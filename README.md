@@ -124,10 +124,11 @@ The D2R launch default is Battle.net's direct product command:
 ```json
 "battleNetPath": "C:\\Program Files (x86)\\Battle.net\\Battle.net.exe",
 "battleNetArgs": "--exec=\"launch OSI\"",
-"preferBattleNetExecLaunch": true
+"preferBattleNetExecLaunch": true,
+"battleNetExecRetryDelaySeconds": 12
 ```
 
-That avoids trying to start `D2R.exe` directly, which usually just lands back at Battle.net. You can still copy `samples/vm-agent.config.example.json` and edit it by hand if you prefer. UI coordinate/timing tuning remains in that JSON.
+That avoids trying to start `D2R.exe` directly, which usually just lands back at Battle.net. If Battle.net is not already running, the agent waits `battleNetExecRetryDelaySeconds` seconds and sends the D2R launch command a second time. You can still copy `samples/vm-agent.config.example.json` and edit it by hand if you prefer. UI coordinate/timing tuning remains in that JSON.
 
 4. Install the scheduled task from an elevated PowerShell prompt inside the VM after the config exists:
 

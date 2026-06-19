@@ -50,6 +50,7 @@ Current implementation:
 - `/d2r start <account>` sends `launch_d2r` to the VM agent.
 - `/d2r ready <account>` launches D2R, clicks Battle.net Play if needed, and clicks through intro screens.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
+- If Battle.net was not already running, the agent waits `battleNetExecRetryDelaySeconds` seconds and sends the same D2R launch command again.
 - If an older config points at `Battle.net Launcher.exe`, the agent resolves the sibling `Battle.net.exe` for D2R launches.
 - Direct `d2rPath` launch is an advanced override and only used when `preferBattleNetExecLaunch` is false.
 
@@ -75,6 +76,8 @@ Automation:
 ```text
 /d2r ready hc1
 ```
+
+The intro skip loop defaults to 80 clicks at 250ms intervals. The clicks are intentionally fast because they are only meant to push through the initial video/legal screens until the character screen is usable.
 
 ## Character Screen To Existing Game
 

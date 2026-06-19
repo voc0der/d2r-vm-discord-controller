@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using AgentCommon;
 
 namespace D2RAgent;
@@ -20,8 +21,11 @@ internal sealed class WindowsInput
     private const uint MouseEventRightUp = 0x0010;
     private const byte VkControl = 0x11;
     private const byte VkA = 0x41;
+    private const byte VkV = 0x56;
     private const byte VkEscape = 0x1B;
     private const byte VkG = 0x47;
+    private const uint CfUnicodeText = 13;
+    private const uint GmemMoveable = 0x0002;
     private const uint KeyEventKeyUp = 0x0002;
     private const uint InputKeyboard = 1;
     private const uint KeyEventUnicode = 0x0004;
@@ -97,11 +101,40 @@ internal sealed class WindowsInput
     public void TypeText(string text)
     {
         EnsureWindows();
-
-        foreach (var character in text)
+        if (string.IsNullOrEmpty(text))
         {
-            SendUnicodeChar(character);
+            return;
         }
+
+        try
+        {
+            PasteText(text);
+        }
+        catch (Exception pasteEx)
+        {
+            try
+            {
+                foreach (var character in text)
+                {
+                    SendUnicodeChar(character);
+                }
+            }
+            catch (InvalidOperationException typeEx)
+            {
+                throw new InvalidOperationException(
+                    $"Clipboard paste failed, and Unicode typing fallback also failed. PasteError={pasteEx.Message}; TypeError={typeEx.Message}",
+                    typeEx);
+            }
+        }
+    }
+
+    private void PasteText(string text)
+    {
+        EnsureWindows();
+        SetClipboardText(text);
+        KeyDown(VkControl);
+        Key(VkV);
+        KeyUp(VkControl);
     }
 
     private static (int X, int Y) ToScreen(UiPoint point)
@@ -174,6 +207,96 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool OpenClipboard(IntPtr newOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool CloseClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetClipboardData(uint format, IntPtr memory);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalLock(IntPtr memory);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GlobalUnlock(IntPtr memory);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalFree(IntPtr memory);
+
+    private static void SetClipboardText(string text)
+    {
+        var opened = false;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            opened = OpenClipboard(IntPtr.Zero);
+            if (opened)
+            {
+                break;
+            }
+
+            Thread.Sleep(50);
+        }
+
+        if (!opened)
+        {
+            throw new InvalidOperationException($"OpenClipboard failed. LastError={Marshal.GetLastWin32Error()}");
+        }
+
+        IntPtr memory = IntPtr.Zero;
+        try
+        {
+            if (!EmptyClipboard())
+            {
+                throw new InvalidOperationException($"EmptyClipboard failed. LastError={Marshal.GetLastWin32Error()}");
+            }
+
+            var bytes = Encoding.Unicode.GetBytes(text + '\0');
+            memory = GlobalAlloc(GmemMoveable, (UIntPtr)bytes.Length);
+            if (memory == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"GlobalAlloc failed. LastError={Marshal.GetLastWin32Error()}");
+            }
+
+            var target = GlobalLock(memory);
+            if (target == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"GlobalLock failed. LastError={Marshal.GetLastWin32Error()}");
+            }
+
+            try
+            {
+                Marshal.Copy(bytes, 0, target, bytes.Length);
+            }
+            finally
+            {
+                GlobalUnlock(memory);
+            }
+
+            if (SetClipboardData(CfUnicodeText, memory) == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"SetClipboardData failed. LastError={Marshal.GetLastWin32Error()}");
+            }
+
+            memory = IntPtr.Zero;
+        }
+        finally
+        {
+            CloseClipboard();
+            if (memory != IntPtr.Zero)
+            {
+                GlobalFree(memory);
+            }
+        }
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Input

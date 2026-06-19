@@ -14,6 +14,7 @@ public sealed class VmAgentConfig : AgentConfig
     public string? BattleNetArgs { get; set; } = "--exec=\"launch OSI\"";
     public string BattleNetProcessName { get; set; } = "Battle.net";
     public bool PreferBattleNetExecLaunch { get; set; } = true;
+    public int BattleNetExecRetryDelaySeconds { get; set; } = 12;
     public string? D2RPath { get; set; }
     public string? D2RArgs { get; set; }
     public string D2RProcessName { get; set; } = "D2R";
@@ -33,8 +34,8 @@ public sealed class D2RUiAutomationConfig
     public bool ToggleLegacyGraphicsAfterEnteringGame { get; set; } = true;
     public int LegacyGraphicsToggleDelaySeconds { get; set; } = 20;
     public int LobbyLoadSeconds { get; set; } = 3;
-    public int IntroClickCount { get; set; } = 10;
-    public int IntroClickDelayMs { get; set; } = 650;
+    public int IntroClickCount { get; set; } = 80;
+    public int IntroClickDelayMs { get; set; } = 250;
     public int DefaultCharacterSlot { get; set; } = 1;
     public int DefaultFriendRow { get; set; } = 1;
     public double FriendRowHeight { get; set; } = 0.049;

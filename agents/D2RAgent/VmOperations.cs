@@ -58,6 +58,10 @@ public sealed class VmOperations
             return CommandResult.Success("D2R is already running.", await GetStatusAsync(cancellationToken));
         }
 
+        var battleNetWasRunning = IsProcessRunning(_config.BattleNetProcessName);
+        var usedBattleNetExec = false;
+        var launchAttempts = 1;
+
         if (!_config.PreferBattleNetExecLaunch && !string.IsNullOrWhiteSpace(_config.D2RPath))
         {
             var launch = LaunchProcess(_config.D2RPath, _config.D2RArgs);
@@ -68,6 +72,7 @@ public sealed class VmOperations
         }
         else
         {
+            usedBattleNetExec = true;
             var launch = LaunchBattleNetD2R();
             if (!launch.Ok)
             {
@@ -75,9 +80,27 @@ public sealed class VmOperations
             }
         }
 
+        if (usedBattleNetExec && !battleNetWasRunning)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.BattleNetExecRetryDelaySeconds, 1)), cancellationToken);
+            if (!IsProcessRunning(_config.D2RProcessName))
+            {
+                var retry = LaunchBattleNetD2R();
+                if (!retry.Ok)
+                {
+                    return retry;
+                }
+
+                launchAttempts++;
+            }
+        }
+
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.LaunchGraceSeconds, 1)), cancellationToken);
         var status = await GetStatusAsync(cancellationToken);
-        return CommandResult.Success("Launch command sent. Check status for final client state.", status);
+        var message = launchAttempts > 1
+            ? "Battle.net cold-started; D2R launch command sent twice. Check status for final client state."
+            : "Launch command sent. Check status for final client state.";
+        return CommandResult.Success(message, status);
     }
 
     private async Task<CommandResult> RestartD2RAsync(CancellationToken cancellationToken)
@@ -225,6 +248,7 @@ public sealed class VmOperations
     {
         for (var index = 0; index < Math.Max(_config.Ui.IntroClickCount, 0); index++)
         {
+            input.FocusProcess(_config.D2RProcessName);
             input.LeftClick(_config.Ui.IntroSkipPoint);
             await Task.Delay(Math.Max(_config.Ui.IntroClickDelayMs, 100), cancellationToken);
         }
@@ -245,6 +269,8 @@ public sealed class VmOperations
         string value,
         CancellationToken cancellationToken)
     {
+        input.LeftClick(point);
+        await DelayStepAsync(cancellationToken);
         input.LeftClick(point);
         await DelayStepAsync(cancellationToken);
         input.SelectAll();
