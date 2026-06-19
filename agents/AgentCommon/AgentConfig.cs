@@ -10,9 +10,10 @@ public abstract class AgentConfig
 
 public sealed class VmAgentConfig : AgentConfig
 {
-    public string? BattleNetPath { get; set; }
-    public string? BattleNetArgs { get; set; }
+    public string? BattleNetPath { get; set; } = @"C:\Program Files (x86)\Battle.net\Battle.net.exe";
+    public string? BattleNetArgs { get; set; } = "--exec=\"launch OSI\"";
     public string BattleNetProcessName { get; set; } = "Battle.net";
+    public bool PreferBattleNetExecLaunch { get; set; } = true;
     public string? D2RPath { get; set; }
     public string? D2RArgs { get; set; }
     public string D2RProcessName { get; set; } = "D2R";

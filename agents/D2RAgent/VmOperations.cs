@@ -6,6 +6,9 @@ namespace D2RAgent;
 
 public sealed class VmOperations
 {
+    private const string DefaultBattleNetPath = @"C:\Program Files (x86)\Battle.net\Battle.net.exe";
+    private const string DefaultBattleNetD2RArgs = "--exec=\"launch OSI\"";
+
     private readonly VmAgentConfig _config;
 
     public VmOperations(VmAgentConfig config)
@@ -55,7 +58,7 @@ public sealed class VmOperations
             return CommandResult.Success("D2R is already running.", await GetStatusAsync(cancellationToken));
         }
 
-        if (!string.IsNullOrWhiteSpace(_config.D2RPath))
+        if (!_config.PreferBattleNetExecLaunch && !string.IsNullOrWhiteSpace(_config.D2RPath))
         {
             var launch = LaunchProcess(_config.D2RPath, _config.D2RArgs);
             if (!launch.Ok)
@@ -65,7 +68,7 @@ public sealed class VmOperations
         }
         else
         {
-            var launch = LaunchBattleNet();
+            var launch = LaunchBattleNetD2R();
             if (!launch.Ok)
             {
                 return launch;
@@ -359,6 +362,37 @@ public sealed class VmOperations
         }
 
         return LaunchProcess(_config.BattleNetPath, _config.BattleNetArgs);
+    }
+
+    private CommandResult LaunchBattleNetD2R()
+    {
+        var path = ResolveBattleNetExecutablePath();
+        var args = string.IsNullOrWhiteSpace(_config.BattleNetArgs)
+            ? DefaultBattleNetD2RArgs
+            : _config.BattleNetArgs;
+
+        return LaunchProcess(path, args);
+    }
+
+    private string ResolveBattleNetExecutablePath()
+    {
+        if (string.IsNullOrWhiteSpace(_config.BattleNetPath))
+        {
+            return DefaultBattleNetPath;
+        }
+
+        var fileName = Path.GetFileName(_config.BattleNetPath);
+        if (fileName.Equals("Battle.net Launcher.exe", StringComparison.OrdinalIgnoreCase)
+            && Path.GetDirectoryName(_config.BattleNetPath) is { } directory)
+        {
+            var battleNetExe = Path.Combine(directory, "Battle.net.exe");
+            if (File.Exists(battleNetExe))
+            {
+                return battleNetExe;
+            }
+        }
+
+        return _config.BattleNetPath;
     }
 
     private CommandResult LaunchProcess(string path, string? args)

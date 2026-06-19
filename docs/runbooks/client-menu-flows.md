@@ -49,8 +49,9 @@ Current implementation:
 
 - `/d2r start <account>` sends `launch_d2r` to the VM agent.
 - `/d2r ready <account>` launches D2R, clicks Battle.net Play if needed, and clicks through intro screens.
-- If `d2rPath` is configured, the agent launches that path.
-- If `d2rPath` is not configured, the agent ensures Battle.net is running.
+- By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
+- If an older config points at `Battle.net Launcher.exe`, the agent resolves the sibling `Battle.net.exe` for D2R launches.
+- Direct `d2rPath` launch is an advanced override and only used when `preferBattleNetExecLaunch` is false.
 
 ## Battle.net To Character Screen
 

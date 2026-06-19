@@ -29,10 +29,12 @@ public static class VmAgentConfigWizard
             SharedSecret = ConsolePrompt.ReadString("Shared secret from D2RHost", allowEmpty: false),
             HeartbeatSeconds = ConsolePrompt.ReadInt("Heartbeat interval, seconds", 15, minValue: 5),
             BattleNetPath = ConsolePrompt.ReadString(
-                "Battle.net launcher path",
-                @"C:\Program Files (x86)\Battle.net\Battle.net Launcher.exe",
+                "Battle.net executable path",
+                @"C:\Program Files (x86)\Battle.net\Battle.net.exe",
                 allowEmpty: false),
-            D2RPath = NullIfBlank(ConsolePrompt.ReadString("D2R executable path, optional", allowEmpty: true))
+            BattleNetArgs = ConsolePrompt.ReadString("Battle.net D2R launch args", "--exec=\"launch OSI\"", allowEmpty: false),
+            PreferBattleNetExecLaunch = true,
+            D2RPath = NullIfBlank(ConsolePrompt.ReadString("Direct D2R executable path, optional advanced override", allowEmpty: true))
         };
 
         ConfigLoader.Save(configPath, config);

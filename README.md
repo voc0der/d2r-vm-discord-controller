@@ -119,7 +119,15 @@ If `C:\D2ROps\vm-agent.config.json` does not exist, the VM agent asks for `agent
 
 If the JSON already exists, the VM agent skips setup and probes the host. If it cannot connect, it asks whether the hostname or port changed, rewrites the JSON, and retries.
 
-You can still copy `samples/vm-agent.config.example.json` and edit it by hand if you prefer. UI coordinate/timing tuning remains in that JSON.
+The D2R launch default is Battle.net's direct product command:
+
+```json
+"battleNetPath": "C:\\Program Files (x86)\\Battle.net\\Battle.net.exe",
+"battleNetArgs": "--exec=\"launch OSI\"",
+"preferBattleNetExecLaunch": true
+```
+
+That avoids trying to start `D2R.exe` directly, which usually just lands back at Battle.net. You can still copy `samples/vm-agent.config.example.json` and edit it by hand if you prefer. UI coordinate/timing tuning remains in that JSON.
 
 4. Install the scheduled task from an elevated PowerShell prompt inside the VM after the config exists:
 
