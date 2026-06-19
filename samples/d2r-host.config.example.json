@@ -1,14 +1,19 @@
 {
+  "discordToken": "replace_with_discord_bot_token_or_use_DISCORD_TOKEN_env",
+  "discordGuildId": null,
+  "disableDiscord": false,
+  "httpPort": 8080,
+  "databasePath": "C:\\D2ROps\\d2r-host.sqlite",
   "allowedDiscordUserIds": [
     "your_discord_user_id"
   ],
   "startAllDelaySeconds": 20,
+  "powerShellPath": "powershell.exe",
+  "powerShellTimeoutSeconds": 90,
+  "allowedVmNamePrefixes": [
+    "d2r-"
+  ],
   "agents": {
-    "hyperv-host-01": {
-      "kind": "host",
-      "displayName": "Basement Hyper-V Host",
-      "sharedSecret": "replace_with_long_random_host_secret"
-    },
     "d2r-hc-01": {
       "kind": "vm",
       "displayName": "BO-01 VM Agent",
@@ -24,13 +29,11 @@
   "accounts": {
     "hc1": {
       "agentId": "d2r-hc-01",
-      "hostAgentId": "hyperv-host-01",
       "vmName": "d2r-hc-01",
       "displayName": "BO-01"
     },
     "hc2": {
       "agentId": "d2r-hc-02",
-      "hostAgentId": "hyperv-host-01",
       "vmName": "d2r-hc-02",
       "displayName": "BO-02"
     }

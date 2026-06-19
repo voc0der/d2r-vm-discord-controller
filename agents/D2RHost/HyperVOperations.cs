@@ -3,13 +3,13 @@ using System.Text;
 using System.Text.Json;
 using AgentCommon;
 
-namespace HyperVAgent;
+namespace D2RHost;
 
 public sealed class HyperVOperations
 {
-    private readonly HyperVAgentConfig _config;
+    private readonly HostConfig _config;
 
-    public HyperVOperations(HyperVAgentConfig config)
+    public HyperVOperations(HostConfig config)
     {
         _config = config;
     }

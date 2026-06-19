@@ -8,57 +8,30 @@ on:
 
 permissions:
   contents: write
-  packages: write
-
-env:
-  IMAGE_NAME: d2r-vm-discord-controller
 
 jobs:
-  controller-image:
-    name: Publish Controller Image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=tag
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/controller/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  windows-agent-zips:
-    name: Build Windows Agent Zips
+  windows-zips:
+    name: Build Windows Zips
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+
+      - name: Publish D2RHost
+        shell: pwsh
+        run: |
+          dotnet publish agents/D2RHost/D2RHost.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -o artifacts/D2RHost
+          Copy-Item samples/d2r-host.config.example.json artifacts/D2RHost/
+          Copy-Item scripts/install-d2r-host.ps1 artifacts/D2RHost/
+          Compress-Archive -Path artifacts/D2RHost/* -DestinationPath artifacts/D2RHost-win-x64.zip -Force
 
       - name: Publish D2RAgent
         shell: pwsh
@@ -74,23 +47,9 @@ jobs:
           Copy-Item scripts/install-vm-agent.ps1 artifacts/D2RAgent/
           Compress-Archive -Path artifacts/D2RAgent/* -DestinationPath artifacts/D2RAgent-win-x64.zip -Force
 
-      - name: Publish HyperVAgent
-        shell: pwsh
-        run: |
-          dotnet publish agents/HyperVAgent/HyperVAgent.csproj `
-            --configuration Release `
-            --runtime win-x64 `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -p:EnableCompressionInSingleFile=true `
-            -o artifacts/HyperVAgent
-          Copy-Item samples/hyperv-agent.config.example.json artifacts/HyperVAgent/
-          Copy-Item scripts/install-hyperv-agent.ps1 artifacts/HyperVAgent/
-          Compress-Archive -Path artifacts/HyperVAgent/* -DestinationPath artifacts/HyperVAgent-win-x64.zip -Force
-
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-agent-zips
+          name: windows-zips
           path: artifacts/*.zip
 
       - uses: softprops/action-gh-release@v2

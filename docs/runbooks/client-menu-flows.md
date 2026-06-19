@@ -4,7 +4,7 @@
 
 The VM agent should get each VM to a useful operator state: Battle.net running, D2R running, current screenshot available, remote link available, and current game details easy to retrieve from Discord.
 
-The repo does not currently automate D2R menu clicks. The captured screenshots are organized here so the UI path is documented before any future image-recognition or assisted-control work.
+The VM agent automates these flows with coordinate-based input. The captured screenshots are organized here so the UI path is documented and easy to retune if resolution or UI state changes.
 
 ## Discord Helpers
 
@@ -32,7 +32,7 @@ Use these commands while driving clients:
 
 `/game show` is meant to keep the name/password in one place while moving each VM through Join Game or Create Game. `/d2r join-game` and `/d2r create-game` use stored `/game set` values when command options are omitted.
 
-For all-client commands, set `CLIENT_STAGGER_SECONDS=30` in the controller Docker `.env` to run client 1, wait 30 seconds, client 2, and so on. If unset, the controller uses `startAllDelaySeconds` from `controller.config.json`.
+For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`.
 
 ## Launch To Battle.net
 
@@ -182,9 +182,9 @@ Notes:
 - Legacy mode labels the middle menu option `Save and Exit Game`.
 - `/d2r stop <account>` is still available as a hard process stop. Use `/d2r save-exit <account>` when you want a clean game leave.
 
-## Notes For Future Assisted Navigation
+## Notes For Future Tuning
 
-Keep future navigation data tied to screenshots and resolution. The current captures are around 1708x960, except the Battle.net capture at 1707x1087 because it includes the Hyper-V connection chrome.
+Keep navigation data tied to screenshots and resolution. The current captures are around 1708x960, except the Battle.net capture at 1707x1087 because it includes the Hyper-V connection chrome.
 
 Useful future references to collect:
 

@@ -89,10 +89,3 @@ public sealed class UiPoint
     public double X { get; set; }
     public double Y { get; set; }
 }
-
-public sealed class HyperVAgentConfig : AgentConfig
-{
-    public string PowerShellPath { get; set; } = "powershell.exe";
-    public int PowerShellTimeoutSeconds { get; set; } = 90;
-    public string[] AllowedVmNamePrefixes { get; set; } = [];
-}

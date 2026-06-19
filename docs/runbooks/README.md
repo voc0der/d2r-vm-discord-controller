@@ -13,7 +13,7 @@ Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 - `save_and_exit_resurrected.jpg`: Resurrected graphics pause menu with Save and Exit.
 - `save_and_exit_legacy.jpg`: Legacy graphics pause menu with Save and Exit Game.
 
-The Discord/controller implementation currently supports launch, status, screenshots, remote links, and game detail storage. These screenshots are the source-of-truth reference for manual/remote operation and for any future UI navigation work.
+The host and VM-agent implementation supports launch, status, screenshots, remote links, game detail storage, and the menu movement documented in these runbooks. These screenshots are the source-of-truth reference for tuning the current coordinate-based navigation.
 
 See [client-menu-flows.md](client-menu-flows.md).
 

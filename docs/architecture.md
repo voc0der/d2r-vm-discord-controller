@@ -2,30 +2,42 @@
 
 ```text
 Discord slash commands
-  -> Node.js controller
+  -> D2RHost.exe on the Windows Hyper-V host
+    -> HTTP health API
     -> WebSocket server at /agent
       <- outbound VM agents
-      <- outbound Hyper-V host agent
+    -> SQLite state
+    -> local Hyper-V PowerShell cmdlets
 ```
 
-The controller is the only process that talks to Discord. Agents call home over outbound WebSocket connections, authenticate with per-agent shared secrets, and wait for commands.
+`D2RHost` is the only process that talks to Discord. It also owns the VM WebSocket listener, account mapping, SQLite state, and Hyper-V operations.
 
-## Controller
+## D2RHost
 
-The controller owns:
+The host app runs on the Windows Hyper-V machine and owns:
 
 - Discord slash command registration and handling.
-- Account-to-agent mapping.
-- Agent authentication and connection state.
+- Account-to-VM-agent mapping.
+- VM-agent authentication and connection state.
 - Command request/response correlation.
-- SQLite status and command history persistence.
+- SQLite status, command history, and current-game persistence.
 - HTTP health endpoints.
+- Hyper-V VM status, start, stop, reboot, and checkpoint commands.
 
-The controller reads `CONFIG_PATH`, defaults to `/config/controller.config.json` in Docker, and stores SQLite state at `DB_PATH`.
+The host app reads its config from the first CLI argument, then `CONFIG_PATH`, then `C:\D2ROps\d2r-host.config.json`.
+
+Useful environment overrides:
+
+- `DISCORD_TOKEN`
+- `DISCORD_GUILD_ID`
+- `DISABLE_DISCORD`
+- `HTTP_PORT`
+- `DB_PATH`
+- `CLIENT_STAGGER_SECONDS`
 
 ## VM Agent
 
-The VM agent runs inside each Windows VM as the logged-in user. It should be started by a scheduled task at logon because Battle.net, D2R, and screenshots all live in the interactive desktop session.
+The VM agent runs inside each Windows VM as the logged-in user. It should be started by a scheduled task at logon because Battle.net, D2R, screenshots, and menu clicks all live in the interactive desktop session.
 
 It supports:
 
@@ -34,12 +46,14 @@ It supports:
 - Launch Battle.net or configured D2R path.
 - Kill/restart D2R.
 - Primary-screen screenshot capture.
+- Battle.net Play plus D2R intro click-through.
+- Character select, Lobby, Play, Join Game, Create Game, Join Friend, and Save and Exit menu flows.
 
-## Hyper-V Agent
+## Hyper-V Control
 
-The Hyper-V agent runs on the host machine with enough privilege to call Hyper-V PowerShell cmdlets.
+Hyper-V control now runs inside `D2RHost`; there is no separate host-side WebSocket agent.
 
-It supports:
+`D2RHost` uses local PowerShell cmdlets for:
 
 - `Get-VM` status.
 - `Start-VM`.
@@ -47,4 +61,4 @@ It supports:
 - `Restart-VM -Force`.
 - `Checkpoint-VM`.
 
-Use `allowedVmNamePrefixes` to limit which VM names the agent is allowed to operate.
+Use `allowedVmNamePrefixes` to limit which VM names the host is allowed to operate.

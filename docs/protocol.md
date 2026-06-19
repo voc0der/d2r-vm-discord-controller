@@ -1,9 +1,9 @@
 # Agent Protocol
 
-Agents connect to:
+VM agents connect to the host app:
 
 ```text
-ws://controller-host:8080/agent
+ws://d2r-host:8080/agent
 ```
 
 The first message must be a hello:
@@ -32,7 +32,7 @@ Agents periodically push status:
 }
 ```
 
-The controller sends commands:
+`D2RHost` sends commands:
 
 ```json
 {
@@ -71,6 +71,8 @@ Game-oriented menu commands accept optional args such as:
 ```
 
 After `menu_play`, `menu_join_game`, `menu_create_game`, and `menu_join_friend`, the VM agent can wait and press `G` to switch to legacy graphics. This is controlled by `ui.toggleLegacyGraphicsAfterEnteringGame` and `ui.legacyGraphicsToggleDelaySeconds` in `vm-agent.config.json`.
+
+Hyper-V commands do not use this protocol anymore. They run locally inside `D2RHost` on the Windows Hyper-V host.
 
 Agents respond:
 
