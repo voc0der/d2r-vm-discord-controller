@@ -14,11 +14,11 @@ jobs:
     name: Build Windows Zips
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
 
@@ -156,12 +156,12 @@ jobs:
           $notes | Set-Content -Path artifacts/release-notes.md -Encoding utf8
           Get-Content artifacts/release-notes.md
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-zips
           path: artifacts/*.zip
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
         with:
           body_path: artifacts/release-notes.md
