@@ -1,0 +1,226 @@
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
+
+namespace AgentCommon;
+
+public sealed class AgentClient<TConfig> where TConfig : AgentConfig
+{
+    private const string Version = "0.1.0";
+
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    private readonly TConfig _config;
+    private readonly string _agentKind;
+    private readonly Action<string> _log;
+
+    public AgentClient(TConfig config, string agentKind, Action<string>? log = null)
+    {
+        _config = config;
+        _agentKind = agentKind;
+        _log = log ?? Console.WriteLine;
+    }
+
+    public async Task RunForeverAsync(
+        Func<CancellationToken, Task<object>> statusFactory,
+        Func<CommandRequest, CancellationToken, Task<CommandResult>> commandHandler,
+        CancellationToken cancellationToken)
+    {
+        var delay = TimeSpan.FromSeconds(2);
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await RunOnceAsync(statusFactory, commandHandler, cancellationToken);
+                delay = TimeSpan.FromSeconds(2);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _log($"Controller connection failed: {ex.Message}");
+                await Task.Delay(delay, cancellationToken);
+                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 30));
+            }
+        }
+    }
+
+    private async Task RunOnceAsync(
+        Func<CancellationToken, Task<object>> statusFactory,
+        Func<CommandRequest, CancellationToken, Task<CommandResult>> commandHandler,
+        CancellationToken cancellationToken)
+    {
+        using var socket = new ClientWebSocket();
+        using var sendLock = new SemaphoreSlim(1, 1);
+
+        _log($"Connecting to {_config.ControllerUrl} as {_config.AgentId}...");
+        await socket.ConnectAsync(new Uri(_config.ControllerUrl), cancellationToken);
+
+        await SendAsync(
+            socket,
+            sendLock,
+            new
+            {
+                type = "hello",
+                agentId = _config.AgentId,
+                agentKind = _agentKind,
+                sharedSecret = _config.SharedSecret,
+                version = Version,
+                hostName = Environment.MachineName
+            },
+            cancellationToken);
+
+        _log("Connected to controller.");
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var heartbeatTask = SendHeartbeatAsync(socket, sendLock, statusFactory, linkedCts.Token);
+
+        try
+        {
+            while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+            {
+                var raw = await ReceiveStringAsync(socket, cancellationToken);
+                if (raw is null)
+                {
+                    break;
+                }
+
+                await HandleControllerMessageAsync(socket, sendLock, raw, commandHandler, cancellationToken);
+            }
+        }
+        finally
+        {
+            linkedCts.Cancel();
+            try
+            {
+                await heartbeatTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal shutdown.
+            }
+        }
+    }
+
+    private async Task SendHeartbeatAsync(
+        ClientWebSocket socket,
+        SemaphoreSlim sendLock,
+        Func<CancellationToken, Task<object>> statusFactory,
+        CancellationToken cancellationToken)
+    {
+        var interval = TimeSpan.FromSeconds(Math.Max(_config.HeartbeatSeconds, 5));
+
+        while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
+        {
+            var status = await statusFactory(cancellationToken);
+            await SendAsync(
+                socket,
+                sendLock,
+                new
+                {
+                    type = "status",
+                    agentId = _config.AgentId,
+                    status
+                },
+                cancellationToken);
+
+            await Task.Delay(interval, cancellationToken);
+        }
+    }
+
+    private async Task HandleControllerMessageAsync(
+        ClientWebSocket socket,
+        SemaphoreSlim sendLock,
+        string raw,
+        Func<CommandRequest, CancellationToken, Task<CommandResult>> commandHandler,
+        CancellationToken cancellationToken)
+    {
+        using var document = JsonDocument.Parse(raw);
+        var type = document.RootElement.GetProperty("type").GetString();
+        if (!string.Equals(type, "command", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var envelope = JsonSerializer.Deserialize<ControllerCommandEnvelope>(raw, JsonOptions)
+            ?? throw new InvalidOperationException("Controller command payload was invalid.");
+
+        CommandResult result;
+        try
+        {
+            var request = new CommandRequest(envelope.CommandId, envelope.Command, envelope.Args);
+            result = await commandHandler(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            result = CommandResult.Failure(ex.Message);
+        }
+
+        await SendAsync(
+            socket,
+            sendLock,
+            new
+            {
+                type = "command_result",
+                agentId = _config.AgentId,
+                commandId = envelope.CommandId,
+                ok = result.Ok,
+                message = result.Message,
+                data = result.Data
+            },
+            cancellationToken);
+    }
+
+    private static async Task SendAsync(
+        ClientWebSocket socket,
+        SemaphoreSlim sendLock,
+        object payload,
+        CancellationToken cancellationToken)
+    {
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        var bytes = Encoding.UTF8.GetBytes(json);
+        await sendLock.WaitAsync(cancellationToken);
+        try
+        {
+            await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
+        }
+        finally
+        {
+            sendLock.Release();
+        }
+    }
+
+    private static async Task<string?> ReceiveStringAsync(
+        ClientWebSocket socket,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new byte[8192];
+        using var stream = new MemoryStream();
+
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(buffer, cancellationToken);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                if (socket.State == WebSocketState.CloseReceived)
+                {
+                    await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "closing", cancellationToken);
+                }
+
+                return null;
+            }
+
+            stream.Write(buffer, 0, result.Count);
+            if (result.EndOfMessage)
+            {
+                return Encoding.UTF8.GetString(stream.ToArray());
+            }
+        }
+    }
+}

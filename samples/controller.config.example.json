@@ -1,0 +1,38 @@
+{
+  "allowedDiscordUserIds": [
+    "your_discord_user_id"
+  ],
+  "startAllDelaySeconds": 20,
+  "agents": {
+    "hyperv-host-01": {
+      "kind": "host",
+      "displayName": "Basement Hyper-V Host",
+      "sharedSecret": "replace_with_long_random_host_secret"
+    },
+    "d2r-hc-01": {
+      "kind": "vm",
+      "displayName": "BO-01 VM Agent",
+      "sharedSecret": "replace_with_long_random_vm_secret_01",
+      "remoteUrl": "parsec://optional-remote-control-link"
+    },
+    "d2r-hc-02": {
+      "kind": "vm",
+      "displayName": "BO-02 VM Agent",
+      "sharedSecret": "replace_with_long_random_vm_secret_02"
+    }
+  },
+  "accounts": {
+    "hc1": {
+      "agentId": "d2r-hc-01",
+      "hostAgentId": "hyperv-host-01",
+      "vmName": "d2r-hc-01",
+      "displayName": "BO-01"
+    },
+    "hc2": {
+      "agentId": "d2r-hc-02",
+      "hostAgentId": "hyperv-host-01",
+      "vmName": "d2r-hc-02",
+      "displayName": "BO-02"
+    }
+  }
+}

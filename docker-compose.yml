@@ -1,0 +1,24 @@
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: apps/controller/Dockerfile
+    image: ${CONTROLLER_IMAGE:-d2r-vm-discord-controller:local}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HTTP_PORT: "8080"
+      CONFIG_PATH: /config/controller.config.json
+      DB_PATH: /data/controller.sqlite
+      CLIENT_STAGGER_SECONDS: "${CLIENT_STAGGER_SECONDS:-}"
+    ports:
+      - "${CONTROLLER_PORT:-8080}:8080"
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,11 @@
+{
+  "agentId": "hyperv-host-01",
+  "controllerUrl": "ws://127.0.0.1:8080/agent",
+  "sharedSecret": "replace_with_long_random_host_secret",
+  "heartbeatSeconds": 15,
+  "powerShellPath": "powershell.exe",
+  "powerShellTimeoutSeconds": 90,
+  "allowedVmNamePrefixes": [
+    "d2r-"
+  ]
+}
