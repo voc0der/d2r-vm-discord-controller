@@ -13,7 +13,21 @@ internal static class Program
 
         try
         {
-            var config = ConfigLoader.Load<VmAgentConfig>(configPath);
+            var config = VmAgentConfigWizard.LoadOrCreate(configPath);
+            config = await VmAgentConfigWizard.EnsureConnectsAsync(
+                configPath,
+                config,
+                async (candidate, cancellationToken) =>
+                {
+                    var probeOperations = new VmOperations(candidate);
+                    var probeClient = new AgentClient<VmAgentConfig>(candidate, "vm", Console.WriteLine);
+                    await probeClient.ProbeConnectionAsync(
+                        probeOperations.GetStatusAsync,
+                        TimeSpan.FromSeconds(6),
+                        cancellationToken);
+                },
+                CancellationToken.None);
+
             var operations = new VmOperations(config);
             var client = new AgentClient<VmAgentConfig>(config, "vm", Console.WriteLine);
 
@@ -30,6 +44,13 @@ internal static class Program
         catch (Exception ex)
         {
             Console.Error.WriteLine(ex);
+            if (ConsolePrompt.CanPrompt)
+            {
+                Console.WriteLine();
+                Console.WriteLine("Press Enter to exit.");
+                Console.ReadLine();
+            }
+
             return 1;
         }
     }

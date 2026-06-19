@@ -11,6 +11,11 @@ public static class ConfigLoader
         AllowTrailingCommas = true
     };
 
+    private static readonly JsonSerializerOptions WriteOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true
+    };
+
     public static T Load<T>(string path) where T : AgentConfig
     {
         if (!File.Exists(path))
@@ -38,5 +43,17 @@ public static class ConfigLoader
         }
 
         return config;
+    }
+
+    public static void Save<T>(string path, T config) where T : AgentConfig
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var json = JsonSerializer.Serialize(config, WriteOptions);
+        File.WriteAllText(path, json + Environment.NewLine);
     }
 }

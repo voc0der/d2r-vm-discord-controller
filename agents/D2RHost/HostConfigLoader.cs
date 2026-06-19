@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AgentCommon;
 
 namespace D2RHost;
 
@@ -10,6 +11,30 @@ public static class HostConfigLoader
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true
     };
+
+    private static readonly JsonSerializerOptions WriteOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true
+    };
+
+    public static HostConfig LoadOrCreate(string path)
+    {
+        if (!File.Exists(path))
+        {
+            if (!ConsolePrompt.CanPrompt)
+            {
+                throw new FileNotFoundException($"D2R host config was not found: {path}", path);
+            }
+
+            var config = HostConfigWizard.Create(path);
+            Save(path, config);
+            Console.WriteLine($"Wrote host config: {path}");
+            Console.WriteLine("Starting D2RHost with the saved config.");
+            Console.WriteLine();
+        }
+
+        return Load(path);
+    }
 
     public static HostConfig Load(string path)
     {
@@ -24,6 +49,18 @@ public static class HostConfigLoader
         ApplyEnvironment(config);
         Validate(config);
         return config;
+    }
+
+    public static void Save(string path, HostConfig config)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var json = JsonSerializer.Serialize(config, WriteOptions);
+        File.WriteAllText(path, json + Environment.NewLine);
     }
 
     private static void ApplyEnvironment(HostConfig config)

@@ -51,6 +51,41 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         }
     }
 
+    public async Task ProbeConnectionAsync(
+        Func<CancellationToken, Task<object>> statusFactory,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+
+        using var socket = new ClientWebSocket();
+        using var sendLock = new SemaphoreSlim(1, 1);
+
+        await socket.ConnectAsync(new Uri(_config.ControllerUrl), timeoutCts.Token);
+        await SendHelloAsync(socket, sendLock, probeOnly: true, timeoutCts.Token);
+
+        var raw = await ReceiveStringAsync(socket, timeoutCts.Token)
+            ?? throw new InvalidOperationException("Host closed the connection before acknowledging the agent.");
+
+        using var document = JsonDocument.Parse(raw);
+        var type = document.RootElement.GetProperty("type").GetString();
+        if (!string.Equals(type, "hello_ack", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Host returned an unexpected handshake message: {type ?? "(none)"}.");
+        }
+
+        if (document.RootElement.TryGetProperty("ok", out var okProperty) && !okProperty.GetBoolean())
+        {
+            var message = document.RootElement.TryGetProperty("message", out var messageProperty)
+                ? messageProperty.GetString()
+                : "Handshake was rejected.";
+            throw new InvalidOperationException(message);
+        }
+
+        _ = await statusFactory(timeoutCts.Token);
+    }
+
     private async Task RunOnceAsync(
         Func<CancellationToken, Task<object>> statusFactory,
         Func<CommandRequest, CancellationToken, Task<CommandResult>> commandHandler,
@@ -61,20 +96,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
 
         _log($"Connecting to {_config.ControllerUrl} as {_config.AgentId}...");
         await socket.ConnectAsync(new Uri(_config.ControllerUrl), cancellationToken);
-
-        await SendAsync(
-            socket,
-            sendLock,
-            new
-            {
-                type = "hello",
-                agentId = _config.AgentId,
-                agentKind = _agentKind,
-                sharedSecret = _config.SharedSecret,
-                version = Version,
-                hostName = Environment.MachineName
-            },
-            cancellationToken);
+        await SendHelloAsync(socket, sendLock, probeOnly: false, cancellationToken);
 
         _log("Connected to controller.");
 
@@ -106,6 +128,28 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
                 // Normal shutdown.
             }
         }
+    }
+
+    private Task SendHelloAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        bool probeOnly,
+        CancellationToken cancellationToken)
+    {
+        return SendAsync(
+            socket,
+            sendLock,
+            new
+            {
+                type = "hello",
+                agentId = _config.AgentId,
+                agentKind = _agentKind,
+                sharedSecret = _config.SharedSecret,
+                version = Version,
+                hostName = Environment.MachineName,
+                probeOnly
+            },
+            cancellationToken);
     }
 
     private async Task SendHeartbeatAsync(
@@ -178,7 +222,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
     }
 
     private static async Task SendAsync(
-        ClientWebSocket socket,
+        WebSocket socket,
         SemaphoreSlim sendLock,
         object payload,
         CancellationToken cancellationToken)

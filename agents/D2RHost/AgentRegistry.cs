@@ -57,8 +57,32 @@ public sealed class AgentRegistry
                         return;
                     }
 
+                    if (hello.ProbeOnly)
+                    {
+                        await SendJsonAsync(
+                            socket,
+                            new
+                            {
+                                type = "hello_ack",
+                                agentId = hello.AgentId,
+                                ok = true
+                            },
+                            cancellationToken);
+                        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "probe ok", cancellationToken);
+                        return;
+                    }
+
                     agentId = hello.AgentId;
                     RegisterAgent(socket, hello);
+                    await SendJsonAsync(
+                        socket,
+                        new
+                        {
+                            type = "hello_ack",
+                            agentId = hello.AgentId,
+                            ok = true
+                        },
+                        cancellationToken);
                     continue;
                 }
 
@@ -286,13 +310,23 @@ public sealed class AgentRegistry
         }
     }
 
+    private static async Task SendJsonAsync(
+        WebSocket socket,
+        object payload,
+        CancellationToken cancellationToken)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions);
+        await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
+    }
+
     private sealed record HelloMessage(
         string Type,
         string AgentId,
         string AgentKind,
         string SharedSecret,
         string? Version,
-        string? HostName);
+        string? HostName,
+        bool ProbeOnly = false);
 
     private sealed class ConnectedAgent
     {

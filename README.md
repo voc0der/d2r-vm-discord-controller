@@ -61,14 +61,21 @@ The host PC does not need Docker or Node. The VM agents connect outbound to the 
 
 1. Create a Discord application and bot, then invite it to your server with `applications.commands` and `bot` scopes.
 2. Download `D2RHost-win-x64.zip` from a release or build it locally.
-3. Copy the host app and config to `C:\D2ROps`.
+3. Copy the host app to `C:\D2ROps`.
 
 ```powershell
 Copy-Item .\D2RHost.exe C:\D2ROps\
-Copy-Item .\d2r-host.config.example.json C:\D2ROps\d2r-host.config.json
 ```
 
-4. Edit `C:\D2ROps\d2r-host.config.json`:
+4. Double-click `D2RHost.exe`, or run it from PowerShell:
+
+```powershell
+C:\D2ROps\D2RHost.exe
+```
+
+If `C:\D2ROps\d2r-host.config.json` does not exist, the host opens a terminal setup flow and writes it. If the JSON already exists, setup is skipped and the host starts normally.
+
+The setup flow asks for:
 
 - Set `discordToken` or set a machine-level `DISCORD_TOKEN` environment variable.
 - Optional: set `discordGuildId` for instant guild slash-command registration.
@@ -78,7 +85,9 @@ Copy-Item .\d2r-host.config.example.json C:\D2ROps\d2r-host.config.json
 - Set `allowedVmNamePrefixes` so the host only operates your D2R VMs.
 - Set `startAllDelaySeconds` or the `CLIENT_STAGGER_SECONDS` environment variable to stagger all-client commands.
 
-5. Install the host scheduled task from an elevated PowerShell prompt:
+You can still copy `samples/d2r-host.config.example.json` and edit it by hand if you prefer.
+
+5. Install the host scheduled task from an elevated PowerShell prompt after the config exists:
 
 ```powershell
 .\install-d2r-host.ps1 -ExePath .\D2RHost.exe
@@ -100,9 +109,19 @@ For each D2R VM:
 
 1. Download `D2RAgent-win-x64.zip` from a release or build it locally.
 2. Copy `D2RAgent.exe` to `C:\D2ROps`.
-3. Copy `samples/vm-agent.config.example.json` to `C:\D2ROps\vm-agent.config.json`.
-4. Edit `agentId`, `controllerUrl`, `sharedSecret`, Battle.net path, and UI timing/points if needed.
-5. Install the scheduled task from an elevated PowerShell prompt inside the VM:
+3. Double-click `D2RAgent.exe`, or run it from PowerShell:
+
+```powershell
+C:\D2ROps\D2RAgent.exe
+```
+
+If `C:\D2ROps\vm-agent.config.json` does not exist, the VM agent asks for `agentId`, `controllerUrl`, `sharedSecret`, and Battle.net path, then writes the JSON. Use the agent values printed by the host setup.
+
+If the JSON already exists, the VM agent skips setup and probes the host. If it cannot connect, it asks whether the hostname or port changed, rewrites the JSON, and retries.
+
+You can still copy `samples/vm-agent.config.example.json` and edit it by hand if you prefer. UI coordinate/timing tuning remains in that JSON.
+
+4. Install the scheduled task from an elevated PowerShell prompt inside the VM after the config exists:
 
 ```powershell
 .\install-vm-agent.ps1 -ExePath .\D2RAgent.exe

@@ -19,6 +19,16 @@ The first message must be a hello:
 }
 ```
 
+For startup connection tests, an agent may include `"probeOnly": true`. `D2RHost` authenticates it, replies with `hello_ack`, and closes the probe socket without replacing any already-connected VM agent:
+
+```json
+{
+  "type": "hello_ack",
+  "agentId": "d2r-hc-01",
+  "ok": true
+}
+```
+
 Agents periodically push status:
 
 ```json

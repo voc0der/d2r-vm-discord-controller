@@ -24,7 +24,7 @@ The host app runs on the Windows Hyper-V machine and owns:
 - HTTP health endpoints.
 - Hyper-V VM status, start, stop, reboot, and checkpoint commands.
 
-The host app reads its config from the first CLI argument, then `CONFIG_PATH`, then `C:\D2ROps\d2r-host.config.json`.
+The host app reads its config from the first CLI argument, then `CONFIG_PATH`, then `C:\D2ROps\d2r-host.config.json`. If that JSON is missing and the app has an interactive console, it launches first-run setup and writes the config before starting.
 
 Useful environment overrides:
 
@@ -38,6 +38,8 @@ Useful environment overrides:
 ## VM Agent
 
 The VM agent runs inside each Windows VM as the logged-in user. It should be started by a scheduled task at logon because Battle.net, D2R, screenshots, and menu clicks all live in the interactive desktop session.
+
+If `vm-agent.config.json` is missing, the VM agent prompts for its host URL, agent ID, shared secret, and Battle.net path, then writes the JSON. On later starts it probes the host; if the probe fails in an interactive console, it offers to update hostname/port and save the JSON.
 
 It supports:
 
