@@ -15,6 +15,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
@@ -47,6 +50,112 @@ jobs:
           Copy-Item scripts/install-vm-agent.ps1 artifacts/D2RAgent/
           Compress-Archive -Path artifacts/D2RAgent/* -DestinationPath artifacts/D2RAgent-win-x64.zip -Force
 
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+
+          $repo = "${{ github.repository }}"
+          $isTag = $env:GITHUB_REF_TYPE -eq "tag"
+          $tag = if ($isTag) { $env:GITHUB_REF_NAME } else { "manual-$env:GITHUB_RUN_NUMBER" }
+          $allTags = @(git tag --sort=-v:refname)
+          $previousTag = if ($isTag) { $allTags | Where-Object { $_ -ne $tag } | Select-Object -First 1 } else { $null }
+          $range = if ($isTag -and $previousTag) { "$previousTag..$tag" } elseif ($isTag) { $tag } else { "HEAD" }
+          $compareUrl = if ($isTag -and $previousTag) {
+            "https://github.com/$repo/compare/$previousTag...$tag"
+          } elseif ($isTag) {
+            "https://github.com/$repo/commits/$tag"
+          } else {
+            "https://github.com/$repo/commit/${{ github.sha }}"
+          }
+
+          $groups = [ordered]@{
+            "Features" = [System.Collections.Generic.List[string]]::new()
+            "Fixes" = [System.Collections.Generic.List[string]]::new()
+            "Documentation" = [System.Collections.Generic.List[string]]::new()
+            "CI and Build" = [System.Collections.Generic.List[string]]::new()
+            "Maintenance" = [System.Collections.Generic.List[string]]::new()
+            "Other Changes" = [System.Collections.Generic.List[string]]::new()
+          }
+
+          $commitLines = @(git log --no-merges --pretty=format:"%H%x09%s%x09%an" $range)
+          foreach ($line in $commitLines) {
+            if ([string]::IsNullOrWhiteSpace($line)) {
+              continue
+            }
+
+            $parts = $line -split "`t", 3
+            $sha = $parts[0]
+            $shortSha = $sha.Substring(0, 7)
+            $subject = $parts[1]
+            $author = $parts[2]
+            $entry = "- $subject ([$shortSha](https://github.com/$repo/commit/$sha)) by $author"
+
+            $commitType = ""
+            if ($subject -match "^(?<type>[a-z]+)(\([^)]+\))?!?:") {
+              $commitType = $Matches["type"]
+            }
+
+            $section = "Other Changes"
+            if ($commitType -eq "feat") {
+              $section = "Features"
+            } elseif ($commitType -eq "fix") {
+              $section = "Fixes"
+            } elseif ($commitType -eq "docs") {
+              $section = "Documentation"
+            } elseif ($commitType -in @("ci", "build")) {
+              $section = "CI and Build"
+            } elseif ($commitType -in @("chore", "refactor", "test", "perf", "revert")) {
+              $section = "Maintenance"
+            }
+
+            $groups[$section].Add($entry)
+          }
+
+          $contributors = @(git log --format="%an <%ae>" $range | Sort-Object -Unique)
+
+          $notes = [System.Collections.Generic.List[string]]::new()
+          $notes.Add("# $tag")
+          $notes.Add("")
+          $notes.Add("## Compare")
+          $notes.Add("")
+          $notes.Add("- $compareUrl")
+          $notes.Add("")
+          $notes.Add("## Changelog")
+          $notes.Add("")
+
+          foreach ($name in $groups.Keys) {
+            if ($groups[$name].Count -eq 0) {
+              continue
+            }
+
+            $notes.Add("### $name")
+            $notes.Add("")
+            foreach ($entry in $groups[$name]) {
+              $notes.Add($entry)
+            }
+            $notes.Add("")
+          }
+
+          if ($commitLines.Count -eq 0) {
+            $notes.Add("- No commits found in release range `$range`.")
+            $notes.Add("")
+          }
+
+          $notes.Add("## Contributors")
+          $notes.Add("")
+          foreach ($contributor in $contributors) {
+            $notes.Add("- $contributor")
+          }
+          $notes.Add("")
+          $notes.Add("## Artifacts")
+          $notes.Add("")
+          $notes.Add("- D2RHost-win-x64.zip")
+          $notes.Add("- D2RAgent-win-x64.zip")
+
+          $notes | Set-Content -Path artifacts/release-notes.md -Encoding utf8
+          Get-Content artifacts/release-notes.md
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows-zips
@@ -55,4 +164,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          body_path: artifacts/release-notes.md
           files: artifacts/*.zip

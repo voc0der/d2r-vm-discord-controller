@@ -8,8 +8,30 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  semantic-pr:
+    name: Semantic PR Title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        with:
+          types: |
+            feat
+            fix
+            docs
+            ci
+            build
+            refactor
+            test
+            chore
+            perf
+            revert
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   windows:
     name: Windows C# Apps
     runs-on: windows-latest

@@ -163,18 +163,4 @@ $env:DISABLE_DISCORD = "true"
 .\D2RHost.exe C:\D2ROps\d2r-host.config.json
 ```
 
-## Release Setup
-
-Create a release by pushing a SemVer tag:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The release workflow publishes:
-
-- `D2RHost-win-x64.zip`
-- `D2RAgent-win-x64.zip`
-
 Client-side D2R menu flow references live in [docs/runbooks](docs/runbooks/README.md).
