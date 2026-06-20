@@ -277,10 +277,13 @@ public sealed class DiscordBot
             vmName,
             snapshotName = context.GetString("name")
         });
-        var result = await _hyperV.HandleCommandAsync(
-            new CommandRequest(Guid.NewGuid().ToString("N"), commandName, args),
-            CancellationToken.None);
-        await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = FormatCommandResult(result.Ok, result.Message));
+        QueueDiscordWork(context, $"vm {commandName}", async () =>
+        {
+            var result = await _hyperV.HandleCommandAsync(
+                new CommandRequest(Guid.NewGuid().ToString("N"), commandName, args),
+                CancellationToken.None);
+            await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = FormatCommandResult(result.Ok, result.Message));
+        });
     }
 
     private async Task HandleGameAsync(SlashContext context)
@@ -316,6 +319,23 @@ public sealed class DiscordBot
         bool readyFirstIfNotMenuReady = false)
     {
         await context.Command.DeferAsync(ephemeral: true);
+        QueueDiscordWork(context, commandName, () => RunVmCommandDeferredAsync(
+            context,
+            account,
+            commandName,
+            args,
+            timeout,
+            readyFirstIfNotMenuReady));
+    }
+
+    private async Task RunVmCommandDeferredAsync(
+        SlashContext context,
+        AccountConfig account,
+        string commandName,
+        object args,
+        TimeSpan? timeout,
+        bool readyFirstIfNotMenuReady)
+    {
         var readyResult = readyFirstIfNotMenuReady
             ? await SendReadyIfNotMenuReadyAsync(account, args)
             : null;
@@ -338,6 +358,11 @@ public sealed class DiscordBot
     private async Task RunScreenshotAsync(SlashContext context, AccountConfig account, object args)
     {
         await context.Command.DeferAsync(ephemeral: true);
+        QueueDiscordWork(context, "screenshot", () => RunScreenshotDeferredAsync(context, account, args));
+    }
+
+    private async Task RunScreenshotDeferredAsync(SlashContext context, AccountConfig account, object args)
+    {
         var result = await _registry.SendCommandAsync(account.AgentId, "screenshot", args, TimeSpan.FromSeconds(60));
         if (!result.Ok || result.Data is not { } data)
         {
@@ -354,6 +379,41 @@ public sealed class DiscordBot
         await using var stream = new MemoryStream(bytes);
         await context.Command.FollowupWithFileAsync(stream, $"{account.AgentId}-screenshot.{extension}", result.Message, ephemeral: true);
         await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = "Screenshot attached.");
+    }
+
+    private void QueueDiscordWork(SlashContext context, string operationName, Func<Task> work)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await work();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Discord command background work failed for {OperationName}.", operationName);
+                await SetCommandResponseSafeAsync(context.Command, $"Command failed: {ex.Message}");
+            }
+        });
+    }
+
+    private async Task SetCommandResponseSafeAsync(SocketSlashCommand command, string content)
+    {
+        try
+        {
+            if (command.HasResponded)
+            {
+                await command.ModifyOriginalResponseAsync(properties => properties.Content = content);
+            }
+            else
+            {
+                await command.RespondAsync(content, ephemeral: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not update Discord command response after background failure.");
+        }
     }
 
     private async Task QueueCreateGameAllAsync(SlashContext context, GameInput game)

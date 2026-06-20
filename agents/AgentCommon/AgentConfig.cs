@@ -20,7 +20,7 @@ public sealed class VmAgentConfig : AgentConfig
     public string D2RProcessName { get; set; } = "D2R";
     public string? WorkingDirectory { get; set; }
     public int LaunchGraceSeconds { get; set; } = 10;
-    public int D2RStartTimeoutSeconds { get; set; } = 90;
+    public int D2RStartTimeoutSeconds { get; set; } = 120;
     public bool IdleQuitEnabled { get; set; } = true;
     public int IdleQuitMinutes { get; set; } = 30;
     public int IdleQuitCheckSeconds { get; set; } = 60;
@@ -41,7 +41,7 @@ public sealed class D2RUiAutomationConfig
     public int ReadyNudgeMaxDelayMs { get; set; } = 4000;
     public int WindowFocusTimeoutSeconds { get; set; } = 30;
     public int CharacterScreenSettleSeconds { get; set; } = 1;
-    public int CharacterScreenReadyTimeoutSeconds { get; set; } = 75;
+    public int CharacterScreenReadyTimeoutSeconds { get; set; } = 120;
     public int LobbyReadyTimeoutSeconds { get; set; } = 30;
     public int GameEntryStartTimeoutSeconds { get; set; } = 30;
     public int DefaultCharacterSlot { get; set; } = 1;

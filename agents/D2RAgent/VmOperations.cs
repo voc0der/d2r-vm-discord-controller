@@ -559,19 +559,28 @@ public sealed class VmOperations
                 return false;
             }
 
-            if (state == ReadyScreenState.DiabloSplash)
-            {
-                input.LeftClick(_config.Ui.IntroSkipPoint);
-                await DelayStepAsync(cancellationToken);
-                input.PressStartKey();
-            }
-            else
-            {
-                input.LeftClick(_config.Ui.IntroSkipPoint);
-            }
-
+            await NudgeReadyScreenAsync(input, state, cancellationToken);
             await DelayReadyNudgeAsync(cancellationToken);
         }
+    }
+
+    private async Task NudgeReadyScreenAsync(
+        WindowsInput input,
+        ReadyScreenState state,
+        CancellationToken cancellationToken)
+    {
+        input.LeftClick(_config.Ui.IntroSkipPoint);
+        await DelayStepAsync(cancellationToken);
+
+        if (state == ReadyScreenState.DiabloSplash)
+        {
+            input.PressStartKey();
+            return;
+        }
+
+        input.PressEscape();
+        await DelayStepAsync(cancellationToken);
+        input.PressStartKey();
     }
 
     private async Task<bool> ClickLobbyUntilReadyAsync(
@@ -1155,6 +1164,8 @@ public sealed class VmOperations
     {
         var timeout = TimeSpan.FromSeconds(Math.Max(_config.D2RStartTimeoutSeconds, 1));
         var deadline = DateTimeOffset.UtcNow + timeout;
+        var launchRetryDelay = TimeSpan.FromSeconds(Math.Max(_config.BattleNetExecRetryDelaySeconds, 1));
+        var nextLaunchRetryAt = DateTimeOffset.UtcNow;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1168,24 +1179,63 @@ public sealed class VmOperations
                 return false;
             }
 
-            if (_config.Ui.ClickBattleNetPlayWhenNeeded
-                && IsProcessRunning(_config.BattleNetProcessName))
+            if (DateTimeOffset.UtcNow >= nextLaunchRetryAt)
             {
-                try
-                {
-                    if (input.TryFocusProcess(_config.BattleNetProcessName))
-                    {
-                        input.LeftClick(_config.Ui.BattleNetPlayButton);
-                    }
-                }
-                catch (InvalidOperationException)
-                {
-                    // Battle.net may be running before its main window can receive input.
-                }
+                _ = TrySendD2RLaunchCommand();
+                nextLaunchRetryAt = DateTimeOffset.UtcNow + launchRetryDelay;
             }
 
+            _ = TryClickBattleNetPlay(input);
             await DelayReadyNudgeAsync(cancellationToken);
         }
+    }
+
+    private CommandResult TrySendD2RLaunchCommand()
+    {
+        if (!_config.PreferBattleNetExecLaunch && !string.IsNullOrWhiteSpace(_config.D2RPath))
+        {
+            return LaunchProcess(_config.D2RPath, _config.D2RArgs);
+        }
+
+        return LaunchBattleNetD2R();
+    }
+
+    private bool TryClickBattleNetPlay(WindowsInput input)
+    {
+        if (!_config.Ui.ClickBattleNetPlayWhenNeeded
+            || !IsProcessRunning(_config.BattleNetProcessName))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (!input.TryFocusProcess(_config.BattleNetProcessName))
+            {
+                return false;
+            }
+
+            if (!IsBattleNetPlayButtonReady(input))
+            {
+                return false;
+            }
+
+            input.LeftClick(_config.Ui.BattleNetPlayButton);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            // Battle.net may be running before its main window can receive input.
+            return false;
+        }
+    }
+
+    private bool IsBattleNetPlayButtonReady(WindowsInput input)
+    {
+        var stats = input.SampleRegion(_config.Ui.BattleNetPlayButton, widthRatio: 0.16, heightRatio: 0.06);
+        return stats.BlueRatio > 0.20
+            && stats.AverageLuminance > 40
+            && stats.DarkRatio < 0.70;
     }
 
     private CommandResult LaunchBattleNet()

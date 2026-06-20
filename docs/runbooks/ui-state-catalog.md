@@ -5,7 +5,12 @@ This catalog names the UI states represented by the screenshot assets. Keep file
 | State | Asset | Purpose |
 | --- | --- | --- |
 | Battle.net ready | `assets/d2r-ui/logged_in_battle_net.jpg` | Battle.net is logged in, D2R selected, Play button visible. |
+| First intro video | `assets/d2r-ui/first_intro_video.jpg` | First full-screen startup video after D2R launches. |
+| First intro logo | `assets/d2r-ui/first_intro_video_end.jpg` | Blizzard logo at the end of the first startup video. |
+| Second intro video | `assets/d2r-ui/second_intro.jpg` | Diablo II startup/title animation before the final splash. |
+| Second intro title | `assets/d2r-ui/second_intro_end.jpg` | Diablo II: Resurrected title animation before Press any key appears. |
 | D2R title splash | `assets/d2r-ui/diablo_splash.jpg` | D2R title screen with Diablo logo and Press any key prompt visible. |
+| Connecting to Battle.net | `assets/d2r-ui/connecting_to_battlenet_post_splash.jpg` | Centered Connecting to Battle.net modal after pressing through the title splash. |
 | Character select | `assets/d2r-ui/character_screen.jpg` | Online character list with Play and Lobby buttons. |
 | Character select skeleton selected | `assets/d2r-ui/character_skeleton_selected.jpg` | Character list with the skeleton row selected. |
 | Character select skeleton not selected | `assets/d2r-ui/character_skeleton_not_selected.jpg` | Character list with skeleton visible but another row selected. |
@@ -26,3 +31,7 @@ Skipped for now:
 Private captures:
 
 - Do not commit screenshots that show real Battle.net tags. Keep those in `private-captures/` or name them with `.private` / `.sensitive` before the extension.
+
+Host diagnostics:
+
+- `assets/d2r-host/gateway_blocked_command.jpg`: Host console warning from a slash command handler blocking the Discord gateway task.

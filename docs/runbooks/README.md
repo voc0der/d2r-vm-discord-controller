@@ -5,7 +5,12 @@ These runbooks describe the client-side menu states used when getting VM clients
 Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 
 - `logged_in_battle_net.jpg`: Battle.net logged in with D2R selected and ready to press Play.
+- `first_intro_video.jpg`: First full-screen startup intro video.
+- `first_intro_video_end.jpg`: Blizzard logo at the end of the first startup intro.
+- `second_intro.jpg`: Second startup intro sequence.
+- `second_intro_end.jpg`: Diablo II title animation before the full title splash.
 - `diablo_splash.jpg`: D2R title splash with the Diablo logo and Press any key prompt.
+- `connecting_to_battlenet_post_splash.jpg`: Title splash with the centered Connecting to Battle.net dialog.
 - `character_screen.jpg`: D2R online character select.
 - `character_skeleton_selected.jpg`: Character select with the skeleton character row selected.
 - `character_skeleton_not_selected.jpg`: Character select with a different row selected and skeleton visible.
@@ -18,6 +23,10 @@ Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 - `friend_context_join_game.jpg`: Right-click friend context menu with `Join Game` visible.
 - `save_and_exit_resurrected.jpg`: Resurrected graphics pause menu with Save and Exit.
 - `save_and_exit_legacy.jpg`: Legacy graphics pause menu with Save and Exit Game.
+
+Host diagnostic assets live in `docs/runbooks/assets/d2r-host/`:
+
+- `gateway_blocked_command.jpg`: Host console warning from long slash command work blocking the Discord gateway task.
 
 The host and VM-agent implementation supports launch, status, screenshots, remote links, game detail storage, and the menu movement documented in these runbooks. These screenshots are the source-of-truth reference for tuning the current coordinate-based navigation.
 

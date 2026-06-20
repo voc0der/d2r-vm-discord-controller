@@ -40,6 +40,8 @@ If `lobby`, `play`, `join-game`, `create-game`, or `follow` is requested while t
 
 For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued.
 
+Long-running host commands defer the Discord interaction and continue in background before editing the original ephemeral response. This keeps slow ready/create/join/screenshot operations from blocking Discord gateway heartbeats.
+
 ## Launch To Battle.net
 
 Reference: ![Battle.net logged in](assets/d2r-ui/logged_in_battle_net.jpg)
@@ -55,10 +57,11 @@ Current implementation:
 
 - `/d2r start <account>` sends `launch_d2r` to the VM agent.
 - `/d2r start-all` queues the ready flow for every online VM agent.
-- `/d2r ready <account>` launches D2R, retries Battle.net Play while waiting for D2R, then nudges intro/title states until character select is visually detected.
+- `/d2r ready <account>` launches D2R, retries the Battle.net launch command and Battle.net Play while waiting for D2R, then nudges intro/title states until character select is visually detected.
 - Before launching D2R, the VM agent shows the desktop to minimize other windows. If Battle.net is already running, the agent restores Battle.net before sending the launch command.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
-- If Battle.net was not already running, the agent waits `battleNetExecRetryDelaySeconds` seconds and sends the same D2R launch command again.
+- While D2R is not detected, the ready flow keeps sending the configured launch command every `battleNetExecRetryDelaySeconds` seconds. This handles cold Battle.net starts where the first `--exec` only opens Battle.net.
+- When Battle.net is running, the ready flow samples the blue Play button region and clicks Play every `ui.readyNudgeMinDelayMs` to `ui.readyNudgeMaxDelayMs` when the button is visible.
 - If an older config points at `Battle.net Launcher.exe`, the agent resolves the sibling `Battle.net.exe` for D2R launches.
 - Direct `d2rPath` launch is an advanced override and only used when `preferBattleNetExecLaunch` is false.
 
@@ -66,7 +69,17 @@ Current implementation:
 
 References:
 
+![First intro video](assets/d2r-ui/first_intro_video.jpg)
+
+![First intro logo](assets/d2r-ui/first_intro_video_end.jpg)
+
+![Second intro video](assets/d2r-ui/second_intro.jpg)
+
+![Second intro title](assets/d2r-ui/second_intro_end.jpg)
+
 ![D2R title splash](assets/d2r-ui/diablo_splash.jpg)
+
+![Connecting to Battle.net](assets/d2r-ui/connecting_to_battlenet_post_splash.jpg)
 
 ![Character screen](assets/d2r-ui/character_screen.jpg)
 
@@ -84,7 +97,7 @@ Expected state:
 Manual path:
 
 1. Press Play in Battle.net.
-2. Click through intro/video screens and press through the title screen until character select appears.
+2. Click or press through intro/video screens, the title splash, and the Connecting to Battle.net modal until character select appears.
 3. Select the intended character if it is not already selected.
 
 Automation:
@@ -93,7 +106,7 @@ Automation:
 /d2r ready hc1
 ```
 
-The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, clicking Battle.net Play every `ui.readyNudgeMinDelayMs` to `ui.readyNudgeMaxDelayMs` when Battle.net is visible. After a focusable D2R window exists, it samples the title splash and Play/Lobby button regions before every input. Unknown intro/title states get a center click; the detected Diablo title splash gets a center click plus Space. Each nudge waits a randomized `readyNudge` interval before the next sample. The agent only marks the client ready after Play and Lobby are visually detected, or fails after `ui.characterScreenReadyTimeoutSeconds` with the last detected ready state.
+The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, re-sending the launch command at `battleNetExecRetryDelaySeconds` and clicking Battle.net Play when the blue button is detected. After a focusable D2R window exists, it samples the title splash and Play/Lobby button regions before every input. Unknown intro/video/loading states get a center click, Escape, then Space; the detected Diablo title splash, including the Connecting to Battle.net modal, gets a center click plus Space. Each nudge waits a randomized `readyNudge` interval before the next sample. The agent only marks the client ready after Play and Lobby are visually detected, or fails after `ui.characterScreenReadyTimeoutSeconds` with the last detected ready state.
 
 After launch/ready or Save and Exit leaves D2R at the character screen, the VM agent starts a character-screen idle timer. If no lobby/game command touches that client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 
@@ -223,5 +236,4 @@ Keep navigation data tied to screenshots and resolution. The current captures ar
 
 Useful future references to collect:
 
-- D2R intro/video click-through state.
 - Error states: game full and realm/server issue.
