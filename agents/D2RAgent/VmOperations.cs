@@ -105,7 +105,6 @@ public sealed class VmOperations
     {
         if (IsProcessRunning(_config.D2RProcessName))
         {
-            MarkCharacterScreenIdleIfNotActive("D2R was already running when launch was requested.");
             return CommandResult.Success("D2R is already running.", await GetStatusAsync(cancellationToken));
         }
 
@@ -149,11 +148,6 @@ public sealed class VmOperations
         }
 
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.LaunchGraceSeconds, 1)), cancellationToken);
-        if (IsProcessRunning(_config.D2RProcessName))
-        {
-            MarkCharacterScreenIdle("D2R launch completed.");
-        }
-
         var status = await GetStatusAsync(cancellationToken);
         var message = launchAttempts > 1
             ? "Battle.net cold-started; D2R launch command sent twice. Check status for final client state."
@@ -319,8 +313,12 @@ public sealed class VmOperations
         }
 
         await DelayStepAsync(cancellationToken);
-        await ClickThroughIntroAsync(input, cancellationToken);
-        await PressThroughTitleScreenAsync(input, cancellationToken);
+        if (!IsCharacterScreenReady(input))
+        {
+            await ClickThroughIntroAsync(input, cancellationToken);
+            await PressThroughTitleScreenAsync(input, cancellationToken);
+        }
+
         var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
         if (!characterScreenReady)
         {
@@ -514,21 +512,6 @@ public sealed class VmOperations
         }
     }
 
-    private void MarkCharacterScreenIdleIfNotActive(string reason)
-    {
-        lock (_activityLock)
-        {
-            if (_activityState == D2RActivityState.LobbyOrGame)
-            {
-                return;
-            }
-
-            _activityState = D2RActivityState.CharacterScreenIdle;
-            _characterScreenIdleSinceUtc ??= DateTimeOffset.UtcNow;
-            _lastActivityReason = reason;
-        }
-    }
-
     private void MarkLobbyOrGameInteraction(string reason)
     {
         lock (_activityLock)
@@ -621,6 +604,19 @@ public sealed class VmOperations
             {
                 return false;
             }
+
+            if (IsDiabloSplashScreen(input))
+            {
+                input.PressStartKey();
+                await Task.Delay(Math.Max(_config.Ui.TitleScreenKeyPressDelayMs, 100), cancellationToken);
+            }
+            else
+            {
+                input.LeftClick(_config.Ui.IntroSkipPoint);
+                await Task.Delay(Math.Max(_config.Ui.IntroClickDelayMs, 100), cancellationToken);
+                input.PressStartKey();
+                await Task.Delay(Math.Max(_config.Ui.TitleScreenKeyPressDelayMs, 100), cancellationToken);
+            }
         }
     }
 
@@ -710,9 +706,24 @@ public sealed class VmOperations
 
     private bool IsCharacterScreenReady(WindowsInput input)
     {
+        if (IsDiabloSplashScreen(input))
+        {
+            return false;
+        }
+
         var play = input.SampleRegion(_config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055);
         var lobby = input.SampleRegion(_config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055);
         return IsCharacterButtonRegion(play) && IsCharacterButtonRegion(lobby);
+    }
+
+    private bool IsDiabloSplashScreen(WindowsInput input)
+    {
+        var logo = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.290), widthRatio: 0.45, heightRatio: 0.22);
+        var prompt = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.600), widthRatio: 0.32, heightRatio: 0.055);
+        return logo.OrangeRatio > 0.05
+            && prompt.OrangeRatio > 0.04
+            && logo.DarkRatio > 0.45
+            && prompt.DarkRatio > 0.45;
     }
 
     private bool IsAnyLobbyTabReady(WindowsInput input)

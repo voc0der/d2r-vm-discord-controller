@@ -145,7 +145,12 @@ public sealed class DiscordBot
 
         if (subcommand == "start-all")
         {
-            await QueueAllCommandsAsync(context, "launch_d2r", (accountKey, account) => BuildAccountArgs(accountKey, account));
+            await QueueAllCommandsAsync(
+                context,
+                "menu_ready",
+                (accountKey, account) => BuildAccountArgs(accountKey, account),
+                TimeSpan.FromSeconds(240),
+                displayName: "ready");
             return;
         }
 
@@ -157,7 +162,7 @@ public sealed class DiscordBot
                 "menu_join_game",
                 (accountKey, account) => BuildMenuArgs(accountKey, account, game, context),
                 TimeSpan.FromSeconds(210),
-                readyFirstIfD2RStopped: true);
+                readyFirstIfNotMenuReady: true);
             return;
         }
 
@@ -174,7 +179,7 @@ public sealed class DiscordBot
                 "menu_join_friend",
                 (accountKey, account) => BuildMenuArgs(accountKey, account, null, context),
                 TimeSpan.FromSeconds(210),
-                readyFirstIfD2RStopped: true);
+                readyFirstIfNotMenuReady: true);
             return;
         }
 
@@ -219,19 +224,19 @@ public sealed class DiscordBot
                 await RunVmCommandAsync(context, singleAccount, "menu_ready", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(240));
                 return;
             case "lobby":
-                await RunVmCommandAsync(context, singleAccount, "menu_lobby", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_lobby", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfNotMenuReady: true);
                 return;
             case "play":
-                await RunVmCommandAsync(context, singleAccount, "menu_play", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_play", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfNotMenuReady: true);
                 return;
             case "join-game":
-                await RunVmCommandAsync(context, singleAccount, "menu_join_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_join_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
                 return;
             case "create-game":
-                await RunVmCommandAsync(context, singleAccount, "menu_create_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_create_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
                 return;
             case "follow":
-                await RunVmCommandAsync(context, singleAccount, "menu_join_friend", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(210), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_join_friend", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
                 return;
             case "save-exit":
             case "leave":
@@ -308,17 +313,17 @@ public sealed class DiscordBot
         string commandName,
         object args,
         TimeSpan? timeout = null,
-        bool readyFirstIfD2RStopped = false)
+        bool readyFirstIfNotMenuReady = false)
     {
         await context.Command.DeferAsync(ephemeral: true);
-        var readyResult = readyFirstIfD2RStopped
-            ? await SendReadyIfD2RStoppedAsync(account, args)
+        var readyResult = readyFirstIfNotMenuReady
+            ? await SendReadyIfNotMenuReadyAsync(account, args)
             : null;
 
         if (readyResult?.Ok == false)
         {
             await context.Command.ModifyOriginalResponseAsync(
-                properties => properties.Content = "D2R was not running, so I tried `/d2r ready` first, but it failed: "
+                properties => properties.Content = "This client needed `/d2r ready` before menu automation, but ready failed: "
                     + readyResult.Message);
             return;
         }
@@ -326,7 +331,7 @@ public sealed class DiscordBot
         var result = await _registry.SendCommandAsync(account.AgentId, commandName, args, timeout ?? TimeSpan.FromSeconds(60));
         var prefix = readyResult is null
             ? ""
-            : $"D2R was not running, so I ran `/d2r ready` first: {FormatCommandResult(readyResult.Ok, readyResult.Message)}\n";
+            : $"Ran `/d2r ready` before menu automation: {FormatCommandResult(readyResult.Ok, readyResult.Message)}\n";
         await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = prefix + FormatCommandResult(result.Ok, result.Message));
     }
 
@@ -379,7 +384,7 @@ public sealed class DiscordBot
             try
             {
                 var creatorArgs = BuildMenuArgs(creator.Key, creator.Value, game, context);
-                var creatorReadyResult = await SendReadyIfD2RStoppedAsync(creator.Value, creatorArgs);
+                var creatorReadyResult = await SendReadyIfNotMenuReadyAsync(creator.Value, creatorArgs);
                 if (creatorReadyResult?.Ok == false)
                 {
                     await SendFollowupSafeAsync(
@@ -434,7 +439,7 @@ public sealed class DiscordBot
         try
         {
             var joinArgs = BuildMenuArgs(entry.Key, entry.Value, game, context);
-            var readyResult = await SendReadyIfD2RStoppedAsync(entry.Value, joinArgs);
+            var readyResult = await SendReadyIfNotMenuReadyAsync(entry.Value, joinArgs);
             if (readyResult?.Ok == false)
             {
                 _logger.LogWarning(
@@ -495,23 +500,25 @@ public sealed class DiscordBot
         string commandName,
         Func<string, AccountConfig, object> argsFactory,
         TimeSpan? timeout = null,
-        bool readyFirstIfD2RStopped = false)
+        bool readyFirstIfNotMenuReady = false,
+        string? displayName = null)
     {
+        var label = displayName ?? commandName;
         var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
             await context.Command.RespondAsync(
-                $"No online accounts are available for {commandName}." + FormatOfflineSkipSuffix(offlineEntries),
+                $"No online accounts are available for {label}." + FormatOfflineSkipSuffix(offlineEntries),
                 ephemeral: true);
             return;
         }
 
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
-        var readyFirstCount = readyFirstIfD2RStopped
+        var readyFirstCount = readyFirstIfNotMenuReady
             ? entries.Count(entry => ShouldRunReadyFirst(entry.Value))
             : 0;
         await context.Command.RespondAsync(
-            $"Queued {entries.Length} online {commandName} command(s) with {staggerSeconds}s stagger."
+            $"Queued {entries.Length} online {label} command(s) with {staggerSeconds}s stagger."
                 + FormatReadyFirstSuffix(readyFirstCount)
                 + FormatOfflineSkipSuffix(offlineEntries),
             ephemeral: true);
@@ -524,9 +531,9 @@ public sealed class DiscordBot
                 try
                 {
                     var args = argsFactory(entry.Key, entry.Value);
-                    if (readyFirstIfD2RStopped)
+                    if (readyFirstIfNotMenuReady)
                     {
-                        var readyResult = await SendReadyIfD2RStoppedAsync(entry.Value, args);
+                        var readyResult = await SendReadyIfNotMenuReadyAsync(entry.Value, args);
                         if (readyResult?.Ok == false)
                         {
                             _logger.LogWarning(
@@ -572,7 +579,7 @@ public sealed class DiscordBot
         return (online.ToArray(), offline.ToArray());
     }
 
-    private async Task<CommandResultInfo?> SendReadyIfD2RStoppedAsync(AccountConfig account, object args)
+    private async Task<CommandResultInfo?> SendReadyIfNotMenuReadyAsync(AccountConfig account, object args)
     {
         if (!ShouldRunReadyFirst(account))
         {
@@ -589,13 +596,71 @@ public sealed class DiscordBot
     private bool ShouldRunReadyFirst(AccountConfig account)
     {
         var agent = _registry.GetAgent(account.AgentId);
-        if (agent?.Connected != true || string.IsNullOrWhiteSpace(agent.LastStatusJson))
+        if (agent?.Connected != true)
         {
             return false;
         }
 
-        var status = ParseStatus(agent.LastStatusJson);
-        return status.TryGetValue("d2rRunning", out var d2rRunning) && d2rRunning == false;
+        if (string.IsNullOrWhiteSpace(agent.LastStatusJson))
+        {
+            return true;
+        }
+
+        JsonElement root;
+        try
+        {
+            using var document = JsonDocument.Parse(agent.LastStatusJson);
+            root = document.RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogDebug(ex, "Could not parse last status JSON for {AgentId}.", account.AgentId);
+            return true;
+        }
+
+        if (!TryGetBoolean(root, "d2rRunning", out var d2rRunning))
+        {
+            return true;
+        }
+
+        if (!d2rRunning)
+        {
+            return true;
+        }
+
+        if (!TryGetString(root, "d2rActivityState", out var activityState))
+        {
+            return true;
+        }
+
+        return !string.Equals(activityState, "CharacterScreenIdle", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(activityState, "LobbyOrGame", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)
+    {
+        value = false;
+        if (root.TryGetProperty(propertyName, out var property)
+            && (property.ValueKind == JsonValueKind.True || property.ValueKind == JsonValueKind.False))
+        {
+            value = property.GetBoolean();
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetString(JsonElement root, string propertyName, out string value)
+    {
+        value = "";
+        if (root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String)
+        {
+            value = property.GetString() ?? "";
+            return !string.IsNullOrWhiteSpace(value);
+        }
+
+        return false;
     }
 
     private static string FormatReadyFirstSuffix(int readyFirstCount)
@@ -605,7 +670,7 @@ public sealed class DiscordBot
             return "";
         }
 
-        return $" {readyFirstCount} account(s) show D2R stopped and will run `/d2r ready` first.";
+        return $" {readyFirstCount} account(s) need `/d2r ready` before menu automation.";
     }
 
     private static string FormatOfflineSkipSuffix(IReadOnlyCollection<KeyValuePair<string, AccountConfig>> offlineEntries)
@@ -718,8 +783,11 @@ public sealed class DiscordBot
         var status = ParseStatus(agent.LastStatusJson);
         var battleNet = FormatRunning(status.TryGetValue("battleNetRunning", out var battleNetRunning) ? battleNetRunning : null);
         var d2r = FormatRunning(status.TryGetValue("d2rRunning", out var d2rRunning) ? d2rRunning : null);
+        var activity = TryReadStatusString(agent.LastStatusJson, "d2rActivityState", out var activityState)
+            ? $", state {activityState}"
+            : "";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online, Battle.net {battleNet}, D2R {d2r}, seen {lastSeen}";
+        return $"{name}: online, Battle.net {battleNet}, D2R {d2r}{activity}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)
@@ -729,10 +797,36 @@ public sealed class DiscordBot
             return [];
         }
 
-        using var document = JsonDocument.Parse(json);
-        return document.RootElement.EnumerateObject()
-            .Where(property => property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
-            .ToDictionary(property => property.Name, property => (bool?)property.Value.GetBoolean(), StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.EnumerateObject()
+                .Where(property => property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                .ToDictionary(property => property.Name, property => (bool?)property.Value.GetBoolean(), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static bool TryReadStatusString(string? json, string propertyName, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return TryGetString(document.RootElement, propertyName, out value);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static string FormatCommandResult(bool ok, string message)

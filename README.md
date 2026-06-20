@@ -84,7 +84,9 @@ All-client commands skip accounts whose VM agent is offline when the command is 
 
 `create-game-all` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger. If you do not pass `character-slot`, the host uses each account's optional `characterSlot` value from `d2r-host.config.json`, then falls back to the VM agent's local default.
 
-Menu commands that need D2R running, such as `lobby`, `play`, `join-game`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status says D2R is stopped. The Discord response calls out that extra ready step.
+`/d2r start-all` queues the ready flow for every online account, so cold-booted clients should land on character select instead of merely starting the D2R process.
+
+Menu commands that need D2R running, such as `lobby`, `play`, `join-game`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
 
 ## Host Setup
 
@@ -180,13 +182,13 @@ Start-ScheduledTask -TaskName "D2R VM Agent"
 
 Run the VM agent as a scheduled task at user logon, not as a Windows service. D2R and Battle.net are desktop apps, so the agent needs the logged-in user session for screenshots and input.
 
-The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play when needed, waits up to `d2rStartTimeoutSeconds` for D2R to start, waits for D2R to expose a focusable window, clicks through intro videos, presses through the title screen, and visually confirms the character screen by sampling the Play/Lobby button regions. If cold startup is still racing ahead of D2R, raise `d2rStartTimeoutSeconds` or `ui.characterScreenReadyTimeoutSeconds` in `vm-agent.config.json`.
+The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play when needed, waits up to `d2rStartTimeoutSeconds` for D2R to start, waits for D2R to expose a focusable window, clicks through intro videos, presses through the Diablo title splash, and visually confirms the character screen by sampling the Play/Lobby button regions. If cold startup is still racing ahead of D2R, raise `d2rStartTimeoutSeconds` or `ui.characterScreenReadyTimeoutSeconds` in `vm-agent.config.json`.
 
 ## Menu Automation
 
 The VM agent can drive the flows captured in `docs/runbooks/assets/d2r-ui/`:
 
-- Ready flow: Battle.net Play, then repeated clicks through intro videos.
+- Ready flow: Battle.net Play, repeated clicks through intro videos, title splash detection, then Play/Lobby visual confirmation.
 - Character screen to Play.
 - Character screen to Lobby.
 - Lobby Join Game.

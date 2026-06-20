@@ -5,6 +5,7 @@ These runbooks describe the client-side menu states used when getting VM clients
 Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 
 - `logged_in_battle_net.jpg`: Battle.net logged in with D2R selected and ready to press Play.
+- `diablo_splash.jpg`: D2R title splash with the Diablo logo and Press any key prompt.
 - `character_screen.jpg`: D2R online character select.
 - `join_game.jpg`: Lobby Join Game tab.
 - `create_game.jpg`: Lobby Create Game tab.

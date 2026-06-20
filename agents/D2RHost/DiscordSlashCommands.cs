@@ -35,7 +35,7 @@ public static class DiscordSlashCommands
                     Sub("leave-all", "Alias for Save and Exit across all accounts"),
                     Sub("quit-all", "Stagger Alt+F4 quit across all online accounts"),
                     Sub("close-all", "Alias for quit-all"),
-                    Sub("start-all", "Queue staggered launches for all configured accounts"),
+                    Sub("start-all", "Queue staggered ready flows for all configured accounts"),
                     Sub("health", "Show controller and agent connection health"))
                 .Build(),
             new SlashCommandBuilder()

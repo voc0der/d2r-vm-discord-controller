@@ -197,6 +197,7 @@ internal sealed class WindowsInput
         var bright = 0;
         var grey = 0;
         var dark = 0;
+        var orange = 0;
 
         try
         {
@@ -233,6 +234,14 @@ internal sealed class WindowsInput
                         dark++;
                     }
 
+                    if (red > 110
+                        && green > 45
+                        && blue < 45
+                        && red > green * 1.25)
+                    {
+                        orange++;
+                    }
+
                     if (Math.Max(red, Math.Max(green, blue)) - Math.Min(red, Math.Min(green, blue)) < 45
                         && luminance is > 35 and < 170)
                     {
@@ -254,6 +263,7 @@ internal sealed class WindowsInput
             (double)bright / count,
             (double)grey / count,
             (double)dark / count,
+            (double)orange / count,
             count);
     }
 
@@ -483,4 +493,5 @@ internal sealed record ScreenRegionStats(
     double BrightRatio,
     double GreyRatio,
     double DarkRatio,
+    double OrangeRatio,
     int Samples);

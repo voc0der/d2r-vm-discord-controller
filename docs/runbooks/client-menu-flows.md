@@ -54,6 +54,7 @@ Expected state:
 Current implementation:
 
 - `/d2r start <account>` sends `launch_d2r` to the VM agent.
+- `/d2r start-all` queues the ready flow for every online VM agent.
 - `/d2r ready <account>` launches D2R, clicks Battle.net Play if needed, clicks through intro screens, and presses through the title screen.
 - Before launching D2R, the VM agent shows the desktop to minimize other windows. If Battle.net is already running, the agent restores Battle.net before sending the launch command.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
@@ -63,7 +64,11 @@ Current implementation:
 
 ## Battle.net To Character Screen
 
-Reference: ![Character screen](assets/d2r-ui/character_screen.jpg)
+References:
+
+![D2R title splash](assets/d2r-ui/diablo_splash.jpg)
+
+![Character screen](assets/d2r-ui/character_screen.jpg)
 
 Expected state:
 
@@ -84,7 +89,7 @@ Automation:
 /d2r ready hc1
 ```
 
-The intro skip loop defaults to 80 clicks at 250ms intervals, then 6 Space presses at 500ms intervals for the title screen. The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, waits up to `ui.windowFocusTimeoutSeconds` for a focusable D2R window, and samples the Play/Lobby button regions until the character screen is detected or `ui.characterScreenReadyTimeoutSeconds` expires. The clicks are intentionally fast because they are only meant to push through the initial video/legal screens until the title or character screen is usable.
+The intro skip loop defaults to 80 clicks at 250ms intervals, then 6 Space presses at 500ms intervals for the title screen. The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, waits up to `ui.windowFocusTimeoutSeconds` for a focusable D2R window, and samples the Play/Lobby button regions until the character screen is detected or `ui.characterScreenReadyTimeoutSeconds` expires. While waiting, it detects the Diablo title splash from the orange logo/prompt regions and presses Space again; otherwise it alternates a center click and Space to keep pushing through intro or title states. It only marks the client ready after Play and Lobby are visually detected.
 
 After launch/ready or Save and Exit leaves D2R at the character screen, the VM agent starts a character-screen idle timer. If no lobby/game command touches that client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 

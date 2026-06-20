@@ -5,6 +5,7 @@ This catalog names the UI states represented by the screenshot assets. Keep file
 | State | Asset | Purpose |
 | --- | --- | --- |
 | Battle.net ready | `assets/d2r-ui/logged_in_battle_net.jpg` | Battle.net is logged in, D2R selected, Play button visible. |
+| D2R title splash | `assets/d2r-ui/diablo_splash.jpg` | D2R title screen with Diablo logo and Press any key prompt visible. |
 | Character select | `assets/d2r-ui/character_screen.jpg` | Online character list with Play and Lobby buttons. |
 | Lobby Join Game | `assets/d2r-ui/join_game.jpg` | Join Game tab with game name/password fields. |
 | Lobby Create Game | `assets/d2r-ui/create_game.jpg` | Create Game tab with name/password/difficulty/options. |
