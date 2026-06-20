@@ -159,6 +159,12 @@ public sealed class DiscordBot
             return;
         }
 
+        if (subcommand == "create-game-all")
+        {
+            await QueueCreateGameAllAsync(context, ResolveGameInput(context));
+            return;
+        }
+
         if (subcommand == "follow-all")
         {
             await QueueAllCommandsAsync(
@@ -309,6 +315,92 @@ public sealed class DiscordBot
         await using var stream = new MemoryStream(bytes);
         await context.Command.FollowupWithFileAsync(stream, $"{account.AgentId}-screenshot.{extension}", result.Message, ephemeral: true);
         await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = "Screenshot attached.");
+    }
+
+    private async Task QueueCreateGameAllAsync(SlashContext context, GameInput game)
+    {
+        var entries = _config.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (entries.Length == 0)
+        {
+            await context.Command.RespondAsync("No accounts are configured.", ephemeral: true);
+            return;
+        }
+
+        var creator = entries[0];
+        var joiners = entries.Skip(1).ToArray();
+        var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
+
+        await context.Command.RespondAsync(
+            $"Queued create-game-all for {entries.Length} account(s). {creator.Key} will create {game.GameName}; "
+                + $"{joiners.Length} account(s) will join after creation with {staggerSeconds}s stagger.",
+            ephemeral: true);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var createResult = await _registry.SendCommandAsync(
+                    creator.Value.AgentId,
+                    "menu_create_game",
+                    BuildMenuArgs(creator.Key, creator.Value, game, context),
+                    TimeSpan.FromSeconds(150));
+
+                if (!createResult.Ok)
+                {
+                    _logger.LogWarning(
+                        "create-game-all stopped because creator {AccountKey} failed: {Message}",
+                        creator.Key,
+                        createResult.Message);
+                    await SendFollowupSafeAsync(
+                        context,
+                        $"create-game-all stopped: {creator.Key} failed to create {game.GameName}: {createResult.Message}");
+                    return;
+                }
+
+                foreach (var (entry, index) in joiners.Select((entry, index) => (entry, index)))
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
+                        try
+                        {
+                            await _registry.SendCommandAsync(
+                                entry.Value.AgentId,
+                                "menu_join_game",
+                                BuildMenuArgs(entry.Key, entry.Value, game, context),
+                                TimeSpan.FromSeconds(150));
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Queued join after create-game-all failed for {AccountKey}.", entry.Key);
+                        }
+                    });
+                }
+
+                await SendFollowupSafeAsync(
+                    context,
+                    joiners.Length == 0
+                        ? $"{creator.Key} created {game.GameName}. No other accounts were configured to join."
+                        : $"{creator.Key} created {game.GameName}; queued {joiners.Length} join command(s).");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "create-game-all orchestration failed for {GameName}.", game.GameName);
+                await SendFollowupSafeAsync(context, $"create-game-all failed while creating {game.GameName}: {ex.Message}");
+            }
+        });
+    }
+
+    private async Task SendFollowupSafeAsync(SlashContext context, string message)
+    {
+        try
+        {
+            await context.Command.FollowupAsync(message, ephemeral: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not send Discord follow-up for background command.");
+        }
     }
 
     private async Task QueueAllCommandsAsync(

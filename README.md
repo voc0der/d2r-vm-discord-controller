@@ -54,6 +54,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r follow account [character-slot] [friend-row]`
 - `/d2r save-exit account`
 - `/d2r leave account`
+- `/d2r create-game-all [name] [password] [difficulty] [character-slot]`
 - `/d2r join-all [name] [password] [difficulty] [character-slot]`
 - `/d2r follow-all [character-slot] [friend-row]`
 - `/d2r save-exit-all`
@@ -69,7 +70,9 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/vm reboot account`
 - `/vm snapshot account [name]`
 
-`/game set` stores the current game details in SQLite. `join-game`, `create-game`, and `join-all` use those stored values when options are omitted.
+`/game set` stores the current game details in SQLite. `join-game`, `create-game`, `create-game-all`, and `join-all` use those stored values when options are omitted.
+
+`create-game-all` uses the first configured account by account key as the creator. After that create flow succeeds, the remaining accounts join the same game with the configured all-client stagger.
 
 ## Host Setup
 
