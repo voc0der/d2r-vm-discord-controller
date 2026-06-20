@@ -253,7 +253,16 @@ public sealed class VmOperations
             && IsProcessRunning(_config.BattleNetProcessName)
             && _config.Ui.ClickBattleNetPlayWhenNeeded)
         {
-            input.FocusProcess(_config.BattleNetProcessName);
+            var battleNetFocused = await TryFocusProcessUntilAsync(
+                input,
+                _config.BattleNetProcessName,
+                TimeSpan.FromSeconds(Math.Max(_config.Ui.WindowFocusTimeoutSeconds, 1)),
+                cancellationToken);
+            if (!battleNetFocused)
+            {
+                return CommandResult.Failure("Battle.net is running, but no focusable window was found yet.", await GetStatusAsync(cancellationToken));
+            }
+
             await DelayStepAsync(cancellationToken);
             input.LeftClick(_config.Ui.BattleNetPlayButton);
             await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.BattleNetPlayGraceSeconds, 1)), cancellationToken);
@@ -264,10 +273,21 @@ public sealed class VmOperations
             return CommandResult.Failure("Battle.net is ready, but D2R was not detected yet.", await GetStatusAsync(cancellationToken));
         }
 
-        input.FocusProcess(_config.D2RProcessName);
+        var d2rFocused = await TryFocusProcessUntilAsync(
+            input,
+            _config.D2RProcessName,
+            TimeSpan.FromSeconds(Math.Max(_config.Ui.WindowFocusTimeoutSeconds, 1)),
+            cancellationToken);
+        if (!d2rFocused)
+        {
+            return CommandResult.Failure("D2R is running, but no focusable window was found yet.", await GetStatusAsync(cancellationToken));
+        }
+
         await DelayStepAsync(cancellationToken);
         await ClickThroughIntroAsync(input, cancellationToken);
         await PressThroughTitleScreenAsync(input, cancellationToken);
+        await DelayCharacterScreenSettleAsync(cancellationToken);
+        input.FocusProcess(_config.D2RProcessName);
         MarkCharacterScreenIdle("Ready flow completed.");
         return CommandResult.Success("D2R ready flow completed.", await GetStatusAsync(cancellationToken));
     }
@@ -465,6 +485,17 @@ public sealed class VmOperations
         }
     }
 
+    private async Task DelayCharacterScreenSettleAsync(CancellationToken cancellationToken)
+    {
+        var settleSeconds = Math.Max(_config.Ui.CharacterScreenSettleSeconds, 0);
+        if (settleSeconds == 0)
+        {
+            return;
+        }
+
+        await Task.Delay(TimeSpan.FromSeconds(settleSeconds), cancellationToken);
+    }
+
     private async Task SelectCharacterAsync(
         WindowsInput input,
         int? characterSlot,
@@ -584,6 +615,37 @@ public sealed class VmOperations
     private Task DelayLongAsync(CancellationToken cancellationToken)
     {
         return Task.Delay(Math.Max(_config.Ui.LongDelayMs, 100), cancellationToken);
+    }
+
+    private async Task<bool> TryFocusProcessUntilAsync(
+        WindowsInput input,
+        string processName,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (input.TryFocusProcess(processName))
+                {
+                    return true;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // The process may appear before its main window is ready.
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return false;
+            }
+
+            await DelayStepAsync(cancellationToken);
+        }
     }
 
     private CommandResult LaunchBattleNet()

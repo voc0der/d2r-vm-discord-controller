@@ -41,6 +41,8 @@ public sealed class D2RUiAutomationConfig
     public int IntroClickDelayMs { get; set; } = 250;
     public int TitleScreenKeyPressCount { get; set; } = 6;
     public int TitleScreenKeyPressDelayMs { get; set; } = 500;
+    public int WindowFocusTimeoutSeconds { get; set; } = 30;
+    public int CharacterScreenSettleSeconds { get; set; } = 5;
     public int DefaultCharacterSlot { get; set; } = 1;
     public int DefaultFriendRow { get; set; } = 1;
     public double FriendRowHeight { get; set; } = 0.049;

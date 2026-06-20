@@ -84,7 +84,7 @@ Automation:
 /d2r ready hc1
 ```
 
-The intro skip loop defaults to 80 clicks at 250ms intervals, then 6 Space presses at 500ms intervals for the title screen. The clicks are intentionally fast because they are only meant to push through the initial video/legal screens until the title or character screen is usable.
+The intro skip loop defaults to 80 clicks at 250ms intervals, then 6 Space presses at 500ms intervals for the title screen. The ready flow waits up to `ui.windowFocusTimeoutSeconds` for a focusable D2R window, then waits `ui.characterScreenSettleSeconds`, default 5 seconds, after the title-screen key presses before returning. The clicks are intentionally fast because they are only meant to push through the initial video/legal screens until the title or character screen is usable.
 
 After launch/ready or Save and Exit leaves D2R at the character screen, the VM agent starts a character-screen idle timer. If no lobby/game command touches that client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 

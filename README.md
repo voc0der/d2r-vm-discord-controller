@@ -176,7 +176,7 @@ Start-ScheduledTask -TaskName "D2R VM Agent"
 
 Run the VM agent as a scheduled task at user logon, not as a Windows service. D2R and Battle.net are desktop apps, so the agent needs the logged-in user session for screenshots and input.
 
-The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play when needed, waits for D2R, clicks through intro videos, presses through the title screen, and lands on the character screen.
+The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play when needed, waits for D2R to expose a focusable window, clicks through intro videos, presses through the title screen, waits `ui.characterScreenSettleSeconds`, default 5 seconds, and lands on the character screen. If cold startup is still racing ahead of D2R, raise `ui.characterScreenSettleSeconds` in `vm-agent.config.json`.
 
 ## Menu Automation
 

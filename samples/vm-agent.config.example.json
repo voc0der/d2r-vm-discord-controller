@@ -30,6 +30,8 @@
     "introClickDelayMs": 250,
     "titleScreenKeyPressCount": 6,
     "titleScreenKeyPressDelayMs": 500,
+    "windowFocusTimeoutSeconds": 30,
+    "characterScreenSettleSeconds": 5,
     "defaultCharacterSlot": 1,
     "defaultFriendRow": 1,
     "friendRowHeight": 0.049,

@@ -52,7 +52,11 @@ internal sealed class WindowsInput
 
     public void FocusProcess(string processName)
     {
-        TryFocusProcess(processName);
+        if (!TryFocusProcess(processName))
+        {
+            var normalized = Path.GetFileNameWithoutExtension(processName);
+            throw new InvalidOperationException($"Process is running, but no focusable window was found: {normalized}");
+        }
     }
 
     public bool TryFocusProcess(string processName)

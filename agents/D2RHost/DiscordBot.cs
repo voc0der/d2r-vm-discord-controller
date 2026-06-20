@@ -410,7 +410,7 @@ public sealed class DiscordBot
                 await SendFollowupSafeAsync(
                     context,
                     joiners.Length == 0
-                        ? $"{creator.Key} created {game.GameName}. No other accounts were configured to join."
+                        ? $"Create flow completed on {creator.Key} for {game.GameName}. No other accounts were configured to join."
                         : FormatCreateGameAllResult(creator.Key, game.GameName, joinResults));
             }
             catch (Exception ex)
@@ -462,10 +462,10 @@ public sealed class DiscordBot
         var failed = joinResults.Where(result => !result.Ok).ToArray();
         var lines = new List<string>
         {
-            $"{creatorKey} created {gameName}.",
+            $"Create flow completed on {creatorKey} for {gameName}.",
             joined.Length == 0
-                ? "No joiners completed successfully."
-                : $"Joined: {string.Join(", ", joined)}."
+                ? "No join flows completed successfully."
+                : $"Join flows completed: {string.Join(", ", joined)}."
         };
 
         if (failed.Length > 0)
