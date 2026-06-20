@@ -15,6 +15,8 @@ public static class DiscordSlashCommands
                     Sub("status", "Show one account or all account client statuses", OptionalAccount()),
                     Sub("start", "Launch Battle.net/D2R for an account", Account()),
                     Sub("stop", "Kill the D2R process for an account", Account()),
+                    Sub("quit", "Focus D2R and close it with Alt+F4", Account()),
+                    Sub("close", "Alias for quit", Account()),
                     Sub("restart-client", "Restart the D2R process for an account", Account()),
                     Sub("screenshot", "Capture the VM's current primary-screen screenshot", Account()),
                     Sub("remote", "Show the configured remote-control URL for an account VM", Account()),
@@ -31,6 +33,8 @@ public static class DiscordSlashCommands
                     Sub("follow-all", "Stagger all accounts into a friend's game", CharacterSlot(), FriendRow()),
                     Sub("save-exit-all", "Stagger Save and Exit across all accounts"),
                     Sub("leave-all", "Alias for Save and Exit across all accounts"),
+                    Sub("quit-all", "Stagger Alt+F4 quit across all online accounts"),
+                    Sub("close-all", "Alias for quit-all"),
                     Sub("start-all", "Queue staggered launches for all configured accounts"),
                     Sub("health", "Show controller and agent connection health"))
                 .Build(),

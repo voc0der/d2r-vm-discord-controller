@@ -184,6 +184,16 @@ public sealed class DiscordBot
             return;
         }
 
+        if (subcommand is "quit-all" or "close-all")
+        {
+            await QueueAllCommandsAsync(
+                context,
+                "quit_d2r",
+                (accountKey, account) => BuildAccountArgs(accountKey, account),
+                TimeSpan.FromSeconds(30));
+            return;
+        }
+
         var (singleAccountKey, singleAccount) = RequireAccount(context.GetRequiredString("account"));
 
         switch (subcommand)
@@ -193,6 +203,10 @@ public sealed class DiscordBot
                 return;
             case "stop":
                 await RunVmCommandAsync(context, singleAccount, "kill_d2r", BuildAccountArgs(singleAccountKey, singleAccount));
+                return;
+            case "quit":
+            case "close":
+                await RunVmCommandAsync(context, singleAccount, "quit_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(30));
                 return;
             case "restart-client":
                 await RunVmCommandAsync(context, singleAccount, "restart_d2r", BuildAccountArgs(singleAccountKey, singleAccount));

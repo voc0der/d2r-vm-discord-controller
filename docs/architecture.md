@@ -46,7 +46,7 @@ It supports:
 - Battle.net process status.
 - D2R process status.
 - Launch Battle.net or configured D2R path.
-- Kill/restart D2R.
+- Kill/restart D2R, or focus D2R and quit with Alt+F4.
 - Primary-screen screenshot capture.
 - Battle.net Play plus D2R intro click-through.
 - Character select, Lobby, Play, Join Game, Create Game, Join Friend, and Save and Exit menu flows.

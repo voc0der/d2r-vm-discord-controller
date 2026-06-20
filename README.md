@@ -43,6 +43,8 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r status [account]`
 - `/d2r start account`
 - `/d2r stop account`
+- `/d2r quit account`
+- `/d2r close account`
 - `/d2r restart-client account`
 - `/d2r screenshot account`
 - `/d2r remote account`
@@ -59,6 +61,8 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r follow-all [character-slot] [friend-row]`
 - `/d2r save-exit-all`
 - `/d2r leave-all`
+- `/d2r quit-all`
+- `/d2r close-all`
 - `/d2r start-all`
 - `/d2r health`
 - `/game set name [password] [difficulty] [notes]`
@@ -180,6 +184,7 @@ The VM agent can drive the flows captured in `docs/runbooks/assets/d2r-ui/`:
 - Lobby Create Game.
 - Lobby friends drawer right-click Join Game.
 - In-game Save and Exit.
+- D2R window quit via Alt+F4.
 
 After `play`, `join-game`, `create-game`, or `follow`, the agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use. Disable that with `ui.toggleLegacyGraphicsAfterEnteringGame: false` in the VM config.
 

@@ -19,9 +19,11 @@ internal sealed class WindowsInput
     private const uint MouseEventLeftUp = 0x0004;
     private const uint MouseEventRightDown = 0x0008;
     private const uint MouseEventRightUp = 0x0010;
+    private const byte VkAlt = 0x12;
     private const byte VkControl = 0x11;
     private const byte VkLeftWindows = 0x5B;
     private const byte VkA = 0x41;
+    private const byte VkF4 = 0x73;
     private const byte VkM = 0x4D;
     private const byte VkSpace = 0x20;
     private const byte VkV = 0x56;
@@ -50,6 +52,11 @@ internal sealed class WindowsInput
 
     public void FocusProcess(string processName)
     {
+        TryFocusProcess(processName);
+    }
+
+    public bool TryFocusProcess(string processName)
+    {
         EnsureWindows();
 
         var normalized = Path.GetFileNameWithoutExtension(processName);
@@ -64,11 +71,12 @@ internal sealed class WindowsInput
 
         if (process.MainWindowHandle == IntPtr.Zero)
         {
-            return;
+            return false;
         }
 
         ShowWindow(process.MainWindowHandle, SwRestore);
         SetForegroundWindow(process.MainWindowHandle);
+        return true;
     }
 
     public void LeftClick(UiPoint point)
@@ -101,6 +109,19 @@ internal sealed class WindowsInput
     public void PressEscape()
     {
         Key(VkEscape);
+    }
+
+    public void PressAltF4()
+    {
+        KeyDown(VkAlt);
+        try
+        {
+            Key(VkF4);
+        }
+        finally
+        {
+            KeyUp(VkAlt);
+        }
     }
 
     public void PressStartKey()

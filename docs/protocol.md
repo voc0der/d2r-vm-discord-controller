@@ -66,6 +66,7 @@ menu_join_game
 menu_create_game
 menu_join_friend
 menu_save_exit
+quit_d2r
 ```
 
 Game-oriented menu commands accept optional args such as:

@@ -38,6 +38,7 @@ public sealed class VmOperations
             "launch_battlenet" => LaunchBattleNet(),
             "launch_d2r" => await LaunchD2RAsync(cancellationToken),
             "kill_d2r" => KillProcess(_config.D2RProcessName),
+            "quit_d2r" => await QuitD2RAsync(cancellationToken),
             "restart_d2r" => await RestartD2RAsync(cancellationToken),
             "screenshot" => await TakeScreenshotAsync(cancellationToken),
             "menu_ready" => await ReadyClientAsync(cancellationToken),
@@ -137,6 +138,25 @@ public sealed class VmOperations
         KillProcess(_config.D2RProcessName);
         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         return await LaunchD2RAsync(cancellationToken);
+    }
+
+    private async Task<CommandResult> QuitD2RAsync(CancellationToken cancellationToken)
+    {
+        if (!IsProcessRunning(_config.D2RProcessName))
+        {
+            return CommandResult.Success("D2R is not running.", await GetStatusAsync(cancellationToken));
+        }
+
+        var input = new WindowsInput();
+        if (!input.TryFocusProcess(_config.D2RProcessName))
+        {
+            return CommandResult.Failure("D2R is running, but no focusable window was found.");
+        }
+
+        await DelayStepAsync(cancellationToken);
+        input.PressAltF4();
+        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+        return CommandResult.Success("Alt+F4 sent to D2R.", await GetStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> ReadyClientAsync(CancellationToken cancellationToken)

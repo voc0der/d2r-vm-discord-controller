@@ -23,6 +23,10 @@ Use these commands while driving clients:
 /d2r leave hc1
 /d2r save-exit-all
 /d2r leave-all
+/d2r quit hc1
+/d2r close hc1
+/d2r quit-all
+/d2r close-all
 /d2r screenshot hc1
 /d2r remote hc1
 /game set name:<game> password:<password> difficulty:hell
@@ -185,6 +189,7 @@ Notes:
 
 - Resurrected mode labels the middle menu option `Save and Exit`.
 - Legacy mode labels the middle menu option `Save and Exit Game`.
+- `/d2r quit <account>` and `/d2r close <account>` focus D2R and send Alt+F4.
 - `/d2r stop <account>` is still available as a hard process stop. Use `/d2r save-exit <account>` when you want a clean game leave.
 
 ## Notes For Future Tuning
