@@ -319,10 +319,12 @@ public sealed class DiscordBot
 
     private async Task QueueCreateGameAllAsync(SlashContext context, GameInput game)
     {
-        var entries = _config.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).ToArray();
+        var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            await context.Command.RespondAsync("No accounts are configured.", ephemeral: true);
+            await context.Command.RespondAsync(
+                "No online accounts are available for create-game-all." + FormatOfflineSkipSuffix(offlineEntries),
+                ephemeral: true);
             return;
         }
 
@@ -331,8 +333,9 @@ public sealed class DiscordBot
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
 
         await context.Command.RespondAsync(
-            $"Queued create-game-all for {entries.Length} account(s). {creator.Key} will create {game.GameName}; "
-                + $"{joiners.Length} account(s) will join after creation with {staggerSeconds}s stagger.",
+            $"Queued create-game-all for {entries.Length} online account(s). {creator.Key} will create {game.GameName}; "
+                + $"{joiners.Length} account(s) will join after creation with {staggerSeconds}s stagger."
+                + FormatOfflineSkipSuffix(offlineEntries),
             ephemeral: true);
 
         _ = Task.Run(async () =>
@@ -409,10 +412,19 @@ public sealed class DiscordBot
         Func<string, AccountConfig, object> argsFactory,
         TimeSpan? timeout = null)
     {
-        var entries = _config.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).ToArray();
+        var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
+        if (entries.Length == 0)
+        {
+            await context.Command.RespondAsync(
+                $"No online accounts are available for {commandName}." + FormatOfflineSkipSuffix(offlineEntries),
+                ephemeral: true);
+            return;
+        }
+
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
         await context.Command.RespondAsync(
-            $"Queued {entries.Length} {commandName} command(s) with {staggerSeconds}s stagger.",
+            $"Queued {entries.Length} online {commandName} command(s) with {staggerSeconds}s stagger."
+                + FormatOfflineSkipSuffix(offlineEntries),
             ephemeral: true);
 
         foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
@@ -434,6 +446,36 @@ public sealed class DiscordBot
                 }
             });
         }
+    }
+
+    private (KeyValuePair<string, AccountConfig>[] Online, KeyValuePair<string, AccountConfig>[] Offline) GetAccountEntriesByConnectivity()
+    {
+        var online = new List<KeyValuePair<string, AccountConfig>>();
+        var offline = new List<KeyValuePair<string, AccountConfig>>();
+
+        foreach (var entry in _config.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            if (_registry.GetAgent(entry.Value.AgentId)?.Connected == true)
+            {
+                online.Add(entry);
+            }
+            else
+            {
+                offline.Add(entry);
+            }
+        }
+
+        return (online.ToArray(), offline.ToArray());
+    }
+
+    private static string FormatOfflineSkipSuffix(IReadOnlyCollection<KeyValuePair<string, AccountConfig>> offlineEntries)
+    {
+        if (offlineEntries.Count == 0)
+        {
+            return "";
+        }
+
+        return $" Skipped {offlineEntries.Count} offline account(s): {string.Join(", ", offlineEntries.Select(entry => entry.Key))}.";
     }
 
     private object BuildMenuArgs(

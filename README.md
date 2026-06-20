@@ -72,7 +72,9 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 
 `/game set` stores the current game details in SQLite. `join-game`, `create-game`, `create-game-all`, and `join-all` use those stored values when options are omitted.
 
-`create-game-all` uses the first configured account by account key as the creator. After that create flow succeeds, the remaining accounts join the same game with the configured all-client stagger.
+All-client commands skip accounts whose VM agent is offline when the command is queued.
+
+`create-game-all` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger.
 
 ## Host Setup
 
@@ -181,7 +183,7 @@ The VM agent can drive the flows captured in `docs/runbooks/assets/d2r-ui/`:
 
 After `play`, `join-game`, `create-game`, or `follow`, the agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use. Disable that with `ui.toggleLegacyGraphicsAfterEnteringGame: false` in the VM config.
 
-All-client commands are staggered. Set `CLIENT_STAGGER_SECONDS=30` on the host, or set `startAllDelaySeconds` in `d2r-host.config.json`.
+All-client commands are staggered and skip offline VM agents. Set `CLIENT_STAGGER_SECONDS=30` on the host, or set `startAllDelaySeconds` in `d2r-host.config.json`.
 
 ## Build Locally
 
