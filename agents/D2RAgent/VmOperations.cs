@@ -261,7 +261,7 @@ public sealed class VmOperations
 
         if (!IsProcessRunning(_config.D2RProcessName))
         {
-            return CommandResult.Success("Battle.net is ready, but D2R was not detected yet.", await GetStatusAsync(cancellationToken));
+            return CommandResult.Failure("Battle.net is ready, but D2R was not detected yet.", await GetStatusAsync(cancellationToken));
         }
 
         input.FocusProcess(_config.D2RProcessName);

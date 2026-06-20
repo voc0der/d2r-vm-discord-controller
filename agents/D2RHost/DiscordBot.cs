@@ -404,42 +404,14 @@ public sealed class DiscordBot
                     return;
                 }
 
-                foreach (var (entry, index) in joiners.Select((entry, index) => (entry, index)))
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
-                        try
-                        {
-                            var joinArgs = BuildMenuArgs(entry.Key, entry.Value, game, context);
-                            var readyResult = await SendReadyIfD2RStoppedAsync(entry.Value, joinArgs);
-                            if (readyResult?.Ok == false)
-                            {
-                                _logger.LogWarning(
-                                    "Queued join after create-game-all skipped for {AccountKey} because ready failed: {Message}",
-                                    entry.Key,
-                                    readyResult.Message);
-                                return;
-                            }
-
-                            await _registry.SendCommandAsync(
-                                entry.Value.AgentId,
-                                "menu_join_game",
-                                joinArgs,
-                                TimeSpan.FromSeconds(150));
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Queued join after create-game-all failed for {AccountKey}.", entry.Key);
-                        }
-                    });
-                }
+                var joinResults = await Task.WhenAll(joiners.Select((entry, index) =>
+                    RunCreateGameAllJoinerAsync(entry, index, staggerSeconds, game, context)));
 
                 await SendFollowupSafeAsync(
                     context,
                     joiners.Length == 0
                         ? $"{creator.Key} created {game.GameName}. No other accounts were configured to join."
-                        : $"{creator.Key} created {game.GameName}; queued {joiners.Length} join command(s).");
+                        : FormatCreateGameAllResult(creator.Key, game.GameName, joinResults));
             }
             catch (Exception ex)
             {
@@ -447,6 +419,61 @@ public sealed class DiscordBot
                 await SendFollowupSafeAsync(context, $"create-game-all failed while creating {game.GameName}: {ex.Message}");
             }
         });
+    }
+
+    private async Task<JoinResult> RunCreateGameAllJoinerAsync(
+        KeyValuePair<string, AccountConfig> entry,
+        int index,
+        int staggerSeconds,
+        GameInput game,
+        SlashContext context)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
+        try
+        {
+            var joinArgs = BuildMenuArgs(entry.Key, entry.Value, game, context);
+            var readyResult = await SendReadyIfD2RStoppedAsync(entry.Value, joinArgs);
+            if (readyResult?.Ok == false)
+            {
+                _logger.LogWarning(
+                    "Queued join after create-game-all skipped for {AccountKey} because ready failed: {Message}",
+                    entry.Key,
+                    readyResult.Message);
+                return new JoinResult(entry.Key, false, $"ready failed: {readyResult.Message}");
+            }
+
+            var joinResult = await _registry.SendCommandAsync(
+                entry.Value.AgentId,
+                "menu_join_game",
+                joinArgs,
+                TimeSpan.FromSeconds(150));
+            return new JoinResult(entry.Key, joinResult.Ok, joinResult.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Queued join after create-game-all failed for {AccountKey}.", entry.Key);
+            return new JoinResult(entry.Key, false, ex.Message);
+        }
+    }
+
+    private static string FormatCreateGameAllResult(string creatorKey, string gameName, IReadOnlyCollection<JoinResult> joinResults)
+    {
+        var joined = joinResults.Where(result => result.Ok).Select(result => result.AccountKey).ToArray();
+        var failed = joinResults.Where(result => !result.Ok).ToArray();
+        var lines = new List<string>
+        {
+            $"{creatorKey} created {gameName}.",
+            joined.Length == 0
+                ? "No joiners completed successfully."
+                : $"Joined: {string.Join(", ", joined)}."
+        };
+
+        if (failed.Length > 0)
+        {
+            lines.Add("Failed: " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+        }
+
+        return string.Join("\n", lines);
     }
 
     private async Task SendFollowupSafeAsync(SlashContext context, string message)
@@ -603,7 +630,7 @@ public sealed class DiscordBot
             gameName = game?.GameName,
             password = game?.Password,
             difficulty = game?.Difficulty,
-            characterSlot = context.GetInt("character-slot"),
+            characterSlot = context.GetInt("character-slot") ?? account.CharacterSlot,
             friendRow = context.GetInt("friend-row")
         };
     }
@@ -776,6 +803,8 @@ public sealed class DiscordBot
     }
 
     private sealed record GameInput(string GameName, string? Password, string? Difficulty);
+
+    private sealed record JoinResult(string AccountKey, bool Ok, string Message);
 
     private sealed class SlashContext
     {

@@ -30,12 +30,14 @@
     "hc1": {
       "agentId": "d2r-hc-01",
       "vmName": "d2r-hc-01",
-      "displayName": "BO-01"
+      "displayName": "BO-01",
+      "characterSlot": 1
     },
     "hc2": {
       "agentId": "d2r-hc-02",
       "vmName": "d2r-hc-02",
-      "displayName": "BO-02"
+      "displayName": "BO-02",
+      "characterSlot": 1
     }
   }
 }

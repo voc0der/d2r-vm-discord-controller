@@ -30,6 +30,7 @@ public sealed class AccountConfig
     public string AgentId { get; set; } = "";
     public string? DisplayName { get; set; }
     public string? VmName { get; set; }
+    public int? CharacterSlot { get; set; }
 }
 
 public sealed record ActiveGame(

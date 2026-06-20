@@ -78,7 +78,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 
 All-client commands skip accounts whose VM agent is offline when the command is queued.
 
-`create-game-all` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger.
+`create-game-all` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger. If you do not pass `character-slot`, the host uses each account's optional `characterSlot` value from `d2r-host.config.json`, then falls back to the VM agent's local default.
 
 Menu commands that need D2R running, such as `lobby`, `play`, `join-game`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status says D2R is stopped. The Discord response calls out that extra ready step.
 
@@ -109,6 +109,7 @@ The setup flow asks for:
 - Add your Discord user ID to `allowedDiscordUserIds`.
 - Add one `agents` entry per VM agent. Each `sharedSecret` must match that VM's config.
 - Add one `accounts` entry per controlled D2R account, mapping it to the VM agent and Hyper-V VM name.
+- Set the default character slot for each account. Discord's `character-slot` option overrides this per command.
 - Set `allowedVmNamePrefixes` so the host only operates your D2R VMs.
 - Set `startAllDelaySeconds` or the `CLIENT_STAGGER_SECONDS` environment variable to stagger all-client commands.
 

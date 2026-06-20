@@ -75,6 +75,7 @@ public static class HostConfigWizard
         }
 
         var displayName = ConsolePrompt.ReadString("Display name", vmName, allowEmpty: false);
+        var characterSlot = ConsolePrompt.ReadInt("Default character slot for this account", 1, minValue: 1, maxValue: 8);
         var sharedSecret = ConsolePrompt.ReadString("Shared secret for this VM agent", SecretGenerator.Create(), allowEmpty: false);
         var remoteUrl = ConsolePrompt.ReadString("Remote-control URL, optional", allowEmpty: true);
 
@@ -90,7 +91,8 @@ public static class HostConfigWizard
         {
             AgentId = agentId,
             DisplayName = displayName,
-            VmName = vmName
+            VmName = vmName,
+            CharacterSlot = characterSlot
         };
     }
 
