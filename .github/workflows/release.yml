@@ -25,12 +25,15 @@ jobs:
       - name: Publish D2RHost
         shell: pwsh
         run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME.TrimStart("v") } else { "0.0.0" }
           dotnet publish agents/D2RHost/D2RHost.csproj `
             --configuration Release `
             --runtime win-x64 `
             --self-contained true `
             -p:PublishSingleFile=true `
             -p:EnableCompressionInSingleFile=true `
+            -p:Version=$version `
+            -p:InformationalVersion=$version `
             -o artifacts/D2RHost
           Copy-Item samples/d2r-host.config.example.json artifacts/D2RHost/
           Copy-Item scripts/install-d2r-host.ps1 artifacts/D2RHost/
@@ -39,12 +42,15 @@ jobs:
       - name: Publish D2RAgent
         shell: pwsh
         run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME.TrimStart("v") } else { "0.0.0" }
           dotnet publish agents/D2RAgent/D2RAgent.csproj `
             --configuration Release `
             --runtime win-x64 `
             --self-contained true `
             -p:PublishSingleFile=true `
             -p:EnableCompressionInSingleFile=true `
+            -p:Version=$version `
+            -p:InformationalVersion=$version `
             -o artifacts/D2RAgent
           Copy-Item samples/vm-agent.config.example.json artifacts/D2RAgent/
           Copy-Item scripts/install-vm-agent.ps1 artifacts/D2RAgent/

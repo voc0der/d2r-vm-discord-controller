@@ -13,6 +13,11 @@ internal static class Program
 
         try
         {
+            if (await SelfUpdater.CheckAndOfferUpdateAsync(SelfUpdateOptions.D2RAgent(args)))
+            {
+                return 0;
+            }
+
             var config = VmAgentConfigWizard.LoadOrCreate(configPath);
             config = await VmAgentConfigWizard.EnsureConnectsAsync(
                 configPath,

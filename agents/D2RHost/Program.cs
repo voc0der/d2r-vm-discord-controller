@@ -3,6 +3,11 @@ using D2RHost;
 
 try
 {
+    if (await SelfUpdater.CheckAndOfferUpdateAsync(SelfUpdateOptions.D2RHost(args)))
+    {
+        return 0;
+    }
+
     var configPath = args.FirstOrDefault()
         ?? Environment.GetEnvironmentVariable("CONFIG_PATH")
         ?? @"C:\D2ROps\d2r-host.config.json";

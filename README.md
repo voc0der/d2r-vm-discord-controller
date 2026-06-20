@@ -24,6 +24,20 @@ Discord
 
 The host PC does not need Docker or Node. The VM agents connect outbound to the host over WebSocket, so the VMs only need to reach `ws://HOST_LAN_IP:8080/agent`.
 
+## Updates
+
+`D2RHost.exe` and `D2RAgent.exe` check the latest GitHub release when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
+
+When accepted, the app starts a PowerShell updater, exits, downloads the matching release zip, replaces the files in the exe directory, and restarts the same exe. Non-interactive runs, such as scheduled tasks, skip the prompt.
+
+Versions before `v0.1.3` do not include the updater, so those installs need one manual replacement before future updates can self-apply.
+
+Set this environment variable to skip update checks:
+
+```powershell
+$env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
+```
+
 ## Discord Commands
 
 - `/d2r status [account]`
