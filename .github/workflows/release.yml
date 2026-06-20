@@ -84,17 +84,37 @@ jobs:
             "Other Changes" = [System.Collections.Generic.List[string]]::new()
           }
 
-          $commitLines = @(git log --no-merges --pretty=format:"%H%x09%s%x09%an" $range)
+          function Format-Contributor([string]$name, [string]$email) {
+            $trimmedName = $name.Trim()
+            $normalizedName = $trimmedName.ToLowerInvariant()
+            $normalizedEmail = $email.Trim().ToLowerInvariant()
+
+            if ($normalizedName -eq "voc0der" -or $normalizedEmail -eq "contact@netspace.in") {
+              return "[@voc0der](https://github.com/voc0der)"
+            }
+
+            if ($normalizedName -eq "dependabot[bot]") {
+              return "[@dependabot[bot]](https://github.com/apps/dependabot)"
+            }
+
+            if ([string]::IsNullOrWhiteSpace($trimmedName)) {
+              return "unknown"
+            }
+
+            return $trimmedName
+          }
+
+          $commitLines = @(git log --no-merges --pretty=format:"%H%x09%s%x09%an%x09%ae" $range)
           foreach ($line in $commitLines) {
             if ([string]::IsNullOrWhiteSpace($line)) {
               continue
             }
 
-            $parts = $line -split "`t", 3
+            $parts = $line -split "`t", 4
             $sha = $parts[0]
             $shortSha = $sha.Substring(0, 7)
             $subject = $parts[1]
-            $author = $parts[2]
+            $author = Format-Contributor $parts[2] $parts[3]
             $entry = "- $subject ([$shortSha](https://github.com/$repo/commit/$sha)) by $author"
 
             $commitType = ""
@@ -118,7 +138,12 @@ jobs:
             $groups[$section].Add($entry)
           }
 
-          $contributors = @(git log --format="%an <%ae>" $range | Sort-Object -Unique)
+          $contributors = @(git log --format="%an%x09%ae" $range |
+            ForEach-Object {
+              $parts = $_ -split "`t", 2
+              Format-Contributor $parts[0] $parts[1]
+            } |
+            Sort-Object -Unique)
 
           $notes = [System.Collections.Generic.List[string]]::new()
           $notes.Add("# $tag")
