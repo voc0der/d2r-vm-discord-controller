@@ -80,6 +80,8 @@ All-client commands skip accounts whose VM agent is offline when the command is 
 
 `create-game-all` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger.
 
+Menu commands that need D2R running, such as `lobby`, `play`, `join-game`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status says D2R is stopped. The Discord response calls out that extra ready step.
+
 ## Host Setup
 
 1. Create a Discord application and bot, then invite it to your server with `applications.commands` and `bot` scopes.
@@ -161,6 +163,8 @@ The D2R launch default is Battle.net's direct product command:
 ```
 
 That avoids trying to start `D2R.exe` directly, which usually just lands back at Battle.net. Before launching, the VM agent shows the desktop to minimize other windows; if Battle.net is already running, it restores Battle.net before sending the D2R launch command. If Battle.net is not already running, the agent waits `battleNetExecRetryDelaySeconds` seconds and sends the D2R launch command a second time. You can still copy `samples/vm-agent.config.example.json` and edit it by hand if you prefer. UI coordinate/timing tuning remains in that JSON.
+
+By default, a VM agent quits D2R with Alt+F4 after 30 minutes at the character screen without lobby/game interaction. Tune that with `idleQuitEnabled`, `idleQuitMinutes`, and `idleQuitCheckSeconds` in `vm-agent.config.json`.
 
 4. Install the scheduled task from an elevated PowerShell prompt inside the VM after the config exists:
 

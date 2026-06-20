@@ -10,6 +10,11 @@ public sealed class VmOperations
     private const string DefaultBattleNetD2RArgs = "--exec=\"launch OSI\"";
 
     private readonly VmAgentConfig _config;
+    private readonly object _activityLock = new();
+    private D2RActivityState _activityState = D2RActivityState.Unknown;
+    private DateTimeOffset? _characterScreenIdleSinceUtc;
+    private DateTimeOffset? _lastLobbyOrGameInteractionUtc;
+    private string? _lastActivityReason;
 
     public VmOperations(VmAgentConfig config)
     {
@@ -19,13 +24,27 @@ public sealed class VmOperations
     public Task<object> GetStatusAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var battleNetRunning = IsProcessRunning(_config.BattleNetProcessName);
+        var d2rRunning = IsProcessRunning(_config.D2RProcessName);
+        if (!d2rRunning)
+        {
+            ClearD2RActivity();
+        }
+
+        var activity = GetActivitySnapshot();
 
         return Task.FromResult<object>(new
         {
             hostName = Environment.MachineName,
             userName = Environment.UserName,
-            battleNetRunning = IsProcessRunning(_config.BattleNetProcessName),
-            d2rRunning = IsProcessRunning(_config.D2RProcessName),
+            battleNetRunning,
+            d2rRunning,
+            d2rActivityState = activity.State.ToString(),
+            characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
+            lastLobbyOrGameInteractionUtc = activity.LastLobbyOrGameInteractionUtc,
+            lastActivityReason = activity.Reason,
+            idleQuitEnabled = _config.IdleQuitEnabled,
+            idleQuitMinutes = _config.IdleQuitMinutes,
             timeUtc = DateTimeOffset.UtcNow
         });
     }
@@ -37,7 +56,7 @@ public sealed class VmOperations
             "status" => CommandResult.Success("Status collected.", await GetStatusAsync(cancellationToken)),
             "launch_battlenet" => LaunchBattleNet(),
             "launch_d2r" => await LaunchD2RAsync(cancellationToken),
-            "kill_d2r" => KillProcess(_config.D2RProcessName),
+            "kill_d2r" => KillD2R(),
             "quit_d2r" => await QuitD2RAsync(cancellationToken),
             "restart_d2r" => await RestartD2RAsync(cancellationToken),
             "screenshot" => await TakeScreenshotAsync(cancellationToken),
@@ -56,6 +75,7 @@ public sealed class VmOperations
     {
         if (IsProcessRunning(_config.D2RProcessName))
         {
+            MarkCharacterScreenIdleIfNotActive("D2R was already running when launch was requested.");
             return CommandResult.Success("D2R is already running.", await GetStatusAsync(cancellationToken));
         }
 
@@ -99,6 +119,11 @@ public sealed class VmOperations
         }
 
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.LaunchGraceSeconds, 1)), cancellationToken);
+        if (IsProcessRunning(_config.D2RProcessName))
+        {
+            MarkCharacterScreenIdle("D2R launch completed.");
+        }
+
         var status = await GetStatusAsync(cancellationToken);
         var message = launchAttempts > 1
             ? "Battle.net cold-started; D2R launch command sent twice. Check status for final client state."
@@ -135,15 +160,68 @@ public sealed class VmOperations
 
     private async Task<CommandResult> RestartD2RAsync(CancellationToken cancellationToken)
     {
-        KillProcess(_config.D2RProcessName);
+        KillD2R();
         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         return await LaunchD2RAsync(cancellationToken);
+    }
+
+    public async Task RunIdleMonitorAsync(Action<string>? log, CancellationToken cancellationToken)
+    {
+        var interval = TimeSpan.FromSeconds(Math.Max(_config.IdleQuitCheckSeconds, 10));
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(interval, cancellationToken);
+            try
+            {
+                await QuitIfCharacterScreenIdleAsync(log ?? (_ => { }), cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                log?.Invoke($"Idle monitor failed: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task QuitIfCharacterScreenIdleAsync(Action<string> log, CancellationToken cancellationToken)
+    {
+        if (!_config.IdleQuitEnabled || !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        if (!IsProcessRunning(_config.D2RProcessName))
+        {
+            ClearD2RActivity();
+            return;
+        }
+
+        var activity = GetActivitySnapshot();
+        if (activity.State != D2RActivityState.CharacterScreenIdle
+            || activity.CharacterScreenIdleSinceUtc is not { } idleSince)
+        {
+            return;
+        }
+
+        var timeout = TimeSpan.FromMinutes(Math.Max(_config.IdleQuitMinutes, 1));
+        var idleFor = DateTimeOffset.UtcNow - idleSince;
+        if (idleFor < timeout)
+        {
+            return;
+        }
+
+        log($"D2R has been idle at the character screen for {idleFor.TotalMinutes:N0} minute(s); sending Alt+F4.");
+        var result = await QuitD2RAsync(cancellationToken);
+        if (!result.Ok)
+        {
+            log($"Idle quit failed: {result.Message}");
+        }
     }
 
     private async Task<CommandResult> QuitD2RAsync(CancellationToken cancellationToken)
     {
         if (!IsProcessRunning(_config.D2RProcessName))
         {
+            ClearD2RActivity();
             return CommandResult.Success("D2R is not running.", await GetStatusAsync(cancellationToken));
         }
 
@@ -156,6 +234,7 @@ public sealed class VmOperations
         await DelayStepAsync(cancellationToken);
         input.PressAltF4();
         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+        ClearD2RActivity();
         return CommandResult.Success("Alt+F4 sent to D2R.", await GetStatusAsync(cancellationToken));
     }
 
@@ -189,6 +268,7 @@ public sealed class VmOperations
         await DelayStepAsync(cancellationToken);
         await ClickThroughIntroAsync(input, cancellationToken);
         await PressThroughTitleScreenAsync(input, cancellationToken);
+        MarkCharacterScreenIdle("Ready flow completed.");
         return CommandResult.Success("D2R ready flow completed.", await GetStatusAsync(cancellationToken));
     }
 
@@ -198,6 +278,7 @@ public sealed class VmOperations
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
         input.LeftClick(_config.Ui.CharacterLobbyButton);
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)), cancellationToken);
+        MarkLobbyOrGameInteraction("Opened Lobby.");
         return CommandResult.Success("Lobby command completed.", await GetStatusAsync(cancellationToken));
     }
 
@@ -207,6 +288,7 @@ public sealed class VmOperations
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
         input.LeftClick(_config.Ui.CharacterPlayButton);
         await WaitForGameEntryAsync(input, cancellationToken);
+        MarkLobbyOrGameInteraction("Clicked Play.");
         return CommandResult.Success("Play character command completed.", await GetStatusAsync(cancellationToken));
     }
 
@@ -231,6 +313,7 @@ public sealed class VmOperations
         await FillTextFieldAsync(input, _config.Ui.JoinPasswordField, args.Password ?? "", cancellationToken);
         input.LeftClick(_config.Ui.JoinGameButton);
         await WaitForGameEntryAsync(input, cancellationToken);
+        MarkLobbyOrGameInteraction($"Joined game {args.GameName}.");
         return CommandResult.Success($"Join game flow completed for {args.GameName}.", await GetStatusAsync(cancellationToken));
     }
 
@@ -256,6 +339,7 @@ public sealed class VmOperations
         await DelayStepAsync(cancellationToken);
         input.LeftClick(_config.Ui.CreateGameButton);
         await WaitForGameEntryAsync(input, cancellationToken);
+        MarkLobbyOrGameInteraction($"Created game {args.GameName}.");
         return CommandResult.Success($"Create game flow completed for {args.GameName}.", await GetStatusAsync(cancellationToken));
     }
 
@@ -274,6 +358,7 @@ public sealed class VmOperations
         await DelayStepAsync(cancellationToken);
         input.LeftClick(_config.Ui.FriendContextJoinGame);
         await WaitForGameEntryAsync(input, cancellationToken);
+        MarkLobbyOrGameInteraction("Joined friend game.");
         return CommandResult.Success("Join friend/follow flow completed.", await GetStatusAsync(cancellationToken));
     }
 
@@ -284,7 +369,73 @@ public sealed class VmOperations
         await DelayStepAsync(cancellationToken);
         input.LeftClick(_config.Ui.SaveAndExitButton);
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)), cancellationToken);
+        MarkCharacterScreenIdle("Save and Exit completed.");
         return CommandResult.Success("Save and Exit flow completed.", await GetStatusAsync(cancellationToken));
+    }
+
+    private CommandResult KillD2R()
+    {
+        var result = KillProcess(_config.D2RProcessName);
+        ClearD2RActivity();
+        return result;
+    }
+
+    private void MarkCharacterScreenIdle(string reason)
+    {
+        lock (_activityLock)
+        {
+            _activityState = D2RActivityState.CharacterScreenIdle;
+            _characterScreenIdleSinceUtc = DateTimeOffset.UtcNow;
+            _lastActivityReason = reason;
+        }
+    }
+
+    private void MarkCharacterScreenIdleIfNotActive(string reason)
+    {
+        lock (_activityLock)
+        {
+            if (_activityState == D2RActivityState.LobbyOrGame)
+            {
+                return;
+            }
+
+            _activityState = D2RActivityState.CharacterScreenIdle;
+            _characterScreenIdleSinceUtc ??= DateTimeOffset.UtcNow;
+            _lastActivityReason = reason;
+        }
+    }
+
+    private void MarkLobbyOrGameInteraction(string reason)
+    {
+        lock (_activityLock)
+        {
+            _activityState = D2RActivityState.LobbyOrGame;
+            _characterScreenIdleSinceUtc = null;
+            _lastLobbyOrGameInteractionUtc = DateTimeOffset.UtcNow;
+            _lastActivityReason = reason;
+        }
+    }
+
+    private void ClearD2RActivity()
+    {
+        lock (_activityLock)
+        {
+            _activityState = D2RActivityState.Unknown;
+            _characterScreenIdleSinceUtc = null;
+            _lastActivityReason = null;
+        }
+    }
+
+    private ActivitySnapshot GetActivitySnapshot()
+    {
+        lock (_activityLock)
+        {
+            return new ActivitySnapshot(
+                _activityState,
+                _characterScreenIdleSinceUtc,
+                _lastLobbyOrGameInteractionUtc,
+                _lastActivityReason);
+        }
     }
 
     private WindowsInput FocusD2R()
@@ -645,4 +796,17 @@ public sealed class VmOperations
             // Best effort cleanup after timeout.
         }
     }
+
+    private enum D2RActivityState
+    {
+        Unknown,
+        CharacterScreenIdle,
+        LobbyOrGame
+    }
+
+    private sealed record ActivitySnapshot(
+        D2RActivityState State,
+        DateTimeOffset? CharacterScreenIdleSinceUtc,
+        DateTimeOffset? LastLobbyOrGameInteractionUtc,
+        string? Reason);
 }

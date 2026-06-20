@@ -13,6 +13,9 @@
   "d2rProcessName": "D2R",
   "workingDirectory": null,
   "launchGraceSeconds": 10,
+  "idleQuitEnabled": true,
+  "idleQuitMinutes": 30,
+  "idleQuitCheckSeconds": 60,
   "powerShellPath": "powershell.exe",
   "screenshotTimeoutSeconds": 30,
   "ui": {

@@ -37,7 +37,12 @@ Agents periodically push status:
   "agentId": "d2r-hc-01",
   "status": {
     "battleNetRunning": true,
-    "d2rRunning": false
+    "d2rRunning": false,
+    "d2rActivityState": "Unknown",
+    "characterScreenIdleSinceUtc": null,
+    "lastLobbyOrGameInteractionUtc": null,
+    "idleQuitEnabled": true,
+    "idleQuitMinutes": 30
   }
 }
 ```

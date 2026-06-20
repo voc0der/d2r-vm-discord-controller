@@ -36,6 +36,8 @@ Use these commands while driving clients:
 
 `/game show` is meant to keep the name/password in one place while moving each VM through Join Game or Create Game. `/d2r join-game` and `/d2r create-game` use stored `/game set` values when command options are omitted.
 
+If `lobby`, `play`, `join-game`, `create-game`, or `follow` is requested while the latest VM status says D2R is stopped, `D2RHost` runs `/d2r ready` first and reports that extra step in Discord.
+
 For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued.
 
 ## Launch To Battle.net
@@ -83,6 +85,8 @@ Automation:
 ```
 
 The intro skip loop defaults to 80 clicks at 250ms intervals, then 6 Space presses at 500ms intervals for the title screen. The clicks are intentionally fast because they are only meant to push through the initial video/legal screens until the title or character screen is usable.
+
+After launch/ready or Save and Exit leaves D2R at the character screen, the VM agent starts a character-screen idle timer. If no lobby/game command touches that client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 
 ## Character Screen To Existing Game
 

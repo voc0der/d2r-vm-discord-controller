@@ -43,7 +43,24 @@ internal static class Program
                 cts.Cancel();
             };
 
-            await client.RunForeverAsync(operations.GetStatusAsync, operations.HandleCommandAsync, cts.Token);
+            var idleMonitorTask = operations.RunIdleMonitorAsync(Console.WriteLine, cts.Token);
+            try
+            {
+                await client.RunForeverAsync(operations.GetStatusAsync, operations.HandleCommandAsync, cts.Token);
+            }
+            finally
+            {
+                cts.Cancel();
+                try
+                {
+                    await idleMonitorTask;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Normal shutdown.
+                }
+            }
+
             return 0;
         }
         catch (Exception ex)
