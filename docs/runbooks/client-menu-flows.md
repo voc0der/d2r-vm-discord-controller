@@ -55,7 +55,7 @@ Current implementation:
 
 - `/d2r start <account>` sends `launch_d2r` to the VM agent.
 - `/d2r start-all` queues the ready flow for every online VM agent.
-- `/d2r ready <account>` launches D2R, clicks Battle.net Play if needed, clicks through intro screens, and presses through the title screen.
+- `/d2r ready <account>` launches D2R, retries Battle.net Play while waiting for D2R, then nudges intro/title states until character select is visually detected.
 - Before launching D2R, the VM agent shows the desktop to minimize other windows. If Battle.net is already running, the agent restores Battle.net before sending the launch command.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
 - If Battle.net was not already running, the agent waits `battleNetExecRetryDelaySeconds` seconds and sends the same D2R launch command again.
@@ -89,7 +89,7 @@ Automation:
 /d2r ready hc1
 ```
 
-The intro skip loop defaults to 80 clicks at 250ms intervals, then 6 Space presses at 500ms intervals for the title screen. The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, waits up to `ui.windowFocusTimeoutSeconds` for a focusable D2R window, and samples the Play/Lobby button regions until the character screen is detected or `ui.characterScreenReadyTimeoutSeconds` expires. While waiting, it detects the Diablo title splash from the orange logo/prompt regions and presses Space again; otherwise it alternates a center click and Space to keep pushing through intro or title states. It only marks the client ready after Play and Lobby are visually detected.
+The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, clicking Battle.net Play every `ui.readyNudgeMinDelayMs` to `ui.readyNudgeMaxDelayMs` when Battle.net is visible. After a focusable D2R window exists, it samples the title splash and Play/Lobby button regions before every input. Unknown intro/title states get a center click; the detected Diablo title splash gets a center click plus Space. Each nudge waits a randomized `readyNudge` interval before the next sample. The agent only marks the client ready after Play and Lobby are visually detected, or fails after `ui.characterScreenReadyTimeoutSeconds` with the last detected ready state.
 
 After launch/ready or Save and Exit leaves D2R at the character screen, the VM agent starts a character-screen idle timer. If no lobby/game command touches that client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 

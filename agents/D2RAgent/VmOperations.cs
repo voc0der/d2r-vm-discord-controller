@@ -273,32 +273,11 @@ public sealed class VmOperations
         var input = new WindowsInput();
         await DelayLongAsync(cancellationToken);
 
-        if (!IsProcessRunning(_config.D2RProcessName)
-            && IsProcessRunning(_config.BattleNetProcessName)
-            && _config.Ui.ClickBattleNetPlayWhenNeeded)
-        {
-            var battleNetFocused = await TryFocusProcessUntilAsync(
-                input,
-                _config.BattleNetProcessName,
-                TimeSpan.FromSeconds(Math.Max(_config.Ui.WindowFocusTimeoutSeconds, 1)),
-                cancellationToken);
-            if (!battleNetFocused)
-            {
-                return CommandResult.Failure("Battle.net is running, but no focusable window was found yet.", await GetStatusAsync(cancellationToken));
-            }
-
-            await DelayStepAsync(cancellationToken);
-            input.LeftClick(_config.Ui.BattleNetPlayButton);
-        }
-
-        var d2rStarted = await WaitForProcessRunningAsync(
-            _config.D2RProcessName,
-            TimeSpan.FromSeconds(Math.Max(_config.D2RStartTimeoutSeconds, 1)),
-            cancellationToken);
+        var d2rStarted = await WaitForD2RProcessStartedAsync(input, cancellationToken);
         if (!d2rStarted)
         {
             return CommandResult.Failure(
-                $"Battle.net is ready, but D2R was not detected within {Math.Max(_config.D2RStartTimeoutSeconds, 1)}s.",
+                $"D2R was not detected within {Math.Max(_config.D2RStartTimeoutSeconds, 1)}s after repeated launch/Play attempts.",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -312,18 +291,11 @@ public sealed class VmOperations
             return CommandResult.Failure("D2R is running, but no focusable window was found yet.", await GetStatusAsync(cancellationToken));
         }
 
-        await DelayStepAsync(cancellationToken);
-        if (!IsCharacterScreenReady(input))
-        {
-            await ClickThroughIntroAsync(input, cancellationToken);
-            await PressThroughTitleScreenAsync(input, cancellationToken);
-        }
-
         var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
         if (!characterScreenReady)
         {
             return CommandResult.Failure(
-                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.",
+                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s. Last detected ready state: {DescribeReadyScreenState(input)}.",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -345,7 +317,7 @@ public sealed class VmOperations
         if (!characterScreenReady)
         {
             return CommandResult.Failure(
-                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.",
+                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s. Last detected ready state: {DescribeReadyScreenState(input)}.",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -369,7 +341,7 @@ public sealed class VmOperations
         if (!characterScreenReady)
         {
             return CommandResult.Failure(
-                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.",
+                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s. Last detected ready state: {DescribeReadyScreenState(input)}.",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -552,26 +524,6 @@ public sealed class VmOperations
         return input;
     }
 
-    private async Task ClickThroughIntroAsync(WindowsInput input, CancellationToken cancellationToken)
-    {
-        for (var index = 0; index < Math.Max(_config.Ui.IntroClickCount, 0); index++)
-        {
-            input.FocusProcess(_config.D2RProcessName);
-            input.LeftClick(_config.Ui.IntroSkipPoint);
-            await Task.Delay(Math.Max(_config.Ui.IntroClickDelayMs, 100), cancellationToken);
-        }
-    }
-
-    private async Task PressThroughTitleScreenAsync(WindowsInput input, CancellationToken cancellationToken)
-    {
-        for (var index = 0; index < Math.Max(_config.Ui.TitleScreenKeyPressCount, 0); index++)
-        {
-            input.FocusProcess(_config.D2RProcessName);
-            input.PressStartKey();
-            await Task.Delay(Math.Max(_config.Ui.TitleScreenKeyPressDelayMs, 100), cancellationToken);
-        }
-    }
-
     private async Task DelayCharacterScreenSettleAsync(CancellationToken cancellationToken)
     {
         var settleSeconds = Math.Max(_config.Ui.CharacterScreenSettleSeconds, 0);
@@ -593,9 +545,9 @@ public sealed class VmOperations
         {
             cancellationToken.ThrowIfCancellationRequested();
             input.FocusProcess(_config.D2RProcessName);
-            await DelayStepAsync(cancellationToken);
+            var state = DetectReadyScreenState(input);
 
-            if (IsCharacterScreenReady(input))
+            if (state == ReadyScreenState.CharacterScreen)
             {
                 return true;
             }
@@ -605,18 +557,18 @@ public sealed class VmOperations
                 return false;
             }
 
-            if (IsDiabloSplashScreen(input))
+            if (state == ReadyScreenState.DiabloSplash)
             {
+                input.LeftClick(_config.Ui.IntroSkipPoint);
+                await DelayStepAsync(cancellationToken);
                 input.PressStartKey();
-                await Task.Delay(Math.Max(_config.Ui.TitleScreenKeyPressDelayMs, 100), cancellationToken);
             }
             else
             {
                 input.LeftClick(_config.Ui.IntroSkipPoint);
-                await Task.Delay(Math.Max(_config.Ui.IntroClickDelayMs, 100), cancellationToken);
-                input.PressStartKey();
-                await Task.Delay(Math.Max(_config.Ui.TitleScreenKeyPressDelayMs, 100), cancellationToken);
             }
+
+            await DelayReadyNudgeAsync(cancellationToken);
         }
     }
 
@@ -706,14 +658,33 @@ public sealed class VmOperations
 
     private bool IsCharacterScreenReady(WindowsInput input)
     {
+        return DetectReadyScreenState(input) == ReadyScreenState.CharacterScreen;
+    }
+
+    private ReadyScreenState DetectReadyScreenState(WindowsInput input)
+    {
         if (IsDiabloSplashScreen(input))
         {
-            return false;
+            return ReadyScreenState.DiabloSplash;
         }
 
         var play = input.SampleRegion(_config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055);
         var lobby = input.SampleRegion(_config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055);
-        return IsCharacterButtonRegion(play) && IsCharacterButtonRegion(lobby);
+        return IsCharacterButtonRegion(play) && IsCharacterButtonRegion(lobby)
+            ? ReadyScreenState.CharacterScreen
+            : ReadyScreenState.Unknown;
+    }
+
+    private string DescribeReadyScreenState(WindowsInput input)
+    {
+        try
+        {
+            return DetectReadyScreenState(input).ToString();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException)
+        {
+            return $"Unavailable ({ex.Message})";
+        }
     }
 
     private bool IsDiabloSplashScreen(WindowsInput input)
@@ -868,6 +839,17 @@ public sealed class VmOperations
         return Task.Delay(Math.Max(_config.Ui.LongDelayMs, 100), cancellationToken);
     }
 
+    private Task DelayReadyNudgeAsync(CancellationToken cancellationToken)
+    {
+        var minDelayMs = Math.Max(_config.Ui.ReadyNudgeMinDelayMs, 250);
+        var maxDelayMs = Math.Max(_config.Ui.ReadyNudgeMaxDelayMs, minDelayMs);
+        var exclusiveMax = maxDelayMs == int.MaxValue ? int.MaxValue : maxDelayMs + 1;
+        var delayMs = minDelayMs == maxDelayMs
+            ? minDelayMs
+            : Random.Shared.Next(minDelayMs, exclusiveMax);
+        return Task.Delay(delayMs, cancellationToken);
+    }
+
     private async Task<bool> TryFocusProcessUntilAsync(
         WindowsInput input,
         string processName,
@@ -899,16 +881,16 @@ public sealed class VmOperations
         }
     }
 
-    private async Task<bool> WaitForProcessRunningAsync(
-        string processName,
-        TimeSpan timeout,
+    private async Task<bool> WaitForD2RProcessStartedAsync(
+        WindowsInput input,
         CancellationToken cancellationToken)
     {
+        var timeout = TimeSpan.FromSeconds(Math.Max(_config.D2RStartTimeoutSeconds, 1));
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (IsProcessRunning(processName))
+            if (IsProcessRunning(_config.D2RProcessName))
             {
                 return true;
             }
@@ -918,7 +900,23 @@ public sealed class VmOperations
                 return false;
             }
 
-            await DelayStepAsync(cancellationToken);
+            if (_config.Ui.ClickBattleNetPlayWhenNeeded
+                && IsProcessRunning(_config.BattleNetProcessName))
+            {
+                try
+                {
+                    if (input.TryFocusProcess(_config.BattleNetProcessName))
+                    {
+                        input.LeftClick(_config.Ui.BattleNetPlayButton);
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    // Battle.net may be running before its main window can receive input.
+                }
+            }
+
+            await DelayReadyNudgeAsync(cancellationToken);
         }
     }
 
@@ -1138,6 +1136,13 @@ public sealed class VmOperations
         Unknown,
         CharacterScreenIdle,
         LobbyOrGame
+    }
+
+    private enum ReadyScreenState
+    {
+        Unknown,
+        DiabloSplash,
+        CharacterScreen
     }
 
     private sealed record ActivitySnapshot(

@@ -182,13 +182,13 @@ Start-ScheduledTask -TaskName "D2R VM Agent"
 
 Run the VM agent as a scheduled task at user logon, not as a Windows service. D2R and Battle.net are desktop apps, so the agent needs the logged-in user session for screenshots and input.
 
-The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play when needed, waits up to `d2rStartTimeoutSeconds` for D2R to start, waits for D2R to expose a focusable window, clicks through intro videos, presses through the Diablo title splash, and visually confirms the character screen by sampling the Play/Lobby button regions. If cold startup is still racing ahead of D2R, raise `d2rStartTimeoutSeconds` or `ui.characterScreenReadyTimeoutSeconds` in `vm-agent.config.json`.
+The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play every `ui.readyNudgeMinDelayMs` to `ui.readyNudgeMaxDelayMs` until D2R starts, waits for D2R to expose a focusable window, then keeps nudging intro/title states at the same jittered interval until it visually confirms the character screen by sampling the Play/Lobby button regions. If cold startup is still racing ahead of D2R, raise `d2rStartTimeoutSeconds` or `ui.characterScreenReadyTimeoutSeconds` in `vm-agent.config.json`.
 
 ## Menu Automation
 
 The VM agent can drive the flows captured in `docs/runbooks/assets/d2r-ui/`:
 
-- Ready flow: Battle.net Play, repeated clicks through intro videos, title splash detection, then Play/Lobby visual confirmation.
+- Ready flow: repeated Battle.net Play attempts, jittered intro/title nudges, title splash detection, then Play/Lobby visual confirmation.
 - Character screen to Play.
 - Character screen to Lobby.
 - Lobby Join Game.
