@@ -75,10 +75,12 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 
 1. Create a Discord application and bot, then invite it to your server with `applications.commands` and `bot` scopes.
 2. Download `D2RHost-win-x64.zip` from a release or build it locally.
-3. Copy the host app to `C:\D2ROps`.
+3. Extract the zip and copy the whole host app folder to `C:\D2ROps`.
 
 ```powershell
-Copy-Item .\D2RHost.exe C:\D2ROps\
+Expand-Archive .\D2RHost-win-x64.zip -DestinationPath .\D2RHost-win-x64 -Force
+New-Item -ItemType Directory -Force -Path C:\D2ROps | Out-Null
+Copy-Item .\D2RHost-win-x64\* C:\D2ROps\ -Recurse -Force
 ```
 
 4. Double-click `D2RHost.exe`, or run it from PowerShell:
@@ -122,7 +124,14 @@ Invoke-RestMethod http://localhost:8080/agents
 For each D2R VM:
 
 1. Download `D2RAgent-win-x64.zip` from a release or build it locally.
-2. Copy `D2RAgent.exe` to `C:\D2ROps`.
+2. Extract the zip and copy the whole VM agent app folder to `C:\D2ROps`.
+
+```powershell
+Expand-Archive .\D2RAgent-win-x64.zip -DestinationPath .\D2RAgent-win-x64 -Force
+New-Item -ItemType Directory -Force -Path C:\D2ROps | Out-Null
+Copy-Item .\D2RAgent-win-x64\* C:\D2ROps\ -Recurse -Force
+```
+
 3. Double-click `D2RAgent.exe`, or run it from PowerShell:
 
 ```powershell

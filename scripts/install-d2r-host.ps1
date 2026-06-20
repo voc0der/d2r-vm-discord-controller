@@ -7,14 +7,46 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (!(Test-Path $ExePath)) {
+if (!(Test-Path -LiteralPath $ExePath -PathType Leaf)) {
     throw "D2RHost.exe was not found at $ExePath"
 }
 
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item -Force $ExePath (Join-Path $InstallDir "D2RHost.exe")
+$ResolvedExePath = (Resolve-Path -LiteralPath $ExePath).Path
+$SourceDir = Split-Path -Parent $ResolvedExePath
 
-if (!(Test-Path $ConfigPath)) {
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+$ResolvedInstallDir = (Resolve-Path -LiteralPath $InstallDir).Path
+
+function Normalize-Path([string]$Path) {
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd([char[]]@('\', '/'))
+}
+
+$SkippedNames = @(
+    (Split-Path -Leaf $ConfigPath),
+    "d2r-host.sqlite",
+    "d2r-host.sqlite-shm",
+    "d2r-host.sqlite-wal"
+) | Where-Object { ![string]::IsNullOrWhiteSpace($_) }
+
+if ((Normalize-Path $SourceDir) -ieq (Normalize-Path $ResolvedInstallDir)) {
+    Write-Host "Install source and destination are both $ResolvedInstallDir. App file copy skipped."
+} else {
+    foreach ($Item in Get-ChildItem -LiteralPath $SourceDir -Force) {
+        if ($SkippedNames -contains $Item.Name) {
+            continue
+        }
+
+        Copy-Item `
+            -LiteralPath $Item.FullName `
+            -Destination (Join-Path $ResolvedInstallDir $Item.Name) `
+            -Recurse `
+            -Force
+    }
+
+    Write-Host "Copied D2RHost app files from $SourceDir to $ResolvedInstallDir."
+}
+
+if (!(Test-Path -LiteralPath $ConfigPath)) {
     Write-Warning "Config file does not exist yet: $ConfigPath"
     Write-Warning "Copy d2r-host.config.example.json there and edit it before starting the task."
 }
