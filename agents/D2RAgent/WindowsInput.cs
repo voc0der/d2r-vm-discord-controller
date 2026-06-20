@@ -26,6 +26,7 @@ internal sealed class WindowsInput
     private const byte VkF4 = 0x73;
     private const byte VkM = 0x4D;
     private const byte VkSpace = 0x20;
+    private const byte VkReturn = 0x0D;
     private const byte VkV = 0x56;
     private const byte VkEscape = 0x1B;
     private const byte VkG = 0x47;
@@ -63,13 +64,30 @@ internal sealed class WindowsInput
     {
         EnsureWindows();
 
-        var normalized = Path.GetFileNameWithoutExtension(processName);
-        var process = Process.GetProcessesByName(normalized)
-            .OrderByDescending(candidate => candidate.MainWindowHandle != IntPtr.Zero)
-            .FirstOrDefault();
+        var process = FindProcess(processName);
 
         if (process is null)
         {
+            var normalized = Path.GetFileNameWithoutExtension(processName);
+            throw new InvalidOperationException($"Process is not running: {normalized}");
+        }
+
+        if (process.MainWindowHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        return TrySetForegroundProcess(process);
+    }
+
+    public bool TryClickProcessWindowCenter(string processName)
+    {
+        EnsureWindows();
+
+        var process = FindProcess(processName);
+        if (process is null)
+        {
+            var normalized = Path.GetFileNameWithoutExtension(processName);
             throw new InvalidOperationException($"Process is not running: {normalized}");
         }
 
@@ -79,8 +97,18 @@ internal sealed class WindowsInput
         }
 
         ShowWindow(process.MainWindowHandle, SwRestore);
-        SetForegroundWindow(process.MainWindowHandle);
-        return true;
+        if (!GetWindowRect(process.MainWindowHandle, out var rect))
+        {
+            return false;
+        }
+
+        var x = (rect.Left + rect.Right) / 2;
+        var y = (rect.Top + rect.Bottom) / 2;
+        SetCursorPos(x, y);
+        mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(50);
+        return IsForegroundProcess(process.Id);
     }
 
     public void LeftClick(UiPoint point)
@@ -131,6 +159,8 @@ internal sealed class WindowsInput
     public void PressStartKey()
     {
         Key(VkSpace);
+        Thread.Sleep(50);
+        Key(VkReturn);
     }
 
     public void PressLegacyGraphicsToggle()
@@ -296,6 +326,57 @@ internal sealed class WindowsInput
         return (x, y);
     }
 
+    private static Process? FindProcess(string processName)
+    {
+        var normalized = Path.GetFileNameWithoutExtension(processName);
+        return Process.GetProcessesByName(normalized)
+            .OrderByDescending(candidate => candidate.MainWindowHandle != IntPtr.Zero)
+            .FirstOrDefault();
+    }
+
+    private static bool TrySetForegroundProcess(Process process)
+    {
+        ShowWindow(process.MainWindowHandle, SwRestore);
+        if (IsForegroundProcess(process.Id))
+        {
+            return true;
+        }
+
+        if (SetForegroundWindow(process.MainWindowHandle))
+        {
+            Thread.Sleep(50);
+            if (IsForegroundProcess(process.Id))
+            {
+                return true;
+            }
+        }
+
+        KeyDown(VkAlt);
+        try
+        {
+            _ = SetForegroundWindow(process.MainWindowHandle);
+        }
+        finally
+        {
+            KeyUp(VkAlt);
+        }
+
+        Thread.Sleep(50);
+        return IsForegroundProcess(process.Id);
+    }
+
+    private static bool IsForegroundProcess(int processId)
+    {
+        var foregroundWindow = GetForegroundWindow();
+        if (foregroundWindow == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        _ = GetWindowThreadProcessId(foregroundWindow, out var foregroundProcessId);
+        return foregroundProcessId == (uint)processId;
+    }
+
     private static void Key(byte virtualKey)
     {
         KeyDown(virtualKey);
@@ -353,7 +434,16 @@ internal sealed class WindowsInput
     private static extern bool SetForegroundWindow(IntPtr windowHandle);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
+
+    [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr windowHandle, int command);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr windowHandle, out WindowRect rect);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
@@ -495,6 +585,14 @@ internal sealed class WindowsInput
         public uint Flags;
         public uint Time;
         public UIntPtr ExtraInfo;
+    }
+
+    private struct WindowRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
     }
 }
 

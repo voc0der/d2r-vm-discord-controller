@@ -37,8 +37,8 @@ public sealed class D2RUiAutomationConfig
     public bool ToggleLegacyGraphicsAfterEnteringGame { get; set; } = true;
     public int LegacyGraphicsToggleDelaySeconds { get; set; } = 20;
     public int LobbyLoadSeconds { get; set; } = 3;
-    public int ReadyNudgeMinDelayMs { get; set; } = 2000;
-    public int ReadyNudgeMaxDelayMs { get; set; } = 4000;
+    public int ReadyNudgeMinDelayMs { get; set; } = 1000;
+    public int ReadyNudgeMaxDelayMs { get; set; } = 2000;
     public int WindowFocusTimeoutSeconds { get; set; } = 30;
     public int CharacterScreenSettleSeconds { get; set; } = 1;
     public int CharacterScreenReadyTimeoutSeconds { get; set; } = 120;

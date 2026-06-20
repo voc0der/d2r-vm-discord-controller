@@ -434,7 +434,8 @@ public sealed class DiscordBot
 
         await context.Command.RespondAsync(
             $"Queued create-game-all for {entries.Length} online account(s). {creator.Key} will create {game.GameName}; "
-                + $"{joiners.Length} account(s) will join after creation with {staggerSeconds}s stagger."
+                + $"{entries.Length} account(s) will warm up first with {staggerSeconds}s stagger; "
+                + $"{joiners.Length} account(s) will join after creation."
                 + FormatReadyFirstSuffix(readyFirstCount)
                 + FormatOfflineSkipSuffix(offlineEntries),
             ephemeral: true);
@@ -443,16 +444,27 @@ public sealed class DiscordBot
         {
             try
             {
-                var creatorArgs = BuildMenuArgs(creator.Key, creator.Value, game, context);
-                var creatorReadyResult = await SendReadyIfNotMenuReadyAsync(creator.Value, creatorArgs);
-                if (creatorReadyResult?.Ok == false)
+                var argsByAccount = entries.ToDictionary(
+                    entry => entry.Key,
+                    entry => BuildMenuArgs(entry.Key, entry.Value, game, context),
+                    StringComparer.OrdinalIgnoreCase);
+                var readyResults = await Task.WhenAll(entries.Select((entry, index) =>
+                    RunCreateGameAllReadyAsync(entry, index, staggerSeconds, argsByAccount[entry.Key])));
+                var readyByAccount = readyResults.ToDictionary(result => result.AccountKey, StringComparer.OrdinalIgnoreCase);
+                if (readyByAccount.TryGetValue(creator.Key, out var creatorReadyResult)
+                    && !creatorReadyResult.Ok)
                 {
                     await SendFollowupSafeAsync(
                         context,
-                        $"create-game-all stopped: {creator.Key} needed `/d2r ready` first, but ready failed: {creatorReadyResult.Message}");
+                        $"create-game-all stopped before create: {creator.Key} failed ready: {creatorReadyResult.Message}");
                     return;
                 }
 
+                await SendFollowupSafeAsync(
+                    context,
+                    FormatCreateGameAllWarmupResult(readyResults, creator.Key, game.GameName));
+
+                var creatorArgs = argsByAccount[creator.Key];
                 var createResult = await _registry.SendCommandAsync(
                     creator.Value.AgentId,
                     "menu_create_game",
@@ -471,14 +483,22 @@ public sealed class DiscordBot
                     return;
                 }
 
-                var joinResults = await Task.WhenAll(joiners.Select((entry, index) =>
-                    RunCreateGameAllJoinerAsync(entry, index, staggerSeconds, game, context)));
+                var failedReadyJoiners = joiners
+                    .Where(entry => readyByAccount.TryGetValue(entry.Key, out var ready) && !ready.Ok)
+                    .Select(entry => new JoinResult(entry.Key, false, $"ready failed before create: {readyByAccount[entry.Key].Message}"))
+                    .ToArray();
+                var joinableEntries = joiners
+                    .Where(entry => !readyByAccount.TryGetValue(entry.Key, out var ready) || ready.Ok)
+                    .ToArray();
+                var joinResults = await Task.WhenAll(joinableEntries.Select((entry, index) =>
+                    RunCreateGameAllJoinerAsync(entry, index, staggerSeconds, argsByAccount[entry.Key], context)));
+                var allJoinResults = failedReadyJoiners.Concat(joinResults).ToArray();
 
                 await SendFollowupSafeAsync(
                     context,
                     joiners.Length == 0
                         ? $"Create flow completed on {creator.Key} for {game.GameName}. No other accounts were configured to join."
-                        : FormatCreateGameAllResult(creator.Key, game.GameName, joinResults));
+                        : FormatCreateGameAllResult(creator.Key, game.GameName, allJoinResults));
             }
             catch (Exception ex)
             {
@@ -488,27 +508,37 @@ public sealed class DiscordBot
         });
     }
 
+    private async Task<ReadyResult> RunCreateGameAllReadyAsync(
+        KeyValuePair<string, AccountConfig> entry,
+        int index,
+        int staggerSeconds,
+        object args)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
+        try
+        {
+            var readyResult = await SendReadyIfNotMenuReadyAsync(entry.Value, args);
+            return readyResult is null
+                ? new ReadyResult(entry.Key, true, "Already menu-ready.", RanReady: false)
+                : new ReadyResult(entry.Key, readyResult.Ok, readyResult.Message, RanReady: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Queued ready before create-game-all failed for {AccountKey}.", entry.Key);
+            return new ReadyResult(entry.Key, false, ex.Message, RanReady: true);
+        }
+    }
+
     private async Task<JoinResult> RunCreateGameAllJoinerAsync(
         KeyValuePair<string, AccountConfig> entry,
         int index,
         int staggerSeconds,
-        GameInput game,
+        object joinArgs,
         SlashContext context)
     {
         await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
         try
         {
-            var joinArgs = BuildMenuArgs(entry.Key, entry.Value, game, context);
-            var readyResult = await SendReadyIfNotMenuReadyAsync(entry.Value, joinArgs);
-            if (readyResult?.Ok == false)
-            {
-                _logger.LogWarning(
-                    "Queued join after create-game-all skipped for {AccountKey} because ready failed: {Message}",
-                    entry.Key,
-                    readyResult.Message);
-                return new JoinResult(entry.Key, false, $"ready failed: {readyResult.Message}");
-            }
-
             var joinResult = await _registry.SendCommandAsync(
                 entry.Value.AgentId,
                 "menu_join_game",
@@ -521,6 +551,37 @@ public sealed class DiscordBot
             _logger.LogError(ex, "Queued join after create-game-all failed for {AccountKey}.", entry.Key);
             return new JoinResult(entry.Key, false, ex.Message);
         }
+    }
+
+    private static string FormatCreateGameAllWarmupResult(
+        IReadOnlyCollection<ReadyResult> readyResults,
+        string creatorKey,
+        string gameName)
+    {
+        var warmed = readyResults.Where(result => result is { Ok: true, RanReady: true }).Select(result => result.AccountKey).ToArray();
+        var alreadyReady = readyResults.Where(result => result is { Ok: true, RanReady: false }).Select(result => result.AccountKey).ToArray();
+        var failed = readyResults.Where(result => !result.Ok).ToArray();
+        var lines = new List<string>
+        {
+            $"Ready warm-up completed for create-game-all. Creating {gameName} on {creatorKey}."
+        };
+
+        if (warmed.Length > 0)
+        {
+            lines.Add($"Warmed: {string.Join(", ", warmed)}.");
+        }
+
+        if (alreadyReady.Length > 0)
+        {
+            lines.Add($"Already ready: {string.Join(", ", alreadyReady)}.");
+        }
+
+        if (failed.Length > 0)
+        {
+            lines.Add("Will skip failed joiner(s): " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+        }
+
+        return string.Join("\n", lines);
     }
 
     private static string FormatCreateGameAllResult(string creatorKey, string gameName, IReadOnlyCollection<JoinResult> joinResults)
@@ -959,6 +1020,8 @@ public sealed class DiscordBot
     }
 
     private sealed record GameInput(string GameName, string? Password, string? Difficulty);
+
+    private sealed record ReadyResult(string AccountKey, bool Ok, string Message, bool RanReady);
 
     private sealed record JoinResult(string AccountKey, bool Ok, string Message);
 
