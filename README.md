@@ -176,7 +176,7 @@ Start-ScheduledTask -TaskName "D2R VM Agent"
 
 Run the VM agent as a scheduled task at user logon, not as a Windows service. D2R and Battle.net are desktop apps, so the agent needs the logged-in user session for screenshots and input.
 
-The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play when needed, waits for D2R to expose a focusable window, clicks through intro videos, presses through the title screen, waits `ui.characterScreenSettleSeconds`, default 5 seconds, and lands on the character screen. If cold startup is still racing ahead of D2R, raise `ui.characterScreenSettleSeconds` in `vm-agent.config.json`.
+The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play when needed, waits up to `d2rStartTimeoutSeconds` for D2R to start, waits for D2R to expose a focusable window, clicks through intro videos, presses through the title screen, and visually confirms the character screen by sampling the Play/Lobby button regions. If cold startup is still racing ahead of D2R, raise `d2rStartTimeoutSeconds` or `ui.characterScreenReadyTimeoutSeconds` in `vm-agent.config.json`.
 
 ## Menu Automation
 
@@ -191,7 +191,7 @@ The VM agent can drive the flows captured in `docs/runbooks/assets/d2r-ui/`:
 - In-game Save and Exit.
 - D2R window quit via Alt+F4.
 
-After `play`, `join-game`, `create-game`, or `follow`, the agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use. Disable that with `ui.toggleLegacyGraphicsAfterEnteringGame: false` in the VM config.
+Before menu commands click into the lobby, the agent waits for the character screen or lobby tabs to be visually detectable. For `join-game` and `create-game`, it retries the final Join/Create button until the active lobby tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. After `play`, `join-game`, `create-game`, or `follow`, the agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use. Disable that with `ui.toggleLegacyGraphicsAfterEnteringGame: false` in the VM config.
 
 All-client commands are staggered and skip offline VM agents. Set `CLIENT_STAGGER_SECONDS=30` on the host, or set `startAllDelaySeconds` in `d2r-host.config.json`.
 

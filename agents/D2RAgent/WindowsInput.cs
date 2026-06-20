@@ -175,6 +175,88 @@ internal sealed class WindowsInput
         }
     }
 
+    public ScreenRegionStats SampleRegion(UiPoint center, double widthRatio, double heightRatio, int sampleGrid = 17)
+    {
+        EnsureWindows();
+        var width = GetSystemMetrics(SmCxScreen);
+        var height = GetSystemMetrics(SmCyScreen);
+        var centerX = center.X * width;
+        var centerY = center.Y * height;
+        var regionWidth = Math.Max(width * widthRatio, sampleGrid);
+        var regionHeight = Math.Max(height * heightRatio, sampleGrid);
+        var grid = Math.Clamp(sampleGrid, 3, 51);
+        var hdc = GetDC(IntPtr.Zero);
+        if (hdc == IntPtr.Zero)
+        {
+            throw new InvalidOperationException($"GetDC failed. LastError={Marshal.GetLastWin32Error()}");
+        }
+
+        var count = 0;
+        var luminanceSum = 0.0;
+        var luminanceSquaredSum = 0.0;
+        var bright = 0;
+        var grey = 0;
+        var dark = 0;
+
+        try
+        {
+            for (var yIndex = 0; yIndex < grid; yIndex++)
+            {
+                var y = Math.Clamp(
+                    (int)Math.Round(centerY - (regionHeight / 2) + ((yIndex + 0.5) * regionHeight / grid)),
+                    0,
+                    height - 1);
+
+                for (var xIndex = 0; xIndex < grid; xIndex++)
+                {
+                    var x = Math.Clamp(
+                        (int)Math.Round(centerX - (regionWidth / 2) + ((xIndex + 0.5) * regionWidth / grid)),
+                        0,
+                        width - 1);
+                    var color = GetPixel(hdc, x, y);
+                    var red = (int)(color & 0x000000FF);
+                    var green = (int)((color & 0x0000FF00) >> 8);
+                    var blue = (int)((color & 0x00FF0000) >> 16);
+                    var luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+
+                    count++;
+                    luminanceSum += luminance;
+                    luminanceSquaredSum += luminance * luminance;
+
+                    if (luminance > 130)
+                    {
+                        bright++;
+                    }
+
+                    if (luminance < 35)
+                    {
+                        dark++;
+                    }
+
+                    if (Math.Max(red, Math.Max(green, blue)) - Math.Min(red, Math.Min(green, blue)) < 45
+                        && luminance is > 35 and < 170)
+                    {
+                        grey++;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            ReleaseDC(IntPtr.Zero, hdc);
+        }
+
+        var average = luminanceSum / count;
+        var variance = Math.Max((luminanceSquaredSum / count) - (average * average), 0);
+        return new ScreenRegionStats(
+            average,
+            Math.Sqrt(variance),
+            (double)bright / count,
+            (double)grey / count,
+            (double)dark / count,
+            count);
+    }
+
     private void PasteText(string text)
     {
         EnsureWindows();
@@ -254,6 +336,15 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr GetDC(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern int ReleaseDC(IntPtr windowHandle, IntPtr deviceContext);
+
+    [DllImport("gdi32.dll")]
+    private static extern uint GetPixel(IntPtr deviceContext, int x, int y);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool OpenClipboard(IntPtr newOwner);
@@ -385,3 +476,11 @@ internal sealed class WindowsInput
         public UIntPtr ExtraInfo;
     }
 }
+
+internal sealed record ScreenRegionStats(
+    double AverageLuminance,
+    double LuminanceStdDev,
+    double BrightRatio,
+    double GreyRatio,
+    double DarkRatio,
+    int Samples);

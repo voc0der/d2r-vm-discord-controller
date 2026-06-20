@@ -156,6 +156,7 @@ public sealed class DiscordBot
                 context,
                 "menu_join_game",
                 (accountKey, account) => BuildMenuArgs(accountKey, account, game, context),
+                TimeSpan.FromSeconds(210),
                 readyFirstIfD2RStopped: true);
             return;
         }
@@ -172,6 +173,7 @@ public sealed class DiscordBot
                 context,
                 "menu_join_friend",
                 (accountKey, account) => BuildMenuArgs(accountKey, account, null, context),
+                TimeSpan.FromSeconds(210),
                 readyFirstIfD2RStopped: true);
             return;
         }
@@ -214,22 +216,22 @@ public sealed class DiscordBot
                 await RunVmCommandAsync(context, singleAccount, "restart_d2r", BuildAccountArgs(singleAccountKey, singleAccount));
                 return;
             case "ready":
-                await RunVmCommandAsync(context, singleAccount, "menu_ready", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(150));
+                await RunVmCommandAsync(context, singleAccount, "menu_ready", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(240));
                 return;
             case "lobby":
-                await RunVmCommandAsync(context, singleAccount, "menu_lobby", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(90), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_lobby", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfD2RStopped: true);
                 return;
             case "play":
-                await RunVmCommandAsync(context, singleAccount, "menu_play", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(90), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_play", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfD2RStopped: true);
                 return;
             case "join-game":
-                await RunVmCommandAsync(context, singleAccount, "menu_join_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(150), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_join_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfD2RStopped: true);
                 return;
             case "create-game":
-                await RunVmCommandAsync(context, singleAccount, "menu_create_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(150), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_create_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfD2RStopped: true);
                 return;
             case "follow":
-                await RunVmCommandAsync(context, singleAccount, "menu_join_friend", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfD2RStopped: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_join_friend", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(210), readyFirstIfD2RStopped: true);
                 return;
             case "save-exit":
             case "leave":
@@ -390,7 +392,7 @@ public sealed class DiscordBot
                     creator.Value.AgentId,
                     "menu_create_game",
                     creatorArgs,
-                    TimeSpan.FromSeconds(150));
+                    TimeSpan.FromSeconds(210));
 
                 if (!createResult.Ok)
                 {
@@ -446,7 +448,7 @@ public sealed class DiscordBot
                 entry.Value.AgentId,
                 "menu_join_game",
                 joinArgs,
-                TimeSpan.FromSeconds(150));
+                TimeSpan.FromSeconds(210));
             return new JoinResult(entry.Key, joinResult.Ok, joinResult.Message);
         }
         catch (Exception ex)
@@ -581,7 +583,7 @@ public sealed class DiscordBot
             account.AgentId,
             "menu_ready",
             args,
-            TimeSpan.FromSeconds(150));
+            TimeSpan.FromSeconds(240));
     }
 
     private bool ShouldRunReadyFirst(AccountConfig account)

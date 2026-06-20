@@ -265,12 +265,17 @@ public sealed class VmOperations
 
             await DelayStepAsync(cancellationToken);
             input.LeftClick(_config.Ui.BattleNetPlayButton);
-            await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.BattleNetPlayGraceSeconds, 1)), cancellationToken);
         }
 
-        if (!IsProcessRunning(_config.D2RProcessName))
+        var d2rStarted = await WaitForProcessRunningAsync(
+            _config.D2RProcessName,
+            TimeSpan.FromSeconds(Math.Max(_config.D2RStartTimeoutSeconds, 1)),
+            cancellationToken);
+        if (!d2rStarted)
         {
-            return CommandResult.Failure("Battle.net is ready, but D2R was not detected yet.", await GetStatusAsync(cancellationToken));
+            return CommandResult.Failure(
+                $"Battle.net is ready, but D2R was not detected within {Math.Max(_config.D2RStartTimeoutSeconds, 1)}s.",
+                await GetStatusAsync(cancellationToken));
         }
 
         var d2rFocused = await TryFocusProcessUntilAsync(
@@ -286,8 +291,15 @@ public sealed class VmOperations
         await DelayStepAsync(cancellationToken);
         await ClickThroughIntroAsync(input, cancellationToken);
         await PressThroughTitleScreenAsync(input, cancellationToken);
+        var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
+        if (!characterScreenReady)
+        {
+            return CommandResult.Failure(
+                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.",
+                await GetStatusAsync(cancellationToken));
+        }
+
         await DelayCharacterScreenSettleAsync(cancellationToken);
-        input.FocusProcess(_config.D2RProcessName);
         MarkCharacterScreenIdle("Ready flow completed.");
         return CommandResult.Success("D2R ready flow completed.", await GetStatusAsync(cancellationToken));
     }
@@ -295,9 +307,29 @@ public sealed class VmOperations
     private async Task<CommandResult> GoLobbyAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
         var input = FocusD2R();
+        if (IsAnyLobbyTabReady(input))
+        {
+            MarkLobbyOrGameInteraction("Lobby was already open.");
+            return CommandResult.Success("Lobby was already open.", await GetStatusAsync(cancellationToken));
+        }
+
+        var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
+        if (!characterScreenReady)
+        {
+            return CommandResult.Failure(
+                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.",
+                await GetStatusAsync(cancellationToken));
+        }
+
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
-        input.LeftClick(_config.Ui.CharacterLobbyButton);
-        await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)), cancellationToken);
+        var lobbyReady = await ClickLobbyUntilReadyAsync(input, cancellationToken);
+        if (!lobbyReady)
+        {
+            return CommandResult.Failure(
+                $"Clicked Lobby, but the lobby tabs were not detected within {Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1)}s.",
+                await GetStatusAsync(cancellationToken));
+        }
+
         MarkLobbyOrGameInteraction("Opened Lobby.");
         return CommandResult.Success("Lobby command completed.", await GetStatusAsync(cancellationToken));
     }
@@ -305,6 +337,14 @@ public sealed class VmOperations
     private async Task<CommandResult> PlayCharacterAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
         var input = FocusD2R();
+        var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
+        if (!characterScreenReady)
+        {
+            return CommandResult.Failure(
+                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.",
+                await GetStatusAsync(cancellationToken));
+        }
+
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
         input.LeftClick(_config.Ui.CharacterPlayButton);
         await WaitForGameEntryAsync(input, cancellationToken);
@@ -326,12 +366,29 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
-        input.LeftClick(_config.Ui.JoinGameTab);
-        await DelayStepAsync(cancellationToken);
+        var joinTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.JoinGameTab, cancellationToken);
+        if (!joinTabReady)
+        {
+            return CommandResult.Failure(
+                $"Clicked Join Game tab, but it was not detected within {Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1)}s.",
+                await GetStatusAsync(cancellationToken));
+        }
+
         await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.JoinGameNameField, args.GameName, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.JoinPasswordField, args.Password ?? "", cancellationToken);
-        input.LeftClick(_config.Ui.JoinGameButton);
+        var joinStarted = await ClickGameEntryButtonUntilLeavesLobbyAsync(
+            input,
+            _config.Ui.JoinGameButton,
+            _config.Ui.JoinGameTab,
+            cancellationToken);
+        if (!joinStarted)
+        {
+            return CommandResult.Failure(
+                $"Clicked Join Game, but the Join Game tab was still visible after {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s.",
+                await GetStatusAsync(cancellationToken));
+        }
+
         await WaitForGameEntryAsync(input, cancellationToken);
         MarkLobbyOrGameInteraction($"Joined game {args.GameName}.");
         return CommandResult.Success($"Join game flow completed for {args.GameName}.", await GetStatusAsync(cancellationToken));
@@ -351,13 +408,30 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
-        input.LeftClick(_config.Ui.CreateGameTab);
-        await DelayStepAsync(cancellationToken);
+        var createTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.CreateGameTab, cancellationToken);
+        if (!createTabReady)
+        {
+            return CommandResult.Failure(
+                $"Clicked Create Game tab, but it was not detected within {Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1)}s.",
+                await GetStatusAsync(cancellationToken));
+        }
+
         await FillTextFieldAsync(input, _config.Ui.CreateGameNameField, args.GameName, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
         input.LeftClick(GetCreateDifficultyPoint(args.Difficulty));
         await DelayStepAsync(cancellationToken);
-        input.LeftClick(_config.Ui.CreateGameButton);
+        var createStarted = await ClickGameEntryButtonUntilLeavesLobbyAsync(
+            input,
+            _config.Ui.CreateGameButton,
+            _config.Ui.CreateGameTab,
+            cancellationToken);
+        if (!createStarted)
+        {
+            return CommandResult.Failure(
+                $"Clicked Create Game, but the Create Game tab was still visible after {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s.",
+                await GetStatusAsync(cancellationToken));
+        }
+
         await WaitForGameEntryAsync(input, cancellationToken);
         MarkLobbyOrGameInteraction($"Created game {args.GameName}.");
         return CommandResult.Success($"Create game flow completed for {args.GameName}.", await GetStatusAsync(cancellationToken));
@@ -494,6 +568,142 @@ public sealed class VmOperations
         }
 
         await Task.Delay(TimeSpan.FromSeconds(settleSeconds), cancellationToken);
+    }
+
+    private async Task<bool> WaitForCharacterScreenReadyAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            input.FocusProcess(_config.D2RProcessName);
+            await DelayStepAsync(cancellationToken);
+
+            if (IsCharacterScreenReady(input))
+            {
+                return true;
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return false;
+            }
+        }
+    }
+
+    private async Task<bool> ClickLobbyUntilReadyAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            input.FocusProcess(_config.D2RProcessName);
+
+            if (IsAnyLobbyTabReady(input))
+            {
+                return true;
+            }
+
+            if (IsCharacterScreenReady(input))
+            {
+                input.LeftClick(_config.Ui.CharacterLobbyButton);
+            }
+
+            await DelayStepAsync(cancellationToken);
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return IsAnyLobbyTabReady(input);
+            }
+        }
+    }
+
+    private async Task<bool> ClickLobbyTabUntilReadyAsync(
+        WindowsInput input,
+        AgentCommon.UiPoint tab,
+        CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            input.FocusProcess(_config.D2RProcessName);
+
+            if (IsLobbyTabReady(input, tab))
+            {
+                return true;
+            }
+
+            input.LeftClick(tab);
+            await DelayStepAsync(cancellationToken);
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return IsLobbyTabReady(input, tab);
+            }
+        }
+    }
+
+    private async Task<bool> ClickGameEntryButtonUntilLeavesLobbyAsync(
+        WindowsInput input,
+        AgentCommon.UiPoint button,
+        AgentCommon.UiPoint activeTab,
+        CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            input.FocusProcess(_config.D2RProcessName);
+            input.LeftClick(button);
+            await Task.Delay(
+                TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5)),
+                cancellationToken);
+
+            if (!IsLobbyTabReady(input, activeTab))
+            {
+                return true;
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return false;
+            }
+        }
+    }
+
+    private bool IsCharacterScreenReady(WindowsInput input)
+    {
+        var play = input.SampleRegion(_config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055);
+        var lobby = input.SampleRegion(_config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055);
+        return IsCharacterButtonRegion(play) && IsCharacterButtonRegion(lobby);
+    }
+
+    private bool IsAnyLobbyTabReady(WindowsInput input)
+    {
+        return IsLobbyTabReady(input, _config.Ui.CreateGameTab)
+            || IsLobbyTabReady(input, _config.Ui.JoinGameTab);
+    }
+
+    private static bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab)
+    {
+        var stats = input.SampleRegion(tab, widthRatio: 0.10, heightRatio: 0.045);
+        return stats.AverageLuminance > 28
+            && stats.GreyRatio > 0.25
+            && stats.DarkRatio < 0.80;
+    }
+
+    private static bool IsCharacterButtonRegion(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 45
+            && stats.GreyRatio > 0.35
+            && stats.DarkRatio < 0.55;
     }
 
     private async Task SelectCharacterAsync(
@@ -637,6 +847,29 @@ public sealed class VmOperations
             catch (InvalidOperationException)
             {
                 // The process may appear before its main window is ready.
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return false;
+            }
+
+            await DelayStepAsync(cancellationToken);
+        }
+    }
+
+    private async Task<bool> WaitForProcessRunningAsync(
+        string processName,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsProcessRunning(processName))
+            {
+                return true;
             }
 
             if (DateTimeOffset.UtcNow >= deadline)

@@ -84,7 +84,7 @@ Automation:
 /d2r ready hc1
 ```
 
-The intro skip loop defaults to 80 clicks at 250ms intervals, then 6 Space presses at 500ms intervals for the title screen. The ready flow waits up to `ui.windowFocusTimeoutSeconds` for a focusable D2R window, then waits `ui.characterScreenSettleSeconds`, default 5 seconds, after the title-screen key presses before returning. The clicks are intentionally fast because they are only meant to push through the initial video/legal screens until the title or character screen is usable.
+The intro skip loop defaults to 80 clicks at 250ms intervals, then 6 Space presses at 500ms intervals for the title screen. The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, waits up to `ui.windowFocusTimeoutSeconds` for a focusable D2R window, and samples the Play/Lobby button regions until the character screen is detected or `ui.characterScreenReadyTimeoutSeconds` expires. The clicks are intentionally fast because they are only meant to push through the initial video/legal screens until the title or character screen is usable.
 
 After launch/ready or Save and Exit leaves D2R at the character screen, the VM agent starts a character-screen idle timer. If no lobby/game command touches that client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 
@@ -109,7 +109,7 @@ Automation:
 /d2r join-game hc1 character-slot:1
 ```
 
-After the final Join Game click, the VM agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds, then presses `G` to switch to legacy graphics for lower idle GPU use.
+Before typing, the VM agent retries the Join Game tab click until the tab is detected. After typing, it retries the final Join Game button until the Join Game tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. Then it waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use.
 
 ## Character Screen To Create Game
 
@@ -134,7 +134,7 @@ Automation:
 /d2r create-game hc1 character-slot:1
 ```
 
-After the final Create Game click, the VM agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds, then presses `G`.
+Before typing, the VM agent retries the Create Game tab click until the tab is detected. After typing, it retries the final Create Game button until the Create Game tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. Then it waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G`.
 
 ## Join Off Friend
 
