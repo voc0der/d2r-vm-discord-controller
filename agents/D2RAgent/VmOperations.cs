@@ -59,6 +59,8 @@ public sealed class VmOperations
         }
 
         var battleNetWasRunning = IsProcessRunning(_config.BattleNetProcessName);
+        await PrepareDesktopForD2RLaunchAsync(battleNetWasRunning, cancellationToken);
+
         var usedBattleNetExec = false;
         var launchAttempts = 1;
 
@@ -101,6 +103,33 @@ public sealed class VmOperations
             ? "Battle.net cold-started; D2R launch command sent twice. Check status for final client state."
             : "Launch command sent. Check status for final client state.";
         return CommandResult.Success(message, status);
+    }
+
+    private async Task PrepareDesktopForD2RLaunchAsync(bool battleNetWasRunning, CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var input = new WindowsInput();
+        input.ShowDesktop();
+        await DelayStepAsync(cancellationToken);
+
+        if (!battleNetWasRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            input.FocusProcess(_config.BattleNetProcessName);
+            await DelayStepAsync(cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            // Battle.net may be between windows during startup; launching can still proceed.
+        }
     }
 
     private async Task<CommandResult> RestartD2RAsync(CancellationToken cancellationToken)

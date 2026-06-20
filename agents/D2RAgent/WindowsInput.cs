@@ -20,7 +20,9 @@ internal sealed class WindowsInput
     private const uint MouseEventRightDown = 0x0008;
     private const uint MouseEventRightUp = 0x0010;
     private const byte VkControl = 0x11;
+    private const byte VkLeftWindows = 0x5B;
     private const byte VkA = 0x41;
+    private const byte VkM = 0x4D;
     private const byte VkV = 0x56;
     private const byte VkEscape = 0x1B;
     private const byte VkG = 0x47;
@@ -30,6 +32,20 @@ internal sealed class WindowsInput
     private const uint InputKeyboard = 1;
     private const uint KeyEventUnicode = 0x0004;
     private const int SwRestore = 9;
+
+    public void ShowDesktop()
+    {
+        EnsureWindows();
+        KeyDown(VkLeftWindows);
+        try
+        {
+            Key(VkM);
+        }
+        finally
+        {
+            KeyUp(VkLeftWindows);
+        }
+    }
 
     public void FocusProcess(string processName)
     {

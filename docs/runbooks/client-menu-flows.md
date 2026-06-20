@@ -49,6 +49,7 @@ Current implementation:
 
 - `/d2r start <account>` sends `launch_d2r` to the VM agent.
 - `/d2r ready <account>` launches D2R, clicks Battle.net Play if needed, and clicks through intro screens.
+- Before launching D2R, the VM agent shows the desktop to minimize other windows. If Battle.net is already running, the agent restores Battle.net before sending the launch command.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
 - If Battle.net was not already running, the agent waits `battleNetExecRetryDelaySeconds` seconds and sends the same D2R launch command again.
 - If an older config points at `Battle.net Launcher.exe`, the agent resolves the sibling `Battle.net.exe` for D2R launches.
