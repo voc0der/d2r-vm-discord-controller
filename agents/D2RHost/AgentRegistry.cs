@@ -10,14 +10,21 @@ public sealed class AgentRegistry
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly HostConfig _config;
+    private readonly AgentAutoUpdateState _autoUpdate;
     private readonly AppDb _db;
     private readonly ILogger<AgentRegistry> _logger;
     private readonly ConcurrentDictionary<string, ConnectedAgent> _agents = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, PendingCommand> _pending = new();
+    private readonly ConcurrentDictionary<string, byte> _autoUpdateAttempts = new(StringComparer.OrdinalIgnoreCase);
 
-    public AgentRegistry(HostConfig config, AppDb db, ILogger<AgentRegistry> logger)
+    public AgentRegistry(
+        HostConfig config,
+        AgentAutoUpdateState autoUpdate,
+        AppDb db,
+        ILogger<AgentRegistry> logger)
     {
         _config = config;
+        _autoUpdate = autoUpdate;
         _db = db;
         _logger = logger;
     }
@@ -83,6 +90,7 @@ public sealed class AgentRegistry
                             ok = true
                         },
                         cancellationToken);
+                    QueueSelfUpdateAfterAuthentication(hello.AgentId, hello.Version);
                     continue;
                 }
 
@@ -249,6 +257,60 @@ public sealed class AgentRegistry
         _agents[hello.AgentId] = connected;
         _db.UpsertAgentStatus(connected.Id, connected.Kind, connected: true, "{}");
         _logger.LogInformation("Agent authenticated: {AgentId}", hello.AgentId);
+    }
+
+    private void QueueSelfUpdateAfterAuthentication(string agentId, string? version)
+    {
+        if (!_autoUpdate.Enabled)
+        {
+            _logger.LogDebug(
+                "Skipping satellite auto-update for {AgentId}: {Reason}",
+                agentId,
+                _autoUpdate.Reason);
+            return;
+        }
+
+        var key = $"{agentId}|{version ?? "(unknown)"}";
+        if (!_autoUpdateAttempts.TryAdd(key, 0))
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2));
+                var result = await SendCommandAsync(
+                    agentId,
+                    "self_update",
+                    new
+                    {
+                        initiatedBy = "host",
+                        hostVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString()
+                    },
+                    TimeSpan.FromSeconds(45));
+
+                if (result.Ok)
+                {
+                    _logger.LogInformation(
+                        "Satellite auto-update command completed for {AgentId}: {Message}",
+                        agentId,
+                        result.Message);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Satellite auto-update command failed for {AgentId}: {Message}",
+                        agentId,
+                        result.Message);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Satellite auto-update command failed for {AgentId}.", agentId);
+            }
+        });
     }
 
     private void UpdateStatus(string agentId, JsonElement root)

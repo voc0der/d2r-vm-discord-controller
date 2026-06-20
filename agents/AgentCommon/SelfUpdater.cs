@@ -21,38 +21,75 @@ public static class SelfUpdater
         SelfUpdateOptions options,
         CancellationToken cancellationToken = default)
     {
-        if (!OperatingSystem.IsWindows() || !ConsolePrompt.CanPrompt || IsDisabled())
+        var result = await CheckAndStartUpdateAsync(options, requirePrompt: true, cancellationToken);
+        if (!result.Ok)
         {
-            return false;
+            Console.WriteLine($"Update check failed, continuing startup: {result.Message}");
+        }
+
+        return result.UpdateStarted;
+    }
+
+    public static async Task<SelfUpdateResult> CheckAndStartUpdateAsync(
+        SelfUpdateOptions options,
+        bool requirePrompt,
+        CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return SelfUpdateResult.Skipped("Self-update only runs on Windows.");
+        }
+
+        if (requirePrompt && !ConsolePrompt.CanPrompt)
+        {
+            return SelfUpdateResult.Skipped("Interactive prompt is not available.");
+        }
+
+        if (IsDisabled())
+        {
+            return SelfUpdateResult.Skipped("Self-update is disabled by D2ROPS_DISABLE_UPDATE_CHECK.");
         }
 
         try
         {
-            var currentExe = Environment.ProcessPath;
-            if (string.IsNullOrWhiteSpace(currentExe)
-                || !currentExe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-                || !File.Exists(currentExe))
+            if (!TryGetCurrentExecutable(options, out var currentExe, out var executableMessage))
             {
-                return false;
+                return SelfUpdateResult.Skipped(executableMessage);
             }
 
             var currentVersion = GetCurrentVersion();
             if (currentVersion is null)
             {
-                return false;
+                return SelfUpdateResult.Skipped("Current app version is not SemVer.");
             }
 
             var release = await GetLatestReleaseAsync(options, cancellationToken);
             if (release.Version <= currentVersion)
             {
-                return false;
+                return new SelfUpdateResult(
+                    Ok: true,
+                    CheckedLatest: true,
+                    UpdateAvailable: false,
+                    UpdateStarted: false,
+                    Message: $"{options.AppName} is current at {currentVersion}.",
+                    CurrentVersion: currentVersion.ToString(),
+                    LatestVersion: release.Version.ToString(),
+                    LogPath: null);
             }
 
             Console.WriteLine($"{options.AppName} {release.TagName} is available. Current version: {currentVersion}");
             Console.WriteLine(release.HtmlUrl);
-            if (!ConsolePrompt.ReadBool("Update in place now", true))
+            if (requirePrompt && !ConsolePrompt.ReadBool("Update in place now", true))
             {
-                return false;
+                return new SelfUpdateResult(
+                    Ok: true,
+                    CheckedLatest: true,
+                    UpdateAvailable: true,
+                    UpdateStarted: false,
+                    Message: $"Update to {release.TagName} was skipped by operator.",
+                    CurrentVersion: currentVersion.ToString(),
+                    LatestVersion: release.Version.ToString(),
+                    LogPath: null);
             }
 
             var scriptPath = WriteUpdaterScript(options, release, currentExe);
@@ -62,12 +99,19 @@ public static class SelfUpdater
             Console.WriteLine();
             Console.WriteLine("Updater started. This process will exit so the exe can be replaced.");
             Console.WriteLine($"Updater log: {logPath}");
-            return true;
+            return new SelfUpdateResult(
+                Ok: true,
+                CheckedLatest: true,
+                UpdateAvailable: true,
+                UpdateStarted: true,
+                Message: $"Updater started for {options.AppName} {release.TagName}.",
+                CurrentVersion: currentVersion.ToString(),
+                LatestVersion: release.Version.ToString(),
+                LogPath: logPath);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Update check failed, continuing startup: {ex.Message}");
-            return false;
+            return SelfUpdateResult.Failed(ex.Message);
         }
     }
 
@@ -75,6 +119,31 @@ public static class SelfUpdater
     {
         return bool.TryParse(Environment.GetEnvironmentVariable("D2ROPS_DISABLE_UPDATE_CHECK"), out var disabled)
             && disabled;
+    }
+
+    private static bool TryGetCurrentExecutable(
+        SelfUpdateOptions options,
+        out string currentExe,
+        out string message)
+    {
+        currentExe = Environment.ProcessPath ?? "";
+        if (string.IsNullOrWhiteSpace(currentExe)
+            || !currentExe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(currentExe))
+        {
+            message = "Current process is not a published Windows exe.";
+            return false;
+        }
+
+        var expectedName = options.AppName + ".exe";
+        if (!string.Equals(Path.GetFileName(currentExe), expectedName, StringComparison.OrdinalIgnoreCase))
+        {
+            message = $"Current process is {Path.GetFileName(currentExe)}, not {expectedName}.";
+            return false;
+        }
+
+        message = "";
+        return true;
     }
 
     private static ReleaseVersion? GetCurrentVersion()
@@ -327,4 +396,37 @@ public static class SelfUpdater
             return true;
         }
     }
+}
+
+public sealed record SelfUpdateResult(
+    bool Ok,
+    bool CheckedLatest,
+    bool UpdateAvailable,
+    bool UpdateStarted,
+    string Message,
+    string? CurrentVersion,
+    string? LatestVersion,
+    string? LogPath)
+{
+    public static SelfUpdateResult Skipped(string message) =>
+        new(
+            Ok: true,
+            CheckedLatest: false,
+            UpdateAvailable: false,
+            UpdateStarted: false,
+            Message: message,
+            CurrentVersion: null,
+            LatestVersion: null,
+            LogPath: null);
+
+    public static SelfUpdateResult Failed(string message) =>
+        new(
+            Ok: false,
+            CheckedLatest: false,
+            UpdateAvailable: false,
+            UpdateStarted: false,
+            Message: message,
+            CurrentVersion: null,
+            LatestVersion: null,
+            LogPath: null);
 }

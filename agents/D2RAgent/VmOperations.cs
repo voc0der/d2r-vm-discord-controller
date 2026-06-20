@@ -11,14 +11,16 @@ public sealed class VmOperations
 
     private readonly VmAgentConfig _config;
     private readonly object _activityLock = new();
+    private readonly string[] _restartArgs;
     private D2RActivityState _activityState = D2RActivityState.Unknown;
     private DateTimeOffset? _characterScreenIdleSinceUtc;
     private DateTimeOffset? _lastLobbyOrGameInteractionUtc;
     private string? _lastActivityReason;
 
-    public VmOperations(VmAgentConfig config)
+    public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
         _config = config;
+        _restartArgs = restartArgs ?? [];
     }
 
     public Task<object> GetStatusAsync(CancellationToken cancellationToken)
@@ -67,8 +69,36 @@ public sealed class VmOperations
             "menu_create_game" => await CreateGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_join_friend" => await JoinFriendAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_save_exit" => await SaveAndExitAsync(cancellationToken),
+            "self_update" => await SelfUpdateAsync(cancellationToken),
             _ => CommandResult.Failure($"Unsupported VM command: {request.Command}")
         };
+    }
+
+    private async Task<CommandResult> SelfUpdateAsync(CancellationToken cancellationToken)
+    {
+        var result = await SelfUpdater.CheckAndStartUpdateAsync(
+            SelfUpdateOptions.D2RAgent(_restartArgs),
+            requirePrompt: false,
+            cancellationToken);
+        var data = new
+        {
+            result.CheckedLatest,
+            result.UpdateAvailable,
+            result.UpdateStarted,
+            result.CurrentVersion,
+            result.LatestVersion,
+            result.LogPath
+        };
+
+        if (!result.Ok)
+        {
+            return CommandResult.Failure(result.Message, data);
+        }
+
+        return CommandResult.Success(
+            result.Message,
+            data,
+            exitAfterResult: result.UpdateStarted);
     }
 
     private async Task<CommandResult> LaunchD2RAsync(CancellationToken cancellationToken)

@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 
@@ -6,8 +7,6 @@ namespace AgentCommon;
 
 public sealed class AgentClient<TConfig> where TConfig : AgentConfig
 {
-    private const string Version = "0.1.0";
-
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -35,7 +34,12 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         {
             try
             {
-                await RunOnceAsync(statusFactory, commandHandler, cancellationToken);
+                var exitRequested = await RunOnceAsync(statusFactory, commandHandler, cancellationToken);
+                if (exitRequested)
+                {
+                    break;
+                }
+
                 delay = TimeSpan.FromSeconds(2);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -86,7 +90,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         _ = await statusFactory(timeoutCts.Token);
     }
 
-    private async Task RunOnceAsync(
+    private async Task<bool> RunOnceAsync(
         Func<CancellationToken, Task<object>> statusFactory,
         Func<CommandRequest, CancellationToken, Task<CommandResult>> commandHandler,
         CancellationToken cancellationToken)
@@ -113,8 +117,14 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
                     break;
                 }
 
-                await HandleControllerMessageAsync(socket, sendLock, raw, commandHandler, cancellationToken);
+                var exitRequested = await HandleControllerMessageAsync(socket, sendLock, raw, commandHandler, cancellationToken);
+                if (exitRequested)
+                {
+                    return true;
+                }
             }
+
+            return false;
         }
         finally
         {
@@ -145,7 +155,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
                 agentId = _config.AgentId,
                 agentKind = _agentKind,
                 sharedSecret = _config.SharedSecret,
-                version = Version,
+                version = GetCurrentVersionText(),
                 hostName = Environment.MachineName,
                 probeOnly
             },
@@ -178,7 +188,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         }
     }
 
-    private async Task HandleControllerMessageAsync(
+    private async Task<bool> HandleControllerMessageAsync(
         ClientWebSocket socket,
         SemaphoreSlim sendLock,
         string raw,
@@ -189,7 +199,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         var type = document.RootElement.GetProperty("type").GetString();
         if (!string.Equals(type, "command", StringComparison.OrdinalIgnoreCase))
         {
-            return;
+            return false;
         }
 
         var envelope = JsonSerializer.Deserialize<ControllerCommandEnvelope>(raw, JsonOptions)
@@ -219,6 +229,17 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
                 data = result.Data
             },
             cancellationToken);
+
+        return result.ExitAfterResult;
+    }
+
+    private static string GetCurrentVersionText()
+    {
+        var assembly = Assembly.GetEntryAssembly() ?? typeof(AgentClient<TConfig>).Assembly;
+        return assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion
+            ?? "0.0.0";
     }
 
     private static async Task SendAsync(

@@ -26,11 +26,15 @@ The host PC does not need Docker or Node. The VM agents connect outbound to the 
 
 ## Updates
 
-`D2RHost.exe` and `D2RAgent.exe` check the latest GitHub release when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
+`D2RHost.exe` checks the latest GitHub release on startup. If a newer version exists, the host starts an in-place updater, exits, and restarts before it accepts VM-agent connections. After the updated host is running and VM agents authenticate, the host sends each authenticated VM agent a self-update command.
 
-When accepted, the app starts a PowerShell updater, exits, downloads the matching release zip, replaces the files in the exe directory, and restarts the same exe. Non-interactive runs, such as scheduled tasks, skip the prompt.
+`D2RAgent.exe` can still check for an update when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
+
+When an update is started, the app starts a PowerShell updater, exits, downloads the matching release zip, replaces the files in the exe directory, and restarts the same exe.
 
 Versions before `v0.1.3` do not include the updater, so those installs need one manual replacement before future updates can self-apply.
+
+Host-forced satellite updates require a VM agent version that supports the `self_update` command. Older VM agents may need one manual update before the host can force future satellite updates.
 
 Set this environment variable to skip update checks:
 

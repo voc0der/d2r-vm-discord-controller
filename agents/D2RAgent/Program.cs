@@ -33,7 +33,7 @@ internal static class Program
                 },
                 CancellationToken.None);
 
-            var operations = new VmOperations(config);
+            var operations = new VmOperations(config, args);
             var client = new AgentClient<VmAgentConfig>(config, "vm", Console.WriteLine);
 
             using var cts = new CancellationTokenSource();

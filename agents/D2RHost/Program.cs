@@ -3,10 +3,26 @@ using D2RHost;
 
 try
 {
-    if (await SelfUpdater.CheckAndOfferUpdateAsync(SelfUpdateOptions.D2RHost(args)))
+    var hostUpdate = await SelfUpdater.CheckAndStartUpdateAsync(
+        SelfUpdateOptions.D2RHost(args),
+        requirePrompt: false);
+    if (!hostUpdate.Ok)
+    {
+        Console.WriteLine($"Host update check failed; satellite auto-update disabled: {hostUpdate.Message}");
+    }
+    else if (!hostUpdate.CheckedLatest)
+    {
+        Console.WriteLine($"Host update check skipped; satellite auto-update disabled: {hostUpdate.Message}");
+    }
+
+    if (hostUpdate.UpdateStarted)
     {
         return 0;
     }
+
+    var agentAutoUpdate = new AgentAutoUpdateState(
+        Enabled: hostUpdate.Ok && hostUpdate.CheckedLatest,
+        Reason: hostUpdate.Message);
 
     var configPath = args.FirstOrDefault()
         ?? Environment.GetEnvironmentVariable("CONFIG_PATH")
@@ -18,6 +34,7 @@ try
     builder.WebHost.UseUrls($"http://0.0.0.0:{config.HttpPort}");
 
     builder.Services.AddSingleton(config);
+    builder.Services.AddSingleton(agentAutoUpdate);
     builder.Services.AddSingleton<AppDb>();
     builder.Services.AddSingleton<AgentRegistry>();
     builder.Services.AddSingleton<HyperVOperations>();
