@@ -48,7 +48,7 @@ Expected state:
 Current implementation:
 
 - `/d2r start <account>` sends `launch_d2r` to the VM agent.
-- `/d2r ready <account>` launches D2R, clicks Battle.net Play if needed, and clicks through intro screens.
+- `/d2r ready <account>` launches D2R, clicks Battle.net Play if needed, clicks through intro screens, and presses through the title screen.
 - Before launching D2R, the VM agent shows the desktop to minimize other windows. If Battle.net is already running, the agent restores Battle.net before sending the launch command.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
 - If Battle.net was not already running, the agent waits `battleNetExecRetryDelaySeconds` seconds and sends the same D2R launch command again.
@@ -69,7 +69,7 @@ Expected state:
 Manual path:
 
 1. Press Play in Battle.net.
-2. Click through intro/video screens until character select appears.
+2. Click through intro/video screens and press through the title screen until character select appears.
 3. Select the intended character if it is not already selected.
 
 Automation:
@@ -78,7 +78,7 @@ Automation:
 /d2r ready hc1
 ```
 
-The intro skip loop defaults to 80 clicks at 250ms intervals. The clicks are intentionally fast because they are only meant to push through the initial video/legal screens until the character screen is usable.
+The intro skip loop defaults to 80 clicks at 250ms intervals, then 6 Space presses at 500ms intervals for the title screen. The clicks are intentionally fast because they are only meant to push through the initial video/legal screens until the title or character screen is usable.
 
 ## Character Screen To Existing Game
 

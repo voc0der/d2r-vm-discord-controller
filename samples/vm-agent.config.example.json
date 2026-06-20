@@ -25,6 +25,8 @@
     "lobbyLoadSeconds": 3,
     "introClickCount": 80,
     "introClickDelayMs": 250,
+    "titleScreenKeyPressCount": 6,
+    "titleScreenKeyPressDelayMs": 500,
     "defaultCharacterSlot": 1,
     "defaultFriendRow": 1,
     "friendRowHeight": 0.049,

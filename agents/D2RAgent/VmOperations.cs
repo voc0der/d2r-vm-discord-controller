@@ -168,6 +168,7 @@ public sealed class VmOperations
         input.FocusProcess(_config.D2RProcessName);
         await DelayStepAsync(cancellationToken);
         await ClickThroughIntroAsync(input, cancellationToken);
+        await PressThroughTitleScreenAsync(input, cancellationToken);
         return CommandResult.Success("D2R ready flow completed.", await GetStatusAsync(cancellationToken));
     }
 
@@ -280,6 +281,16 @@ public sealed class VmOperations
             input.FocusProcess(_config.D2RProcessName);
             input.LeftClick(_config.Ui.IntroSkipPoint);
             await Task.Delay(Math.Max(_config.Ui.IntroClickDelayMs, 100), cancellationToken);
+        }
+    }
+
+    private async Task PressThroughTitleScreenAsync(WindowsInput input, CancellationToken cancellationToken)
+    {
+        for (var index = 0; index < Math.Max(_config.Ui.TitleScreenKeyPressCount, 0); index++)
+        {
+            input.FocusProcess(_config.D2RProcessName);
+            input.PressStartKey();
+            await Task.Delay(Math.Max(_config.Ui.TitleScreenKeyPressDelayMs, 100), cancellationToken);
         }
     }
 

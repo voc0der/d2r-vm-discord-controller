@@ -23,6 +23,7 @@ internal sealed class WindowsInput
     private const byte VkLeftWindows = 0x5B;
     private const byte VkA = 0x41;
     private const byte VkM = 0x4D;
+    private const byte VkSpace = 0x20;
     private const byte VkV = 0x56;
     private const byte VkEscape = 0x1B;
     private const byte VkG = 0x47;
@@ -100,6 +101,11 @@ internal sealed class WindowsInput
     public void PressEscape()
     {
         Key(VkEscape);
+    }
+
+    public void PressStartKey()
+    {
+        Key(VkSpace);
     }
 
     public void PressLegacyGraphicsToggle()
