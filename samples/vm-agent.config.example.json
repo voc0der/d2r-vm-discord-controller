@@ -62,6 +62,7 @@
     "joinDifficultyNightmareOption": { "x": 0.844, "y": 0.255 },
     "joinDifficultyHellOption": { "x": 0.844, "y": 0.29 },
     "joinGameButton": { "x": 0.765, "y": 0.622 },
+    "gameEntryErrorDialogOkButton": { "x": 0.5, "y": 0.539 },
     "createGameTab": { "x": 0.673, "y": 0.071 },
     "createGameNameField": { "x": 0.766, "y": 0.16 },
     "createPasswordField": { "x": 0.766, "y": 0.224 },

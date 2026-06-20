@@ -7,7 +7,12 @@ Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 - `logged_in_battle_net.jpg`: Battle.net logged in with D2R selected and ready to press Play.
 - `diablo_splash.jpg`: D2R title splash with the Diablo logo and Press any key prompt.
 - `character_screen.jpg`: D2R online character select.
+- `character_skeleton_selected.jpg`: Character select with the skeleton character row selected.
+- `character_skeleton_not_selected.jpg`: Character select with a different row selected and skeleton visible.
 - `join_game.jpg`: Lobby Join Game tab.
+- `game_and_password_dont_match.jpg`: Join Game modal when the game name and password do not match.
+- `game_no_longer_available_to_join.jpg`: Join Game modal when the selected game is no longer available.
+- `connection_interrupted.jpg`: Full-screen connection interrupted message that returns to the prior menu state.
 - `create_game.jpg`: Lobby Create Game tab.
 - `lobby_right_click_party_icon.jpg`: Lobby friends drawer opened from the party/friends icon near chat, with a friend context menu open.
 - `friend_context_join_game.jpg`: Right-click friend context menu with `Join Game` visible.

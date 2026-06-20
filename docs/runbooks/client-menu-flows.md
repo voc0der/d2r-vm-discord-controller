@@ -70,6 +70,10 @@ References:
 
 ![Character screen](assets/d2r-ui/character_screen.jpg)
 
+![Skeleton selected](assets/d2r-ui/character_skeleton_selected.jpg)
+
+![Skeleton not selected](assets/d2r-ui/character_skeleton_not_selected.jpg)
+
 Expected state:
 
 - D2R has finished intro videos.
@@ -95,7 +99,15 @@ After launch/ready or Save and Exit leaves D2R at the character screen, the VM a
 
 ## Character Screen To Existing Game
 
-Reference: ![Join Game tab](assets/d2r-ui/join_game.jpg)
+References:
+
+![Join Game tab](assets/d2r-ui/join_game.jpg)
+
+![Game and password do not match](assets/d2r-ui/game_and_password_dont_match.jpg)
+
+![Game no longer available](assets/d2r-ui/game_no_longer_available_to_join.jpg)
+
+![Connection interrupted](assets/d2r-ui/connection_interrupted.jpg)
 
 Manual path:
 
@@ -114,11 +126,15 @@ Automation:
 /d2r join-game hc1 character-slot:1
 ```
 
-Before typing, the VM agent retries the Join Game tab click until the tab is detected. After typing, it retries the final Join Game button until the Join Game tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. Then it waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use.
+Before typing, the VM agent retries the Join Game tab click until the tab is detected. After typing, it retries the final Join Game button until the client enters the game or `ui.gameEntryStartTimeoutSeconds` expires. If a game-entry error modal appears, such as password mismatch or game unavailable, the agent clicks OK, restores the Join Game form, re-enters the game/password fields, and retries. If the full-screen connection interrupted message appears, the agent waits for the Join Game tab to return, restores the form, and retries. After a successful entry, it waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use.
 
 ## Character Screen To Create Game
 
-Reference: ![Create Game tab](assets/d2r-ui/create_game.jpg)
+References:
+
+![Create Game tab](assets/d2r-ui/create_game.jpg)
+
+![Connection interrupted](assets/d2r-ui/connection_interrupted.jpg)
 
 Manual path:
 
@@ -139,7 +155,7 @@ Automation:
 /d2r create-game hc1 character-slot:1
 ```
 
-Before typing, the VM agent retries the Create Game tab click until the tab is detected. After typing, it retries the final Create Game button until the Create Game tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. Then it waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G`.
+Before typing, the VM agent retries the Create Game tab click until the tab is detected. After typing, it retries the final Create Game button until the client enters the game or `ui.gameEntryStartTimeoutSeconds` expires. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. After a successful entry, it waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G`.
 
 ## Join Off Friend
 
@@ -208,5 +224,4 @@ Keep navigation data tied to screenshots and resolution. The current captures ar
 Useful future references to collect:
 
 - D2R intro/video click-through state.
-- Character selected vs not selected.
-- Error states: game full, wrong password, failed to join, realm/server issue.
+- Error states: game full and realm/server issue.

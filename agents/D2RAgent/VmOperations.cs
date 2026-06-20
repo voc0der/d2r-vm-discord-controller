@@ -377,21 +377,22 @@ public sealed class VmOperations
         await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.JoinGameNameField, args.GameName, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.JoinPasswordField, args.Password ?? "", cancellationToken);
-        var joinStarted = await ClickGameEntryButtonUntilLeavesLobbyAsync(
+        var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
             _config.Ui.JoinGameButton,
             _config.Ui.JoinGameTab,
+            () => RestoreJoinGameFormAsync(input, args, cancellationToken),
             cancellationToken);
-        if (!joinStarted)
+        if (!joinEntry.Entered)
         {
             return CommandResult.Failure(
-                $"Clicked Join Game, but the Join Game tab was still visible after {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s.",
+                $"Clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {joinEntry.Message}",
                 await GetStatusAsync(cancellationToken));
         }
 
-        await WaitForGameEntryAsync(input, cancellationToken);
         MarkLobbyOrGameInteraction($"Joined game {args.GameName}.");
-        return CommandResult.Success($"Join game flow completed for {args.GameName}.", await GetStatusAsync(cancellationToken));
+        var retrySuffix = FormatEntryRecoverySuffix(joinEntry);
+        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> CreateGameAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -420,21 +421,22 @@ public sealed class VmOperations
         await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
         input.LeftClick(GetCreateDifficultyPoint(args.Difficulty));
         await DelayStepAsync(cancellationToken);
-        var createStarted = await ClickGameEntryButtonUntilLeavesLobbyAsync(
+        var createEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
             _config.Ui.CreateGameButton,
             _config.Ui.CreateGameTab,
+            () => RestoreCreateGameFormAsync(input, args, cancellationToken),
             cancellationToken);
-        if (!createStarted)
+        if (!createEntry.Entered)
         {
             return CommandResult.Failure(
-                $"Clicked Create Game, but the Create Game tab was still visible after {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s.",
+                $"Clicked Create Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {createEntry.Message}",
                 await GetStatusAsync(cancellationToken));
         }
 
-        await WaitForGameEntryAsync(input, cancellationToken);
         MarkLobbyOrGameInteraction($"Created game {args.GameName}.");
-        return CommandResult.Success($"Create game flow completed for {args.GameName}.", await GetStatusAsync(cancellationToken));
+        var retrySuffix = FormatEntryRecoverySuffix(createEntry);
+        return CommandResult.Success($"Create game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> JoinFriendAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -627,9 +629,137 @@ public sealed class VmOperations
         }
     }
 
-    private async Task<bool> ClickGameEntryButtonUntilLeavesLobbyAsync(
+    private async Task<GameEntryAttemptResult> ClickMenuEntryButtonUntilEnteredGameAsync(
         WindowsInput input,
         AgentCommon.UiPoint button,
+        AgentCommon.UiPoint activeTab,
+        Func<Task<bool>> restoreFormAsync,
+        CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        var dialogRetries = 0;
+        var connectionRetries = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            input.FocusProcess(_config.D2RProcessName);
+
+            if (IsGameEntryErrorDialogOpen(input))
+            {
+                dialogRetries++;
+                if (!await DismissGameEntryErrorDialogAsync(input, cancellationToken)
+                    || !await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "A game-entry error dialog appeared, but the menu form could not be restored.");
+                }
+            }
+
+            if (IsConnectionInterruptedScreen(input))
+            {
+                connectionRetries++;
+                if (!await WaitForMenuAfterConnectionInterruptedAsync(input, activeTab, cancellationToken)
+                    || !await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu form could not be restored.");
+                }
+            }
+
+            if (!IsLobbyTabReady(input, activeTab))
+            {
+                var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken);
+                if (waitResult == GameEntryWaitResult.EnteredGame)
+                {
+                    return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
+                }
+
+                connectionRetries++;
+                if (waitResult == GameEntryWaitResult.ConnectionInterrupted
+                    && !await WaitForMenuAfterConnectionInterruptedAsync(input, activeTab, cancellationToken))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu tab did not return.");
+                }
+
+                if (!await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned from game entry, but the menu form could not be restored.");
+                }
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(dialogRetries, connectionRetries));
+            }
+
+            input.LeftClick(button);
+            await Task.Delay(
+                TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5)),
+                cancellationToken);
+
+            if (IsGameEntryErrorDialogOpen(input))
+            {
+                dialogRetries++;
+                if (!await DismissGameEntryErrorDialogAsync(input, cancellationToken)
+                    || !await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "A game-entry error dialog appeared, but the menu form could not be restored.");
+                }
+            }
+
+            if (IsConnectionInterruptedScreen(input))
+            {
+                connectionRetries++;
+                if (!await WaitForMenuAfterConnectionInterruptedAsync(input, activeTab, cancellationToken)
+                    || !await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu form could not be restored.");
+                }
+            }
+
+            if (!IsLobbyTabReady(input, activeTab))
+            {
+                var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken);
+                if (waitResult == GameEntryWaitResult.EnteredGame)
+                {
+                    return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
+                }
+
+                connectionRetries++;
+                if (waitResult == GameEntryWaitResult.ConnectionInterrupted
+                    && !await WaitForMenuAfterConnectionInterruptedAsync(input, activeTab, cancellationToken))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu tab did not return.");
+                }
+
+                if (!await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned from game entry, but the menu form could not be restored.");
+                }
+            }
+        }
+    }
+
+    private async Task<bool> DismissGameEntryErrorDialogAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            input.FocusProcess(_config.D2RProcessName);
+            input.LeftClick(_config.Ui.GameEntryErrorDialogOkButton);
+            await DelayLongAsync(cancellationToken);
+
+            if (!IsGameEntryErrorDialogOpen(input))
+            {
+                return true;
+            }
+        }
+
+        return !IsGameEntryErrorDialogOpen(input);
+    }
+
+    private async Task<bool> WaitForMenuAfterConnectionInterruptedAsync(
+        WindowsInput input,
         AgentCommon.UiPoint activeTab,
         CancellationToken cancellationToken)
     {
@@ -639,12 +769,7 @@ public sealed class VmOperations
         {
             cancellationToken.ThrowIfCancellationRequested();
             input.FocusProcess(_config.D2RProcessName);
-            input.LeftClick(button);
-            await Task.Delay(
-                TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5)),
-                cancellationToken);
-
-            if (!IsLobbyTabReady(input, activeTab))
+            if (!IsConnectionInterruptedScreen(input) && IsLobbyTabReady(input, activeTab))
             {
                 return true;
             }
@@ -653,7 +778,83 @@ public sealed class VmOperations
             {
                 return false;
             }
+
+            await DelayLongAsync(cancellationToken);
         }
+    }
+
+    private async Task<bool> RestoreJoinGameFormAsync(
+        WindowsInput input,
+        MenuCommandArgs args,
+        CancellationToken cancellationToken)
+    {
+        var joinTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.JoinGameTab, cancellationToken);
+        if (!joinTabReady)
+        {
+            return false;
+        }
+
+        await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
+        await FillTextFieldAsync(input, _config.Ui.JoinGameNameField, args.GameName ?? "", cancellationToken);
+        await FillTextFieldAsync(input, _config.Ui.JoinPasswordField, args.Password ?? "", cancellationToken);
+        return true;
+    }
+
+    private async Task<bool> RestoreCreateGameFormAsync(
+        WindowsInput input,
+        MenuCommandArgs args,
+        CancellationToken cancellationToken)
+    {
+        var createTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.CreateGameTab, cancellationToken);
+        if (!createTabReady)
+        {
+            return false;
+        }
+
+        await FillTextFieldAsync(input, _config.Ui.CreateGameNameField, args.GameName ?? "", cancellationToken);
+        await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
+        input.LeftClick(GetCreateDifficultyPoint(args.Difficulty));
+        await DelayStepAsync(cancellationToken);
+        return true;
+    }
+
+    private static string FormatEntryRecoverySuffix(GameEntryAttemptResult result)
+    {
+        var parts = new List<string>();
+        if (result.DialogRetries > 0)
+        {
+            parts.Add($"{result.DialogRetries} error dialog(s)");
+        }
+
+        if (result.ConnectionRetries > 0)
+        {
+            parts.Add($"{result.ConnectionRetries} connection interruption(s)");
+        }
+
+        return parts.Count == 0
+            ? ""
+            : $" Recovered from {string.Join(" and ", parts)}.";
+    }
+
+    private static string FormatEntryTimeoutMessage(int dialogRetries, int connectionRetries)
+    {
+        if (dialogRetries == 0 && connectionRetries == 0)
+        {
+            return "No game-entry error state was detected.";
+        }
+
+        var parts = new List<string>();
+        if (dialogRetries > 0)
+        {
+            parts.Add($"{dialogRetries} error dialog(s)");
+        }
+
+        if (connectionRetries > 0)
+        {
+            parts.Add($"{connectionRetries} connection interruption(s)");
+        }
+
+        return $"Recovered from {string.Join(" and ", parts)}, but the menu tab stayed visible.";
     }
 
     private bool IsCharacterScreenReady(WindowsInput input)
@@ -695,6 +896,34 @@ public sealed class VmOperations
             && prompt.OrangeRatio > 0.04
             && logo.DarkRatio > 0.45
             && prompt.DarkRatio > 0.45;
+    }
+
+    private bool IsGameEntryErrorDialogOpen(WindowsInput input)
+    {
+        var okButton = input.SampleRegion(_config.Ui.GameEntryErrorDialogOkButton, widthRatio: 0.14, heightRatio: 0.050);
+        var topBorder = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.381), widthRatio: 0.32, heightRatio: 0.025);
+        var body = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.465), widthRatio: 0.32, heightRatio: 0.20);
+        return okButton.AverageLuminance > 45
+            && okButton.LuminanceStdDev > 25
+            && okButton.GreyRatio > 0.35
+            && okButton.DarkRatio < 0.60
+            && topBorder.AverageLuminance > 28
+            && topBorder.GreyRatio > 0.25
+            && topBorder.DarkRatio < 0.75
+            && body.AverageLuminance < 40
+            && body.DarkRatio > 0.70;
+    }
+
+    private bool IsConnectionInterruptedScreen(WindowsInput input)
+    {
+        var screen = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.500), widthRatio: 0.80, heightRatio: 0.60);
+        var text = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.502), widthRatio: 0.55, heightRatio: 0.08);
+        return screen.AverageLuminance < 5
+            && screen.DarkRatio > 0.97
+            && text.AverageLuminance > 3
+            && text.LuminanceStdDev > 15
+            && text.GreyRatio > 0.02
+            && text.DarkRatio > 0.85;
     }
 
     private bool IsAnyLobbyTabReady(WindowsInput input)
@@ -761,21 +990,60 @@ public sealed class VmOperations
 
     private async Task WaitForGameEntryAsync(WindowsInput input, CancellationToken cancellationToken)
     {
+        _ = await WaitForGameEntryAsync(input, returnTab: null, cancellationToken);
+    }
+
+    private async Task<GameEntryWaitResult> WaitForGameEntryAsync(
+        WindowsInput input,
+        AgentCommon.UiPoint? returnTab,
+        CancellationToken cancellationToken)
+    {
         var delaySeconds = _config.Ui.ToggleLegacyGraphicsAfterEnteringGame
             ? Math.Max(_config.Ui.LegacyGraphicsToggleDelaySeconds, 1)
             : Math.Max(_config.Ui.GameLoadSeconds, 1);
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(delaySeconds);
+        var sawConnectionInterrupted = false;
 
-        await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            input.FocusProcess(_config.D2RProcessName);
+
+            if (IsConnectionInterruptedScreen(input))
+            {
+                sawConnectionInterrupted = true;
+            }
+            else if (returnTab is not null && IsLobbyTabReady(input, returnTab))
+            {
+                return sawConnectionInterrupted
+                    ? GameEntryWaitResult.ConnectionInterrupted
+                    : GameEntryWaitResult.ReturnedToMenu;
+            }
+
+            var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
+            if (remainingMs == 0)
+            {
+                break;
+            }
+
+            await Task.Delay((int)Math.Min(1000, remainingMs), cancellationToken);
+        }
+
+        if (sawConnectionInterrupted)
+        {
+            return GameEntryWaitResult.ConnectionInterrupted;
+        }
 
         if (!_config.Ui.ToggleLegacyGraphicsAfterEnteringGame)
         {
-            return;
+            return GameEntryWaitResult.EnteredGame;
         }
 
         input.FocusProcess(_config.D2RProcessName);
         await DelayStepAsync(cancellationToken);
         input.PressLegacyGraphicsToggle();
         await DelayStepAsync(cancellationToken);
+        return GameEntryWaitResult.EnteredGame;
     }
 
     private AgentCommon.UiPoint GetCharacterSlotPoint(int? characterSlot)
@@ -1144,6 +1412,19 @@ public sealed class VmOperations
         DiabloSplash,
         CharacterScreen
     }
+
+    private enum GameEntryWaitResult
+    {
+        EnteredGame,
+        ConnectionInterrupted,
+        ReturnedToMenu
+    }
+
+    private sealed record GameEntryAttemptResult(
+        bool Entered,
+        int DialogRetries,
+        int ConnectionRetries,
+        string Message);
 
     private sealed record ActivitySnapshot(
         D2RActivityState State,

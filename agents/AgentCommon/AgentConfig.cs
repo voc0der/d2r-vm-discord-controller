@@ -74,6 +74,7 @@ public sealed class D2RUiAutomationConfig
     public UiPoint JoinDifficultyNightmareOption { get; set; } = new(0.844, 0.255);
     public UiPoint JoinDifficultyHellOption { get; set; } = new(0.844, 0.290);
     public UiPoint JoinGameButton { get; set; } = new(0.765, 0.622);
+    public UiPoint GameEntryErrorDialogOkButton { get; set; } = new(0.500, 0.539);
     public UiPoint CreateGameTab { get; set; } = new(0.673, 0.071);
     public UiPoint CreateGameNameField { get; set; } = new(0.766, 0.160);
     public UiPoint CreatePasswordField { get; set; } = new(0.766, 0.224);
