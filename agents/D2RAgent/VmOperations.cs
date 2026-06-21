@@ -11,6 +11,8 @@ public sealed class VmOperations
     private const int MaxD2RStartTimeoutSeconds = 60;
     private const int MaxReadyStartupSkipSeconds = 45;
     private const int MaxCharacterScreenReconnectSeconds = 45;
+    private const int ReadyStartupDetectionIntervalMs = 1000;
+    private const int ReadyStartupSampleGrid = 5;
 
     private readonly VmAgentConfig _config;
     private readonly object _activityLock = new();
@@ -653,18 +655,24 @@ public sealed class VmOperations
         var intervalMs = Math.Clamp(_config.Ui.ReadyStartupSkipIntervalMs, 50, 250);
         var nudges = 0;
         var lastState = ReadyScreenState.Unknown;
+        var nextDetectionAt = DateTimeOffset.UtcNow;
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var state = DetectReadyScreenState(input);
-            lastState = state;
-            if (state is ReadyScreenState.CharacterScreen or ReadyScreenState.OfflineCharacterScreen)
-            {
-                return new ReadyWaitResult(true, nudges, lastState);
-            }
-
             SendReadySkipKey(input);
             nudges++;
+
+            if (DateTimeOffset.UtcNow >= nextDetectionAt)
+            {
+                var state = DetectReadyScreenState(input, ReadyStartupSampleGrid);
+                lastState = state;
+                if (state is ReadyScreenState.CharacterScreen or ReadyScreenState.OfflineCharacterScreen)
+                {
+                    return new ReadyWaitResult(true, nudges, lastState);
+                }
+
+                nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
+            }
 
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
@@ -1122,57 +1130,68 @@ public sealed class VmOperations
             || IsCharacterScreenOffline(input, windowRelative: true);
     }
 
-    private ReadyScreenState DetectReadyScreenState(WindowsInput input)
+    private bool IsCharacterScreenOffline(WindowsInput input, int sampleGrid)
     {
-        if (IsDiabloSplashScreen(input))
+        return IsCharacterScreenOffline(input, windowRelative: false, sampleGrid)
+            || IsCharacterScreenOffline(input, windowRelative: true, sampleGrid);
+    }
+
+    private ReadyScreenState DetectReadyScreenState(WindowsInput input, int sampleGrid = 17)
+    {
+        if (IsDiabloSplashScreen(input, sampleGrid))
         {
             return ReadyScreenState.DiabloSplash;
         }
 
-        if (IsCharacterScreenOffline(input))
+        if (IsCharacterScreenOffline(input, sampleGrid: sampleGrid))
         {
             return ReadyScreenState.OfflineCharacterScreen;
         }
 
-        return IsCharacterButtonPairReady(input, windowRelative: false)
-            || IsCharacterButtonPairReady(input, windowRelative: true)
-            || IsCharacterMenuReady(input, windowRelative: false)
-            || IsCharacterMenuReady(input, windowRelative: true)
+        return IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid)
+            || IsCharacterButtonPairReady(input, windowRelative: true, sampleGrid)
+            || IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
+            || IsCharacterMenuReady(input, windowRelative: true, sampleGrid)
             ? ReadyScreenState.CharacterScreen
             : ReadyScreenState.Unknown;
     }
 
-    private bool IsCharacterButtonPairReady(WindowsInput input, bool windowRelative)
+    private bool IsCharacterButtonPairReady(WindowsInput input, bool windowRelative, int sampleGrid = 17)
     {
-        var play = SampleD2RRegion(input, _config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative);
-        var lobby = SampleD2RRegion(input, _config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative);
+        var play = SampleD2RRegion(input, _config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative, sampleGrid: sampleGrid);
+        var lobby = SampleD2RRegion(input, _config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative, sampleGrid: sampleGrid);
         return D2RScreenClassifier.IsCharacterButtonRegion(play)
             && D2RScreenClassifier.IsCharacterButtonRegion(lobby)
-            && IsOnlineCharacterListReady(input, windowRelative);
+            && IsOnlineCharacterListReady(input, windowRelative, sampleGrid);
     }
 
-    private bool IsCharacterMenuReady(WindowsInput input, bool windowRelative)
+    private bool IsCharacterMenuReady(WindowsInput input, bool windowRelative, int sampleGrid = 17)
     {
-        var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: windowRelative);
-        var options = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.405), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative);
-        var cinematics = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.460), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative);
+        var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: windowRelative, sampleGrid: sampleGrid);
+        var options = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.405), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative, sampleGrid: sampleGrid);
+        var cinematics = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.460), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative, sampleGrid: sampleGrid);
         return D2RScreenClassifier.IsCharacterMenuReady(logo, options, cinematics);
     }
 
     private bool IsCharacterScreenOffline(WindowsInput input, bool windowRelative)
     {
-        if (!IsCharacterMenuReady(input, windowRelative))
+        return IsCharacterScreenOffline(input, windowRelative, sampleGrid: 17);
+    }
+
+    private bool IsCharacterScreenOffline(WindowsInput input, bool windowRelative, int sampleGrid)
+    {
+        if (!IsCharacterMenuReady(input, windowRelative, sampleGrid))
         {
             return false;
         }
 
-        var emptyCharacterPanel = SampleD2RRegion(input, new AgentCommon.UiPoint(0.895, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: windowRelative);
+        var emptyCharacterPanel = SampleD2RRegion(input, new AgentCommon.UiPoint(0.895, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: windowRelative, sampleGrid: sampleGrid);
         return D2RScreenClassifier.IsOfflineCharacterPanelRegion(emptyCharacterPanel);
     }
 
-    private bool IsOnlineCharacterListReady(WindowsInput input, bool windowRelative)
+    private bool IsOnlineCharacterListReady(WindowsInput input, bool windowRelative, int sampleGrid = 17)
     {
-        var characterList = SampleD2RRegion(input, new AgentCommon.UiPoint(0.890, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: windowRelative);
+        var characterList = SampleD2RRegion(input, new AgentCommon.UiPoint(0.890, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: windowRelative, sampleGrid: sampleGrid);
         return D2RScreenClassifier.IsOnlineCharacterListRegion(characterList);
     }
 
@@ -1183,10 +1202,10 @@ public sealed class VmOperations
             : $"D2R stopped before the ready loop finished. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.";
     }
 
-    private bool IsDiabloSplashScreen(WindowsInput input)
+    private bool IsDiabloSplashScreen(WindowsInput input, int sampleGrid = 17)
     {
-        var logo = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.290), widthRatio: 0.45, heightRatio: 0.22);
-        var prompt = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.600), widthRatio: 0.32, heightRatio: 0.055);
+        var logo = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.290), widthRatio: 0.45, heightRatio: 0.22, sampleGrid: sampleGrid);
+        var prompt = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.600), widthRatio: 0.32, heightRatio: 0.055, sampleGrid: sampleGrid);
         return logo.OrangeRatio > 0.05
             && prompt.OrangeRatio > 0.04
             && logo.DarkRatio > 0.45
@@ -1320,11 +1339,12 @@ public sealed class VmOperations
         AgentCommon.UiPoint center,
         double widthRatio,
         double heightRatio,
-        bool windowRelative)
+        bool windowRelative,
+        int sampleGrid = 17)
     {
         return windowRelative
-            ? input.SampleRegion(center, widthRatio, heightRatio, coordinateProcessNames: GetD2RProcessNames())
-            : input.SampleRegion(center, widthRatio, heightRatio);
+            ? input.SampleRegion(center, widthRatio, heightRatio, coordinateProcessNames: GetD2RProcessNames(), sampleGrid: sampleGrid)
+            : input.SampleRegion(center, widthRatio, heightRatio, sampleGrid: sampleGrid);
     }
 
     private async Task SelectCharacterAsync(
