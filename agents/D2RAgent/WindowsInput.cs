@@ -260,6 +260,85 @@ internal sealed class WindowsInput
         return SendWindowReadySkipKey(processNames);
     }
 
+    public InputDiagnostics GetInputDiagnostics(IEnumerable<string> processNames)
+    {
+        EnsureWindows();
+
+        var names = NormalizeProcessNames(processNames).ToArray();
+        var screenWidth = GetSystemMetrics(SmCxScreen);
+        var screenHeight = GetSystemMetrics(SmCyScreen);
+        var foregroundWindow = GetForegroundWindow();
+        int? foregroundProcessId = null;
+        string? foregroundProcessName = null;
+        if (foregroundWindow != IntPtr.Zero)
+        {
+            _ = GetWindowThreadProcessId(foregroundWindow, out var foregroundPid);
+            if (foregroundPid != 0)
+            {
+                foregroundProcessId = (int)foregroundPid;
+                try
+                {
+                    foregroundProcessName = Process.GetProcessById((int)foregroundPid).ProcessName;
+                }
+                catch (ArgumentException)
+                {
+                    foregroundProcessName = null;
+                }
+            }
+        }
+
+        var process = FindProcess(names);
+        if (process is null)
+        {
+            return new InputDiagnostics(
+                ProcessFound: false,
+                ProcessId: null,
+                ProcessName: null,
+                SessionId: null,
+                UserInteractive: Environment.UserInteractive,
+                HasMainWindow: false,
+                MainWindowTitle: null,
+                IsForeground: false,
+                ForegroundProcessId: foregroundProcessId,
+                ForegroundProcessName: foregroundProcessName,
+                ScreenWidth: screenWidth,
+                ScreenHeight: screenHeight,
+                WindowRect: null,
+                ClientRect: null);
+        }
+
+        InputRect? windowRect = null;
+        InputRect? clientRect = null;
+        if (process.MainWindowHandle != IntPtr.Zero)
+        {
+            if (GetWindowRect(process.MainWindowHandle, out var window))
+            {
+                windowRect = new InputRect(window.Left, window.Top, window.Right, window.Bottom);
+            }
+
+            if (TryGetProcessClientBounds(names, out var client))
+            {
+                clientRect = new InputRect(client.Left, client.Top, client.Left + client.Width, client.Top + client.Height);
+            }
+        }
+
+        return new InputDiagnostics(
+            ProcessFound: true,
+            ProcessId: process.Id,
+            ProcessName: process.ProcessName,
+            SessionId: SafeGetSessionId(process),
+            UserInteractive: Environment.UserInteractive,
+            HasMainWindow: process.MainWindowHandle != IntPtr.Zero,
+            MainWindowTitle: process.MainWindowTitle,
+            IsForeground: IsForegroundProcess(process.Id),
+            ForegroundProcessId: foregroundProcessId,
+            ForegroundProcessName: foregroundProcessName,
+            ScreenWidth: screenWidth,
+            ScreenHeight: screenHeight,
+            WindowRect: windowRect,
+            ClientRect: clientRect);
+    }
+
     public void PressEscape()
     {
         Key(VkEscape);
@@ -558,6 +637,18 @@ internal sealed class WindowsInput
         return names.Length == 0 ? "(none)" : string.Join("/", names);
     }
 
+    private static int? SafeGetSessionId(Process process)
+    {
+        try
+        {
+            return process.SessionId;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     private static bool TrySetForegroundProcess(Process process)
     {
         ShowWindow(process.MainWindowHandle, SwRestore);
@@ -583,6 +674,51 @@ internal sealed class WindowsInput
         finally
         {
             KeyUp(VkAlt);
+        }
+
+        Thread.Sleep(50);
+        if (IsForegroundProcess(process.Id))
+        {
+            return true;
+        }
+
+        var foregroundWindow = GetForegroundWindow();
+        var foregroundThread = foregroundWindow == IntPtr.Zero
+            ? 0
+            : GetWindowThreadProcessId(foregroundWindow, out _);
+        var targetThread = GetWindowThreadProcessId(process.MainWindowHandle, out _);
+        var currentThread = GetCurrentThreadId();
+        var attachedForeground = false;
+        var attachedTarget = false;
+
+        try
+        {
+            if (foregroundThread != 0 && foregroundThread != currentThread)
+            {
+                attachedForeground = AttachThreadInput(currentThread, foregroundThread, attach: true);
+            }
+
+            if (targetThread != 0 && targetThread != currentThread)
+            {
+                attachedTarget = AttachThreadInput(currentThread, targetThread, attach: true);
+            }
+
+            _ = BringWindowToTop(process.MainWindowHandle);
+            _ = SetForegroundWindow(process.MainWindowHandle);
+            _ = SetActiveWindow(process.MainWindowHandle);
+            _ = SetFocus(process.MainWindowHandle);
+        }
+        finally
+        {
+            if (attachedTarget)
+            {
+                _ = AttachThreadInput(currentThread, targetThread, attach: false);
+            }
+
+            if (attachedForeground)
+            {
+                _ = AttachThreadInput(currentThread, foregroundThread, attach: false);
+            }
         }
 
         Thread.Sleep(50);
@@ -621,16 +757,18 @@ internal sealed class WindowsInput
 
     private static void SendVirtualKey(byte virtualKey, bool keyUp)
     {
+        var scanCode = (byte)MapVirtualKey(virtualKey, MapVkToVsc);
+        keybd_event(virtualKey, scanCode, keyUp ? KeyEventKeyUp : 0, UIntPtr.Zero);
+
         var sent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp) });
         if (sent == 1)
         {
             return;
         }
 
-        var scanCode = MapVirtualKey(virtualKey, MapVkToVsc);
         if (scanCode != 0)
         {
-            sent = SendInputs(new[] { Input.ForScanCode((ushort)scanCode, keyUp) });
+            sent = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp) });
         }
 
         if (sent == 1)
@@ -664,26 +802,15 @@ internal sealed class WindowsInput
 
     private static bool SendMouseClick(int x, int y, MouseButton button)
     {
-        var width = Math.Max(GetSystemMetrics(SmCxScreen) - 1, 1);
-        var height = Math.Max(GetSystemMetrics(SmCyScreen) - 1, 1);
-        var absoluteX = (int)Math.Round(x * 65535.0 / width);
-        var absoluteY = (int)Math.Round(y * 65535.0 / height);
         var down = button == MouseButton.Left ? MouseEventLeftDown : MouseEventRightDown;
         var up = button == MouseButton.Left ? MouseEventLeftUp : MouseEventRightUp;
-        if (SendInputs(new[] { Input.ForMouse(absoluteX, absoluteY, MouseEventMove | MouseEventAbsolute) }) != 1)
-        {
-            return false;
-        }
-
-        if (SendInputs(new[] { Input.ForMouse(0, 0, down) }) != 1)
-        {
-            return false;
-        }
-
-        Thread.Sleep(InputHoldMilliseconds);
-        var sentUp = SendInputs(new[] { Input.ForMouse(0, 0, up) }) == 1;
+        SetCursorPos(x, y);
         Thread.Sleep(InputGapMilliseconds);
-        return sentUp;
+        mouse_event(down, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(InputHoldMilliseconds);
+        mouse_event(up, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(InputGapMilliseconds);
+        return true;
     }
 
     private static void SendLegacyMouseClick(int x, int y, MouseButton button)
@@ -782,6 +909,21 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetActiveWindow(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetFocus(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
@@ -1053,3 +1195,25 @@ internal sealed record ScreenRegionStats(
     double RedRatio,
     double BlueRatio,
     int Samples);
+
+internal sealed record InputRect(int Left, int Top, int Right, int Bottom)
+{
+    public int Width => Right - Left;
+    public int Height => Bottom - Top;
+}
+
+internal sealed record InputDiagnostics(
+    bool ProcessFound,
+    int? ProcessId,
+    string? ProcessName,
+    int? SessionId,
+    bool UserInteractive,
+    bool HasMainWindow,
+    string? MainWindowTitle,
+    bool IsForeground,
+    int? ForegroundProcessId,
+    string? ForegroundProcessName,
+    int ScreenWidth,
+    int ScreenHeight,
+    InputRect? WindowRect,
+    InputRect? ClientRect);

@@ -41,6 +41,7 @@ public sealed class VmOperations
             userName = Environment.UserName,
             battleNetRunning,
             d2rRunning,
+            d2rInput = d2rRunning ? TryGetD2RInputDiagnostics() : null,
             d2rActivityState = activity.State.ToString(),
             characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
             lastLobbyOrGameInteractionUtc = activity.LastLobbyOrGameInteractionUtc,
@@ -314,7 +315,7 @@ public sealed class VmOperations
         if (!lobbyReady)
         {
             return CommandResult.Failure(
-                $"Clicked Lobby, but the lobby tabs were not detected within {Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1)}s.",
+                $"Clicked Lobby, but the lobby tabs were not detected within {Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1)}s.{FormatInputDiagnosticsSuffix()}",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -667,6 +668,29 @@ public sealed class VmOperations
         MouseButton button = MouseButton.Left)
     {
         input.Click(point, button);
+    }
+
+    private InputDiagnostics? TryGetD2RInputDiagnostics()
+    {
+        try
+        {
+            return new WindowsInput().GetInputDiagnostics(GetD2RProcessNames());
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private string FormatInputDiagnosticsSuffix()
+    {
+        var diagnostics = TryGetD2RInputDiagnostics();
+        if (diagnostics is null)
+        {
+            return "";
+        }
+
+        return $" Input diagnostics: userInteractive={diagnostics.UserInteractive}, d2rSession={diagnostics.SessionId?.ToString() ?? "?"}, hasWindow={diagnostics.HasMainWindow}, foreground={diagnostics.IsForeground}, foregroundProcess={diagnostics.ForegroundProcessName ?? "?"}, screen={diagnostics.ScreenWidth}x{diagnostics.ScreenHeight}.";
     }
 
     private async Task<bool> ClickLobbyUntilReadyAsync(

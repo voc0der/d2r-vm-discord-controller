@@ -1192,13 +1192,7 @@ public sealed class DiscordBot
             return true;
         }
 
-        if (!TryGetString(root, "d2rActivityState", out var activityState))
-        {
-            return true;
-        }
-
-        return !string.Equals(activityState, "CharacterScreenIdle", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(activityState, "LobbyOrGame", StringComparison.OrdinalIgnoreCase);
+        return false;
     }
 
     private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)
@@ -1225,6 +1219,14 @@ public sealed class DiscordBot
         }
 
         return false;
+    }
+
+    private static bool TryGetInt(JsonElement root, string propertyName, out int value)
+    {
+        value = 0;
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt32(out value);
     }
 
     private static string FormatReadyFirstSuffix(int readyFirstCount)
@@ -1350,8 +1352,11 @@ public sealed class DiscordBot
         var activity = TryReadStatusString(agent.LastStatusJson, "d2rActivityState", out var activityState)
             ? $", state {activityState}"
             : "";
+        var input = TryReadD2RInputSummary(agent.LastStatusJson, out var inputSummary)
+            ? $", input {inputSummary}"
+            : "";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online, Battle.net {battleNet}, D2R {d2r}{activity}, seen {lastSeen}";
+        return $"{name}: online, Battle.net {battleNet}, D2R {d2r}{activity}{input}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)
@@ -1386,6 +1391,48 @@ public sealed class DiscordBot
         {
             using var document = JsonDocument.Parse(json);
             return TryGetString(document.RootElement, propertyName, out value);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadD2RInputSummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("d2rInput", out var input)
+                || input.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return false;
+            }
+
+            var interactive = TryGetBoolean(input, "userInteractive", out var isInteractive)
+                ? isInteractive.ToString().ToLowerInvariant()
+                : "?";
+            var window = TryGetBoolean(input, "hasMainWindow", out var hasWindow)
+                ? hasWindow.ToString().ToLowerInvariant()
+                : "?";
+            var foreground = TryGetBoolean(input, "isForeground", out var isForeground)
+                ? isForeground.ToString().ToLowerInvariant()
+                : "?";
+            var foregroundProcess = TryGetString(input, "foregroundProcessName", out var foregroundName)
+                ? foregroundName
+                : "?";
+            var session = TryGetInt(input, "sessionId", out var sessionId)
+                ? sessionId.ToString()
+                : "?";
+
+            value = $"interactive={interactive}, session={session}, window={window}, foreground={foreground}, fg={foregroundProcess}";
+            return true;
         }
         catch (JsonException)
         {
