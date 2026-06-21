@@ -496,15 +496,29 @@ public sealed class VmOperations
     private WindowsInput FocusD2R()
     {
         var processNames = GetD2RProcessNames();
-        var input = new WindowsInput(processNames);
-        if (!input.TryFocusProcess(processNames)
-            && !input.TryClickProcessWindowCenter(processNames))
+        if (!IsD2RRunning())
         {
-            throw new InvalidOperationException(
-                $"Process is running, but no focusable window was found: {FormatProcessNames(processNames)}");
+            throw new InvalidOperationException($"Process is not running: {FormatProcessNames(processNames)}");
         }
 
+        var input = new WindowsInput(processNames);
+        _ = TryPrepareD2RForInput(input);
+
         return input;
+    }
+
+    private bool TryPrepareD2RForInput(WindowsInput input)
+    {
+        try
+        {
+            var processNames = GetD2RProcessNames();
+            return input.TryFocusProcess(processNames)
+                || input.TryClickProcessWindowCenter(processNames);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     private async Task DelayCharacterScreenSettleAsync(CancellationToken cancellationToken)
@@ -574,11 +588,7 @@ public sealed class VmOperations
     {
         try
         {
-            var processNames = GetD2RProcessNames();
-            if (!input.TryFocusProcess(processNames))
-            {
-                _ = input.TryClickProcessWindowCenter(processNames);
-            }
+            _ = TryPrepareD2RForInput(input);
         }
         catch (InvalidOperationException)
         {
@@ -595,7 +605,7 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(GetD2RProcessNames());
+            _ = TryPrepareD2RForInput(input);
 
             if (IsAnyLobbyTabReady(input))
             {
@@ -622,7 +632,7 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(GetD2RProcessNames());
+            _ = TryPrepareD2RForInput(input);
 
             if (IsLobbyTabReady(input, tab))
             {
@@ -652,7 +662,7 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(GetD2RProcessNames());
+            _ = TryPrepareD2RForInput(input);
 
             if (IsGameEntryErrorDialogOpen(input))
             {
@@ -754,7 +764,7 @@ public sealed class VmOperations
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            input.FocusProcess(GetD2RProcessNames());
+            _ = TryPrepareD2RForInput(input);
             input.LeftClick(_config.Ui.GameEntryErrorDialogOkButton);
             await DelayLongAsync(cancellationToken);
 
@@ -777,7 +787,7 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(GetD2RProcessNames());
+            _ = TryPrepareD2RForInput(input);
             if (!IsConnectionInterruptedScreen(input) && IsLobbyTabReady(input, activeTab))
             {
                 return true;
@@ -934,14 +944,25 @@ public sealed class VmOperations
             || IsLobbyTabReady(input, _config.Ui.JoinGameTab);
     }
 
-    private static bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab)
+    private bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab)
     {
         var stats = input.SampleRegion(tab, widthRatio: 0.10, heightRatio: 0.045);
         return stats.AverageLuminance > 28
             && stats.AverageLuminance < 90
             && stats.GreyRatio > 0.25
             && stats.DarkRatio > 0.20
-            && stats.DarkRatio < 0.80;
+            && stats.DarkRatio < 0.80
+            && IsLobbyEntryButtonReady(input);
+    }
+
+    private bool IsLobbyEntryButtonReady(WindowsInput input)
+    {
+        var stats = input.SampleRegion(_config.Ui.CreateGameButton, widthRatio: 0.16, heightRatio: 0.055);
+        return stats.AverageLuminance > 30
+            && stats.AverageLuminance < 90
+            && stats.GreyRatio > 0.30
+            && stats.DarkRatio > 0.25
+            && stats.DarkRatio < 0.70;
     }
 
     private static bool IsCharacterButtonRegion(ScreenRegionStats stats)
@@ -1011,7 +1032,7 @@ public sealed class VmOperations
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(GetD2RProcessNames());
+            _ = TryPrepareD2RForInput(input);
 
             if (IsConnectionInterruptedScreen(input))
             {
@@ -1043,7 +1064,7 @@ public sealed class VmOperations
             return GameEntryWaitResult.EnteredGame;
         }
 
-        input.FocusProcess(GetD2RProcessNames());
+        _ = TryPrepareD2RForInput(input);
         await DelayStepAsync(cancellationToken);
         input.PressLegacyGraphicsToggle();
         await DelayStepAsync(cancellationToken);

@@ -514,13 +514,20 @@ public sealed class DiscordBot
         int staggerSeconds,
         object args)
     {
+        if (!ShouldRunReadyFirst(entry.Value))
+        {
+            return new ReadyResult(entry.Key, true, "Already menu-ready.", RanReady: false);
+        }
+
         await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
         try
         {
-            var readyResult = await SendReadyIfNotMenuReadyAsync(entry.Value, args);
-            return readyResult is null
-                ? new ReadyResult(entry.Key, true, "Already menu-ready.", RanReady: false)
-                : new ReadyResult(entry.Key, readyResult.Ok, readyResult.Message, RanReady: true);
+            var readyResult = await _registry.SendCommandAsync(
+                entry.Value.AgentId,
+                "menu_ready",
+                args,
+                TimeSpan.FromSeconds(240));
+            return new ReadyResult(entry.Key, readyResult.Ok, readyResult.Message, RanReady: true);
         }
         catch (Exception ex)
         {
@@ -761,7 +768,13 @@ public sealed class DiscordBot
             return true;
         }
 
-        return false;
+        if (!TryGetString(root, "d2rActivityState", out var activityState))
+        {
+            return true;
+        }
+
+        return !string.Equals(activityState, "CharacterScreenIdle", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(activityState, "LobbyOrGame", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)
