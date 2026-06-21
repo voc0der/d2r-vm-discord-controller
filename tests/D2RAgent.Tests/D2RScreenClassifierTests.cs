@@ -61,6 +61,32 @@ public sealed class D2RScreenClassifierTests
             characterMenuReady: false));
     }
 
+    [Fact]
+    public void OnlineCharacterListRejectsEmptyOfflinePanel()
+    {
+        var offlinePanel = Stats(
+            averageLuminance: 22,
+            luminanceStdDev: 9,
+            greyRatio: 0.05,
+            darkRatio: 0.95);
+
+        Assert.False(D2RScreenClassifier.IsOnlineCharacterListRegion(offlinePanel));
+        Assert.True(D2RScreenClassifier.IsOfflineCharacterPanelRegion(offlinePanel));
+    }
+
+    [Fact]
+    public void OnlineCharacterListAcceptsPopulatedCharacterPanel()
+    {
+        var onlinePanel = Stats(
+            averageLuminance: 38,
+            luminanceStdDev: 30,
+            greyRatio: 0.40,
+            darkRatio: 0.57);
+
+        Assert.True(D2RScreenClassifier.IsOnlineCharacterListRegion(onlinePanel));
+        Assert.False(D2RScreenClassifier.IsOfflineCharacterPanelRegion(onlinePanel));
+    }
+
     private static ScreenRegionStats Stats(
         double averageLuminance,
         double luminanceStdDev = 0,

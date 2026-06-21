@@ -377,7 +377,7 @@ internal sealed class WindowsInput
 
     public void PressStartupSkipKey()
     {
-        PressKeyThroughAllNativePaths(VkG);
+        Key(VkG);
     }
 
     public void SelectAll()
@@ -770,31 +770,6 @@ internal sealed class WindowsInput
         {
             Key(virtualKey);
         }
-    }
-
-    private static void PressKeyThroughAllNativePaths(byte virtualKey)
-    {
-        var scanCode = (ushort)MapVirtualKey(virtualKey, MapVkToVsc);
-        var scanCodeByte = (byte)Math.Min(scanCode, byte.MaxValue);
-
-        keybd_event(virtualKey, scanCodeByte, 0, UIntPtr.Zero);
-        Thread.Sleep(InputHoldMilliseconds);
-        keybd_event(virtualKey, scanCodeByte, KeyEventKeyUp, UIntPtr.Zero);
-        Thread.Sleep(InputGapMilliseconds);
-
-        if (scanCode != 0)
-        {
-            var extendedKey = IsExtendedVirtualKey(virtualKey);
-            _ = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: false, extendedKey) });
-            Thread.Sleep(InputHoldMilliseconds);
-            _ = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: true, extendedKey) });
-            Thread.Sleep(InputGapMilliseconds);
-        }
-
-        _ = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp: false) });
-        Thread.Sleep(InputHoldMilliseconds);
-        _ = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp: true) });
-        Thread.Sleep(InputGapMilliseconds);
     }
 
     private static void KeyDown(byte virtualKey)

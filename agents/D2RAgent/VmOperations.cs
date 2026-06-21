@@ -291,6 +291,13 @@ public sealed class VmOperations
         }
 
         await DelayCharacterScreenSettleAsync(cancellationToken);
+        if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
+        {
+            return CommandResult.Failure(
+                $"D2R reached the offline character screen, but clicking Online did not reveal the online character list within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.{FormatInputDiagnosticsSuffix()}",
+                await GetStatusAsync(cancellationToken));
+        }
+
         MarkCharacterScreenIdle("Ready flow completed.");
         return CommandResult.Success("D2R ready flow completed.", await GetStatusAsync(cancellationToken));
     }
@@ -472,6 +479,17 @@ public sealed class VmOperations
                 await GetStatusAsync(cancellationToken));
         }
 
+        if (IsCharacterScreenOffline(input))
+        {
+            var online = await EnsureOnlineCharacterScreenAsync(input, cancellationToken);
+            if (!online)
+            {
+                return CommandResult.Failure(
+                    $"D2R is at the offline character screen, and the Online tab did not reconnect within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.{FormatInputDiagnosticsSuffix()}",
+                    await GetStatusAsync(cancellationToken));
+            }
+        }
+
         if (IsCharacterScreenReady(input))
         {
             return null;
@@ -583,6 +601,44 @@ public sealed class VmOperations
         await Task.Delay(TimeSpan.FromSeconds(settleSeconds), cancellationToken);
     }
 
+    private async Task<bool> EnsureOnlineCharacterScreenAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        if (!IsCharacterScreenOffline(input))
+        {
+            return true;
+        }
+
+        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = TryPrepareD2RForInput(input);
+
+            if (IsCharacterScreenReady(input))
+            {
+                return true;
+            }
+
+            if (IsCharacterScreenOffline(input))
+            {
+                ClickD2R(input, _config.Ui.CharacterOnlineTab);
+            }
+
+            var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
+            if (remainingMs == 0)
+            {
+                break;
+            }
+
+            await Task.Delay((int)Math.Min(Math.Max(_config.Ui.LobbyLoadSeconds, 1) * 1000, remainingMs), cancellationToken);
+        }
+
+        return IsCharacterScreenReady(input);
+    }
+
     private async Task<ReadyWaitResult> PumpStartupSkipInputsUntilCharacterScreenAsync(
         WindowsInput input,
         CancellationToken cancellationToken)
@@ -601,12 +657,12 @@ public sealed class VmOperations
             cancellationToken.ThrowIfCancellationRequested();
             var state = DetectReadyScreenState(input);
             lastState = state;
-            if (state == ReadyScreenState.CharacterScreen)
+            if (state is ReadyScreenState.CharacterScreen or ReadyScreenState.OfflineCharacterScreen)
             {
                 return new ReadyWaitResult(true, nudges, lastState);
             }
 
-            SendReadySkipKey(input, primeInput: nudges % 10 == 0);
+            SendReadySkipKey(input);
             nudges++;
             if (DateTimeOffset.UtcNow >= blindSuccessAt && IsD2RRunning())
             {
@@ -625,22 +681,16 @@ public sealed class VmOperations
         return new ReadyWaitResult(false, nudges, lastState);
     }
 
-    private void SendReadySkipKey(WindowsInput input, bool primeInput)
+    private void SendReadySkipKey(WindowsInput input)
     {
         if (!IsD2RRunning())
         {
             return;
         }
 
-        if (primeInput)
-        {
-            _ = TryPrepareD2RForInput(input);
-        }
-
+        _ = TryPrepareD2RForInput(input);
         ClickD2R(input, _config.Ui.IntroSkipPoint);
         input.PressStartupSkipKey();
-        _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
-        _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -660,13 +710,13 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
-        var processNames = GetD2RProcessNames();
-        input.Click(point, button, processNames);
-
         if (button == MouseButton.Left)
         {
-            _ = input.SendWindowClick(point, processNames, button);
+            input.LeftClick(point);
+            return;
         }
+
+        input.RightClick(point);
     }
 
     private InputDiagnostics? TryGetD2RInputDiagnostics()
@@ -785,6 +835,24 @@ public sealed class VmOperations
                 }
             }
 
+            if (IsCharacterScreenOffline(input))
+            {
+                if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
+                    || !await ClickLobbyUntilReadyAsync(input, cancellationToken)
+                    || !await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the menu form could not be restored after clicking Online.");
+                }
+            }
+            else if (IsCharacterScreenReady(input))
+            {
+                if (!await ClickLobbyUntilReadyAsync(input, cancellationToken)
+                    || !await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the menu form could not be restored.");
+                }
+            }
+
             if (DateTimeOffset.UtcNow >= deadline)
             {
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(dialogRetries, connectionRetries));
@@ -808,6 +876,23 @@ public sealed class VmOperations
                     || !await restoreFormAsync())
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu form could not be restored.");
+                }
+            }
+            else if (waitResult == GameEntryWaitResult.OfflineCharacterScreen)
+            {
+                if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
+                    || !await ClickLobbyUntilReadyAsync(input, cancellationToken)
+                    || !await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the menu form could not be restored after clicking Online.");
+                }
+            }
+            else if (waitResult == GameEntryWaitResult.ReturnedToCharacterScreen)
+            {
+                if (!await ClickLobbyUntilReadyAsync(input, cancellationToken)
+                    || !await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the menu form could not be restored.");
                 }
             }
             else if (waitResult == GameEntryWaitResult.ReturnedToMenu
@@ -934,6 +1019,8 @@ public sealed class VmOperations
         {
             GameEntryWaitResult.ConnectionInterrupted => "Connection interrupted was detected.",
             GameEntryWaitResult.ReturnedToMenu => "The client returned to the menu instead of entering the game.",
+            GameEntryWaitResult.ReturnedToCharacterScreen => "The client returned to character select instead of entering the game.",
+            GameEntryWaitResult.OfflineCharacterScreen => "The client returned to the offline character screen instead of entering the game.",
             GameEntryWaitResult.TimedOut => "No in-game HUD/globe state, lobby return, or connection-interrupted state was detected.",
             _ => "The game-entry result was inconclusive."
         };
@@ -944,11 +1031,22 @@ public sealed class VmOperations
         return DetectReadyScreenState(input) == ReadyScreenState.CharacterScreen;
     }
 
+    private bool IsCharacterScreenOffline(WindowsInput input)
+    {
+        return IsCharacterScreenOffline(input, windowRelative: false)
+            || IsCharacterScreenOffline(input, windowRelative: true);
+    }
+
     private ReadyScreenState DetectReadyScreenState(WindowsInput input)
     {
         if (IsDiabloSplashScreen(input))
         {
             return ReadyScreenState.DiabloSplash;
+        }
+
+        if (IsCharacterScreenOffline(input))
+        {
+            return ReadyScreenState.OfflineCharacterScreen;
         }
 
         return IsCharacterButtonPairReady(input, windowRelative: false)
@@ -964,7 +1062,8 @@ public sealed class VmOperations
         var play = SampleD2RRegion(input, _config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative);
         var lobby = SampleD2RRegion(input, _config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative);
         return D2RScreenClassifier.IsCharacterButtonRegion(play)
-            && D2RScreenClassifier.IsCharacterButtonRegion(lobby);
+            && D2RScreenClassifier.IsCharacterButtonRegion(lobby)
+            && IsOnlineCharacterListReady(input, windowRelative);
     }
 
     private bool IsCharacterMenuReady(WindowsInput input, bool windowRelative)
@@ -973,6 +1072,23 @@ public sealed class VmOperations
         var options = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.405), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative);
         var cinematics = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.460), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative);
         return D2RScreenClassifier.IsCharacterMenuReady(logo, options, cinematics);
+    }
+
+    private bool IsCharacterScreenOffline(WindowsInput input, bool windowRelative)
+    {
+        if (!IsCharacterMenuReady(input, windowRelative))
+        {
+            return false;
+        }
+
+        var emptyCharacterPanel = SampleD2RRegion(input, new AgentCommon.UiPoint(0.895, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: windowRelative);
+        return D2RScreenClassifier.IsOfflineCharacterPanelRegion(emptyCharacterPanel);
+    }
+
+    private bool IsOnlineCharacterListReady(WindowsInput input, bool windowRelative)
+    {
+        var characterList = SampleD2RRegion(input, new AgentCommon.UiPoint(0.890, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: windowRelative);
+        return D2RScreenClassifier.IsOnlineCharacterListRegion(characterList);
     }
 
     private string FormatCharacterScreenReadyFailure(ReadyWaitResult result)
@@ -1203,6 +1319,14 @@ public sealed class VmOperations
             {
                 sawConnectionInterrupted = true;
             }
+            else if (IsCharacterScreenOffline(input))
+            {
+                return GameEntryWaitResult.OfflineCharacterScreen;
+            }
+            else if (returnTab is not null && IsCharacterScreenReady(input))
+            {
+                return GameEntryWaitResult.ReturnedToCharacterScreen;
+            }
             else if (returnTab is not null && IsLobbyTabReady(input, returnTab))
             {
                 return sawConnectionInterrupted
@@ -1227,6 +1351,16 @@ public sealed class VmOperations
         if (returnTab is not null && IsLobbyTabReady(input, returnTab))
         {
             return GameEntryWaitResult.ReturnedToMenu;
+        }
+
+        if (IsCharacterScreenOffline(input))
+        {
+            return GameEntryWaitResult.OfflineCharacterScreen;
+        }
+
+        if (returnTab is not null && IsCharacterScreenReady(input))
+        {
+            return GameEntryWaitResult.ReturnedToCharacterScreen;
         }
 
         return GameEntryWaitResult.TimedOut;
@@ -1732,6 +1866,7 @@ public sealed class VmOperations
     {
         Unknown,
         DiabloSplash,
+        OfflineCharacterScreen,
         CharacterScreen
     }
 
@@ -1740,6 +1875,8 @@ public sealed class VmOperations
         EnteredGame,
         ConnectionInterrupted,
         ReturnedToMenu,
+        ReturnedToCharacterScreen,
+        OfflineCharacterScreen,
         TimedOut
     }
 

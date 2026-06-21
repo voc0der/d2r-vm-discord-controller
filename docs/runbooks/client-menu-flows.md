@@ -4,9 +4,29 @@
 
 The VM agent should get each VM to a useful operator state: Battle.net running, D2R running, current screenshot available, remote link available, and current game details easy to retrieve from Discord.
 
-The VM agent automates these flows with coordinate-based input. The captured screenshots are organized here so the UI path is documented and easy to retune if resolution or UI state changes.
+The VM agent automates these flows with coordinate-based input and small visual anchors. The captured screenshots are organized here so the UI path is documented and easy to retune if resolution or UI state changes.
 
-The current baseline resolution is **1366x768**. New captures live under `assets/d2r-ui/1366x768/`; use those first when tuning detector regions or coordinate points. Older captures remain in `assets/d2r-ui/` as historical references. BattleTag suffix numbers visible in the friend context menu captures have been redacted in the checked-in 1366x768 copies.
+The current baseline resolution is **1366x768**. New captures live under `assets/d2r-ui/1366x768/`; use those first when tuning detector regions or coordinate points. Small anchor crops live under `assets/d2r-ui/1366x768/snippets/`; prefer those over whole-scene reasoning when adding detectors. Older captures remain in `assets/d2r-ui/` as historical references. BattleTag suffix numbers visible in the friend context menu captures have been redacted in the checked-in 1366x768 copies.
+
+## Visual Anchors
+
+The automation should not depend on whole-scene matching. Treat each state as a set of small anchors near expected proportional regions, then use fallback regions when the first probe is inconclusive.
+
+Current snippet anchors:
+
+- ![Lobby text snippet](assets/d2r-ui/1366x768/snippets/character_lobby_button_text.png) character Lobby button text
+- ![Play text snippet](assets/d2r-ui/1366x768/snippets/character_play_button_text.png) character Play button text
+- ![Online tab snippet](assets/d2r-ui/1366x768/snippets/character_online_tab_text.png) Online tab text
+- ![Offline tab snippet](assets/d2r-ui/1366x768/snippets/character_offline_tab_text.png) Offline tab text
+- ![Offline empty panel snippet](assets/d2r-ui/1366x768/snippets/character_offline_empty_panel.png) empty offline character panel
+- ![Join Game tab snippet](assets/d2r-ui/1366x768/snippets/lobby_join_game_tab_text.png) Join Game tab text
+- ![Create Game tab snippet](assets/d2r-ui/1366x768/snippets/lobby_create_game_tab_text.png) Create Game tab text
+- ![Join Game button snippet](assets/d2r-ui/1366x768/snippets/join_game_button_text.png) final Join Game button text
+- ![Create Game button snippet](assets/d2r-ui/1366x768/snippets/create_game_button_text.png) final Create Game button text
+- ![Health globe snippet](assets/d2r-ui/1366x768/snippets/modern_health_globe.png) modern health globe
+- ![Mana globe snippet](assets/d2r-ui/1366x768/snippets/modern_mana_globe.png) modern mana globe
+
+Runtime detectors currently use lightweight stats over these same anchor regions rather than full image-template matching. The next detector hardening step should load these snippets directly and match them in a small search box around the configured proportional coordinates.
 
 ## Discord Helpers
 
@@ -124,6 +144,8 @@ References:
 
 ![Character screen not selected](assets/d2r-ui/1366x768/char_screen_not_selected.png)
 
+![Character screen but offline](assets/d2r-ui/1366x768/character_screen_but_offline.png)
+
 Older references:
 
 ![First intro video](assets/d2r-ui/first_intro_video.jpg)
@@ -147,7 +169,7 @@ Older references:
 Expected state:
 
 - D2R has finished intro videos.
-- Online mode is selected.
+- Online mode is selected. If D2R lands on the offline character screen, click the Online tab until the online character list appears.
 - Character list is visible.
 - Play and Lobby buttons are visible.
 
@@ -163,9 +185,11 @@ Automation:
 /d2r ready hc1
 ```
 
-The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, re-sending the launch command at `battleNetExecRetryDelaySeconds` and clicking Battle.net Play when the blue button is detected. After D2R exists, it best-effort focuses D2R every tenth burst, then clicks `ui.introSkipPoint`, default center, and sends `G` through the native Windows key paths that have behaved differently with D2R: `keybd_event`, scan-code `SendInput`, and virtual-key `SendInput`. It also posts a `G` key message to the D2R window and posts a center-click/Space/Enter ready burst as a fallback. The loop repeats until character select is visually detected, or after `ui.readyStartupBlindSuccessSeconds`, default 45 seconds, if D2R is still running. The ready loop intentionally does not send Escape because an unrecognized character screen can interpret Escape as menu/exit input.
+The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, re-sending the launch command at `battleNetExecRetryDelaySeconds` and clicking Battle.net Play when the blue button is detected. After D2R exists, each startup burst best-effort focuses D2R, clicks `ui.introSkipPoint`, default center, and sends `G` with visible desktop input. The loop repeats until character select is visually detected, or after `ui.readyStartupBlindSuccessSeconds`, default 45 seconds, if D2R is still running. The ready loop intentionally does not send Escape because an unrecognized character screen can interpret Escape as menu/exit input.
 
-D2R menu flows send D2R-client-relative Win32 mouse input and also post left-click messages to the D2R window. Character screen and lobby readiness checks sample both full-screen coordinates and D2R-window-relative coordinates as fuzzy state hints, not as hard blockers before clicking. Lobby tab detection is guarded by character-screen anchors so Act/title backgrounds do not masquerade as lobby.
+D2R menu flows use the old working visible desktop input path first: full-screen proportional coordinates, `SetCursorPos`, `mouse_event`, and `keybd_event`. Character screen and lobby readiness checks sample both full-screen coordinates and D2R-window-relative coordinates as fuzzy state hints, not as hard blockers before clicking. Lobby tab detection is guarded by character-screen anchors so Act/title backgrounds do not masquerade as lobby.
+
+The offline character screen is handled as its own state. The detector looks for the left character menu plus an empty/dark character panel, then clicks `ui.characterOnlineTab`, default `(0.850, 0.049)`, until the online character list appears. If create/join returns to the offline character screen instead of entering the game, the agent clicks Online, reopens Lobby, restores the form, and retries.
 
 If a character-screen menu command is sent while D2R is running but still on an intro/title/loading state, the VM agent runs the same startup skip loop before clicking Play or Lobby. If `/d2r ready` just marked the client `CharacterScreenIdle`, later menu commands trust that state instead of spending another full startup-skip timeout on the same visual check. If the client is already in a game, character-screen menu automation fails clearly and expects `/d2r save-exit` first.
 

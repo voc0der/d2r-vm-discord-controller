@@ -19,6 +19,20 @@ internal static class D2RScreenClassifier
             && IsCharacterMenuButtonRegion(cinematics);
     }
 
+    public static bool IsOnlineCharacterListRegion(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 30
+            && stats.GreyRatio > 0.20
+            && stats.DarkRatio < 0.80;
+    }
+
+    public static bool IsOfflineCharacterPanelRegion(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance < 32
+            && stats.DarkRatio > 0.82
+            && stats.GreyRatio < 0.18;
+    }
+
     public static bool IsLobbyTabReady(
         ScreenRegionStats tab,
         bool characterButtonPairReady,
