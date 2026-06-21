@@ -546,26 +546,7 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                if (!input.TryFocusProcess(_config.D2RProcessName))
-                {
-                    _ = input.TryClickProcessWindowCenter(_config.D2RProcessName);
-                    await DelayReadyNudgeAsync(cancellationToken);
-                    continue;
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                if (DateTimeOffset.UtcNow >= deadline)
-                {
-                    return false;
-                }
-
-                await DelayReadyNudgeAsync(cancellationToken);
-                continue;
-            }
-
+            _ = TryPrepareD2RWindowForReadyInput(input);
             var state = DetectReadyScreenState(input);
 
             if (state == ReadyScreenState.CharacterScreen)
@@ -580,6 +561,23 @@ public sealed class VmOperations
 
             await NudgeReadyScreenAsync(input, state, cancellationToken);
             await DelayReadyNudgeAsync(cancellationToken);
+        }
+    }
+
+    private bool TryPrepareD2RWindowForReadyInput(WindowsInput input)
+    {
+        try
+        {
+            if (input.TryFocusProcess(_config.D2RProcessName))
+            {
+                return true;
+            }
+
+            return input.TryClickProcessWindowCenter(_config.D2RProcessName);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
         }
     }
 
