@@ -303,6 +303,12 @@ public sealed class VmOperations
             return CommandResult.Success("Lobby was already open.", await GetStatusAsync(cancellationToken));
         }
 
+        var menuReady = await EnsureCharacterScreenReadyForMenuAsync(input, cancellationToken);
+        if (menuReady is not null)
+        {
+            return menuReady;
+        }
+
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
         var lobbyReady = await ClickLobbyUntilReadyAsync(input, cancellationToken);
         if (!lobbyReady)
@@ -319,9 +325,22 @@ public sealed class VmOperations
     private async Task<CommandResult> PlayCharacterAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
         var input = FocusD2R();
+        var menuReady = await EnsureCharacterScreenReadyForMenuAsync(input, cancellationToken);
+        if (menuReady is not null)
+        {
+            return menuReady;
+        }
+
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
         ClickD2R(input, _config.Ui.CharacterPlayButton);
-        await WaitForGameEntryAsync(input, cancellationToken);
+        var entry = await WaitForGameEntryAsync(input, cancellationToken);
+        if (entry != GameEntryWaitResult.EnteredGame)
+        {
+            return CommandResult.Failure(
+                $"Clicked Play, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {FormatGameEntryWaitFailure(entry)}",
+                await GetStatusAsync(cancellationToken));
+        }
+
         MarkLobbyOrGameInteraction("Clicked Play.");
         return CommandResult.Success("Play character command completed.", await GetStatusAsync(cancellationToken));
     }
@@ -426,8 +445,22 @@ public sealed class VmOperations
         await DelayLongAsync(cancellationToken);
         ClickD2R(input, GetFriendRowPoint(args.FriendRow), MouseButton.Right);
         await DelayStepAsync(cancellationToken);
+        if (!IsFriendJoinGameOptionReady(input))
+        {
+            return CommandResult.Failure(
+                "Friend context menu opened, but Join Game was not detected for that row.",
+                await GetStatusAsync(cancellationToken));
+        }
+
         ClickD2R(input, _config.Ui.FriendContextJoinGame);
-        await WaitForGameEntryAsync(input, cancellationToken);
+        var entry = await WaitForGameEntryAsync(input, cancellationToken);
+        if (entry != GameEntryWaitResult.EnteredGame)
+        {
+            return CommandResult.Failure(
+                $"Clicked friend Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {FormatGameEntryWaitFailure(entry)}",
+                await GetStatusAsync(cancellationToken));
+        }
+
         MarkLobbyOrGameInteraction("Joined friend game.");
         return CommandResult.Success("Join friend/follow flow completed.", await GetStatusAsync(cancellationToken));
     }
@@ -441,6 +474,34 @@ public sealed class VmOperations
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)), cancellationToken);
         MarkCharacterScreenIdle("Save and Exit completed.");
         return CommandResult.Success("Save and Exit flow completed.", await GetStatusAsync(cancellationToken));
+    }
+
+    private async Task<CommandResult?> EnsureCharacterScreenReadyForMenuAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        if (IsInGameReady(input))
+        {
+            return CommandResult.Failure(
+                "D2R is already in a game; use /d2r save-exit before character-screen menu automation.",
+                await GetStatusAsync(cancellationToken));
+        }
+
+        if (IsCharacterScreenReady(input))
+        {
+            return null;
+        }
+
+        var ready = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken);
+        if (!ready.Ready)
+        {
+            return CommandResult.Failure(
+                FormatCharacterScreenReadyFailure(ready),
+                await GetStatusAsync(cancellationToken));
+        }
+
+        await DelayCharacterScreenSettleAsync(cancellationToken);
+        return null;
     }
 
     private CommandResult KillD2R()
@@ -564,16 +625,20 @@ public sealed class VmOperations
             await Task.Delay((int)Math.Min(intervalMs, remainingMs), cancellationToken);
         }
 
-        return IsD2RRunning()
-            ? new ReadyWaitResult(true, nudges, lastState)
-            : new ReadyWaitResult(false, nudges, lastState);
+        return new ReadyWaitResult(false, nudges, lastState);
     }
 
     private void SendReadySkipKey(WindowsInput input)
     {
+        if (!IsD2RRunning())
+        {
+            return;
+        }
+
         _ = TryPrepareD2RForInput(input);
-        _ = TryClickD2RWindowCenter(input);
+        ClickD2R(input, _config.Ui.IntroSkipPoint);
         input.PressReadySkipKey();
+        _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -670,6 +735,12 @@ public sealed class VmOperations
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
 
+            if (IsInGameReady(input))
+            {
+                await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
+                return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
+            }
+
             if (IsGameEntryErrorDialogOpen(input))
             {
                 dialogRetries++;
@@ -696,6 +767,11 @@ public sealed class VmOperations
                 if (waitResult == GameEntryWaitResult.EnteredGame)
                 {
                     return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
+                }
+
+                if (waitResult == GameEntryWaitResult.TimedOut)
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatGameEntryWaitFailure(waitResult));
                 }
 
                 connectionRetries++;
@@ -720,6 +796,12 @@ public sealed class VmOperations
                 TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5)),
                 cancellationToken);
 
+            if (IsInGameReady(input))
+            {
+                await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
+                return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
+            }
+
             if (IsGameEntryErrorDialogOpen(input))
             {
                 dialogRetries++;
@@ -746,6 +828,11 @@ public sealed class VmOperations
                 if (waitResult == GameEntryWaitResult.EnteredGame)
                 {
                     return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
+                }
+
+                if (waitResult == GameEntryWaitResult.TimedOut)
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatGameEntryWaitFailure(waitResult));
                 }
 
                 connectionRetries++;
@@ -881,6 +968,17 @@ public sealed class VmOperations
         return $"Recovered from {string.Join(" and ", parts)}, but the menu tab stayed visible.";
     }
 
+    private static string FormatGameEntryWaitFailure(GameEntryWaitResult result)
+    {
+        return result switch
+        {
+            GameEntryWaitResult.ConnectionInterrupted => "Connection interrupted was detected.",
+            GameEntryWaitResult.ReturnedToMenu => "The client returned to the menu instead of entering the game.",
+            GameEntryWaitResult.TimedOut => "No in-game HUD/globe state, lobby return, or connection-interrupted state was detected.",
+            _ => "The game-entry result was inconclusive."
+        };
+    }
+
     private bool IsCharacterScreenReady(WindowsInput input)
     {
         return DetectReadyScreenState(input) == ReadyScreenState.CharacterScreen;
@@ -977,12 +1075,19 @@ public sealed class VmOperations
 
     private bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab, bool windowRelative)
     {
+        if (IsCharacterButtonPairReady(input, windowRelative)
+            || IsCharacterMenuReady(input, windowRelative))
+        {
+            return false;
+        }
+
         var stats = SampleD2RRegion(input, tab, widthRatio: 0.10, heightRatio: 0.045, windowRelative: windowRelative);
         return stats.AverageLuminance > 28
             && stats.AverageLuminance < 90
             && stats.GreyRatio > 0.25
             && stats.DarkRatio > 0.20
             && stats.DarkRatio < 0.80
+            && IsLobbyFormPanelReady(input, windowRelative)
             && IsLobbyEntryButtonReady(input, windowRelative);
     }
 
@@ -1000,6 +1105,63 @@ public sealed class VmOperations
             && stats.GreyRatio > 0.30
             && stats.DarkRatio > 0.25
             && stats.DarkRatio < 0.70;
+    }
+
+    private bool IsLobbyFormPanelReady(WindowsInput input, bool windowRelative)
+    {
+        var stats = SampleD2RRegion(input, new AgentCommon.UiPoint(0.765, 0.365), widthRatio: 0.30, heightRatio: 0.42, windowRelative: windowRelative);
+        return stats.AverageLuminance < 30
+            && stats.GreyRatio < 0.25
+            && stats.DarkRatio > 0.80;
+    }
+
+    private bool IsFriendJoinGameOptionReady(WindowsInput input)
+    {
+        return IsFriendJoinGameOptionReady(input, windowRelative: false)
+            || IsFriendJoinGameOptionReady(input, windowRelative: true);
+    }
+
+    private bool IsFriendJoinGameOptionReady(WindowsInput input, bool windowRelative)
+    {
+        var stats = SampleD2RRegion(input, _config.Ui.FriendContextJoinGame, widthRatio: 0.12, heightRatio: 0.040, windowRelative: windowRelative);
+        return stats.AverageLuminance > 36
+            && stats.GreyRatio > 0.56
+            && stats.DarkRatio < 0.44;
+    }
+
+    private bool IsInGameReady(WindowsInput input)
+    {
+        return IsInGameReady(input, windowRelative: false)
+            || IsInGameReady(input, windowRelative: true);
+    }
+
+    private bool IsInGameReady(WindowsInput input, bool windowRelative)
+    {
+        var hud = SampleD2RRegion(input, _config.Ui.InGameHudBar, widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
+        var modernHealth = SampleD2RRegion(input, _config.Ui.ModernHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var modernMana = SampleD2RRegion(input, _config.Ui.ModernManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        if (IsInGameHudProfile(modernHealth, modernMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        {
+            return true;
+        }
+
+        var legacyHealth = SampleD2RRegion(input, _config.Ui.LegacyHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var legacyMana = SampleD2RRegion(input, _config.Ui.LegacyManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        return IsInGameHudProfile(legacyHealth, legacyMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18);
+    }
+
+    private static bool IsInGameHudProfile(
+        ScreenRegionStats health,
+        ScreenRegionStats mana,
+        ScreenRegionStats hud,
+        double healthRedThreshold,
+        double manaBlueThreshold)
+    {
+        return health.RedRatio > healthRedThreshold
+            && mana.BlueRatio > manaBlueThreshold
+            && hud.AverageLuminance > 35
+            && hud.LuminanceStdDev > 25
+            && hud.DarkRatio < 0.80;
     }
 
     private static bool IsCharacterButtonRegion(ScreenRegionStats stats)
@@ -1069,9 +1231,9 @@ public sealed class VmOperations
         await DelayStepAsync(cancellationToken);
     }
 
-    private async Task WaitForGameEntryAsync(WindowsInput input, CancellationToken cancellationToken)
+    private async Task<GameEntryWaitResult> WaitForGameEntryAsync(WindowsInput input, CancellationToken cancellationToken)
     {
-        _ = await WaitForGameEntryAsync(input, returnTab: null, cancellationToken);
+        return await WaitForGameEntryAsync(input, returnTab: null, cancellationToken);
     }
 
     private async Task<GameEntryWaitResult> WaitForGameEntryAsync(
@@ -1079,9 +1241,14 @@ public sealed class VmOperations
         AgentCommon.UiPoint? returnTab,
         CancellationToken cancellationToken)
     {
-        var delaySeconds = _config.Ui.ToggleLegacyGraphicsAfterEnteringGame
-            ? Math.Max(_config.Ui.LegacyGraphicsToggleDelaySeconds, 1)
-            : Math.Max(_config.Ui.GameLoadSeconds, 1);
+        var delaySeconds = Math.Max(
+            Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1),
+            Math.Max(_config.Ui.GameLoadSeconds, 1));
+        if (_config.Ui.ToggleLegacyGraphicsAfterEnteringGame)
+        {
+            delaySeconds = Math.Max(delaySeconds, Math.Max(_config.Ui.LegacyGraphicsToggleDelaySeconds, 1));
+        }
+
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(delaySeconds);
         var sawConnectionInterrupted = false;
 
@@ -1089,6 +1256,12 @@ public sealed class VmOperations
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
+
+            if (IsInGameReady(input))
+            {
+                await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
+                return GameEntryWaitResult.EnteredGame;
+            }
 
             if (IsConnectionInterruptedScreen(input))
             {
@@ -1115,16 +1288,27 @@ public sealed class VmOperations
             return GameEntryWaitResult.ConnectionInterrupted;
         }
 
+        if (returnTab is not null && IsLobbyTabReady(input, returnTab))
+        {
+            return GameEntryWaitResult.ReturnedToMenu;
+        }
+
+        return GameEntryWaitResult.TimedOut;
+    }
+
+    private async Task ToggleLegacyGraphicsAfterEntryAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
         if (!_config.Ui.ToggleLegacyGraphicsAfterEnteringGame)
         {
-            return GameEntryWaitResult.EnteredGame;
+            return;
         }
 
         _ = TryPrepareD2RForInput(input);
         await DelayStepAsync(cancellationToken);
         input.PressLegacyGraphicsToggle();
         await DelayStepAsync(cancellationToken);
-        return GameEntryWaitResult.EnteredGame;
     }
 
     private AgentCommon.UiPoint GetCharacterSlotPoint(int? characterSlot)
@@ -1619,7 +1803,8 @@ public sealed class VmOperations
     {
         EnteredGame,
         ConnectionInterrupted,
-        ReturnedToMenu
+        ReturnedToMenu,
+        TimedOut
     }
 
     private sealed record GameEntryAttemptResult(

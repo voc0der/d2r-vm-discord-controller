@@ -72,7 +72,7 @@ public sealed class D2RUiAutomationConfig
     public UiPoint CharacterLobbyButton { get; set; } = new(0.585, 0.897);
     public UiPoint LobbyPartyIcon { get; set; } = new(0.096, 0.707);
     public UiPoint FriendRowStart { get; set; } = new(0.180, 0.180);
-    public UiPoint FriendContextJoinGame { get; set; } = new(0.318, 0.354);
+    public UiPoint FriendContextJoinGame { get; set; } = new(0.318, 0.322);
     public UiPoint JoinGameTab { get; set; } = new(0.766, 0.071);
     public UiPoint JoinGameNameField { get; set; } = new(0.697, 0.138);
     public UiPoint JoinPasswordField { get; set; } = new(0.837, 0.138);
@@ -90,6 +90,11 @@ public sealed class D2RUiAutomationConfig
     public UiPoint CreateHellButton { get; set; } = new(0.832, 0.350);
     public UiPoint CreateGameButton { get; set; } = new(0.765, 0.619);
     public UiPoint SaveAndExitButton { get; set; } = new(0.500, 0.439);
+    public UiPoint ModernHealthGlobe { get; set; } = new(0.260, 0.900);
+    public UiPoint ModernManaGlobe { get; set; } = new(0.760, 0.900);
+    public UiPoint LegacyHealthGlobe { get; set; } = new(0.200, 0.900);
+    public UiPoint LegacyManaGlobe { get; set; } = new(0.800, 0.900);
+    public UiPoint InGameHudBar { get; set; } = new(0.500, 0.955);
 }
 
 public sealed class UiPoint

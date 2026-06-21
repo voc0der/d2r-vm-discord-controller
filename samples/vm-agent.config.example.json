@@ -60,7 +60,7 @@
     "characterLobbyButton": { "x": 0.585, "y": 0.897 },
     "lobbyPartyIcon": { "x": 0.096, "y": 0.707 },
     "friendRowStart": { "x": 0.18, "y": 0.18 },
-    "friendContextJoinGame": { "x": 0.318, "y": 0.354 },
+    "friendContextJoinGame": { "x": 0.318, "y": 0.322 },
     "joinGameTab": { "x": 0.766, "y": 0.071 },
     "joinGameNameField": { "x": 0.697, "y": 0.138 },
     "joinPasswordField": { "x": 0.837, "y": 0.138 },
@@ -77,6 +77,11 @@
     "createNightmareButton": { "x": 0.767, "y": 0.35 },
     "createHellButton": { "x": 0.832, "y": 0.35 },
     "createGameButton": { "x": 0.765, "y": 0.619 },
-    "saveAndExitButton": { "x": 0.5, "y": 0.439 }
+    "saveAndExitButton": { "x": 0.5, "y": 0.439 },
+    "modernHealthGlobe": { "x": 0.26, "y": 0.9 },
+    "modernManaGlobe": { "x": 0.76, "y": 0.9 },
+    "legacyHealthGlobe": { "x": 0.2, "y": 0.9 },
+    "legacyManaGlobe": { "x": 0.8, "y": 0.9 },
+    "inGameHudBar": { "x": 0.5, "y": 0.955 }
   }
 }
