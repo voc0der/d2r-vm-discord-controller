@@ -168,6 +168,22 @@ internal sealed class WindowsInput
         Click(point, MouseButton.Right, coordinateProcessNames);
     }
 
+    public bool SendWindowClick(UiPoint point, IEnumerable<string> processNames, MouseButton button)
+    {
+        EnsureWindows();
+
+        var process = FindProcess(processNames);
+        if (process is null || process.MainWindowHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        ShowWindow(process.MainWindowHandle, SwRestore);
+        var (x, y) = ToScreen(point, processNames);
+        SendWindowMouseClick(process.MainWindowHandle, x, y, button);
+        return true;
+    }
+
     public void Click(UiPoint point, MouseButton button)
     {
         Click(point, button, coordinateProcessNames: null);
