@@ -281,8 +281,6 @@ public sealed class VmOperations
                 await GetStatusAsync(cancellationToken));
         }
 
-        _ = TryPrepareD2RWindowForReadyInput(input);
-
         var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
         if (!characterScreenReady)
         {
@@ -538,7 +536,6 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _ = TryPrepareD2RWindowForReadyInput(input);
             var state = DetectReadyScreenState(input);
 
             if (state == ReadyScreenState.CharacterScreen)
@@ -556,33 +553,12 @@ public sealed class VmOperations
         }
     }
 
-    private bool TryPrepareD2RWindowForReadyInput(WindowsInput input)
-    {
-        try
-        {
-            if (input.TryFocusProcess(_config.D2RProcessName))
-            {
-                return true;
-            }
-
-            return input.TryClickProcessWindowCenter(_config.D2RProcessName);
-        }
-        catch (InvalidOperationException)
-        {
-            return false;
-        }
-    }
-
     private async Task NudgeReadyScreenAsync(
         WindowsInput input,
         ReadyScreenState state,
         CancellationToken cancellationToken)
     {
-        if (!input.TryClickProcessWindowCenter(_config.D2RProcessName))
-        {
-            input.LeftClick(_config.Ui.IntroSkipPoint);
-        }
-
+        input.LeftClick(_config.Ui.IntroSkipPoint);
         await DelayStepAsync(cancellationToken);
 
         if (state != ReadyScreenState.DiabloSplash)
@@ -593,10 +569,7 @@ public sealed class VmOperations
 
         input.PressStartKey();
         await DelayStepAsync(cancellationToken);
-        if (!input.TryClickProcessWindowCenter(_config.D2RProcessName))
-        {
-            input.LeftClick(_config.Ui.IntroSkipPoint);
-        }
+        input.LeftClick(_config.Ui.IntroSkipPoint);
     }
 
     private async Task<bool> ClickLobbyUntilReadyAsync(

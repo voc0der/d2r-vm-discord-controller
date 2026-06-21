@@ -385,14 +385,21 @@ internal sealed class WindowsInput
 
     private static void KeyDown(byte virtualKey)
     {
-        EnsureWindows();
-        keybd_event(virtualKey, 0, 0, UIntPtr.Zero);
+        SendVirtualKey(virtualKey, keyUp: false);
     }
 
     private static void KeyUp(byte virtualKey)
     {
-        EnsureWindows();
-        keybd_event(virtualKey, 0, KeyEventKeyUp, UIntPtr.Zero);
+        SendVirtualKey(virtualKey, keyUp: true);
+    }
+
+    private static void SendVirtualKey(byte virtualKey, bool keyUp)
+    {
+        var sent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp) });
+        if (sent != 1)
+        {
+            throw new InvalidOperationException($"SendInput failed for virtual key 0x{virtualKey:X2}. LastError={Marshal.GetLastWin32Error()}");
+        }
     }
 
     private static void SendUnicodeChar(char character)
@@ -403,11 +410,17 @@ internal sealed class WindowsInput
             Input.ForUnicode(character, keyUp: true)
         };
 
-        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
+        var sent = SendInputs(inputs);
         if (sent != inputs.Length)
         {
             throw new InvalidOperationException($"SendInput failed while typing text. LastError={Marshal.GetLastWin32Error()}");
         }
+    }
+
+    private static uint SendInputs(Input[] inputs)
+    {
+        EnsureWindows();
+        return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
     }
 
     private static void EnsureWindows()
@@ -426,9 +439,6 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
-
-    [DllImport("user32.dll")]
-    private static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr windowHandle);
@@ -564,6 +574,22 @@ internal sealed class WindowsInput
                     {
                         Scan = character,
                         Flags = KeyEventUnicode | (keyUp ? KeyEventKeyUp : 0)
+                    }
+                }
+            };
+        }
+
+        public static Input ForVirtualKey(byte virtualKey, bool keyUp)
+        {
+            return new Input
+            {
+                Type = InputKeyboard,
+                Union = new InputUnion
+                {
+                    Keyboard = new KeyboardInput
+                    {
+                        VirtualKey = virtualKey,
+                        Flags = keyUp ? KeyEventKeyUp : 0
                     }
                 }
             };
