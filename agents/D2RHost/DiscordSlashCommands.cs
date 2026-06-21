@@ -59,6 +59,17 @@ public static class DiscordSlashCommands
                         Notes()),
                     Sub("show", "Show the stored game details"),
                     Sub("clear", "Clear the stored game details"))
+                .Build(),
+            new SlashCommandBuilder()
+                .WithName("config")
+                .WithDescription("Configure the D2R controller")
+                .AddOptions(
+                    Sub("show", "Show runtime controller config"),
+                    Sub("stagger", "Persist all-client stagger seconds and restart the host",
+                        Seconds("seconds", "Delay between all-client actions, in seconds")),
+                    Sub("notifications", "Persist game session notification settings and restart the host",
+                        BoolOption("enabled", "Whether to post game session updates"),
+                        StringOption("channel-id", "Discord text channel ID for session updates", required: false)))
                 .Build()
         ];
     }
@@ -144,6 +155,26 @@ public static class DiscordSlashCommands
             .WithRequired(false)
             .WithMinValue(1)
             .WithMaxValue(20);
+    }
+
+    private static SlashCommandOptionBuilder Seconds(string name, string description)
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName(name)
+            .WithDescription(description)
+            .WithType(ApplicationCommandOptionType.Integer)
+            .WithRequired(true)
+            .WithMinValue(0)
+            .WithMaxValue(300);
+    }
+
+    private static SlashCommandOptionBuilder BoolOption(string name, string description)
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName(name)
+            .WithDescription(description)
+            .WithType(ApplicationCommandOptionType.Boolean)
+            .WithRequired(true);
     }
 
     private static SlashCommandOptionBuilder StringOption(

@@ -32,6 +32,9 @@ Use these commands while driving clients:
 /game set name:<game> password:<password> difficulty:hell
 /game show
 /game clear
+/config show
+/config stagger seconds:20
+/config notifications enabled:true channel-id:1517651040340541472
 ```
 
 `/game show` is meant to keep the name/password in one place while moving each VM through Join Game or Create Game. `/d2r join-game` and `/d2r create-game` use stored `/game set` values when command options are omitted.
@@ -39,6 +42,8 @@ Use these commands while driving clients:
 If `lobby`, `play`, `join-game`, `create-game`, or `follow` is requested while the latest VM status says D2R is stopped, `D2RHost` runs `/d2r ready` first and reports that extra step in Discord.
 
 For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued. `/d2r create-game-all` warms every online client first with this stagger before the creator makes the game, so one cold client does not leave the other VMs idle on the desktop.
+
+Use `/config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/config notifications enabled:true channel-id:<channel>` to post create-game-all and join-all session updates into a Discord channel. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
 
 Long-running host commands defer the Discord interaction and continue in background before editing the original ephemeral response. This keeps slow ready/create/join/screenshot operations from blocking Discord gateway heartbeats.
 
@@ -108,9 +113,9 @@ Automation:
 /d2r ready hc1
 ```
 
-The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, re-sending the launch command at `battleNetExecRetryDelaySeconds` and clicking Battle.net Play when the blue button is detected. After D2R exists, it best-effort focuses D2R and repeatedly clicks the D2R window center, sends `G` through Win32 input, and posts the same `G` key directly to the D2R window every `ui.readyStartupSkipIntervalMs`, default 100 ms. It stops early when character select is detected, but if the visual detector misses a ready character screen, the ready command no longer fails solely because of that detector once the skip loop has run and D2R is still running. The ready loop intentionally does not send Escape because an unrecognized character screen can interpret Escape as menu/exit input.
+The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, re-sending the launch command at `battleNetExecRetryDelaySeconds` and clicking Battle.net Play when the blue button is detected. After D2R exists, it best-effort focuses D2R and repeatedly sends real Win32 input to the D2R window: click the D2R window center, then press `G` every `ui.readyStartupSkipIntervalMs`, default 100 ms. It stops early when character select is detected, but if the visual detector misses a ready character screen, the ready command no longer fails solely because of that detector once the skip loop has run and D2R is still running. The ready loop intentionally does not send Escape because an unrecognized character screen can interpret Escape as menu/exit input.
 
-D2R menu flows send clicks through normal Win32 mouse input and a direct D2R-window mouse message. Character screen and lobby readiness checks sample both full-screen coordinates and D2R-window-relative coordinates so resolution/window geometry changes do not depend on one fixed coordinate frame.
+D2R menu flows send real Win32 mouse input using D2R-window-relative coordinates. Character screen and lobby readiness checks sample both full-screen coordinates and D2R-window-relative coordinates so resolution/window geometry changes do not depend on one fixed coordinate frame.
 
 After launch/ready or Save and Exit leaves D2R at the character screen, the VM agent starts a character-screen idle timer. If no lobby/game command touches that client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 

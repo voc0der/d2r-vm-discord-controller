@@ -8,6 +8,8 @@
     "your_discord_user_id"
   ],
   "startAllDelaySeconds": 20,
+  "gameSessionNotificationsEnabled": false,
+  "guildChannel": null,
   "powerShellPath": "powershell.exe",
   "powerShellTimeoutSeconds": 90,
   "allowedVmNamePrefixes": [

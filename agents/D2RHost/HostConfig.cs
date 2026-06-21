@@ -10,6 +10,8 @@ public sealed class HostConfig
     public string[] AllowedDiscordUserIds { get; set; } = [];
     public int StartAllDelaySeconds { get; set; } = 20;
     public int? ClientStaggerSeconds { get; set; }
+    public bool GameSessionNotificationsEnabled { get; set; }
+    public ulong? GuildChannel { get; set; }
     public string PowerShellPath { get; set; } = "powershell.exe";
     public int PowerShellTimeoutSeconds { get; set; } = 90;
     public string[] AllowedVmNamePrefixes { get; set; } = [];

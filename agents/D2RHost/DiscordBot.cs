@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using AgentCommon;
 using Discord;
@@ -8,21 +9,30 @@ namespace D2RHost;
 public sealed class DiscordBot
 {
     private readonly HostConfig _config;
+    private readonly HostRuntimeOptions _runtime;
     private readonly AgentRegistry _registry;
     private readonly HyperVOperations _hyperV;
     private readonly AppDb _db;
     private readonly ILogger<DiscordBot> _logger;
     private readonly DiscordSocketClient _client;
+    private readonly SemaphoreSlim _sessionLock = new(1, 1);
+    private IUserMessage? _activeSessionMessage;
+    private string? _activeSessionGameName;
+    private DateTimeOffset? _activeSessionStartedUtc;
+    private int _activeSessionExpected;
+    private int _activeSessionJoined;
     private bool _commandsRegistered;
 
     public DiscordBot(
         HostConfig config,
+        HostRuntimeOptions runtime,
         AgentRegistry registry,
         HyperVOperations hyperV,
         AppDb db,
         ILogger<DiscordBot> logger)
     {
         _config = config;
+        _runtime = runtime;
         _registry = registry;
         _hyperV = hyperV;
         _db = db;
@@ -107,6 +117,9 @@ public sealed class DiscordBot
                 case "game":
                     await HandleGameAsync(context);
                     break;
+                case "config":
+                    await HandleConfigAsync(context);
+                    break;
             }
         }
         catch (Exception ex)
@@ -157,12 +170,7 @@ public sealed class DiscordBot
         if (subcommand == "join-all")
         {
             var game = ResolveGameInput(context);
-            await QueueAllCommandsAsync(
-                context,
-                "menu_join_game",
-                (accountKey, account) => BuildMenuArgs(accountKey, account, game, context),
-                TimeSpan.FromSeconds(210),
-                readyFirstIfNotMenuReady: true);
+            await QueueJoinAllAsync(context, game);
             return;
         }
 
@@ -310,6 +318,127 @@ public sealed class DiscordBot
         }
     }
 
+    private async Task HandleConfigAsync(SlashContext context)
+    {
+        switch (context.SubcommandName)
+        {
+            case "show":
+                await context.Command.RespondAsync(FormatRuntimeConfig(), ephemeral: true);
+                return;
+            case "stagger":
+                var seconds = context.GetRequiredInt("seconds");
+                _config.StartAllDelaySeconds = seconds;
+                _config.ClientStaggerSeconds = seconds;
+                await SaveConfigAndRespawnAsync(
+                    context,
+                    $"Set all-client stagger to {seconds}s.");
+                return;
+            case "notifications":
+                var enabled = context.GetRequiredBool("enabled");
+                var channelText = BlankToNull(context.GetString("channel-id"));
+                if (channelText is not null)
+                {
+                    _config.GuildChannel = ParseChannelId(channelText);
+                }
+
+                if (enabled && _config.GuildChannel is null)
+                {
+                    await context.Command.RespondAsync("channel-id is required when enabling notifications.", ephemeral: true);
+                    return;
+                }
+
+                _config.GameSessionNotificationsEnabled = enabled;
+                await SaveConfigAndRespawnAsync(
+                    context,
+                    enabled
+                        ? $"Enabled game session notifications in channel {_config.GuildChannel}."
+                        : "Disabled game session notifications.");
+                return;
+            default:
+                throw new InvalidOperationException($"Unsupported config subcommand: {context.SubcommandName}");
+        }
+    }
+
+    private string FormatRuntimeConfig()
+    {
+        var stagger = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
+        var notifications = _config.GameSessionNotificationsEnabled
+            ? $"enabled in {_config.GuildChannel?.ToString() ?? "(no channel)"}"
+            : "disabled";
+        return string.Join("\n", new[]
+        {
+            $"Config path: {_runtime.ConfigPath}",
+            $"All-client stagger: {stagger}s",
+            $"Session notifications: {notifications}"
+        });
+    }
+
+    private async Task SaveConfigAndRespawnAsync(SlashContext context, string message)
+    {
+        HostConfigLoader.Save(_runtime.ConfigPath, _config);
+        await context.Command.RespondAsync(
+            $"{message}\nSaved `{_runtime.ConfigPath}`. Respawning host.",
+            ephemeral: true);
+        QueueHostRespawn();
+    }
+
+    private void QueueHostRespawn()
+    {
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            var processPath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(processPath) || !File.Exists(processPath))
+            {
+                _logger.LogWarning("Config was saved, but the host cannot respawn because Environment.ProcessPath is unavailable.");
+                return;
+            }
+
+            try
+            {
+                var scriptPath = WriteRespawnScript(processPath, _runtime.RestartArgs);
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = _config.PowerShellPath,
+                    UseShellExecute = false
+                };
+                startInfo.ArgumentList.Add("-NoProfile");
+                startInfo.ArgumentList.Add("-ExecutionPolicy");
+                startInfo.ArgumentList.Add("Bypass");
+                startInfo.ArgumentList.Add("-File");
+                startInfo.ArgumentList.Add(scriptPath);
+                Process.Start(startInfo);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Config was saved, but the host respawn failed.");
+            }
+        });
+    }
+
+    private static string WriteRespawnScript(string processPath, IEnumerable<string> restartArgs)
+    {
+        var scriptPath = Path.Combine(
+            Path.GetTempPath(),
+            $"d2rops-host-respawn-{Guid.NewGuid():N}.ps1");
+        var workingDirectory = Path.GetDirectoryName(processPath) ?? Environment.CurrentDirectory;
+        var restartArgumentLine = string.Join(" ", restartArgs.Select(WindowsArgumentQuote));
+        var script = $$"""
+            $ErrorActionPreference = 'Stop'
+            Wait-Process -Id {{Environment.ProcessId}} -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 750
+            if ({{PsQuote(restartArgumentLine)}}.Length -gt 0) {
+                Start-Process -FilePath {{PsQuote(processPath)}} -ArgumentList {{PsQuote(restartArgumentLine)}} -WorkingDirectory {{PsQuote(workingDirectory)}}
+            } else {
+                Start-Process -FilePath {{PsQuote(processPath)}} -WorkingDirectory {{PsQuote(workingDirectory)}}
+            }
+            Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+            """;
+        File.WriteAllText(scriptPath, script);
+        return scriptPath;
+    }
+
     private async Task RunVmCommandAsync(
         SlashContext context,
         AccountConfig account,
@@ -440,6 +569,11 @@ public sealed class DiscordBot
                 + FormatOfflineSkipSuffix(offlineEntries),
             ephemeral: true);
 
+        await StartGameSessionAsync(
+            game.GameName,
+            entries.Length,
+            $"Queued create-game-all. {creator.Key} will create; {joiners.Length} account(s) will join.");
+
         _ = Task.Run(async () =>
         {
             try
@@ -454,15 +588,20 @@ public sealed class DiscordBot
                 if (readyByAccount.TryGetValue(creator.Key, out var creatorReadyResult)
                     && !creatorReadyResult.Ok)
                 {
+                    await CompleteGameSessionAsync(
+                        ok: false,
+                        joined: 0,
+                        status: $"Stopped before create: {creator.Key} failed ready.",
+                        detail: creatorReadyResult.Message);
                     await SendFollowupSafeAsync(
                         context,
                         $"create-game-all stopped before create: {creator.Key} failed ready: {creatorReadyResult.Message}");
                     return;
                 }
 
-                await SendFollowupSafeAsync(
-                    context,
-                    FormatCreateGameAllWarmupResult(readyResults, creator.Key, game.GameName));
+                var warmupMessage = FormatCreateGameAllWarmupResult(readyResults, creator.Key, game.GameName);
+                await UpdateGameSessionAsync("Ready warm-up completed; creating game.", joined: 0, detail: warmupMessage);
+                await SendFollowupSafeAsync(context, warmupMessage);
 
                 var creatorArgs = argsByAccount[creator.Key];
                 var createResult = await _registry.SendCommandAsync(
@@ -477,11 +616,21 @@ public sealed class DiscordBot
                         "create-game-all stopped because creator {AccountKey} failed: {Message}",
                         creator.Key,
                         createResult.Message);
+                    await CompleteGameSessionAsync(
+                        ok: false,
+                        joined: 0,
+                        status: $"{creator.Key} failed to create {game.GameName}.",
+                        detail: createResult.Message);
                     await SendFollowupSafeAsync(
                         context,
                         $"create-game-all stopped: {creator.Key} failed to create {game.GameName}: {createResult.Message}");
                     return;
                 }
+
+                await UpdateGameSessionAsync(
+                    $"Game created by {creator.Key}; joiners entering.",
+                    joined: 1,
+                    detail: createResult.Message);
 
                 var failedReadyJoiners = joiners
                     .Where(entry => readyByAccount.TryGetValue(entry.Key, out var ready) && !ready.Ok)
@@ -493,6 +642,17 @@ public sealed class DiscordBot
                 var joinResults = await Task.WhenAll(joinableEntries.Select((entry, index) =>
                     RunCreateGameAllJoinerAsync(entry, index, staggerSeconds, argsByAccount[entry.Key], context)));
                 var allJoinResults = failedReadyJoiners.Concat(joinResults).ToArray();
+                var joinedCount = 1 + allJoinResults.Count(result => result.Ok);
+                var allOk = allJoinResults.All(result => result.Ok);
+                await CompleteGameSessionAsync(
+                    ok: allOk,
+                    joined: joinedCount,
+                    status: allOk
+                        ? $"Create/join flow completed for {game.GameName}."
+                        : $"Create/join flow completed with failures for {game.GameName}.",
+                    detail: joiners.Length == 0
+                        ? "No other accounts were configured to join."
+                        : FormatCreateGameAllResult(creator.Key, game.GameName, allJoinResults));
 
                 await SendFollowupSafeAsync(
                     context,
@@ -503,6 +663,11 @@ public sealed class DiscordBot
             catch (Exception ex)
             {
                 _logger.LogError(ex, "create-game-all orchestration failed for {GameName}.", game.GameName);
+                await CompleteGameSessionAsync(
+                    ok: false,
+                    joined: _activeSessionJoined,
+                    status: $"create-game-all failed for {game.GameName}.",
+                    detail: ex.Message);
                 await SendFollowupSafeAsync(context, $"create-game-all failed while creating {game.GameName}: {ex.Message}");
             }
         });
@@ -560,6 +725,97 @@ public sealed class DiscordBot
         }
     }
 
+    private async Task QueueJoinAllAsync(SlashContext context, GameInput game)
+    {
+        var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
+        if (entries.Length == 0)
+        {
+            await context.Command.RespondAsync(
+                "No online accounts are available for join-all." + FormatOfflineSkipSuffix(offlineEntries),
+                ephemeral: true);
+            return;
+        }
+
+        var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
+        var readyFirstCount = entries.Count(entry => ShouldRunReadyFirst(entry.Value));
+        await context.Command.RespondAsync(
+            $"Queued join-all for {entries.Length} online account(s) into {game.GameName} with {staggerSeconds}s stagger."
+                + FormatReadyFirstSuffix(readyFirstCount)
+                + FormatOfflineSkipSuffix(offlineEntries),
+            ephemeral: true);
+
+        await StartGameSessionAsync(
+            game.GameName,
+            entries.Length,
+            $"Queued join-all for {entries.Length} account(s).");
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var joinResults = await Task.WhenAll(entries.Select((entry, index) =>
+                    RunJoinAllEntryAsync(entry, index, staggerSeconds, game, context)));
+                var joinedCount = joinResults.Count(result => result.Ok);
+                var allOk = joinResults.All(result => result.Ok);
+                var summary = FormatJoinAllResult(game.GameName, joinResults);
+                await CompleteGameSessionAsync(
+                    ok: allOk,
+                    joined: joinedCount,
+                    status: allOk
+                        ? $"join-all completed for {game.GameName}."
+                        : $"join-all completed with failures for {game.GameName}.",
+                    detail: summary);
+                await SendFollowupSafeAsync(context, summary);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "join-all orchestration failed for {GameName}.", game.GameName);
+                await CompleteGameSessionAsync(
+                    ok: false,
+                    joined: _activeSessionJoined,
+                    status: $"join-all failed for {game.GameName}.",
+                    detail: ex.Message);
+                await SendFollowupSafeAsync(context, $"join-all failed for {game.GameName}: {ex.Message}");
+            }
+        });
+    }
+
+    private async Task<JoinResult> RunJoinAllEntryAsync(
+        KeyValuePair<string, AccountConfig> entry,
+        int index,
+        int staggerSeconds,
+        GameInput game,
+        SlashContext context)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
+        var args = BuildMenuArgs(entry.Key, entry.Value, game, context);
+        try
+        {
+            var readyResult = await SendReadyIfNotMenuReadyAsync(entry.Value, args);
+            if (readyResult?.Ok == false)
+            {
+                return new JoinResult(entry.Key, false, $"ready failed before join: {readyResult.Message}");
+            }
+
+            var joinResult = await _registry.SendCommandAsync(
+                entry.Value.AgentId,
+                "menu_join_game",
+                args,
+                TimeSpan.FromSeconds(210));
+            if (joinResult.Ok)
+            {
+                await IncrementGameSessionJoinedAsync($"{entry.Key} joined {game.GameName}.");
+            }
+
+            return new JoinResult(entry.Key, joinResult.Ok, joinResult.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Queued join-all failed for {AccountKey}.", entry.Key);
+            return new JoinResult(entry.Key, false, ex.Message);
+        }
+    }
+
     private static string FormatCreateGameAllWarmupResult(
         IReadOnlyCollection<ReadyResult> readyResults,
         string creatorKey,
@@ -609,6 +865,174 @@ public sealed class DiscordBot
         }
 
         return string.Join("\n", lines);
+    }
+
+    private static string FormatJoinAllResult(string gameName, IReadOnlyCollection<JoinResult> joinResults)
+    {
+        var joined = joinResults.Where(result => result.Ok).Select(result => result.AccountKey).ToArray();
+        var failed = joinResults.Where(result => !result.Ok).ToArray();
+        var lines = new List<string>
+        {
+            $"Join-all completed for {gameName}.",
+            joined.Length == 0
+                ? "No join flows completed successfully."
+                : $"Join flows completed: {string.Join(", ", joined)}."
+        };
+
+        if (failed.Length > 0)
+        {
+            lines.Add("Failed: " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private async Task StartGameSessionAsync(string gameName, int expected, string status)
+    {
+        var channel = GetGameSessionChannel();
+        if (channel is null)
+        {
+            return;
+        }
+
+        await _sessionLock.WaitAsync();
+        try
+        {
+            _activeSessionGameName = gameName;
+            _activeSessionStartedUtc = DateTimeOffset.UtcNow;
+            _activeSessionExpected = expected;
+            _activeSessionJoined = 0;
+            _activeSessionMessage = await channel.SendMessageAsync(FormatGameSessionMessage(status, detail: null));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not start Discord game session notification.");
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
+    private async Task UpdateGameSessionAsync(string status, int? joined = null, string? detail = null)
+    {
+        await _sessionLock.WaitAsync();
+        try
+        {
+            if (_activeSessionMessage is null)
+            {
+                return;
+            }
+
+            if (joined is not null)
+            {
+                _activeSessionJoined = joined.Value;
+            }
+
+            await _activeSessionMessage.ModifyAsync(properties =>
+                properties.Content = FormatGameSessionMessage(status, detail));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not update Discord game session notification.");
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
+    private async Task IncrementGameSessionJoinedAsync(string status)
+    {
+        await _sessionLock.WaitAsync();
+        try
+        {
+            if (_activeSessionMessage is null)
+            {
+                return;
+            }
+
+            _activeSessionJoined++;
+            await _activeSessionMessage.ModifyAsync(properties =>
+                properties.Content = FormatGameSessionMessage(status, detail: null));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not update Discord game session joined count.");
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
+    private async Task CompleteGameSessionAsync(bool ok, int joined, string status, string? detail = null)
+    {
+        await _sessionLock.WaitAsync();
+        try
+        {
+            if (_activeSessionMessage is null)
+            {
+                return;
+            }
+
+            _activeSessionJoined = joined;
+            await _activeSessionMessage.ModifyAsync(properties =>
+                properties.Content = FormatGameSessionMessage(status, detail));
+            await _activeSessionMessage.AddReactionAsync(new Emoji(ok ? "✅" : "⛔"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not complete Discord game session notification.");
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
+    private IMessageChannel? GetGameSessionChannel()
+    {
+        if (!_config.GameSessionNotificationsEnabled || _config.GuildChannel is not { } channelId)
+        {
+            return null;
+        }
+
+        var channel = _client.GetChannel(channelId) as IMessageChannel;
+        if (channel is null)
+        {
+            _logger.LogWarning("Game session notifications are enabled, but channel {ChannelId} is not visible.", channelId);
+        }
+
+        return channel;
+    }
+
+    private string FormatGameSessionMessage(string status, string? detail)
+    {
+        var elapsed = _activeSessionStartedUtc is { } started
+            ? DateTimeOffset.UtcNow - started
+            : TimeSpan.Zero;
+        var lines = new List<string>
+        {
+            $"Game session: {_activeSessionGameName ?? "(unknown)"}",
+            $"Status: {status}",
+            $"Bots in game: {_activeSessionJoined}/{_activeSessionExpected}",
+            $"Elapsed: {FormatElapsed(elapsed)}"
+        };
+
+        if (!string.IsNullOrWhiteSpace(detail))
+        {
+            lines.Add(detail);
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed)
+    {
+        return elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours}h {elapsed.Minutes}m"
+            : $"{elapsed.Minutes}m {elapsed.Seconds}s";
     }
 
     private async Task SendFollowupSafeAsync(SlashContext context, string message)
@@ -1022,6 +1446,61 @@ public sealed class DiscordBot
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    private static ulong ParseChannelId(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith("<#") && trimmed.EndsWith('>'))
+        {
+            trimmed = trimmed[2..^1];
+        }
+
+        return ulong.TryParse(trimmed, out var channelId)
+            ? channelId
+            : throw new InvalidOperationException($"Invalid Discord channel ID: {value}");
+    }
+
+    private static string PsQuote(string value)
+    {
+        return "'" + value.Replace("'", "''") + "'";
+    }
+
+    private static string WindowsArgumentQuote(string value)
+    {
+        if (value.Length > 0 && !value.Any(static c => char.IsWhiteSpace(c) || c == '"'))
+        {
+            return value;
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append('"');
+        var backslashes = 0;
+        foreach (var c in value)
+        {
+            if (c == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                builder.Append('\\', backslashes * 2 + 1);
+                builder.Append('"');
+            }
+            else
+            {
+                builder.Append('\\', backslashes);
+                builder.Append(c);
+            }
+
+            backslashes = 0;
+        }
+
+        builder.Append('\\', backslashes * 2);
+        builder.Append('"');
+        return builder.ToString();
+    }
+
     private Task OnDiscordLogAsync(LogMessage message)
     {
         var level = message.Severity switch
@@ -1092,6 +1571,28 @@ public sealed class DiscordBot
             }
 
             return Convert.ToInt32(option.Value);
+        }
+
+        public int GetRequiredInt(string name)
+        {
+            return GetInt(name)
+                ?? throw new InvalidOperationException($"{name} is required.");
+        }
+
+        public bool? GetBool(string name)
+        {
+            if (!_options.TryGetValue(name, out var option) || option.Value is null)
+            {
+                return null;
+            }
+
+            return Convert.ToBoolean(option.Value);
+        }
+
+        public bool GetRequiredBool(string name)
+        {
+            return GetBool(name)
+                ?? throw new InvalidOperationException($"{name} is required.");
         }
     }
 }

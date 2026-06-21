@@ -34,6 +34,7 @@ try
     builder.WebHost.UseUrls($"http://0.0.0.0:{config.HttpPort}");
 
     builder.Services.AddSingleton(config);
+    builder.Services.AddSingleton(new HostRuntimeOptions(configPath, args));
     builder.Services.AddSingleton(agentAutoUpdate);
     builder.Services.AddSingleton<AppDb>();
     builder.Services.AddSingleton<AgentRegistry>();
