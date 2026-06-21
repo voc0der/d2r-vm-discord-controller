@@ -122,6 +122,9 @@ public sealed class DiscordBot
                 case "config":
                     await HandleConfigAsync(context);
                     break;
+                case "restart":
+                    await HandleRestartAsync(context);
+                    break;
             }
         }
         catch (Exception ex)
@@ -359,6 +362,14 @@ public sealed class DiscordBot
             default:
                 throw new InvalidOperationException($"Unsupported config subcommand: {context.SubcommandName}");
         }
+    }
+
+    private async Task HandleRestartAsync(SlashContext context)
+    {
+        await context.Command.RespondAsync(
+            "Respawning D2RHost. Startup self-update will run before Discord reconnects.",
+            ephemeral: true);
+        QueueHostRespawn();
     }
 
     private string FormatRuntimeConfig()
@@ -1729,8 +1740,15 @@ public sealed class DiscordBot
 
         public static SlashContext From(SocketSlashCommand command)
         {
-            var subcommand = command.Data.Options.FirstOrDefault()
-                ?? throw new InvalidOperationException("Slash command did not include a subcommand.");
+            var subcommand = command.Data.Options.FirstOrDefault();
+            if (subcommand is null)
+            {
+                return new SlashContext(
+                    command,
+                    "",
+                    new Dictionary<string, SocketSlashCommandDataOption>(StringComparer.OrdinalIgnoreCase));
+            }
+
             return new SlashContext(
                 command,
                 subcommand.Name,

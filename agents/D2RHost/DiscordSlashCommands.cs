@@ -70,6 +70,10 @@ public static class DiscordSlashCommands
                     Sub("notifications", "Persist game session notification settings and restart the host",
                         BoolOption("enabled", "Whether to post game session updates"),
                         StringOption("channel-id", "Discord text channel ID for session updates", required: false)))
+                .Build(),
+            new SlashCommandBuilder()
+                .WithName("restart")
+                .WithDescription("Respawn D2RHost so startup self-update can apply")
                 .Build()
         ];
     }

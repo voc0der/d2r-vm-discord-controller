@@ -57,6 +57,7 @@ Use these commands while driving clients:
 /config show
 /config stagger seconds:20
 /config notifications enabled:true channel-id:1517651040340541472
+/restart
 ```
 
 `/game show` is meant to keep the name/password in one place while moving each VM through Join Game or Create Game. `/d2r join-game` and `/d2r create-game` use stored `/game set` values when command options are omitted.
@@ -65,7 +66,7 @@ If `lobby`, `play`, `join-game`, `create-game`, or `follow` is requested while t
 
 For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued. `/d2r create-game-all` warms every online client first with this stagger before the creator makes the game, so one cold client does not leave the other VMs idle on the desktop.
 
-Use `/config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/config notifications enabled:true channel-id:<channel>` to post create-game-all and join-all session updates into a Discord channel. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
+Use `/config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/config notifications enabled:true channel-id:<channel>` to post create-game-all and join-all session updates into a Discord channel. Use `/restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
 
 Long-running host commands defer the Discord interaction and continue in background before editing the original ephemeral response. This keeps slow ready/create/join/screenshot operations from blocking Discord gateway heartbeats.
 

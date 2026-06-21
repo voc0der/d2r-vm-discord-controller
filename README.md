@@ -69,6 +69,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r close-all`
 - `/d2r start-all`
 - `/d2r health`
+- `/restart`
 - `/game set name [password] [difficulty] [notes]`
 - `/game show`
 - `/game clear`
@@ -85,6 +86,8 @@ All-client commands skip accounts whose VM agent is offline when the command is 
 `create-game-all` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger. If you do not pass `character-slot`, the host uses each account's optional `characterSlot` value from `d2r-host.config.json`, then falls back to the VM agent's local default.
 
 `/d2r start-all` queues the ready flow for every online account, so cold-booted clients should land on character select instead of merely starting the D2R process.
+
+`/restart` respawns `D2RHost`. On startup, the host runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed host update once the command exists in Discord.
 
 Menu commands that need D2R running, such as `lobby`, `play`, `join-game`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
 
