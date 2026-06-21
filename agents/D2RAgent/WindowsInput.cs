@@ -21,6 +21,8 @@ internal sealed class WindowsInput
     private const uint MouseEventRightUp = 0x0010;
     private const uint MouseEventMove = 0x0001;
     private const uint MouseEventAbsolute = 0x8000;
+    private const uint MouseKeyLeft = 0x0001;
+    private const uint MouseKeyRight = 0x0002;
     private const byte VkAlt = 0x12;
     private const byte VkControl = 0x11;
     private const byte VkLeftWindows = 0x5B;
@@ -40,6 +42,16 @@ internal sealed class WindowsInput
     private const uint KeyEventUnicode = 0x0004;
     private const uint KeyEventScanCode = 0x0008;
     private const uint MapVkToVsc = 0;
+    private const uint WmKeyDown = 0x0100;
+    private const uint WmKeyUp = 0x0101;
+    private const uint WmChar = 0x0102;
+    private const uint WmMouseMove = 0x0200;
+    private const uint WmLButtonDown = 0x0201;
+    private const uint WmLButtonUp = 0x0202;
+    private const uint WmRButtonDown = 0x0204;
+    private const uint WmRButtonUp = 0x0205;
+    private const int InputHoldMilliseconds = 90;
+    private const int InputGapMilliseconds = 35;
     private const int SwRestore = 9;
 
     public void ShowDesktop()
@@ -111,9 +123,7 @@ internal sealed class WindowsInput
         var y = (rect.Top + rect.Bottom) / 2;
         if (!SendMouseClick(x, y, MouseButton.Left))
         {
-            SetCursorPos(x, y);
-            mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
-            mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
+            SendLegacyMouseClick(x, y, MouseButton.Left);
         }
 
         Thread.Sleep(50);
@@ -140,16 +150,40 @@ internal sealed class WindowsInput
             return;
         }
 
-        SetCursorPos(x, y);
         if (button == MouseButton.Left)
         {
-            mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
-            mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
+            SendLegacyMouseClick(x, y, button);
             return;
         }
 
-        mouse_event(MouseEventRightDown, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(MouseEventRightUp, 0, 0, 0, UIntPtr.Zero);
+        SendLegacyMouseClick(x, y, button);
+    }
+
+    public bool SendWindowReadyBurst(string processName, UiPoint point, bool includeEscape)
+    {
+        EnsureWindows();
+
+        var process = FindProcess(processName);
+        if (process is null || process.MainWindowHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var windowHandle = process.MainWindowHandle;
+        ShowWindow(windowHandle, SwRestore);
+        _ = TrySetForegroundProcess(process);
+        var (x, y) = ToScreen(point);
+
+        SendWindowMouseClick(windowHandle, x, y, MouseButton.Left);
+        if (includeEscape)
+        {
+            SendWindowKey(windowHandle, VkEscape);
+        }
+
+        SendWindowKey(windowHandle, VkSpace);
+        SendWindowKey(windowHandle, VkReturn);
+        SendWindowMouseClick(windowHandle, x, y, MouseButton.Left);
+        return true;
     }
 
     public void PressEscape()
@@ -394,7 +428,9 @@ internal sealed class WindowsInput
     private static void Key(byte virtualKey)
     {
         KeyDown(virtualKey);
+        Thread.Sleep(InputHoldMilliseconds);
         KeyUp(virtualKey);
+        Thread.Sleep(InputGapMilliseconds);
     }
 
     private static void KeyDown(byte virtualKey)
@@ -457,14 +493,94 @@ internal sealed class WindowsInput
         var absoluteY = (int)Math.Round(y * 65535.0 / height);
         var down = button == MouseButton.Left ? MouseEventLeftDown : MouseEventRightDown;
         var up = button == MouseButton.Left ? MouseEventLeftUp : MouseEventRightUp;
-        var inputs = new[]
+        if (SendInputs(new[] { Input.ForMouse(absoluteX, absoluteY, MouseEventMove | MouseEventAbsolute) }) != 1)
         {
-            Input.ForMouse(absoluteX, absoluteY, MouseEventMove | MouseEventAbsolute),
-            Input.ForMouse(0, 0, down),
-            Input.ForMouse(0, 0, up)
-        };
+            return false;
+        }
 
-        return SendInputs(inputs) == inputs.Length;
+        if (SendInputs(new[] { Input.ForMouse(0, 0, down) }) != 1)
+        {
+            return false;
+        }
+
+        Thread.Sleep(InputHoldMilliseconds);
+        var sentUp = SendInputs(new[] { Input.ForMouse(0, 0, up) }) == 1;
+        Thread.Sleep(InputGapMilliseconds);
+        return sentUp;
+    }
+
+    private static void SendLegacyMouseClick(int x, int y, MouseButton button)
+    {
+        var down = button == MouseButton.Left ? MouseEventLeftDown : MouseEventRightDown;
+        var up = button == MouseButton.Left ? MouseEventLeftUp : MouseEventRightUp;
+        SetCursorPos(x, y);
+        mouse_event(down, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(InputHoldMilliseconds);
+        mouse_event(up, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(InputGapMilliseconds);
+    }
+
+    private static void SendWindowKey(IntPtr windowHandle, byte virtualKey)
+    {
+        _ = PostMessage(windowHandle, WmKeyDown, (IntPtr)virtualKey, KeyLParam(virtualKey, keyUp: false));
+
+        var character = CharacterForVirtualKey(virtualKey);
+        if (character.HasValue)
+        {
+            _ = PostMessage(windowHandle, WmChar, (IntPtr)character.Value, KeyLParam(virtualKey, keyUp: false));
+        }
+
+        Thread.Sleep(InputHoldMilliseconds);
+        _ = PostMessage(windowHandle, WmKeyUp, (IntPtr)virtualKey, KeyLParam(virtualKey, keyUp: true));
+        Thread.Sleep(InputGapMilliseconds);
+    }
+
+    private static void SendWindowMouseClick(IntPtr windowHandle, int screenX, int screenY, MouseButton button)
+    {
+        var point = new WindowPoint { X = screenX, Y = screenY };
+        if (!ScreenToClient(windowHandle, ref point))
+        {
+            return;
+        }
+
+        var downMessage = button == MouseButton.Left ? WmLButtonDown : WmRButtonDown;
+        var upMessage = button == MouseButton.Left ? WmLButtonUp : WmRButtonUp;
+        var mouseKey = button == MouseButton.Left ? MouseKeyLeft : MouseKeyRight;
+        var lParam = MakeLParam(point.X, point.Y);
+
+        _ = PostMessage(windowHandle, WmMouseMove, IntPtr.Zero, lParam);
+        _ = PostMessage(windowHandle, downMessage, (IntPtr)mouseKey, lParam);
+        Thread.Sleep(InputHoldMilliseconds);
+        _ = PostMessage(windowHandle, upMessage, IntPtr.Zero, lParam);
+        Thread.Sleep(InputGapMilliseconds);
+    }
+
+    private static IntPtr KeyLParam(byte virtualKey, bool keyUp)
+    {
+        var scanCode = (int)MapVirtualKey(virtualKey, MapVkToVsc);
+        var lParam = 1 | (scanCode << 16);
+        if (keyUp)
+        {
+            lParam |= unchecked((int)0xC0000000);
+        }
+
+        return (IntPtr)lParam;
+    }
+
+    private static IntPtr MakeLParam(int low, int high)
+    {
+        return (IntPtr)(((high & 0xFFFF) << 16) | (low & 0xFFFF));
+    }
+
+    private static char? CharacterForVirtualKey(byte virtualKey)
+    {
+        return virtualKey switch
+        {
+            VkEscape => (char)0x1B,
+            VkReturn => '\r',
+            VkSpace => ' ',
+            _ => null
+        };
     }
 
     private static void EnsureWindows()
@@ -504,6 +620,12 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessage(IntPtr windowHandle, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool ScreenToClient(IntPtr windowHandle, ref WindowPoint point);
 
     [DllImport("user32.dll")]
     private static extern uint MapVirtualKey(uint code, uint mapType);
@@ -727,6 +849,12 @@ internal sealed class WindowsInput
         public int Top;
         public int Right;
         public int Bottom;
+    }
+
+    private struct WindowPoint
+    {
+        public int X;
+        public int Y;
     }
 }
 

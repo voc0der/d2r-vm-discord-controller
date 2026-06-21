@@ -562,11 +562,12 @@ public sealed class VmOperations
         ReadyScreenState state,
         CancellationToken cancellationToken)
     {
+        var includeEscape = state != ReadyScreenState.DiabloSplash;
         TryPrimeD2RInput(input);
         input.LeftClick(_config.Ui.IntroSkipPoint);
         await DelayStepAsync(cancellationToken);
 
-        if (state != ReadyScreenState.DiabloSplash)
+        if (includeEscape)
         {
             input.PressEscape();
             await DelayStepAsync(cancellationToken);
@@ -575,6 +576,7 @@ public sealed class VmOperations
         input.PressStartKey();
         await DelayStepAsync(cancellationToken);
         input.LeftClick(_config.Ui.IntroSkipPoint);
+        _ = input.SendWindowReadyBurst(_config.D2RProcessName, _config.Ui.IntroSkipPoint, includeEscape);
     }
 
     private void TryPrimeD2RInput(WindowsInput input)
