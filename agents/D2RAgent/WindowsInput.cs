@@ -396,10 +396,12 @@ internal sealed class WindowsInput
     private static void SendVirtualKey(byte virtualKey, bool keyUp)
     {
         var sent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp) });
-        if (sent != 1)
+        if (sent == 1)
         {
-            throw new InvalidOperationException($"SendInput failed for virtual key 0x{virtualKey:X2}. LastError={Marshal.GetLastWin32Error()}");
+            return;
         }
+
+        keybd_event(virtualKey, 0, keyUp ? KeyEventKeyUp : 0, UIntPtr.Zero);
     }
 
     private static void SendUnicodeChar(char character)
@@ -439,6 +441,9 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr windowHandle);
@@ -600,7 +605,24 @@ internal sealed class WindowsInput
     private struct InputUnion
     {
         [FieldOffset(0)]
+        public MouseInput Mouse;
+
+        [FieldOffset(0)]
         public KeyboardInput Keyboard;
+
+        [FieldOffset(0)]
+        public HardwareInput Hardware;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInput
+    {
+        public int X;
+        public int Y;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -611,6 +633,14 @@ internal sealed class WindowsInput
         public uint Flags;
         public uint Time;
         public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HardwareInput
+    {
+        public uint Message;
+        public ushort ParamL;
+        public ushort ParamH;
     }
 
     private struct WindowRect
