@@ -210,7 +210,7 @@ Automation:
 /d2r join-game hc1 character-slot:1
 ```
 
-Before typing, the VM agent retries the Join Game tab click until the tab is detected. After typing, it retries the final Join Game button until the client enters the game or `ui.gameEntryStartTimeoutSeconds` expires. If a game-entry error modal appears, such as password mismatch or game unavailable, the agent clicks OK, restores the Join Game form, re-enters the game/password fields, and retries. If the full-screen connection interrupted message appears, the agent waits for the Join Game tab to return, restores the form, and retries. Entry is confirmed with the health/mana globe and bottom-HUD regions, not by assuming success after the lobby disappears. Once the in-game HUD is confirmed, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
+Before typing, the VM agent retries the Join Game tab click until the tab is detected. After typing, it retries the final Join Game button until the client leaves the lobby tab or `ui.gameEntryStartTimeoutSeconds` expires. If a game-entry error modal appears, such as password mismatch or game unavailable, the agent clicks OK, restores the Join Game form, re-enters the game/password fields, and retries. If the full-screen connection interrupted message appears, the agent waits for the Join Game tab to return, restores the form, and retries. After the load wait, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
 
 ## Character Screen To Create Game
 
@@ -245,7 +245,7 @@ Automation:
 /d2r create-game hc1 character-slot:1
 ```
 
-Before typing, the VM agent retries the Create Game tab click until the tab is detected. After typing, it retries the final Create Game button until the client enters the game or `ui.gameEntryStartTimeoutSeconds` expires. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. Entry is confirmed with the health/mana globe and bottom-HUD regions. Once the in-game HUD is confirmed, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
+Before typing, the VM agent retries the Create Game tab click until the tab is detected. After typing, it retries the final Create Game button until the client leaves the lobby tab or `ui.gameEntryStartTimeoutSeconds` expires. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. After the load wait, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
 
 ## Join Off Friend
 
@@ -284,7 +284,7 @@ Automation:
 ```
 
 `friend-row` is the visible row number in the opened friends drawer. If omitted, the VM agent uses `ui.defaultFriendRow` from `vm-agent.config.json`.
-After opening the friend context menu, the VM agent verifies that the `Join Game` row is present before clicking it. After choosing Join Game, entry is confirmed with the same in-game HUD/globe detector used by create/join game. Once the in-game HUD is confirmed, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
+After opening the friend context menu, the VM agent clicks the configured `Join Game` row. After choosing Join Game and waiting for load, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
 
 Expected context menu:
 

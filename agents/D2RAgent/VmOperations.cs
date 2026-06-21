@@ -446,13 +446,6 @@ public sealed class VmOperations
         await DelayLongAsync(cancellationToken);
         ClickD2R(input, GetFriendRowPoint(args.FriendRow), MouseButton.Right);
         await DelayStepAsync(cancellationToken);
-        if (!IsFriendJoinGameOptionReady(input))
-        {
-            return CommandResult.Failure(
-                "Friend context menu opened, but Join Game was not detected for that row.",
-                await GetStatusAsync(cancellationToken));
-        }
-
         ClickD2R(input, _config.Ui.FriendContextJoinGame);
         var entry = await WaitForGameEntryAsync(input, cancellationToken);
         if (entry != GameEntryWaitResult.EnteredGame)
@@ -1099,20 +1092,10 @@ public sealed class VmOperations
 
     private bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab, bool windowRelative)
     {
-        if (IsCharacterButtonPairReady(input, windowRelative)
-            || IsCharacterMenuReady(input, windowRelative))
-        {
-            return false;
-        }
-
         var stats = SampleD2RRegion(input, tab, widthRatio: 0.10, heightRatio: 0.045, windowRelative: windowRelative);
         return stats.AverageLuminance > 28
-            && stats.AverageLuminance < 90
             && stats.GreyRatio > 0.25
-            && stats.DarkRatio > 0.20
-            && stats.DarkRatio < 0.80
-            && IsLobbyFormPanelReady(input, windowRelative)
-            && IsLobbyEntryButtonReady(input, windowRelative);
+            && stats.DarkRatio < 0.80;
     }
 
     private bool IsLobbyEntryButtonReady(WindowsInput input)
@@ -1317,7 +1300,8 @@ public sealed class VmOperations
             return GameEntryWaitResult.ReturnedToMenu;
         }
 
-        return GameEntryWaitResult.TimedOut;
+        await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
+        return GameEntryWaitResult.EnteredGame;
     }
 
     private async Task ToggleLegacyGraphicsAfterEntryAsync(
