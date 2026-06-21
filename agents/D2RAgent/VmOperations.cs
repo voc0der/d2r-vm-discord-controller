@@ -553,7 +553,7 @@ public sealed class VmOperations
                 return new ReadyWaitResult(true, nudges, lastState);
             }
 
-            SendReadySkipKey(input, primeInput: nudges % 10 == 0);
+            SendReadySkipKey(input);
             nudges++;
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
@@ -569,28 +569,11 @@ public sealed class VmOperations
             : new ReadyWaitResult(false, nudges, lastState);
     }
 
-    private void SendReadySkipKey(WindowsInput input, bool primeInput)
+    private void SendReadySkipKey(WindowsInput input)
     {
-        if (primeInput)
-        {
-            TryPrimeD2RInput(input);
-        }
-
+        _ = TryPrepareD2RForInput(input);
         _ = TryClickD2RWindowCenter(input);
         input.PressReadySkipKey();
-        _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
-    }
-
-    private void TryPrimeD2RInput(WindowsInput input)
-    {
-        try
-        {
-            _ = TryPrepareD2RForInput(input);
-        }
-        catch (InvalidOperationException)
-        {
-            // The blind ready loop should keep nudging even if Windows cannot prove focus yet.
-        }
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -610,16 +593,15 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
+        var processNames = GetD2RProcessNames();
         if (button == MouseButton.Left)
         {
-            input.LeftClick(point);
+            input.LeftClick(point, processNames);
         }
         else
         {
-            input.RightClick(point);
+            input.RightClick(point, processNames);
         }
-
-        _ = input.SendWindowClick(point, GetD2RProcessNames(), button);
     }
 
     private async Task<bool> ClickLobbyUntilReadyAsync(
