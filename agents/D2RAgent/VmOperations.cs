@@ -281,9 +281,7 @@ public sealed class VmOperations
                 await GetStatusAsync(cancellationToken));
         }
 
-        await PumpStartupSkipInputsAsync(input, cancellationToken);
-
-        var ready = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
+        var ready = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken);
         if (!ready.Ready)
         {
             return CommandResult.Failure(
@@ -534,83 +532,46 @@ public sealed class VmOperations
         await Task.Delay(TimeSpan.FromSeconds(settleSeconds), cancellationToken);
     }
 
-    private async Task<ReadyWaitResult> WaitForCharacterScreenReadyAsync(
+    private async Task<ReadyWaitResult> PumpStartupSkipInputsUntilCharacterScreenAsync(
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
-        var deadline = DateTimeOffset.UtcNow + timeout;
+        var skipSeconds = Math.Max(
+            _config.Ui.ReadyStartupSkipSeconds,
+            Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
+        var intervalMs = Math.Max(_config.Ui.ReadyStartupSkipIntervalMs, 100);
         var nudges = 0;
         var lastState = ReadyScreenState.Unknown;
-        while (true)
+        while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var state = DetectReadyScreenState(input);
             lastState = state;
-
             if (state == ReadyScreenState.CharacterScreen)
             {
                 return new ReadyWaitResult(true, nudges, lastState);
             }
 
-            if (DateTimeOffset.UtcNow >= deadline)
-            {
-                return new ReadyWaitResult(false, nudges, lastState);
-            }
-
-            await NudgeReadyScreenAsync(input, state, cancellationToken);
+            SendReadySkipKey(input);
             nudges++;
-            await DelayReadyNudgeAsync(cancellationToken);
-        }
-    }
-
-    private async Task PumpStartupSkipInputsAsync(
-        WindowsInput input,
-        CancellationToken cancellationToken)
-    {
-        var skipSeconds = Math.Max(_config.Ui.ReadyStartupSkipSeconds, 0);
-        if (skipSeconds == 0)
-        {
-            return;
-        }
-
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
-        var intervalMs = Math.Max(_config.Ui.ReadyStartupSkipIntervalMs, 100);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (DetectReadyScreenState(input) == ReadyScreenState.CharacterScreen)
-            {
-                return;
-            }
-
-            SendSafeReadyInputBurst(input);
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
             {
-                return;
+                break;
             }
 
             await Task.Delay((int)Math.Min(intervalMs, remainingMs), cancellationToken);
         }
+
+        return new ReadyWaitResult(false, nudges, lastState);
     }
 
-    private async Task NudgeReadyScreenAsync(
-        WindowsInput input,
-        ReadyScreenState state,
-        CancellationToken cancellationToken)
-    {
-        SendSafeReadyInputBurst(input);
-        await DelayStepAsync(cancellationToken);
-    }
-
-    private void SendSafeReadyInputBurst(WindowsInput input)
+    private void SendReadySkipKey(WindowsInput input)
     {
         TryPrimeD2RInput(input);
-        input.LeftClick(_config.Ui.IntroSkipPoint);
-        input.PressStartKey();
-        input.LeftClick(_config.Ui.IntroSkipPoint);
-        _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
+        input.PressReadySkipKey();
+        _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
     }
 
     private void TryPrimeD2RInput(WindowsInput input)

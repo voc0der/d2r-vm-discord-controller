@@ -224,6 +224,27 @@ internal sealed class WindowsInput
         return true;
     }
 
+    public bool SendWindowReadySkipKey(IEnumerable<string> processNames)
+    {
+        EnsureWindows();
+
+        var process = FindProcess(processNames);
+        if (process is null || process.MainWindowHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        ShowWindow(process.MainWindowHandle, SwRestore);
+        _ = TrySetForegroundProcess(process);
+        SendWindowKey(process.MainWindowHandle, VkG);
+        return true;
+    }
+
+    public bool SendWindowLegacyGraphicsToggle(IEnumerable<string> processNames)
+    {
+        return SendWindowReadySkipKey(processNames);
+    }
+
     public void PressEscape()
     {
         Key(VkEscape);
@@ -250,6 +271,11 @@ internal sealed class WindowsInput
     }
 
     public void PressLegacyGraphicsToggle()
+    {
+        PressReadySkipKey();
+    }
+
+    public void PressReadySkipKey()
     {
         Key(VkG);
     }
