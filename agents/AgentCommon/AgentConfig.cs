@@ -41,6 +41,9 @@ public sealed class D2RUiAutomationConfig
     public int LobbyLoadSeconds { get; set; } = 3;
     public int ReadyStartupSkipSeconds { get; set; } = 120;
     public int ReadyStartupSkipIntervalMs { get; set; } = 100;
+    public bool PreferAutoHotkeyInput { get; set; } = true;
+    public string AutoHotkeyPath { get; set; } = "AutoHotkey.exe";
+    public int AutoHotkeyInputTimeoutSeconds { get; set; } = 5;
     public int ReadyNudgeMinDelayMs { get; set; } = 1000;
     public int ReadyNudgeMaxDelayMs { get; set; } = 2000;
     public int WindowFocusTimeoutSeconds { get; set; } = 30;
