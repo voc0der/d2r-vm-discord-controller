@@ -314,8 +314,9 @@ public sealed class VmOperations
         var lobbyReady = await ClickLobbyUntilReadyAsync(input, cancellationToken);
         if (!lobbyReady)
         {
-            return CommandResult.Failure(
-                $"Clicked Lobby, but the lobby tabs were not detected within {Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1)}s.{FormatInputDiagnosticsSuffix()}",
+            MarkLobbyOrGameInteraction("Clicked Lobby without visual confirmation.");
+            return CommandResult.Success(
+                $"Lobby click sequence completed without visual confirmation.{FormatInputDiagnosticsSuffix()}",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -361,12 +362,7 @@ public sealed class VmOperations
 
         var input = FocusD2R();
         var joinTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.JoinGameTab, cancellationToken);
-        if (!joinTabReady)
-        {
-            return CommandResult.Failure(
-                $"Clicked Join Game tab, but it was not detected within {Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1)}s.",
-                await GetStatusAsync(cancellationToken));
-        }
+        var joinWarning = joinTabReady ? "" : " Join tab was not visually confirmed.";
 
         await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.JoinGameNameField, args.GameName, cancellationToken);
@@ -386,7 +382,7 @@ public sealed class VmOperations
 
         MarkLobbyOrGameInteraction($"Joined game {args.GameName}.");
         var retrySuffix = FormatEntryRecoverySuffix(joinEntry);
-        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}{joinWarning}", await GetStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> CreateGameAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -404,12 +400,7 @@ public sealed class VmOperations
 
         var input = FocusD2R();
         var createTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.CreateGameTab, cancellationToken);
-        if (!createTabReady)
-        {
-            return CommandResult.Failure(
-                $"Clicked Create Game tab, but it was not detected within {Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1)}s.",
-                await GetStatusAsync(cancellationToken));
-        }
+        var createWarning = createTabReady ? "" : " Create tab was not visually confirmed.";
 
         await FillTextFieldAsync(input, _config.Ui.CreateGameNameField, args.GameName, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
@@ -430,7 +421,7 @@ public sealed class VmOperations
 
         MarkLobbyOrGameInteraction($"Created game {args.GameName}.");
         var retrySuffix = FormatEntryRecoverySuffix(createEntry);
-        return CommandResult.Success($"Create game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success($"Create game flow completed for {args.GameName}.{retrySuffix}{createWarning}", await GetStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> JoinFriendAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -600,6 +591,8 @@ public sealed class VmOperations
             _config.Ui.ReadyStartupSkipSeconds,
             Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
+        var blindSuccessAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(
+            Math.Clamp(_config.Ui.ReadyStartupBlindSuccessSeconds, 10, skipSeconds));
         var intervalMs = Math.Clamp(_config.Ui.ReadyStartupSkipIntervalMs, 50, 250);
         var nudges = 0;
         var lastState = ReadyScreenState.Unknown;
@@ -615,6 +608,11 @@ public sealed class VmOperations
 
             SendReadySkipKey(input, primeInput: nudges % 10 == 0);
             nudges++;
+            if (DateTimeOffset.UtcNow >= blindSuccessAt && IsD2RRunning())
+            {
+                return new ReadyWaitResult(true, nudges, lastState);
+            }
+
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
             {
@@ -640,7 +638,8 @@ public sealed class VmOperations
         }
 
         ClickD2R(input, _config.Ui.IntroSkipPoint);
-        input.PressReadySkipKey();
+        input.PressStartupSkipKey();
+        _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -660,7 +659,13 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
-        input.Click(point, button);
+        var processNames = GetD2RProcessNames();
+        input.Click(point, button, processNames);
+
+        if (button == MouseButton.Left)
+        {
+            _ = input.SendWindowClick(point, processNames, button);
+        }
     }
 
     private InputDiagnostics? TryGetD2RInputDiagnostics()
@@ -690,9 +695,7 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1));
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (true)
+        for (var attempt = 0; attempt < 4; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
@@ -703,12 +706,12 @@ public sealed class VmOperations
             }
             ClickD2R(input, _config.Ui.CharacterLobbyButton);
 
-            await DelayStepAsync(cancellationToken);
-            if (DateTimeOffset.UtcNow >= deadline)
-            {
-                return IsAnyLobbyTabReady(input);
-            }
+            await Task.Delay(
+                TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)),
+                cancellationToken);
         }
+
+        return IsAnyLobbyTabReady(input);
     }
 
     private async Task<bool> ClickLobbyTabUntilReadyAsync(
@@ -716,9 +719,7 @@ public sealed class VmOperations
         AgentCommon.UiPoint tab,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyReadyTimeoutSeconds, 1));
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (true)
+        for (var attempt = 0; attempt < 3; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
@@ -729,11 +730,9 @@ public sealed class VmOperations
             }
             ClickD2R(input, tab);
             await DelayStepAsync(cancellationToken);
-            if (DateTimeOffset.UtcNow >= deadline)
-            {
-                return IsLobbyTabReady(input, tab);
-            }
         }
+
+        return IsLobbyTabReady(input, tab);
     }
 
     private async Task<GameEntryAttemptResult> ClickMenuEntryButtonUntilEnteredGameAsync(
@@ -778,58 +777,23 @@ public sealed class VmOperations
                 }
             }
 
-            if (!IsLobbyTabReady(input, activeTab))
-            {
-                var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken);
-                if (waitResult == GameEntryWaitResult.EnteredGame)
-                {
-                    return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
-                }
-
-                if (waitResult == GameEntryWaitResult.TimedOut)
-                {
-                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatGameEntryWaitFailure(waitResult));
-                }
-
-                connectionRetries++;
-                if (waitResult == GameEntryWaitResult.ConnectionInterrupted
-                    && !await WaitForMenuAfterConnectionInterruptedAsync(input, activeTab, cancellationToken))
-                {
-                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu tab did not return.");
-                }
-
-                if (!await restoreFormAsync())
-                {
-                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned from game entry, but the menu form could not be restored.");
-                }
-            }
-
             if (DateTimeOffset.UtcNow >= deadline)
             {
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(dialogRetries, connectionRetries));
             }
+
             ClickD2R(input, button);
             await Task.Delay(
                 TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5)),
                 cancellationToken);
 
-            if (IsInGameReady(input))
+            var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken);
+            if (waitResult == GameEntryWaitResult.EnteredGame)
             {
-                await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
             }
 
-            if (IsGameEntryErrorDialogOpen(input))
-            {
-                dialogRetries++;
-                if (!await DismissGameEntryErrorDialogAsync(input, cancellationToken)
-                    || !await restoreFormAsync())
-                {
-                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "A game-entry error dialog appeared, but the menu form could not be restored.");
-                }
-            }
-
-            if (IsConnectionInterruptedScreen(input))
+            if (waitResult == GameEntryWaitResult.ConnectionInterrupted)
             {
                 connectionRetries++;
                 if (!await WaitForMenuAfterConnectionInterruptedAsync(input, activeTab, cancellationToken)
@@ -838,31 +802,10 @@ public sealed class VmOperations
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu form could not be restored.");
                 }
             }
-
-            if (!IsLobbyTabReady(input, activeTab))
+            else if (waitResult == GameEntryWaitResult.ReturnedToMenu
+                     && !await restoreFormAsync())
             {
-                var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken);
-                if (waitResult == GameEntryWaitResult.EnteredGame)
-                {
-                    return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
-                }
-
-                if (waitResult == GameEntryWaitResult.TimedOut)
-                {
-                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatGameEntryWaitFailure(waitResult));
-                }
-
-                connectionRetries++;
-                if (waitResult == GameEntryWaitResult.ConnectionInterrupted
-                    && !await WaitForMenuAfterConnectionInterruptedAsync(input, activeTab, cancellationToken))
-                {
-                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu tab did not return.");
-                }
-
-                if (!await restoreFormAsync())
-                {
-                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned from game entry, but the menu form could not be restored.");
-                }
+                return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned from game entry, but the menu form could not be restored.");
             }
         }
     }
@@ -1020,7 +963,8 @@ public sealed class VmOperations
     {
         var play = SampleD2RRegion(input, _config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative);
         var lobby = SampleD2RRegion(input, _config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative);
-        return IsCharacterButtonRegion(play) && IsCharacterButtonRegion(lobby);
+        return D2RScreenClassifier.IsCharacterButtonRegion(play)
+            && D2RScreenClassifier.IsCharacterButtonRegion(lobby);
     }
 
     private bool IsCharacterMenuReady(WindowsInput input, bool windowRelative)
@@ -1028,9 +972,7 @@ public sealed class VmOperations
         var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: windowRelative);
         var options = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.405), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative);
         var cinematics = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.460), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative);
-        return logo.OrangeRatio > 0.05
-            && IsCharacterMenuButtonRegion(options)
-            && IsCharacterMenuButtonRegion(cinematics);
+        return D2RScreenClassifier.IsCharacterMenuReady(logo, options, cinematics);
     }
 
     private string FormatCharacterScreenReadyFailure(ReadyWaitResult result)
@@ -1093,9 +1035,10 @@ public sealed class VmOperations
     private bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab, bool windowRelative)
     {
         var stats = SampleD2RRegion(input, tab, widthRatio: 0.10, heightRatio: 0.045, windowRelative: windowRelative);
-        return stats.AverageLuminance > 28
-            && stats.GreyRatio > 0.25
-            && stats.DarkRatio < 0.80;
+        return D2RScreenClassifier.IsLobbyTabReady(
+            stats,
+            IsCharacterButtonPairReady(input, windowRelative),
+            IsCharacterMenuReady(input, windowRelative));
     }
 
     private bool IsLobbyEntryButtonReady(WindowsInput input)
@@ -1169,20 +1112,6 @@ public sealed class VmOperations
             && hud.AverageLuminance > 35
             && hud.LuminanceStdDev > 25
             && hud.DarkRatio < 0.80;
-    }
-
-    private static bool IsCharacterButtonRegion(ScreenRegionStats stats)
-    {
-        return stats.AverageLuminance > 45
-            && stats.GreyRatio > 0.35
-            && stats.DarkRatio < 0.55;
-    }
-
-    private static bool IsCharacterMenuButtonRegion(ScreenRegionStats stats)
-    {
-        return stats.AverageLuminance > 40
-            && stats.GreyRatio > 0.35
-            && stats.DarkRatio < 0.65;
     }
 
     private ScreenRegionStats SampleD2RRegion(

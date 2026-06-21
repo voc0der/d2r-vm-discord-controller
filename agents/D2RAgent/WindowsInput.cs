@@ -39,6 +39,7 @@ internal sealed class WindowsInput
     private const uint KeyEventKeyUp = 0x0002;
     private const uint InputKeyboard = 1;
     private const uint InputMouse = 0;
+    private const uint KeyEventExtendedKey = 0x0001;
     private const uint KeyEventUnicode = 0x0004;
     private const uint KeyEventScanCode = 0x0008;
     private const uint MapVkToVsc = 0;
@@ -372,6 +373,11 @@ internal sealed class WindowsInput
     public void PressReadySkipKey()
     {
         Key(VkG);
+    }
+
+    public void PressStartupSkipKey()
+    {
+        ScanKey(VkG);
     }
 
     public void SelectAll()
@@ -745,6 +751,27 @@ internal sealed class WindowsInput
         Thread.Sleep(InputGapMilliseconds);
     }
 
+    private static void ScanKey(byte virtualKey)
+    {
+        var scanCode = (ushort)MapVirtualKey(virtualKey, MapVkToVsc);
+        if (scanCode == 0)
+        {
+            Key(virtualKey);
+            return;
+        }
+
+        var extendedKey = IsExtendedVirtualKey(virtualKey);
+        var downSent = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: false, extendedKey) });
+        Thread.Sleep(InputHoldMilliseconds);
+        var upSent = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: true, extendedKey) });
+        Thread.Sleep(InputGapMilliseconds);
+
+        if (downSent != 1 || upSent != 1)
+        {
+            Key(virtualKey);
+        }
+    }
+
     private static void KeyDown(byte virtualKey)
     {
         SendVirtualKey(virtualKey, keyUp: false);
@@ -883,8 +910,14 @@ internal sealed class WindowsInput
             VkEscape => (char)0x1B,
             VkReturn => '\r',
             VkSpace => ' ',
+            VkG => 'g',
             _ => null
         };
+    }
+
+    private static bool IsExtendedVirtualKey(byte virtualKey)
+    {
+        return virtualKey is VkLeftWindows;
     }
 
     private static void EnsureWindows()
@@ -1092,7 +1125,7 @@ internal sealed class WindowsInput
             };
         }
 
-        public static Input ForScanCode(ushort scanCode, bool keyUp)
+        public static Input ForScanCode(ushort scanCode, bool keyUp, bool extendedKey = false)
         {
             return new Input
             {
@@ -1102,7 +1135,9 @@ internal sealed class WindowsInput
                     Keyboard = new KeyboardInput
                     {
                         Scan = (char)scanCode,
-                        Flags = KeyEventScanCode | (keyUp ? KeyEventKeyUp : 0)
+                        Flags = KeyEventScanCode
+                            | (extendedKey ? KeyEventExtendedKey : 0)
+                            | (keyUp ? KeyEventKeyUp : 0)
                     }
                 }
             };
