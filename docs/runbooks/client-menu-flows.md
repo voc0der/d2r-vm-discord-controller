@@ -163,19 +163,9 @@ Automation:
 /d2r ready hc1
 ```
 
-The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, re-sending the launch command at `battleNetExecRetryDelaySeconds` and clicking Battle.net Play when the blue button is detected. After D2R exists, it starts an AutoHotkey input pump by default (`ui.preferAutoHotkeyInput: true`) that repeatedly activates D2R, clicks `ui.introSkipPoint`, default center, and sends `G` every `ui.readyStartupSkipIntervalMs`, default 100 ms. This intentionally mirrors the manual AHK path that skips D2R intro videos reliably in the VM desktop. If AutoHotkey is missing or fails to start, the agent falls back to direct Win32 input with scan-code `SendInput` for keys and `SetCursorPos` plus `mouse_event` for clicks. It stops only when character select is visually detected. The ready loop intentionally does not send Escape because an unrecognized character screen can interpret Escape as menu/exit input.
+The ready flow waits up to `d2rStartTimeoutSeconds` for D2R to appear, re-sending the launch command at `battleNetExecRetryDelaySeconds` and clicking Battle.net Play when the blue button is detected. After D2R exists, it best-effort focuses D2R every tenth burst, then clicks `ui.introSkipPoint`, default center, and sends real `G` every `ui.readyStartupSkipIntervalMs`, default 100 ms. Key presses use `keybd_event` plus virtual-key `SendInput`, and mouse clicks use `SetCursorPos` plus `mouse_event` so failures are visible in the VM desktop after the cursor is visible again. It stops only when character select is visually detected. The ready loop intentionally does not send Escape because an unrecognized character screen can interpret Escape as menu/exit input.
 
-AutoHotkey configuration:
-
-```json
-"preferAutoHotkeyInput": true,
-"autoHotkeyPath": "AutoHotkey.exe",
-"autoHotkeyInputTimeoutSeconds": 5
-```
-
-The generated scripts use AutoHotkey v1 command syntax. If a VM has both v1 and v2 installed, point `autoHotkeyPath` at the v1 executable.
-
-D2R menu flows use the same AutoHotkey click path when available, then fall back to real Win32 mouse input using the 1366x768 screen-relative coordinate baseline. Character screen and lobby readiness checks sample both full-screen coordinates and D2R-window-relative coordinates so detection can survive window geometry changes without moving the actual click path away from the known-good screen baseline. Lobby tab detection is guarded by character-screen anchors: the agent will not treat Create/Join tab-colored regions as lobby while the character Play/Lobby buttons or left menu are still visible. This keeps title-bearing characters and Act background changes from being mistaken for the Lobby state.
+D2R menu flows send real Win32 mouse input using the 1366x768 screen-relative coordinate baseline. Character screen and lobby readiness checks sample both full-screen coordinates and D2R-window-relative coordinates so detection can survive window geometry changes without moving the actual click path away from the known-good screen baseline.
 
 If a character-screen menu command is sent while D2R is running but still on an intro/title/loading state, the VM agent runs the same startup skip loop before clicking Play or Lobby. If `/d2r ready` just marked the client `CharacterScreenIdle`, later menu commands trust that state instead of spending another full startup-skip timeout on the same visual check. If the client is already in a game, character-screen menu automation fails clearly and expects `/d2r save-exit` first.
 
@@ -220,7 +210,7 @@ Automation:
 /d2r join-game hc1 character-slot:1
 ```
 
-Before typing, the VM agent retries the Lobby button from character select, then retries the Join Game tab click until the active tab is detected and character-select anchors are absent. After typing, it retries the final Join Game button until the client leaves the lobby tab or `ui.gameEntryStartTimeoutSeconds` expires. If a game-entry error modal appears, such as password mismatch or game unavailable, the agent clicks OK, restores the Join Game form, re-enters the game/password fields, and retries. If the full-screen connection interrupted message appears, the agent waits for the Join Game tab to return, restores the form, and retries. After the load wait, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
+Before typing, the VM agent retries the Join Game tab click until the tab is detected. After typing, it retries the final Join Game button until the client leaves the lobby tab or `ui.gameEntryStartTimeoutSeconds` expires. If a game-entry error modal appears, such as password mismatch or game unavailable, the agent clicks OK, restores the Join Game form, re-enters the game/password fields, and retries. If the full-screen connection interrupted message appears, the agent waits for the Join Game tab to return, restores the form, and retries. After the load wait, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
 
 ## Character Screen To Create Game
 
@@ -255,7 +245,7 @@ Automation:
 /d2r create-game hc1 character-slot:1
 ```
 
-Before typing, the VM agent retries the Lobby button from character select, then retries the Create Game tab click until the active tab is detected and character-select anchors are absent. After typing, it retries the final Create Game button until the client leaves the lobby tab or `ui.gameEntryStartTimeoutSeconds` expires. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. After the load wait, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
+Before typing, the VM agent retries the Create Game tab click until the tab is detected. After typing, it retries the final Create Game button until the client leaves the lobby tab or `ui.gameEntryStartTimeoutSeconds` expires. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. After the load wait, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
 
 ## Join Off Friend
 

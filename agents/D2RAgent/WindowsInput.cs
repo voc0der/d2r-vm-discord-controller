@@ -39,7 +39,6 @@ internal sealed class WindowsInput
     private const uint KeyEventKeyUp = 0x0002;
     private const uint InputKeyboard = 1;
     private const uint InputMouse = 0;
-    private const uint KeyEventExtendedKey = 0x0001;
     private const uint KeyEventUnicode = 0x0004;
     private const uint KeyEventScanCode = 0x0008;
     private const uint MapVkToVsc = 0;
@@ -207,19 +206,6 @@ internal sealed class WindowsInput
         }
 
         SendLegacyMouseClick(x, y, button);
-    }
-
-    public ScreenPoint ToScreenPoint(UiPoint point)
-    {
-        return ToScreenPoint(point, coordinateProcessNames: null);
-    }
-
-    public ScreenPoint ToScreenPoint(UiPoint point, IEnumerable<string>? coordinateProcessNames)
-    {
-        EnsureWindows();
-
-        var (x, y) = ToScreen(point, coordinateProcessNames);
-        return new ScreenPoint(x, y);
     }
 
     public bool SendWindowReadyBurst(string processName, UiPoint point, bool includeEscape)
@@ -771,15 +757,8 @@ internal sealed class WindowsInput
 
     private static void SendVirtualKey(byte virtualKey, bool keyUp)
     {
-        var scanCode = (ushort)MapVirtualKey(virtualKey, MapVkToVsc);
-        if (scanCode != 0)
-        {
-            var scanCodeSent = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp, IsExtendedVirtualKey(virtualKey)) });
-            if (scanCodeSent == 1)
-            {
-                return;
-            }
-        }
+        var scanCode = (byte)MapVirtualKey(virtualKey, MapVkToVsc);
+        keybd_event(virtualKey, scanCode, keyUp ? KeyEventKeyUp : 0, UIntPtr.Zero);
 
         var sent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp) });
         if (sent == 1)
@@ -787,7 +766,17 @@ internal sealed class WindowsInput
             return;
         }
 
-        keybd_event(virtualKey, (byte)Math.Min(scanCode, byte.MaxValue), keyUp ? KeyEventKeyUp : 0, UIntPtr.Zero);
+        if (scanCode != 0)
+        {
+            sent = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp) });
+        }
+
+        if (sent == 1)
+        {
+            return;
+        }
+
+        keybd_event(virtualKey, 0, keyUp ? KeyEventKeyUp : 0, UIntPtr.Zero);
     }
 
     private static void SendUnicodeChar(char character)
@@ -896,11 +885,6 @@ internal sealed class WindowsInput
             VkSpace => ' ',
             _ => null
         };
-    }
-
-    private static bool IsExtendedVirtualKey(byte virtualKey)
-    {
-        return virtualKey is VkLeftWindows;
     }
 
     private static void EnsureWindows()
@@ -1108,7 +1092,7 @@ internal sealed class WindowsInput
             };
         }
 
-        public static Input ForScanCode(ushort scanCode, bool keyUp, bool extendedKey)
+        public static Input ForScanCode(ushort scanCode, bool keyUp)
         {
             return new Input
             {
@@ -1118,9 +1102,7 @@ internal sealed class WindowsInput
                     Keyboard = new KeyboardInput
                     {
                         Scan = (char)scanCode,
-                        Flags = KeyEventScanCode
-                            | (extendedKey ? KeyEventExtendedKey : 0)
-                            | (keyUp ? KeyEventKeyUp : 0)
+                        Flags = KeyEventScanCode | (keyUp ? KeyEventKeyUp : 0)
                     }
                 }
             };
@@ -1213,8 +1195,6 @@ internal sealed record ScreenRegionStats(
     double RedRatio,
     double BlueRatio,
     int Samples);
-
-internal sealed record ScreenPoint(int X, int Y);
 
 internal sealed record InputRect(int Left, int Top, int Right, int Bottom)
 {

@@ -16,7 +16,6 @@ public sealed class VmOperations
     private DateTimeOffset? _characterScreenIdleSinceUtc;
     private DateTimeOffset? _lastLobbyOrGameInteractionUtc;
     private string? _lastActivityReason;
-    private bool _autoHotkeyInputUnavailable;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -604,7 +603,6 @@ public sealed class VmOperations
         var intervalMs = Math.Clamp(_config.Ui.ReadyStartupSkipIntervalMs, 50, 250);
         var nudges = 0;
         var lastState = ReadyScreenState.Unknown;
-        using var autoHotkeyPump = TryStartAutoHotkeyReadyPump(input, skipSeconds, intervalMs);
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -615,11 +613,7 @@ public sealed class VmOperations
                 return new ReadyWaitResult(true, nudges, lastState);
             }
 
-            if (autoHotkeyPump is null || autoHotkeyPump.HasExited)
-            {
-                SendReadySkipKey(input, primeInput: nudges % 10 == 0);
-            }
-
+            SendReadySkipKey(input, primeInput: nudges % 10 == 0);
             nudges++;
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
@@ -631,39 +625,6 @@ public sealed class VmOperations
         }
 
         return new ReadyWaitResult(false, nudges, lastState);
-    }
-
-    private AutoHotkeyScriptRun? TryStartAutoHotkeyReadyPump(
-        WindowsInput input,
-        int skipSeconds,
-        int intervalMs)
-    {
-        if (!_config.Ui.PreferAutoHotkeyInput || _autoHotkeyInputUnavailable)
-        {
-            return null;
-        }
-
-        try
-        {
-            var point = input.ToScreenPoint(_config.Ui.IntroSkipPoint);
-            var run = AutoHotkeyInput.StartReadyPump(
-                _config.Ui.AutoHotkeyPath,
-                GetD2RProcessNames(),
-                point,
-                TimeSpan.FromSeconds(Math.Max(skipSeconds, 1)),
-                TimeSpan.FromMilliseconds(Math.Clamp(intervalMs, 50, 250)));
-            if (run is not null)
-            {
-                return run;
-            }
-        }
-        catch (Exception)
-        {
-            // Fall back to direct Win32 input below.
-        }
-
-        _autoHotkeyInputUnavailable = true;
-        return null;
     }
 
     private void SendReadySkipKey(WindowsInput input, bool primeInput)
@@ -699,45 +660,7 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
-        if (TryClickD2RWithAutoHotkey(input, point, button))
-        {
-            return;
-        }
-
         input.Click(point, button);
-    }
-
-    private bool TryClickD2RWithAutoHotkey(
-        WindowsInput input,
-        AgentCommon.UiPoint point,
-        MouseButton button)
-    {
-        if (!_config.Ui.PreferAutoHotkeyInput || _autoHotkeyInputUnavailable)
-        {
-            return false;
-        }
-
-        try
-        {
-            var screenPoint = input.ToScreenPoint(point);
-            var ok = AutoHotkeyInput.TryClick(
-                _config.Ui.AutoHotkeyPath,
-                GetD2RProcessNames(),
-                screenPoint,
-                button,
-                TimeSpan.FromSeconds(Math.Max(_config.Ui.AutoHotkeyInputTimeoutSeconds, 1)));
-            if (ok)
-            {
-                return true;
-            }
-        }
-        catch (Exception)
-        {
-            // Fall back to direct Win32 input below.
-        }
-
-        _autoHotkeyInputUnavailable = true;
-        return false;
     }
 
     private InputDiagnostics? TryGetD2RInputDiagnostics()
@@ -1097,8 +1020,7 @@ public sealed class VmOperations
     {
         var play = SampleD2RRegion(input, _config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative);
         var lobby = SampleD2RRegion(input, _config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative);
-        return D2RScreenClassifier.IsCharacterButtonRegion(play)
-            && D2RScreenClassifier.IsCharacterButtonRegion(lobby);
+        return IsCharacterButtonRegion(play) && IsCharacterButtonRegion(lobby);
     }
 
     private bool IsCharacterMenuReady(WindowsInput input, bool windowRelative)
@@ -1106,7 +1028,9 @@ public sealed class VmOperations
         var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: windowRelative);
         var options = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.405), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative);
         var cinematics = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.460), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative);
-        return D2RScreenClassifier.IsCharacterMenuReady(logo, options, cinematics);
+        return logo.OrangeRatio > 0.05
+            && IsCharacterMenuButtonRegion(options)
+            && IsCharacterMenuButtonRegion(cinematics);
     }
 
     private string FormatCharacterScreenReadyFailure(ReadyWaitResult result)
@@ -1169,10 +1093,9 @@ public sealed class VmOperations
     private bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab, bool windowRelative)
     {
         var stats = SampleD2RRegion(input, tab, widthRatio: 0.10, heightRatio: 0.045, windowRelative: windowRelative);
-        return D2RScreenClassifier.IsLobbyTabReady(
-            stats,
-            IsCharacterButtonPairReady(input, windowRelative),
-            IsCharacterMenuReady(input, windowRelative));
+        return stats.AverageLuminance > 28
+            && stats.GreyRatio > 0.25
+            && stats.DarkRatio < 0.80;
     }
 
     private bool IsLobbyEntryButtonReady(WindowsInput input)
@@ -1246,6 +1169,20 @@ public sealed class VmOperations
             && hud.AverageLuminance > 35
             && hud.LuminanceStdDev > 25
             && hud.DarkRatio < 0.80;
+    }
+
+    private static bool IsCharacterButtonRegion(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 45
+            && stats.GreyRatio > 0.35
+            && stats.DarkRatio < 0.55;
+    }
+
+    private static bool IsCharacterMenuButtonRegion(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 40
+            && stats.GreyRatio > 0.35
+            && stats.DarkRatio < 0.65;
     }
 
     private ScreenRegionStats SampleD2RRegion(
