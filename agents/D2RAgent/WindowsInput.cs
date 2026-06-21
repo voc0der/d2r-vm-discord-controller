@@ -235,7 +235,6 @@ internal sealed class WindowsInput
         }
 
         ShowWindow(process.MainWindowHandle, SwRestore);
-        _ = TrySetForegroundProcess(process);
         SendWindowKey(process.MainWindowHandle, VkG);
         return true;
     }

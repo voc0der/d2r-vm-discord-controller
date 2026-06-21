@@ -249,7 +249,7 @@ public sealed class VmOperations
             return CommandResult.Success("D2R is not running.", await GetStatusAsync(cancellationToken));
         }
 
-        var input = new WindowsInput(GetD2RProcessNames());
+        var input = new WindowsInput();
         if (!input.TryFocusProcess(GetD2RProcessNames()))
         {
             return CommandResult.Failure("D2R is running, but no focusable window was found.");
@@ -270,7 +270,7 @@ public sealed class VmOperations
             return launch;
         }
 
-        var input = new WindowsInput(GetD2RProcessNames());
+        var input = new WindowsInput();
         await DelayLongAsync(cancellationToken);
 
         var d2rStarted = await WaitForD2RProcessStartedAsync(input, cancellationToken);
@@ -501,7 +501,7 @@ public sealed class VmOperations
             throw new InvalidOperationException($"Process is not running: {FormatProcessNames(processNames)}");
         }
 
-        var input = new WindowsInput(processNames);
+        var input = new WindowsInput();
         _ = TryPrepareD2RForInput(input);
 
         return input;
@@ -540,7 +540,7 @@ public sealed class VmOperations
             _config.Ui.ReadyStartupSkipSeconds,
             Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
-        var intervalMs = Math.Max(_config.Ui.ReadyStartupSkipIntervalMs, 100);
+        var intervalMs = Math.Clamp(_config.Ui.ReadyStartupSkipIntervalMs, 50, 250);
         var nudges = 0;
         var lastState = ReadyScreenState.Unknown;
         while (DateTimeOffset.UtcNow < deadline)
@@ -553,7 +553,7 @@ public sealed class VmOperations
                 return new ReadyWaitResult(true, nudges, lastState);
             }
 
-            SendReadySkipKey(input);
+            SendReadySkipKey(input, primeInput: nudges % 10 == 0);
             nudges++;
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
@@ -567,9 +567,13 @@ public sealed class VmOperations
         return new ReadyWaitResult(false, nudges, lastState);
     }
 
-    private void SendReadySkipKey(WindowsInput input)
+    private void SendReadySkipKey(WindowsInput input, bool primeInput)
     {
-        TryPrimeD2RInput(input);
+        if (primeInput)
+        {
+            TryPrimeD2RInput(input);
+        }
+
         input.PressReadySkipKey();
         _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
     }
