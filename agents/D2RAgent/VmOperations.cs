@@ -644,9 +644,9 @@ public sealed class VmOperations
         if (primeInput)
         {
             _ = TryPrepareD2RForInput(input);
-            ClickD2R(input, _config.Ui.IntroSkipPoint);
         }
 
+        ClickD2R(input, _config.Ui.IntroSkipPoint);
         input.PressReadySkipKey();
     }
 
