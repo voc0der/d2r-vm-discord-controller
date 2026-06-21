@@ -26,6 +26,11 @@ internal static class WindowsProcessIdentity
             .ToArray();
     }
 
+    public static bool IsCurrentProcess(int processId)
+    {
+        return processId == Environment.ProcessId;
+    }
+
     private static string NormalizeProcessName(string? processName)
     {
         if (string.IsNullOrWhiteSpace(processName))

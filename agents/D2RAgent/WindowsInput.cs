@@ -599,6 +599,7 @@ internal sealed class WindowsInput
         var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         var process = names
             .SelectMany(Process.GetProcessesByName)
+            .Where(candidate => !WindowsProcessIdentity.IsCurrentProcess(candidate.Id))
             .OrderByDescending(candidate => candidate.MainWindowHandle != IntPtr.Zero)
             .FirstOrDefault();
         if (process is not null)
@@ -612,6 +613,7 @@ internal sealed class WindowsInput
             : Process.GetProcesses()
                 .Where(candidate => candidate.MainWindowHandle != IntPtr.Zero)
                 .Select(candidate => new { Process = candidate, Title = SafeGetMainWindowTitle(candidate) })
+                .Where(candidate => !WindowsProcessIdentity.IsCurrentProcess(candidate.Process.Id))
                 .Where(candidate => titleNeedles.Any(needle => candidate.Title.Contains(needle, StringComparison.OrdinalIgnoreCase)))
                 .Select(candidate => candidate.Process)
                 .FirstOrDefault();

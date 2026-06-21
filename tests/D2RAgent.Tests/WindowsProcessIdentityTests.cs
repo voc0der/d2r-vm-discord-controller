@@ -26,4 +26,11 @@ public sealed class WindowsProcessIdentityTests
         Assert.Contains("Battle.net Helper", names);
         Assert.DoesNotContain("Battle", names);
     }
+
+    [Fact]
+    public void CurrentProcessIsRejectedAsAutomationTarget()
+    {
+        Assert.True(WindowsProcessIdentity.IsCurrentProcess(Environment.ProcessId));
+        Assert.False(WindowsProcessIdentity.IsCurrentProcess(Environment.ProcessId + 1));
+    }
 }

@@ -1842,7 +1842,9 @@ public sealed class VmOperations
     private static IEnumerable<Process> FindProcessesByNameOrWindowTitle(IEnumerable<string> processNames)
     {
         var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
-        foreach (var process in names.SelectMany(Process.GetProcessesByName))
+        foreach (var process in names
+                     .SelectMany(Process.GetProcessesByName)
+                     .Where(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id)))
         {
             yield return process;
         }
@@ -1856,6 +1858,11 @@ public sealed class VmOperations
         foreach (var process in Process.GetProcesses())
         {
             if (process.MainWindowHandle == IntPtr.Zero)
+            {
+                continue;
+            }
+
+            if (WindowsProcessIdentity.IsCurrentProcess(process.Id))
             {
                 continue;
             }

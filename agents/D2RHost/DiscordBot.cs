@@ -1480,6 +1480,12 @@ public sealed class DiscordBot
             var foregroundProcess = TryGetString(input, "foregroundProcessName", out var foregroundName)
                 ? foregroundName
                 : "?";
+            var targetProcess = TryGetString(input, "processName", out var processName)
+                ? processName
+                : "?";
+            var targetTitle = TryGetString(input, "mainWindowTitle", out var mainWindowTitle)
+                ? mainWindowTitle
+                : "?";
             var session = TryGetInt(input, "sessionId", out var sessionId)
                 ? sessionId.ToString()
                 : "?";
@@ -1490,7 +1496,7 @@ public sealed class DiscordBot
             var windowRect = TryReadInputRect(input, "windowRect");
             var clientRect = TryReadInputRect(input, "clientRect");
 
-            value = $"interactive={interactive}, session={session}, window={window}, foreground={foreground}, fg={foregroundProcess}, screen={screen}, windowRect={windowRect}, client={clientRect}";
+            value = $"interactive={interactive}, session={session}, target={targetProcess}, title={targetTitle}, window={window}, foreground={foreground}, fg={foregroundProcess}, screen={screen}, windowRect={windowRect}, client={clientRect}";
             return true;
         }
         catch (JsonException)
