@@ -313,29 +313,12 @@ public sealed class VmOperations
     private async Task<CommandResult> GoLobbyAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
         var input = FocusD2R();
-        if (IsAnyLobbyTabReady(input))
+        var lobbyReady = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
+        if (lobbyReady is not null)
         {
-            MarkLobbyOrGameInteraction("Lobby was already open.");
-            return CommandResult.Success("Lobby was already open.", await GetStatusAsync(cancellationToken));
+            return lobbyReady;
         }
 
-        var menuReady = await EnsureCharacterScreenReadyForMenuAsync(input, cancellationToken);
-        if (menuReady is not null)
-        {
-            return menuReady;
-        }
-
-        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
-        var lobbyReady = await ClickLobbyUntilReadyAsync(input, cancellationToken);
-        if (!lobbyReady)
-        {
-            MarkLobbyOrGameInteraction("Clicked Lobby without visual confirmation.");
-            return CommandResult.Success(
-                $"Lobby click sequence completed without visual confirmation.{FormatInputDiagnosticsSuffix()}",
-                await GetStatusAsync(cancellationToken));
-        }
-
-        MarkLobbyOrGameInteraction("Opened Lobby.");
         return CommandResult.Success("Lobby command completed.", await GetStatusAsync(cancellationToken));
     }
 
@@ -369,15 +352,14 @@ public sealed class VmOperations
             return CommandResult.Failure("gameName is required for menu_join_game.");
         }
 
-        var lobby = await GoLobbyAsync(args, cancellationToken);
-        if (!lobby.Ok)
+        var input = FocusD2R();
+        var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
+        if (lobby is not null)
         {
             return lobby;
         }
 
-        var input = FocusD2R();
-        var joinTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.JoinGameTab, cancellationToken);
-        var joinWarning = joinTabReady ? "" : " Join tab was not visually confirmed.";
+        await ClickLobbyTabDirectAsync(input, _config.Ui.JoinGameTab, cancellationToken);
 
         await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.JoinGameNameField, args.GameName, cancellationToken);
@@ -397,7 +379,7 @@ public sealed class VmOperations
 
         MarkLobbyOrGameInteraction($"Joined game {args.GameName}.");
         var retrySuffix = FormatEntryRecoverySuffix(joinEntry);
-        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}{joinWarning}", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> CreateGameAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -407,15 +389,14 @@ public sealed class VmOperations
             return CommandResult.Failure("gameName is required for menu_create_game.");
         }
 
-        var lobby = await GoLobbyAsync(args, cancellationToken);
-        if (!lobby.Ok)
+        var input = FocusD2R();
+        var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
+        if (lobby is not null)
         {
             return lobby;
         }
 
-        var input = FocusD2R();
-        var createTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.CreateGameTab, cancellationToken);
-        var createWarning = createTabReady ? "" : " Create tab was not visually confirmed.";
+        await ClickLobbyTabDirectAsync(input, _config.Ui.CreateGameTab, cancellationToken);
 
         await FillTextFieldAsync(input, _config.Ui.CreateGameNameField, args.GameName, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
@@ -436,18 +417,18 @@ public sealed class VmOperations
 
         MarkLobbyOrGameInteraction($"Created game {args.GameName}.");
         var retrySuffix = FormatEntryRecoverySuffix(createEntry);
-        return CommandResult.Success($"Create game flow completed for {args.GameName}.{retrySuffix}{createWarning}", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success($"Create game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> JoinFriendAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
-        var lobby = await GoLobbyAsync(args, cancellationToken);
-        if (!lobby.Ok)
+        var input = FocusD2R();
+        var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
+        if (lobby is not null)
         {
             return lobby;
         }
 
-        var input = FocusD2R();
         ClickD2R(input, _config.Ui.LobbyPartyIcon);
         await DelayLongAsync(cancellationToken);
         ClickD2R(input, GetFriendRowPoint(args.FriendRow), MouseButton.Right);
@@ -843,48 +824,58 @@ public sealed class VmOperations
             : $"{rect.Left},{rect.Top},{rect.Width}x{rect.Height}";
     }
 
-    private async Task<bool> ClickLobbyUntilReadyAsync(
+    private async Task<CommandResult?> EnsureLobbyOpenedAsync(
+        WindowsInput input,
+        MenuCommandArgs args,
+        CancellationToken cancellationToken)
+    {
+        if (GetActivitySnapshot().State == D2RActivityState.LobbyOrGame)
+        {
+            _ = TryPrepareD2RForInput(input);
+            return null;
+        }
+
+        var menuReady = await EnsureCharacterScreenReadyForMenuAsync(input, cancellationToken);
+        if (menuReady is not null)
+        {
+            return menuReady;
+        }
+
+        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+        await ClickLobbyDirectAsync(input, cancellationToken);
+        MarkLobbyOrGameInteraction("Clicked Lobby.");
+        return null;
+    }
+
+    private async Task<bool> ClickLobbyDirectAsync(
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt < 4; attempt++)
+        for (var attempt = 0; attempt < 2; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
-
-            if (IsAnyLobbyTabReady(input))
-            {
-                return true;
-            }
             ClickD2R(input, _config.Ui.CharacterLobbyButton);
-
-            await Task.Delay(
-                TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)),
-                cancellationToken);
+            await DelayLongAsync(cancellationToken);
         }
 
-        return IsAnyLobbyTabReady(input);
+        return true;
     }
 
-    private async Task<bool> ClickLobbyTabUntilReadyAsync(
+    private async Task ClickLobbyTabDirectAsync(
         WindowsInput input,
         AgentCommon.UiPoint tab,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt < 3; attempt++)
+        for (var attempt = 0; attempt < 2; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
-
-            if (IsLobbyTabReady(input, tab))
-            {
-                return true;
-            }
             ClickD2R(input, tab);
             await DelayStepAsync(cancellationToken);
         }
 
-        return IsLobbyTabReady(input, tab);
+        MarkLobbyOrGameInteraction("Clicked lobby tab.");
     }
 
     private async Task<GameEntryAttemptResult> ClickMenuEntryButtonUntilEnteredGameAsync(
@@ -932,7 +923,7 @@ public sealed class VmOperations
             if (IsCharacterScreenOffline(input))
             {
                 if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
-                    || !await ClickLobbyUntilReadyAsync(input, cancellationToken)
+                    || !await ClickLobbyDirectAsync(input, cancellationToken)
                     || !await restoreFormAsync())
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the menu form could not be restored after clicking Online.");
@@ -940,7 +931,7 @@ public sealed class VmOperations
             }
             else if (IsCharacterScreenReady(input))
             {
-                if (!await ClickLobbyUntilReadyAsync(input, cancellationToken)
+                if (!await ClickLobbyDirectAsync(input, cancellationToken)
                     || !await restoreFormAsync())
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the menu form could not be restored.");
@@ -975,7 +966,7 @@ public sealed class VmOperations
             else if (waitResult == GameEntryWaitResult.OfflineCharacterScreen)
             {
                 if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
-                    || !await ClickLobbyUntilReadyAsync(input, cancellationToken)
+                    || !await ClickLobbyDirectAsync(input, cancellationToken)
                     || !await restoreFormAsync())
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the menu form could not be restored after clicking Online.");
@@ -983,7 +974,7 @@ public sealed class VmOperations
             }
             else if (waitResult == GameEntryWaitResult.ReturnedToCharacterScreen)
             {
-                if (!await ClickLobbyUntilReadyAsync(input, cancellationToken)
+                if (!await ClickLobbyDirectAsync(input, cancellationToken)
                     || !await restoreFormAsync())
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the menu form could not be restored.");
@@ -1046,7 +1037,7 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        _ = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.JoinGameTab, cancellationToken);
+        await ClickLobbyTabDirectAsync(input, _config.Ui.JoinGameTab, cancellationToken);
 
         await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.JoinGameNameField, args.GameName ?? "", cancellationToken);
@@ -1059,7 +1050,7 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        _ = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.CreateGameTab, cancellationToken);
+        await ClickLobbyTabDirectAsync(input, _config.Ui.CreateGameTab, cancellationToken);
 
         await FillTextFieldAsync(input, _config.Ui.CreateGameNameField, args.GameName ?? "", cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
@@ -1239,12 +1230,6 @@ public sealed class VmOperations
             && text.LuminanceStdDev > 15
             && text.GreyRatio > 0.02
             && text.DarkRatio > 0.85;
-    }
-
-    private bool IsAnyLobbyTabReady(WindowsInput input)
-    {
-        return IsLobbyTabReady(input, _config.Ui.CreateGameTab)
-            || IsLobbyTabReady(input, _config.Ui.JoinGameTab);
     }
 
     private bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab)
