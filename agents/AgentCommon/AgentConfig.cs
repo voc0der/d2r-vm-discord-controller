@@ -22,7 +22,7 @@ public sealed class VmAgentConfig : AgentConfig
     public string[] D2RProcessNames { get; set; } = ["D2R"];
     public string? WorkingDirectory { get; set; }
     public int LaunchGraceSeconds { get; set; } = 10;
-    public int D2RStartTimeoutSeconds { get; set; } = 120;
+    public int D2RStartTimeoutSeconds { get; set; } = 60;
     public bool IdleQuitEnabled { get; set; } = true;
     public int IdleQuitMinutes { get; set; } = 30;
     public int IdleQuitCheckSeconds { get; set; } = 60;
@@ -39,14 +39,14 @@ public sealed class D2RUiAutomationConfig
     public bool ToggleLegacyGraphicsAfterEnteringGame { get; set; } = true;
     public int LegacyGraphicsToggleDelaySeconds { get; set; } = 20;
     public int LobbyLoadSeconds { get; set; } = 3;
-    public int ReadyStartupSkipSeconds { get; set; } = 120;
+    public int ReadyStartupSkipSeconds { get; set; } = 45;
     public int ReadyStartupSkipIntervalMs { get; set; } = 100;
     public int ReadyStartupBlindSuccessSeconds { get; set; } = 0;
     public int ReadyNudgeMinDelayMs { get; set; } = 1000;
     public int ReadyNudgeMaxDelayMs { get; set; } = 2000;
     public int WindowFocusTimeoutSeconds { get; set; } = 30;
     public int CharacterScreenSettleSeconds { get; set; } = 1;
-    public int CharacterScreenReadyTimeoutSeconds { get; set; } = 120;
+    public int CharacterScreenReadyTimeoutSeconds { get; set; } = 45;
     public int LobbyReadyTimeoutSeconds { get; set; } = 30;
     public int GameEntryStartTimeoutSeconds { get; set; } = 30;
     public int DefaultCharacterSlot { get; set; } = 1;

@@ -8,6 +8,9 @@ public sealed class VmOperations
 {
     private const string DefaultBattleNetPath = @"C:\Program Files (x86)\Battle.net\Battle.net.exe";
     private const string DefaultBattleNetD2RArgs = "--exec=\"launch OSI\"";
+    private const int MaxD2RStartTimeoutSeconds = 60;
+    private const int MaxReadyStartupSkipSeconds = 45;
+    private const int MaxCharacterScreenReconnectSeconds = 45;
 
     private readonly VmAgentConfig _config;
     private readonly object _activityLock = new();
@@ -280,7 +283,7 @@ public sealed class VmOperations
         if (!d2rStarted)
         {
             return CommandResult.Failure(
-                $"D2R was not detected within {Math.Max(_config.D2RStartTimeoutSeconds, 1)}s after repeated launch/Play attempts.",
+                $"D2R was not detected within {GetD2RStartTimeoutSeconds()}s after repeated launch/Play attempts.",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -296,7 +299,7 @@ public sealed class VmOperations
         if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
         {
             return CommandResult.Failure(
-                $"D2R reached the offline character screen, but clicking Online did not reveal the online character list within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.{FormatInputDiagnosticsSuffix()}",
+                $"D2R reached the offline character screen, but clicking Online did not reveal the online character list within {GetCharacterScreenReconnectSeconds()}s.{FormatInputDiagnosticsSuffix()}",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -487,7 +490,7 @@ public sealed class VmOperations
             if (!online)
             {
                 return CommandResult.Failure(
-                    $"D2R is at the offline character screen, and the Online tab did not reconnect within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s.{FormatInputDiagnosticsSuffix()}",
+                    $"D2R is at the offline character screen, and the Online tab did not reconnect within {GetCharacterScreenReconnectSeconds()}s.{FormatInputDiagnosticsSuffix()}",
                     await GetStatusAsync(cancellationToken));
             }
         }
@@ -612,7 +615,7 @@ public sealed class VmOperations
             return true;
         }
 
-        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
+        var timeout = TimeSpan.FromSeconds(GetCharacterScreenReconnectSeconds());
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -645,9 +648,7 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        var skipSeconds = Math.Max(
-            _config.Ui.ReadyStartupSkipSeconds,
-            Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
+        var skipSeconds = GetReadyLoopTimeoutSeconds();
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
         var intervalMs = Math.Clamp(_config.Ui.ReadyStartupSkipIntervalMs, 50, 250);
         var nudges = 0;
@@ -686,7 +687,22 @@ public sealed class VmOperations
 
         _ = TryPrepareD2RForInput(input);
         ClickD2R(input, _config.Ui.IntroSkipPoint);
+        var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
+        var beforeCursor = input.GetCursorPosition();
+        var beforeDiagnostics = TryGetD2RInputDiagnostics();
         input.PressStartupSkipKey();
+        _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
+        var afterCursor = input.GetCursorPosition();
+        var afterDiagnostics = TryGetD2RInputDiagnostics();
+        RecordD2RInputAction(
+            kind: "key",
+            button: "G",
+            point: _config.Ui.IntroSkipPoint,
+            target,
+            beforeCursor,
+            afterCursor,
+            beforeDiagnostics,
+            afterDiagnostics);
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -706,13 +722,14 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
-        var target = input.ResolveScreenPoint(point);
+        var processNames = GetD2RProcessNames();
+        var target = input.ResolveScreenPoint(point, processNames);
         var beforeCursor = input.GetCursorPosition();
         InputDiagnostics? beforeDiagnostics = null;
         InputDiagnostics? afterDiagnostics = null;
         try
         {
-            beforeDiagnostics = input.GetInputDiagnostics(GetD2RProcessNames());
+            beforeDiagnostics = input.GetInputDiagnostics(processNames);
         }
         catch (Exception)
         {
@@ -721,27 +738,48 @@ public sealed class VmOperations
 
         if (button == MouseButton.Left)
         {
-            input.LeftClick(point);
+            input.LeftClick(point, processNames);
         }
         else
         {
-            input.RightClick(point);
+            input.RightClick(point, processNames);
         }
 
         var afterCursor = input.GetCursorPosition();
         try
         {
-            afterDiagnostics = input.GetInputDiagnostics(GetD2RProcessNames());
+            afterDiagnostics = input.GetInputDiagnostics(processNames);
         }
         catch (Exception)
         {
             afterDiagnostics = null;
         }
 
+        RecordD2RInputAction(
+            kind: "click",
+            button: button.ToString(),
+            point,
+            target,
+            beforeCursor,
+            afterCursor,
+            beforeDiagnostics,
+            afterDiagnostics);
+    }
+
+    private void RecordD2RInputAction(
+        string kind,
+        string button,
+        AgentCommon.UiPoint point,
+        (int X, int Y) target,
+        CursorPosition? beforeCursor,
+        CursorPosition? afterCursor,
+        InputDiagnostics? beforeDiagnostics,
+        InputDiagnostics? afterDiagnostics)
+    {
         _lastInputAction = new LastInputActionSnapshot(
             DateTimeOffset.UtcNow,
-            "click",
-            button.ToString(),
+            kind,
+            button,
             point.X,
             point.Y,
             target.X,
@@ -752,6 +790,18 @@ public sealed class VmOperations
             afterDiagnostics?.IsForeground,
             beforeDiagnostics?.ForegroundProcessName,
             afterDiagnostics?.ForegroundProcessName);
+    }
+
+    private (int X, int Y) ResolveD2RScreenPoint(AgentCommon.UiPoint point)
+    {
+        try
+        {
+            return new WindowsInput().ResolveScreenPoint(point, GetD2RProcessNames());
+        }
+        catch (Exception)
+        {
+            return new WindowsInput().ResolveScreenPoint(point);
+        }
     }
 
     private InputDiagnostics? TryGetD2RInputDiagnostics()
@@ -1129,7 +1179,7 @@ public sealed class VmOperations
     private string FormatCharacterScreenReadyFailure(ReadyWaitResult result)
     {
         return IsD2RRunning()
-            ? $"D2R is running, but the character screen was not reached within {Math.Max(_config.Ui.ReadyStartupSkipSeconds, 1)}s. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}."
+            ? $"D2R is running, but the character screen was not reached within {GetReadyLoopTimeoutSeconds()}s. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.{FormatInputDiagnosticsSuffix()}"
             : $"D2R stopped before the ready loop finished. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.";
     }
 
@@ -1488,6 +1538,26 @@ public sealed class VmOperations
         return Task.Delay(delayMs, cancellationToken);
     }
 
+    private int GetD2RStartTimeoutSeconds()
+    {
+        return Math.Clamp(_config.D2RStartTimeoutSeconds, 1, MaxD2RStartTimeoutSeconds);
+    }
+
+    private int GetReadyStartupSkipSeconds()
+    {
+        return Math.Clamp(_config.Ui.ReadyStartupSkipSeconds, 1, MaxReadyStartupSkipSeconds);
+    }
+
+    private int GetReadyLoopTimeoutSeconds()
+    {
+        return Math.Max(GetReadyStartupSkipSeconds(), GetCharacterScreenReconnectSeconds());
+    }
+
+    private int GetCharacterScreenReconnectSeconds()
+    {
+        return Math.Clamp(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1, MaxCharacterScreenReconnectSeconds);
+    }
+
     private async Task<bool> TryFocusProcessUntilAsync(
         WindowsInput input,
         string processName,
@@ -1523,7 +1593,7 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Max(_config.D2RStartTimeoutSeconds, 1));
+        var timeout = TimeSpan.FromSeconds(GetD2RStartTimeoutSeconds());
         var deadline = DateTimeOffset.UtcNow + timeout;
         var launchRetryDelay = TimeSpan.FromSeconds(Math.Max(_config.BattleNetExecRetryDelaySeconds, 1));
         var nextLaunchRetryAt = DateTimeOffset.UtcNow;
@@ -1753,8 +1823,7 @@ public sealed class VmOperations
     private static CommandResult KillProcesses(IEnumerable<string> processNames)
     {
         var names = GetConfiguredProcessNames("", processNames);
-        var processes = names
-            .SelectMany(Process.GetProcessesByName)
+        var processes = FindProcessesByNameOrWindowTitle(names)
             .GroupBy(process => process.Id)
             .Select(group => group.First())
             .ToArray();
@@ -1777,8 +1846,65 @@ public sealed class VmOperations
 
     private static bool IsAnyProcessRunning(IEnumerable<string> processNames)
     {
-        return GetConfiguredProcessNames("", processNames)
-            .Any(processName => Process.GetProcessesByName(processName).Length > 0);
+        var names = GetConfiguredProcessNames("", processNames);
+        return FindProcessesByNameOrWindowTitle(names).Any();
+    }
+
+    private static IEnumerable<Process> FindProcessesByNameOrWindowTitle(IEnumerable<string> processNames)
+    {
+        var names = GetConfiguredProcessNames("", processNames);
+        foreach (var process in names.SelectMany(Process.GetProcessesByName))
+        {
+            yield return process;
+        }
+
+        var titleNeedles = GetWindowTitleNeedles(names).ToArray();
+        if (titleNeedles.Length == 0)
+        {
+            yield break;
+        }
+
+        foreach (var process in Process.GetProcesses())
+        {
+            if (process.MainWindowHandle == IntPtr.Zero)
+            {
+                continue;
+            }
+
+            var title = SafeGetMainWindowTitle(process);
+            if (titleNeedles.Any(needle => title.Contains(needle, StringComparison.OrdinalIgnoreCase)))
+            {
+                yield return process;
+            }
+        }
+    }
+
+    private static IEnumerable<string> GetWindowTitleNeedles(IEnumerable<string> processNames)
+    {
+        foreach (var processName in processNames)
+        {
+            yield return processName;
+            if (processName.StartsWith("D2R", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return "Diablo II: Resurrected";
+            }
+            else if (processName.Contains("Battle.net", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return "Battle.net";
+            }
+        }
+    }
+
+    private static string SafeGetMainWindowTitle(Process process)
+    {
+        try
+        {
+            return process.MainWindowTitle ?? "";
+        }
+        catch (InvalidOperationException)
+        {
+            return "";
+        }
     }
 
     private static string FormatProcessNames(IEnumerable<string> processNames)

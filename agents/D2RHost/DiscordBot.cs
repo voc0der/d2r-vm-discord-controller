@@ -8,6 +8,8 @@ namespace D2RHost;
 
 public sealed class DiscordBot
 {
+    private static readonly TimeSpan ReadyCommandTimeout = TimeSpan.FromSeconds(150);
+
     private readonly HostConfig _config;
     private readonly HostRuntimeOptions _runtime;
     private readonly AgentRegistry _registry;
@@ -162,7 +164,7 @@ public sealed class DiscordBot
                 context,
                 "menu_ready",
                 (accountKey, account) => BuildAccountArgs(accountKey, account),
-                TimeSpan.FromSeconds(240),
+                ReadyCommandTimeout,
                 displayName: "ready");
             return;
         }
@@ -229,7 +231,7 @@ public sealed class DiscordBot
                 await RunVmCommandAsync(context, singleAccount, "restart_d2r", BuildAccountArgs(singleAccountKey, singleAccount));
                 return;
             case "ready":
-                await RunVmCommandAsync(context, singleAccount, "menu_ready", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(240));
+                await RunVmCommandAsync(context, singleAccount, "menu_ready", BuildAccountArgs(singleAccountKey, singleAccount), ReadyCommandTimeout);
                 return;
             case "lobby":
                 await RunVmCommandAsync(context, singleAccount, "menu_lobby", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfNotMenuReady: true);
@@ -465,9 +467,21 @@ public sealed class DiscordBot
         TimeSpan? timeout,
         bool readyFirstIfNotMenuReady)
     {
-        var readyResult = readyFirstIfNotMenuReady
-            ? await SendReadyIfNotMenuReadyAsync(account, args)
-            : null;
+        CommandResultInfo? readyResult = null;
+        if (readyFirstIfNotMenuReady)
+        {
+            try
+            {
+                readyResult = await SendReadyIfNotMenuReadyAsync(account, args);
+            }
+            catch (Exception ex)
+            {
+                await context.Command.ModifyOriginalResponseAsync(
+                    properties => properties.Content = "This client needed `/d2r ready` before menu automation, but ready did not return: "
+                        + FormatExceptionWithAccountStatus(ex, account));
+                return;
+            }
+        }
 
         if (readyResult?.Ok == false)
         {
@@ -477,7 +491,18 @@ public sealed class DiscordBot
             return;
         }
 
-        var result = await _registry.SendCommandAsync(account.AgentId, commandName, args, timeout ?? TimeSpan.FromSeconds(60));
+        CommandResultInfo result;
+        try
+        {
+            result = await _registry.SendCommandAsync(account.AgentId, commandName, args, timeout ?? TimeSpan.FromSeconds(60));
+        }
+        catch (Exception ex)
+        {
+            await context.Command.ModifyOriginalResponseAsync(
+                properties => properties.Content = $"Command `{commandName}` did not return: {FormatExceptionWithAccountStatus(ex, account)}");
+            return;
+        }
+
         var prefix = readyResult is null
             ? ""
             : $"Ran `/d2r ready` before menu automation: {FormatCommandResult(readyResult.Ok, readyResult.Message)}\n";
@@ -691,13 +716,17 @@ public sealed class DiscordBot
                 entry.Value.AgentId,
                 "menu_ready",
                 args,
-                TimeSpan.FromSeconds(240));
+                ReadyCommandTimeout);
             return new ReadyResult(entry.Key, readyResult.Ok, readyResult.Message, RanReady: true);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Queued ready before create-game-all failed for {AccountKey}.", entry.Key);
-            return new ReadyResult(entry.Key, false, ex.Message, RanReady: true);
+            return new ReadyResult(
+                entry.Key,
+                false,
+                FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value),
+                RanReady: true);
         }
     }
 
@@ -1117,7 +1146,7 @@ public sealed class DiscordBot
                     _logger.LogError(ex, "Queued command {Command} failed for {AccountKey}.", commandName, entry.Key);
                     await SendFollowupSafeAsync(
                         context,
-                        $"{label} failed for {entry.Key}: {ex.Message}");
+                        $"{label} failed for {entry.Key}: {FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value)}");
                 }
             });
         }
@@ -1154,7 +1183,7 @@ public sealed class DiscordBot
             account.AgentId,
             "menu_ready",
             args,
-            TimeSpan.FromSeconds(240));
+            ReadyCommandTimeout);
     }
 
     private bool ShouldRunReadyFirst(AccountConfig account)
@@ -1338,6 +1367,19 @@ public sealed class DiscordBot
     {
         var (_, account) = RequireAccount(accountKey);
         return FormatAccountStatusLine(accountKey, account);
+    }
+
+    private string FormatExceptionWithAccountStatus(Exception ex, AccountConfig account)
+    {
+        var entry = _config.Accounts.FirstOrDefault(
+            pair => string.Equals(pair.Value.AgentId, account.AgentId, StringComparison.OrdinalIgnoreCase));
+        var accountKey = string.IsNullOrWhiteSpace(entry.Key) ? account.AgentId : entry.Key;
+        return FormatExceptionWithAccountStatus(ex, accountKey, account);
+    }
+
+    private string FormatExceptionWithAccountStatus(Exception ex, string accountKey, AccountConfig account)
+    {
+        return $"{ex.Message}. Current status: {FormatAccountStatusLine(accountKey, account)}";
     }
 
     private string FormatAccountStatusLine(string accountKey, AccountConfig account)

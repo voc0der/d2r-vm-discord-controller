@@ -396,6 +396,7 @@ internal sealed class WindowsInput
 
     public void PressStartupSkipKey()
     {
+        ScanKey(VkG);
         Key(VkG);
     }
 
@@ -595,10 +596,25 @@ internal sealed class WindowsInput
 
     private static Process? FindProcess(IEnumerable<string> processNames)
     {
-        return NormalizeProcessNames(processNames)
+        var names = NormalizeProcessNames(processNames).ToArray();
+        var process = names
             .SelectMany(Process.GetProcessesByName)
             .OrderByDescending(candidate => candidate.MainWindowHandle != IntPtr.Zero)
             .FirstOrDefault();
+        if (process is not null)
+        {
+            return process;
+        }
+
+        var titleNeedles = GetWindowTitleNeedles(names).ToArray();
+        return titleNeedles.Length == 0
+            ? null
+            : Process.GetProcesses()
+                .Where(candidate => candidate.MainWindowHandle != IntPtr.Zero)
+                .Select(candidate => new { Process = candidate, Title = SafeGetMainWindowTitle(candidate) })
+                .Where(candidate => titleNeedles.Any(needle => candidate.Title.Contains(needle, StringComparison.OrdinalIgnoreCase)))
+                .Select(candidate => candidate.Process)
+                .FirstOrDefault();
     }
 
     private CoordinateBounds GetCoordinateBounds(IEnumerable<string>? coordinateProcessNames)
@@ -654,6 +670,34 @@ internal sealed class WindowsInput
             .Select(processName => Path.GetFileNameWithoutExtension(processName) ?? "")
             .Where(processName => !string.IsNullOrWhiteSpace(processName))
             .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> GetWindowTitleNeedles(IEnumerable<string> processNames)
+    {
+        foreach (var processName in processNames)
+        {
+            yield return processName;
+            if (processName.StartsWith("D2R", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return "Diablo II: Resurrected";
+            }
+            else if (processName.Contains("Battle.net", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return "Battle.net";
+            }
+        }
+    }
+
+    private static string SafeGetMainWindowTitle(Process process)
+    {
+        try
+        {
+            return process.MainWindowTitle ?? "";
+        }
+        catch (InvalidOperationException)
+        {
+            return "";
+        }
     }
 
     private static string FormatProcessNames(IEnumerable<string> processNames)
