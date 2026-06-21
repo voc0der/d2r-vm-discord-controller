@@ -281,15 +281,7 @@ public sealed class VmOperations
                 await GetStatusAsync(cancellationToken));
         }
 
-        var d2rFocused = await TryFocusProcessUntilAsync(
-            input,
-            _config.D2RProcessName,
-            TimeSpan.FromSeconds(Math.Max(_config.Ui.WindowFocusTimeoutSeconds, 1)),
-            cancellationToken);
-        if (!d2rFocused)
-        {
-            return CommandResult.Failure("D2R is running, but no focusable window was found yet.", await GetStatusAsync(cancellationToken));
-        }
+        _ = TryPrepareD2RWindowForReadyInput(input);
 
         var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
         if (!characterScreenReady)
