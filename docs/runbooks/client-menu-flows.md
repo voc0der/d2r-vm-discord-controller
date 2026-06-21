@@ -46,12 +46,14 @@ Long-running host commands defer the Discord interaction and continue in backgro
 
 Reference: ![Battle.net logged in](assets/d2r-ui/logged_in_battle_net.jpg)
 
+Popup reference: ![Battle.net What's New popup](assets/d2r-ui/battlenet_whats_new_popup.jpg)
+
 Expected state:
 
 - Battle.net is logged in.
 - Diablo II: Resurrected is selected.
 - The blue Play button is visible.
-- A store/news popup may appear occasionally. It is not part of the required runbook right now.
+- The What's New/news popup is closed if it appears after a cold launch.
 
 Current implementation:
 
@@ -61,7 +63,7 @@ Current implementation:
 - Before launching D2R, the VM agent shows the desktop to minimize other windows. If Battle.net is already running, the agent restores Battle.net before sending the launch command.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
 - While D2R is not detected, the ready flow keeps sending the configured launch command every `battleNetExecRetryDelaySeconds` seconds. This handles cold Battle.net starts where the first `--exec` only opens Battle.net.
-- When Battle.net is running, the ready flow samples the blue Play button region and clicks Play every `ui.readyNudgeMinDelayMs` to `ui.readyNudgeMaxDelayMs`, default 1-2 seconds, when the button is visible.
+- When Battle.net is running, the ready flow first dismisses the What's New/news popup if detected, then samples the blue Play button region and clicks Play every `ui.readyNudgeMinDelayMs` to `ui.readyNudgeMaxDelayMs`, default 1-2 seconds, when the button is visible.
 - If an older config points at `Battle.net Launcher.exe`, the agent resolves the sibling `Battle.net.exe` for D2R launches.
 - Direct `d2rPath` launch is an advanced override and only used when `preferBattleNetExecLaunch` is false.
 

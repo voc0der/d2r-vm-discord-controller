@@ -13,11 +13,13 @@ public sealed class VmAgentConfig : AgentConfig
     public string? BattleNetPath { get; set; } = @"C:\Program Files (x86)\Battle.net\Battle.net.exe";
     public string? BattleNetArgs { get; set; } = "--exec=\"launch OSI\"";
     public string BattleNetProcessName { get; set; } = "Battle.net";
+    public string[] BattleNetProcessNames { get; set; } = ["Battle.net", "Battle.net Launcher", "Battle.net Helper"];
     public bool PreferBattleNetExecLaunch { get; set; } = true;
     public int BattleNetExecRetryDelaySeconds { get; set; } = 12;
     public string? D2RPath { get; set; }
     public string? D2RArgs { get; set; }
     public string D2RProcessName { get; set; } = "D2R";
+    public string[] D2RProcessNames { get; set; } = ["D2R"];
     public string? WorkingDirectory { get; set; }
     public int LaunchGraceSeconds { get; set; } = 10;
     public int D2RStartTimeoutSeconds { get; set; } = 120;
@@ -48,7 +50,10 @@ public sealed class D2RUiAutomationConfig
     public int DefaultFriendRow { get; set; } = 1;
     public double FriendRowHeight { get; set; } = 0.049;
     public bool ClickBattleNetPlayWhenNeeded { get; set; } = true;
+    public bool DismissBattleNetWhatsNewWhenNeeded { get; set; } = true;
     public UiPoint BattleNetPlayButton { get; set; } = new(0.129, 0.703);
+    public UiPoint BattleNetWhatsNewTitle { get; set; } = new(0.226, 0.187);
+    public UiPoint BattleNetWhatsNewCloseButton { get; set; } = new(0.843, 0.146);
     public UiPoint IntroSkipPoint { get; set; } = new(0.500, 0.500);
     public UiPoint[] CharacterSlots { get; set; } =
     [

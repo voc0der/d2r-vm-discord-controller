@@ -26,8 +26,8 @@ public sealed class VmOperations
     public Task<object> GetStatusAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var battleNetRunning = IsProcessRunning(_config.BattleNetProcessName);
-        var d2rRunning = IsProcessRunning(_config.D2RProcessName);
+        var battleNetRunning = IsBattleNetRunning();
+        var d2rRunning = IsD2RRunning();
         if (!d2rRunning)
         {
             ClearD2RActivity();
@@ -103,12 +103,12 @@ public sealed class VmOperations
 
     private async Task<CommandResult> LaunchD2RAsync(CancellationToken cancellationToken)
     {
-        if (IsProcessRunning(_config.D2RProcessName))
+        if (IsD2RRunning())
         {
             return CommandResult.Success("D2R is already running.", await GetStatusAsync(cancellationToken));
         }
 
-        var battleNetWasRunning = IsProcessRunning(_config.BattleNetProcessName);
+        var battleNetWasRunning = IsBattleNetRunning();
         await PrepareDesktopForD2RLaunchAsync(battleNetWasRunning, cancellationToken);
 
         var usedBattleNetExec = false;
@@ -135,7 +135,7 @@ public sealed class VmOperations
         if (usedBattleNetExec && !battleNetWasRunning)
         {
             await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.BattleNetExecRetryDelaySeconds, 1)), cancellationToken);
-            if (!IsProcessRunning(_config.D2RProcessName))
+            if (!IsD2RRunning())
             {
                 var retry = LaunchBattleNetD2R();
                 if (!retry.Ok)
@@ -173,7 +173,7 @@ public sealed class VmOperations
 
         try
         {
-            input.FocusProcess(_config.BattleNetProcessName);
+            input.FocusProcess(GetBattleNetProcessNames());
             await DelayStepAsync(cancellationToken);
         }
         catch (InvalidOperationException)
@@ -213,7 +213,7 @@ public sealed class VmOperations
             return;
         }
 
-        if (!IsProcessRunning(_config.D2RProcessName))
+        if (!IsD2RRunning())
         {
             ClearD2RActivity();
             return;
@@ -243,14 +243,14 @@ public sealed class VmOperations
 
     private async Task<CommandResult> QuitD2RAsync(CancellationToken cancellationToken)
     {
-        if (!IsProcessRunning(_config.D2RProcessName))
+        if (!IsD2RRunning())
         {
             ClearD2RActivity();
             return CommandResult.Success("D2R is not running.", await GetStatusAsync(cancellationToken));
         }
 
-        var input = new WindowsInput();
-        if (!input.TryFocusProcess(_config.D2RProcessName))
+        var input = new WindowsInput(GetD2RProcessNames());
+        if (!input.TryFocusProcess(GetD2RProcessNames()))
         {
             return CommandResult.Failure("D2R is running, but no focusable window was found.");
         }
@@ -270,7 +270,7 @@ public sealed class VmOperations
             return launch;
         }
 
-        var input = new WindowsInput();
+        var input = new WindowsInput(GetD2RProcessNames());
         await DelayLongAsync(cancellationToken);
 
         var d2rStarted = await WaitForD2RProcessStartedAsync(input, cancellationToken);
@@ -303,14 +303,6 @@ public sealed class VmOperations
             return CommandResult.Success("Lobby was already open.", await GetStatusAsync(cancellationToken));
         }
 
-        var ready = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
-        if (!ready.Ready)
-        {
-            return CommandResult.Failure(
-                FormatCharacterScreenReadyFailure(ready),
-                await GetStatusAsync(cancellationToken));
-        }
-
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
         var lobbyReady = await ClickLobbyUntilReadyAsync(input, cancellationToken);
         if (!lobbyReady)
@@ -327,14 +319,6 @@ public sealed class VmOperations
     private async Task<CommandResult> PlayCharacterAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
         var input = FocusD2R();
-        var ready = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
-        if (!ready.Ready)
-        {
-            return CommandResult.Failure(
-                FormatCharacterScreenReadyFailure(ready),
-                await GetStatusAsync(cancellationToken));
-        }
-
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
         input.LeftClick(_config.Ui.CharacterPlayButton);
         await WaitForGameEntryAsync(input, cancellationToken);
@@ -461,7 +445,7 @@ public sealed class VmOperations
 
     private CommandResult KillD2R()
     {
-        var result = KillProcess(_config.D2RProcessName);
+        var result = KillProcesses(GetD2RProcessNames());
         ClearD2RActivity();
         return result;
     }
@@ -511,8 +495,15 @@ public sealed class VmOperations
 
     private WindowsInput FocusD2R()
     {
-        var input = new WindowsInput();
-        input.FocusProcess(_config.D2RProcessName);
+        var processNames = GetD2RProcessNames();
+        var input = new WindowsInput(processNames);
+        if (!input.TryFocusProcess(processNames)
+            && !input.TryClickProcessWindowCenter(processNames))
+        {
+            throw new InvalidOperationException(
+                $"Process is running, but no focusable window was found: {FormatProcessNames(processNames)}");
+        }
+
         return input;
     }
 
@@ -576,14 +567,18 @@ public sealed class VmOperations
         input.PressStartKey();
         await DelayStepAsync(cancellationToken);
         input.LeftClick(_config.Ui.IntroSkipPoint);
-        _ = input.SendWindowReadyBurst(_config.D2RProcessName, _config.Ui.IntroSkipPoint, includeEscape);
+        _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape);
     }
 
     private void TryPrimeD2RInput(WindowsInput input)
     {
         try
         {
-            _ = input.TryFocusProcess(_config.D2RProcessName);
+            var processNames = GetD2RProcessNames();
+            if (!input.TryFocusProcess(processNames))
+            {
+                _ = input.TryClickProcessWindowCenter(processNames);
+            }
         }
         catch (InvalidOperationException)
         {
@@ -600,17 +595,14 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(_config.D2RProcessName);
+            input.FocusProcess(GetD2RProcessNames());
 
             if (IsAnyLobbyTabReady(input))
             {
                 return true;
             }
 
-            if (IsCharacterScreenReady(input))
-            {
-                input.LeftClick(_config.Ui.CharacterLobbyButton);
-            }
+            input.LeftClick(_config.Ui.CharacterLobbyButton);
 
             await DelayStepAsync(cancellationToken);
             if (DateTimeOffset.UtcNow >= deadline)
@@ -630,7 +622,7 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(_config.D2RProcessName);
+            input.FocusProcess(GetD2RProcessNames());
 
             if (IsLobbyTabReady(input, tab))
             {
@@ -660,7 +652,7 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(_config.D2RProcessName);
+            input.FocusProcess(GetD2RProcessNames());
 
             if (IsGameEntryErrorDialogOpen(input))
             {
@@ -762,7 +754,7 @@ public sealed class VmOperations
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            input.FocusProcess(_config.D2RProcessName);
+            input.FocusProcess(GetD2RProcessNames());
             input.LeftClick(_config.Ui.GameEntryErrorDialogOkButton);
             await DelayLongAsync(cancellationToken);
 
@@ -785,7 +777,7 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(_config.D2RProcessName);
+            input.FocusProcess(GetD2RProcessNames());
             if (!IsConnectionInterruptedScreen(input) && IsLobbyTabReady(input, activeTab))
             {
                 return true;
@@ -946,7 +938,9 @@ public sealed class VmOperations
     {
         var stats = input.SampleRegion(tab, widthRatio: 0.10, heightRatio: 0.045);
         return stats.AverageLuminance > 28
+            && stats.AverageLuminance < 90
             && stats.GreyRatio > 0.25
+            && stats.DarkRatio > 0.20
             && stats.DarkRatio < 0.80;
     }
 
@@ -1017,7 +1011,7 @@ public sealed class VmOperations
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            input.FocusProcess(_config.D2RProcessName);
+            input.FocusProcess(GetD2RProcessNames());
 
             if (IsConnectionInterruptedScreen(input))
             {
@@ -1049,7 +1043,7 @@ public sealed class VmOperations
             return GameEntryWaitResult.EnteredGame;
         }
 
-        input.FocusProcess(_config.D2RProcessName);
+        input.FocusProcess(GetD2RProcessNames());
         await DelayStepAsync(cancellationToken);
         input.PressLegacyGraphicsToggle();
         await DelayStepAsync(cancellationToken);
@@ -1170,7 +1164,7 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (IsProcessRunning(_config.D2RProcessName))
+            if (IsD2RRunning())
             {
                 return true;
             }
@@ -1204,14 +1198,19 @@ public sealed class VmOperations
     private bool TryClickBattleNetPlay(WindowsInput input)
     {
         if (!_config.Ui.ClickBattleNetPlayWhenNeeded
-            || !IsProcessRunning(_config.BattleNetProcessName))
+            || !IsBattleNetRunning())
         {
             return false;
         }
 
         try
         {
-            if (!input.TryFocusProcess(_config.BattleNetProcessName))
+            if (!input.TryFocusProcess(GetBattleNetProcessNames()))
+            {
+                return false;
+            }
+
+            if (TryDismissBattleNetWhatsNewPopup(input))
             {
                 return false;
             }
@@ -1221,7 +1220,7 @@ public sealed class VmOperations
                 return false;
             }
 
-            input.LeftClick(_config.Ui.BattleNetPlayButton);
+            input.LeftClick(_config.Ui.BattleNetPlayButton, GetBattleNetProcessNames());
             return true;
         }
         catch (InvalidOperationException)
@@ -1231,9 +1230,43 @@ public sealed class VmOperations
         }
     }
 
+    private bool TryDismissBattleNetWhatsNewPopup(WindowsInput input)
+    {
+        if (!_config.Ui.DismissBattleNetWhatsNewWhenNeeded)
+        {
+            return false;
+        }
+
+        if (!IsBattleNetWhatsNewPopupOpen(input))
+        {
+            return false;
+        }
+
+        input.LeftClick(_config.Ui.BattleNetWhatsNewCloseButton, GetBattleNetProcessNames());
+        return true;
+    }
+
+    private bool IsBattleNetWhatsNewPopupOpen(WindowsInput input)
+    {
+        var title = input.SampleRegion(
+            _config.Ui.BattleNetWhatsNewTitle,
+            widthRatio: 0.16,
+            heightRatio: 0.06,
+            coordinateProcessNames: GetBattleNetProcessNames());
+
+        return title.AverageLuminance > 30
+            && title.LuminanceStdDev > 40
+            && title.BrightRatio > 0.04
+            && title.DarkRatio > 0.75;
+    }
+
     private bool IsBattleNetPlayButtonReady(WindowsInput input)
     {
-        var stats = input.SampleRegion(_config.Ui.BattleNetPlayButton, widthRatio: 0.16, heightRatio: 0.06);
+        var stats = input.SampleRegion(
+            _config.Ui.BattleNetPlayButton,
+            widthRatio: 0.16,
+            heightRatio: 0.06,
+            coordinateProcessNames: GetBattleNetProcessNames());
         return stats.BlueRatio > 0.20
             && stats.AverageLuminance > 40
             && stats.DarkRatio < 0.70;
@@ -1241,7 +1274,7 @@ public sealed class VmOperations
 
     private CommandResult LaunchBattleNet()
     {
-        if (IsProcessRunning(_config.BattleNetProcessName))
+        if (IsBattleNetRunning())
         {
             return CommandResult.Success("Battle.net is already running.");
         }
@@ -1316,13 +1349,48 @@ public sealed class VmOperations
         }
     }
 
-    private static CommandResult KillProcess(string processName)
+    private bool IsBattleNetRunning()
     {
-        var normalized = NormalizeProcessName(processName);
-        var processes = Process.GetProcessesByName(normalized);
+        return IsAnyProcessRunning(GetBattleNetProcessNames());
+    }
+
+    private bool IsD2RRunning()
+    {
+        return IsAnyProcessRunning(GetD2RProcessNames());
+    }
+
+    private string[] GetBattleNetProcessNames()
+    {
+        return GetConfiguredProcessNames(_config.BattleNetProcessName, _config.BattleNetProcessNames);
+    }
+
+    private string[] GetD2RProcessNames()
+    {
+        return GetConfiguredProcessNames(_config.D2RProcessName, _config.D2RProcessNames);
+    }
+
+    private static string[] GetConfiguredProcessNames(string primaryProcessName, IEnumerable<string>? additionalProcessNames)
+    {
+        return new[] { primaryProcessName }
+            .Concat(additionalProcessNames ?? [])
+            .Where(processName => !string.IsNullOrWhiteSpace(processName))
+            .Select(processName => Path.GetFileNameWithoutExtension(processName) ?? "")
+            .Where(processName => !string.IsNullOrWhiteSpace(processName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static CommandResult KillProcesses(IEnumerable<string> processNames)
+    {
+        var names = GetConfiguredProcessNames("", processNames);
+        var processes = names
+            .SelectMany(Process.GetProcessesByName)
+            .GroupBy(process => process.Id)
+            .Select(group => group.First())
+            .ToArray();
         if (processes.Length == 0)
         {
-            return CommandResult.Success($"{normalized} was not running.");
+            return CommandResult.Success($"{FormatProcessNames(names)} was not running.");
         }
 
         foreach (var process in processes)
@@ -1334,17 +1402,19 @@ public sealed class VmOperations
             }
         }
 
-        return CommandResult.Success($"Killed {processes.Length} {normalized} process(es).");
+        return CommandResult.Success($"Killed {processes.Length} {FormatProcessNames(names)} process(es).");
     }
 
-    private static bool IsProcessRunning(string processName)
+    private static bool IsAnyProcessRunning(IEnumerable<string> processNames)
     {
-        return Process.GetProcessesByName(NormalizeProcessName(processName)).Length > 0;
+        return GetConfiguredProcessNames("", processNames)
+            .Any(processName => Process.GetProcessesByName(processName).Length > 0);
     }
 
-    private static string NormalizeProcessName(string processName)
+    private static string FormatProcessNames(IEnumerable<string> processNames)
     {
-        return Path.GetFileNameWithoutExtension(processName);
+        var names = GetConfiguredProcessNames("", processNames);
+        return names.Length == 0 ? "(none)" : string.Join("/", names);
     }
 
     private async Task<CommandResult> TakeScreenshotAsync(CancellationToken cancellationToken)

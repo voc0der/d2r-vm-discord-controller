@@ -53,6 +53,12 @@ internal sealed class WindowsInput
     private const int InputHoldMilliseconds = 90;
     private const int InputGapMilliseconds = 35;
     private const int SwRestore = 9;
+    private readonly string[] _coordinateProcessNames;
+
+    public WindowsInput(params string[] coordinateProcessNames)
+    {
+        _coordinateProcessNames = NormalizeProcessNames(coordinateProcessNames).ToArray();
+    }
 
     public void ShowDesktop()
     {
@@ -70,23 +76,31 @@ internal sealed class WindowsInput
 
     public void FocusProcess(string processName)
     {
-        if (!TryFocusProcess(processName))
+        FocusProcess([processName]);
+    }
+
+    public void FocusProcess(IEnumerable<string> processNames)
+    {
+        if (!TryFocusProcess(processNames))
         {
-            var normalized = Path.GetFileNameWithoutExtension(processName);
-            throw new InvalidOperationException($"Process is running, but no focusable window was found: {normalized}");
+            throw new InvalidOperationException($"Process is running, but no focusable window was found: {FormatProcessNames(processNames)}");
         }
     }
 
     public bool TryFocusProcess(string processName)
     {
+        return TryFocusProcess([processName]);
+    }
+
+    public bool TryFocusProcess(IEnumerable<string> processNames)
+    {
         EnsureWindows();
 
-        var process = FindProcess(processName);
+        var process = FindProcess(processNames);
 
         if (process is null)
         {
-            var normalized = Path.GetFileNameWithoutExtension(processName);
-            throw new InvalidOperationException($"Process is not running: {normalized}");
+            throw new InvalidOperationException($"Process is not running: {FormatProcessNames(processNames)}");
         }
 
         if (process.MainWindowHandle == IntPtr.Zero)
@@ -99,13 +113,17 @@ internal sealed class WindowsInput
 
     public bool TryClickProcessWindowCenter(string processName)
     {
+        return TryClickProcessWindowCenter([processName]);
+    }
+
+    public bool TryClickProcessWindowCenter(IEnumerable<string> processNames)
+    {
         EnsureWindows();
 
-        var process = FindProcess(processName);
+        var process = FindProcess(processNames);
         if (process is null)
         {
-            var normalized = Path.GetFileNameWithoutExtension(processName);
-            throw new InvalidOperationException($"Process is not running: {normalized}");
+            throw new InvalidOperationException($"Process is not running: {FormatProcessNames(processNames)}");
         }
 
         if (process.MainWindowHandle == IntPtr.Zero)
@@ -127,24 +145,39 @@ internal sealed class WindowsInput
         }
 
         Thread.Sleep(50);
-        return IsForegroundProcess(process.Id);
+        return true;
     }
 
     public void LeftClick(UiPoint point)
     {
-        Click(point, MouseButton.Left);
+        Click(point, MouseButton.Left, coordinateProcessNames: null);
+    }
+
+    public void LeftClick(UiPoint point, IEnumerable<string> coordinateProcessNames)
+    {
+        Click(point, MouseButton.Left, coordinateProcessNames);
     }
 
     public void RightClick(UiPoint point)
     {
-        Click(point, MouseButton.Right);
+        Click(point, MouseButton.Right, coordinateProcessNames: null);
+    }
+
+    public void RightClick(UiPoint point, IEnumerable<string> coordinateProcessNames)
+    {
+        Click(point, MouseButton.Right, coordinateProcessNames);
     }
 
     public void Click(UiPoint point, MouseButton button)
     {
+        Click(point, button, coordinateProcessNames: null);
+    }
+
+    public void Click(UiPoint point, MouseButton button, IEnumerable<string>? coordinateProcessNames)
+    {
         EnsureWindows();
 
-        var (x, y) = ToScreen(point);
+        var (x, y) = ToScreen(point, coordinateProcessNames);
         if (SendMouseClick(x, y, button))
         {
             return;
@@ -161,9 +194,14 @@ internal sealed class WindowsInput
 
     public bool SendWindowReadyBurst(string processName, UiPoint point, bool includeEscape)
     {
+        return SendWindowReadyBurst([processName], point, includeEscape);
+    }
+
+    public bool SendWindowReadyBurst(IEnumerable<string> processNames, UiPoint point, bool includeEscape)
+    {
         EnsureWindows();
 
-        var process = FindProcess(processName);
+        var process = FindProcess(processNames);
         if (process is null || process.MainWindowHandle == IntPtr.Zero)
         {
             return false;
@@ -172,7 +210,7 @@ internal sealed class WindowsInput
         var windowHandle = process.MainWindowHandle;
         ShowWindow(windowHandle, SwRestore);
         _ = TrySetForegroundProcess(process);
-        var (x, y) = ToScreen(point);
+        var (x, y) = ToScreen(point, processNames);
 
         SendWindowMouseClick(windowHandle, x, y, MouseButton.Left);
         if (includeEscape)
@@ -255,13 +293,34 @@ internal sealed class WindowsInput
 
     public ScreenRegionStats SampleRegion(UiPoint center, double widthRatio, double heightRatio, int sampleGrid = 17)
     {
+        return SampleRegion(center, widthRatio, heightRatio, sampleGrid, coordinateProcessNames: null);
+    }
+
+    public ScreenRegionStats SampleRegion(
+        UiPoint center,
+        double widthRatio,
+        double heightRatio,
+        IEnumerable<string> coordinateProcessNames,
+        int sampleGrid = 17)
+    {
+        return SampleRegion(center, widthRatio, heightRatio, sampleGrid, coordinateProcessNames);
+    }
+
+    private ScreenRegionStats SampleRegion(
+        UiPoint center,
+        double widthRatio,
+        double heightRatio,
+        int sampleGrid,
+        IEnumerable<string>? coordinateProcessNames)
+    {
         EnsureWindows();
-        var width = GetSystemMetrics(SmCxScreen);
-        var height = GetSystemMetrics(SmCyScreen);
-        var centerX = center.X * width;
-        var centerY = center.Y * height;
-        var regionWidth = Math.Max(width * widthRatio, sampleGrid);
-        var regionHeight = Math.Max(height * heightRatio, sampleGrid);
+        var screenWidth = GetSystemMetrics(SmCxScreen);
+        var screenHeight = GetSystemMetrics(SmCyScreen);
+        var bounds = GetCoordinateBounds(coordinateProcessNames);
+        var centerX = bounds.Left + (center.X * bounds.Width);
+        var centerY = bounds.Top + (center.Y * bounds.Height);
+        var regionWidth = Math.Max(bounds.Width * widthRatio, sampleGrid);
+        var regionHeight = Math.Max(bounds.Height * heightRatio, sampleGrid);
         var grid = Math.Clamp(sampleGrid, 3, 51);
         var hdc = GetDC(IntPtr.Zero);
         if (hdc == IntPtr.Zero)
@@ -285,14 +344,14 @@ internal sealed class WindowsInput
                 var y = Math.Clamp(
                     (int)Math.Round(centerY - (regionHeight / 2) + ((yIndex + 0.5) * regionHeight / grid)),
                     0,
-                    height - 1);
+                    screenHeight - 1);
 
                 for (var xIndex = 0; xIndex < grid; xIndex++)
                 {
                     var x = Math.Clamp(
                         (int)Math.Round(centerX - (regionWidth / 2) + ((xIndex + 0.5) * regionWidth / grid)),
                         0,
-                        width - 1);
+                        screenWidth - 1);
                     var color = GetPixel(hdc, x, y);
                     var red = (int)(color & 0x000000FF);
                     var green = (int)((color & 0x0000FF00) >> 8);
@@ -365,21 +424,88 @@ internal sealed class WindowsInput
         KeyUp(VkControl);
     }
 
-    private static (int X, int Y) ToScreen(UiPoint point)
+    private (int X, int Y) ToScreen(UiPoint point, IEnumerable<string>? coordinateProcessNames)
     {
-        var width = GetSystemMetrics(SmCxScreen);
-        var height = GetSystemMetrics(SmCyScreen);
-        var x = Math.Clamp((int)Math.Round(point.X * width), 0, width - 1);
-        var y = Math.Clamp((int)Math.Round(point.Y * height), 0, height - 1);
+        var screenWidth = GetSystemMetrics(SmCxScreen);
+        var screenHeight = GetSystemMetrics(SmCyScreen);
+        var bounds = GetCoordinateBounds(coordinateProcessNames);
+        var x = Math.Clamp((int)Math.Round(bounds.Left + (point.X * bounds.Width)), 0, screenWidth - 1);
+        var y = Math.Clamp((int)Math.Round(bounds.Top + (point.Y * bounds.Height)), 0, screenHeight - 1);
         return (x, y);
     }
 
     private static Process? FindProcess(string processName)
     {
-        var normalized = Path.GetFileNameWithoutExtension(processName);
-        return Process.GetProcessesByName(normalized)
+        return FindProcess([processName]);
+    }
+
+    private static Process? FindProcess(IEnumerable<string> processNames)
+    {
+        return NormalizeProcessNames(processNames)
+            .SelectMany(Process.GetProcessesByName)
             .OrderByDescending(candidate => candidate.MainWindowHandle != IntPtr.Zero)
             .FirstOrDefault();
+    }
+
+    private CoordinateBounds GetCoordinateBounds(IEnumerable<string>? coordinateProcessNames)
+    {
+        var names = NormalizeProcessNames(coordinateProcessNames).ToArray();
+        if (names.Length == 0)
+        {
+            names = _coordinateProcessNames;
+        }
+
+        return names.Length > 0 && TryGetProcessClientBounds(names, out var bounds)
+            ? bounds
+            : new CoordinateBounds(0, 0, GetSystemMetrics(SmCxScreen), GetSystemMetrics(SmCyScreen));
+    }
+
+    private static bool TryGetProcessClientBounds(IEnumerable<string> processNames, out CoordinateBounds bounds)
+    {
+        bounds = default;
+        var process = FindProcess(processNames);
+        if (process is null || process.MainWindowHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var windowHandle = process.MainWindowHandle;
+        ShowWindow(windowHandle, SwRestore);
+        if (!GetClientRect(windowHandle, out var clientRect))
+        {
+            return false;
+        }
+
+        var width = clientRect.Right - clientRect.Left;
+        var height = clientRect.Bottom - clientRect.Top;
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        var origin = new WindowPoint { X = clientRect.Left, Y = clientRect.Top };
+        if (!ClientToScreen(windowHandle, ref origin))
+        {
+            return false;
+        }
+
+        bounds = new CoordinateBounds(origin.X, origin.Y, width, height);
+        return true;
+    }
+
+    private static IEnumerable<string> NormalizeProcessNames(IEnumerable<string>? processNames)
+    {
+        return (processNames ?? [])
+            .Where(processName => !string.IsNullOrWhiteSpace(processName))
+            .Select(processName => Path.GetFileNameWithoutExtension(processName) ?? "")
+            .Where(processName => !string.IsNullOrWhiteSpace(processName))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string FormatProcessNames(IEnumerable<string> processNames)
+    {
+        var names = NormalizeProcessNames(processNames).ToArray();
+        return names.Length == 0 ? "(none)" : string.Join("/", names);
     }
 
     private static bool TrySetForegroundProcess(Process process)
@@ -617,6 +743,12 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr windowHandle, out WindowRect rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr windowHandle, out WindowRect rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr windowHandle, ref WindowPoint point);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
@@ -856,6 +988,8 @@ internal sealed class WindowsInput
         public int X;
         public int Y;
     }
+
+    private readonly record struct CoordinateBounds(int Left, int Top, int Width, int Height);
 }
 
 internal sealed record ScreenRegionStats(

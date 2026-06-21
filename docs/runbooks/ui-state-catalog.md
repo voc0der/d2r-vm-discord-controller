@@ -5,6 +5,7 @@ This catalog names the UI states represented by the screenshot assets. Keep file
 | State | Asset | Purpose |
 | --- | --- | --- |
 | Battle.net ready | `assets/d2r-ui/logged_in_battle_net.jpg` | Battle.net is logged in, D2R selected, Play button visible. |
+| Battle.net What's New popup | `assets/d2r-ui/battlenet_whats_new_popup.jpg` | Intermittent Battle.net news/ad modal that can cover Play after a cold launch. |
 | First intro video | `assets/d2r-ui/first_intro_video.jpg` | First full-screen startup video after D2R launches. |
 | First intro logo | `assets/d2r-ui/first_intro_video_end.jpg` | Blizzard logo at the end of the first startup video. |
 | Second intro video | `assets/d2r-ui/second_intro.jpg` | Diablo II startup/title animation before the final splash. |
@@ -23,10 +24,6 @@ This catalog names the UI states represented by the screenshot assets. Keep file
 | Friend Join Game menu | `assets/d2r-ui/friend_context_join_game.jpg` | Right-click friend context menu with `Join Game`. |
 | Save and Exit | `assets/d2r-ui/save_and_exit_resurrected.jpg` | Resurrected graphics pause menu. |
 | Save and Exit Legacy | `assets/d2r-ui/save_and_exit_legacy.jpg` | Legacy graphics pause menu. |
-
-Skipped for now:
-
-- Battle.net ad/store popup. It is intermittent and not required for the current runbook.
 
 Private captures:
 

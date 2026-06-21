@@ -662,19 +662,31 @@ public sealed class DiscordBot
                                 commandName,
                                 entry.Key,
                                 readyResult.Message);
+                            await SendFollowupSafeAsync(
+                                context,
+                                $"{label} skipped for {entry.Key}: ready failed: {readyResult.Message}");
                             return;
                         }
                     }
 
-                    await _registry.SendCommandAsync(
+                    var result = await _registry.SendCommandAsync(
                         entry.Value.AgentId,
                         commandName,
                         args,
                         timeout ?? TimeSpan.FromSeconds(60));
+                    if (!result.Ok)
+                    {
+                        await SendFollowupSafeAsync(
+                            context,
+                            $"{label} failed for {entry.Key}: {result.Message}");
+                    }
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Queued command {Command} failed for {AccountKey}.", commandName, entry.Key);
+                    await SendFollowupSafeAsync(
+                        context,
+                        $"{label} failed for {entry.Key}: {ex.Message}");
                 }
             });
         }
@@ -749,13 +761,7 @@ public sealed class DiscordBot
             return true;
         }
 
-        if (!TryGetString(root, "d2rActivityState", out var activityState))
-        {
-            return true;
-        }
-
-        return !string.Equals(activityState, "CharacterScreenIdle", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(activityState, "LobbyOrGame", StringComparison.OrdinalIgnoreCase);
+        return false;
     }
 
     private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)

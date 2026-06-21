@@ -5,6 +5,7 @@ These runbooks describe the client-side menu states used when getting VM clients
 Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 
 - `logged_in_battle_net.jpg`: Battle.net logged in with D2R selected and ready to press Play.
+- `battlenet_whats_new_popup.jpg`: Battle.net What's New/news modal that can appear over Play after a cold launch.
 - `first_intro_video.jpg`: First full-screen startup intro video.
 - `first_intro_video_end.jpg`: Blizzard logo at the end of the first startup intro.
 - `second_intro.jpg`: Second startup intro sequence.
