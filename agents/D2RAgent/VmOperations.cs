@@ -829,16 +829,23 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        if (GetActivitySnapshot().State == D2RActivityState.LobbyOrGame)
+        var activity = GetActivitySnapshot();
+        if (activity.State == D2RActivityState.LobbyOrGame)
         {
             _ = TryPrepareD2RForInput(input);
-            return null;
+            if (!IsCharacterScreenReady(input) && !IsCharacterScreenOffline(input))
+            {
+                return null;
+            }
         }
 
-        var menuReady = await EnsureCharacterScreenReadyForMenuAsync(input, cancellationToken);
-        if (menuReady is not null)
+        if (activity.State != D2RActivityState.CharacterScreenIdle)
         {
-            return menuReady;
+            var menuReady = await EnsureCharacterScreenReadyForMenuAsync(input, cancellationToken);
+            if (menuReady is not null)
+            {
+                return menuReady;
+            }
         }
 
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
@@ -889,6 +896,7 @@ public sealed class VmOperations
         var deadline = DateTimeOffset.UtcNow + timeout;
         var dialogRetries = 0;
         var connectionRetries = 0;
+        await ClickMenuEntryButtonAsync(input, button, cancellationToken);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -943,7 +951,6 @@ public sealed class VmOperations
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(dialogRetries, connectionRetries));
             }
 
-            ClickD2R(input, button);
             await Task.Delay(
                 TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5)),
                 cancellationToken);
@@ -985,7 +992,23 @@ public sealed class VmOperations
             {
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned from game entry, but the menu form could not be restored.");
             }
+
+            if (DateTimeOffset.UtcNow < deadline)
+            {
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+            }
         }
+    }
+
+    private async Task ClickMenuEntryButtonAsync(
+        WindowsInput input,
+        AgentCommon.UiPoint button,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _ = TryPrepareD2RForInput(input);
+        ClickD2R(input, button);
+        await DelayStepAsync(cancellationToken);
     }
 
     private async Task<bool> DismissGameEntryErrorDialogAsync(
