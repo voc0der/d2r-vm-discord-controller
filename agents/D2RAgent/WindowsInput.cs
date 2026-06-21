@@ -621,17 +621,18 @@ internal sealed class WindowsInput
 
     private static void SendVirtualKey(byte virtualKey, bool keyUp)
     {
-        var scanCode = MapVirtualKey(virtualKey, MapVkToVsc);
-        var input = scanCode == 0
-            ? Input.ForVirtualKey(virtualKey, keyUp)
-            : Input.ForScanCode((ushort)scanCode, keyUp);
-        var sent = SendInputs(new[] { input });
+        var sent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp) });
         if (sent == 1)
         {
             return;
         }
 
-        sent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp) });
+        var scanCode = MapVirtualKey(virtualKey, MapVkToVsc);
+        if (scanCode != 0)
+        {
+            sent = SendInputs(new[] { Input.ForScanCode((ushort)scanCode, keyUp) });
+        }
+
         if (sent == 1)
         {
             return;

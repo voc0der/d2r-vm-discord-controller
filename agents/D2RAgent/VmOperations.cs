@@ -480,6 +480,11 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken)
     {
+        if (GetActivitySnapshot().State == D2RActivityState.CharacterScreenIdle)
+        {
+            return null;
+        }
+
         if (IsInGameReady(input))
         {
             return CommandResult.Failure(
@@ -614,7 +619,7 @@ public sealed class VmOperations
                 return new ReadyWaitResult(true, nudges, lastState);
             }
 
-            SendReadySkipKey(input);
+            SendReadySkipKey(input, primeInput: nudges % 10 == 0);
             nudges++;
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
@@ -628,17 +633,20 @@ public sealed class VmOperations
         return new ReadyWaitResult(false, nudges, lastState);
     }
 
-    private void SendReadySkipKey(WindowsInput input)
+    private void SendReadySkipKey(WindowsInput input, bool primeInput)
     {
         if (!IsD2RRunning())
         {
             return;
         }
 
-        _ = TryPrepareD2RForInput(input);
-        ClickD2R(input, _config.Ui.IntroSkipPoint);
+        if (primeInput)
+        {
+            _ = TryPrepareD2RForInput(input);
+            ClickD2R(input, _config.Ui.IntroSkipPoint);
+        }
+
         input.PressReadySkipKey();
-        _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -658,15 +666,7 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
-        var processNames = GetD2RProcessNames();
-        if (button == MouseButton.Left)
-        {
-            input.LeftClick(point, processNames);
-        }
-        else
-        {
-            input.RightClick(point, processNames);
-        }
+        input.Click(point, button);
     }
 
     private async Task<bool> ClickLobbyUntilReadyAsync(
