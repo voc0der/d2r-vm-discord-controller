@@ -196,8 +196,9 @@ public sealed class AgentRegistry
             throw new InvalidOperationException("Could not register pending command.");
         }
 
+        var commandTimeout = timeout ?? TimeSpan.FromSeconds(60);
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(timeout ?? TimeSpan.FromSeconds(60));
+        timeoutCts.CancelAfter(commandTimeout);
         await using var registration = timeoutCts.Token.Register(() =>
         {
             if (_pending.TryRemove(commandId, out var removed))
@@ -212,7 +213,8 @@ public sealed class AgentRegistry
                 type = "command",
                 commandId,
                 command,
-                args = args ?? new { }
+                args = args ?? new { },
+                timeoutMs = GetAgentCommandTimeoutMs(commandTimeout)
             },
             JsonOptions);
 
@@ -227,6 +229,17 @@ public sealed class AgentRegistry
         }
 
         return await pending.Task;
+    }
+
+    private static int GetAgentCommandTimeoutMs(TimeSpan hostTimeout)
+    {
+        var timeout = hostTimeout - TimeSpan.FromSeconds(5);
+        if (timeout < TimeSpan.FromSeconds(5))
+        {
+            timeout = hostTimeout;
+        }
+
+        return (int)Math.Clamp(timeout.TotalMilliseconds, 1, int.MaxValue);
     }
 
     private bool Authenticate(HelloMessage hello)

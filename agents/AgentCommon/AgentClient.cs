@@ -205,11 +205,29 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         var envelope = JsonSerializer.Deserialize<ControllerCommandEnvelope>(raw, JsonOptions)
             ?? throw new InvalidOperationException("Controller command payload was invalid.");
 
+        var commandTimeout = envelope.TimeoutMs is > 0
+            ? TimeSpan.FromMilliseconds(envelope.TimeoutMs.Value)
+            : (TimeSpan?)null;
+        using var commandTimeoutCts = commandTimeout.HasValue
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+        if (commandTimeout.HasValue)
+        {
+            commandTimeoutCts!.CancelAfter(commandTimeout.Value);
+        }
+
+        var commandToken = commandTimeoutCts?.Token ?? cancellationToken;
         CommandResult result;
         try
         {
             var request = new CommandRequest(envelope.CommandId, envelope.Command, envelope.Args);
-            result = await commandHandler(request, cancellationToken);
+            result = await commandHandler(request, commandToken);
+        }
+        catch (OperationCanceledException) when (commandTimeoutCts?.IsCancellationRequested == true
+                                                && !cancellationToken.IsCancellationRequested)
+        {
+            result = CommandResult.Failure(
+                $"Command \"{envelope.Command}\" exceeded agent-side timeout of {commandTimeout!.Value.TotalSeconds:N0}s.");
         }
         catch (Exception ex)
         {

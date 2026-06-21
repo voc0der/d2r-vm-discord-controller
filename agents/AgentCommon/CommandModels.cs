@@ -16,4 +16,5 @@ internal sealed record ControllerCommandEnvelope(
     string Type,
     string CommandId,
     string Command,
-    JsonElement Args);
+    JsonElement Args,
+    int? TimeoutMs = null);

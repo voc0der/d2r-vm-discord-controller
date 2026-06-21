@@ -13,6 +13,7 @@ public sealed class VmOperations
     private const int MaxCharacterScreenReconnectSeconds = 45;
     private const int ReadyStartupDetectionIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
+    private const int MenuSampleGrid = 9;
 
     private readonly VmAgentConfig _config;
     private readonly object _activityLock = new();
@@ -1136,7 +1137,7 @@ public sealed class VmOperations
             || IsCharacterScreenOffline(input, windowRelative: true, sampleGrid);
     }
 
-    private ReadyScreenState DetectReadyScreenState(WindowsInput input, int sampleGrid = 17)
+    private ReadyScreenState DetectReadyScreenState(WindowsInput input, int sampleGrid = MenuSampleGrid)
     {
         if (IsDiabloSplashScreen(input, sampleGrid))
         {
@@ -1156,7 +1157,7 @@ public sealed class VmOperations
             : ReadyScreenState.Unknown;
     }
 
-    private bool IsCharacterButtonPairReady(WindowsInput input, bool windowRelative, int sampleGrid = 17)
+    private bool IsCharacterButtonPairReady(WindowsInput input, bool windowRelative, int sampleGrid = MenuSampleGrid)
     {
         var play = SampleD2RRegion(input, _config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative, sampleGrid: sampleGrid);
         var lobby = SampleD2RRegion(input, _config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative, sampleGrid: sampleGrid);
@@ -1165,7 +1166,7 @@ public sealed class VmOperations
             && IsOnlineCharacterListReady(input, windowRelative, sampleGrid);
     }
 
-    private bool IsCharacterMenuReady(WindowsInput input, bool windowRelative, int sampleGrid = 17)
+    private bool IsCharacterMenuReady(WindowsInput input, bool windowRelative, int sampleGrid = MenuSampleGrid)
     {
         var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: windowRelative, sampleGrid: sampleGrid);
         var options = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.405), widthRatio: 0.13, heightRatio: 0.05, windowRelative: windowRelative, sampleGrid: sampleGrid);
@@ -1175,7 +1176,7 @@ public sealed class VmOperations
 
     private bool IsCharacterScreenOffline(WindowsInput input, bool windowRelative)
     {
-        return IsCharacterScreenOffline(input, windowRelative, sampleGrid: 17);
+        return IsCharacterScreenOffline(input, windowRelative, sampleGrid: MenuSampleGrid);
     }
 
     private bool IsCharacterScreenOffline(WindowsInput input, bool windowRelative, int sampleGrid)
@@ -1189,7 +1190,7 @@ public sealed class VmOperations
         return D2RScreenClassifier.IsOfflineCharacterPanelRegion(emptyCharacterPanel);
     }
 
-    private bool IsOnlineCharacterListReady(WindowsInput input, bool windowRelative, int sampleGrid = 17)
+    private bool IsOnlineCharacterListReady(WindowsInput input, bool windowRelative, int sampleGrid = MenuSampleGrid)
     {
         var characterList = SampleD2RRegion(input, new AgentCommon.UiPoint(0.890, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: windowRelative, sampleGrid: sampleGrid);
         return D2RScreenClassifier.IsOnlineCharacterListRegion(characterList);
@@ -1202,7 +1203,7 @@ public sealed class VmOperations
             : $"D2R stopped before the ready loop finished. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.";
     }
 
-    private bool IsDiabloSplashScreen(WindowsInput input, int sampleGrid = 17)
+    private bool IsDiabloSplashScreen(WindowsInput input, int sampleGrid = MenuSampleGrid)
     {
         var logo = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.290), widthRatio: 0.45, heightRatio: 0.22, sampleGrid: sampleGrid);
         var prompt = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.600), widthRatio: 0.32, heightRatio: 0.055, sampleGrid: sampleGrid);
@@ -1340,7 +1341,7 @@ public sealed class VmOperations
         double widthRatio,
         double heightRatio,
         bool windowRelative,
-        int sampleGrid = 17)
+        int sampleGrid = MenuSampleGrid)
     {
         return windowRelative
             ? input.SampleRegion(center, widthRatio, heightRatio, coordinateProcessNames: GetD2RProcessNames(), sampleGrid: sampleGrid)

@@ -640,11 +640,29 @@ public sealed class DiscordBot
                 await SendFollowupSafeAsync(context, warmupMessage);
 
                 var creatorArgs = argsByAccount[creator.Key];
-                var createResult = await _registry.SendCommandAsync(
-                    creator.Value.AgentId,
-                    "menu_create_game",
-                    creatorArgs,
-                    TimeSpan.FromSeconds(210));
+                CommandResultInfo createResult;
+                try
+                {
+                    createResult = await _registry.SendCommandAsync(
+                        creator.Value.AgentId,
+                        "menu_create_game",
+                        creatorArgs,
+                        TimeSpan.FromSeconds(210));
+                }
+                catch (Exception ex)
+                {
+                    var message = FormatExceptionWithAccountStatus(ex, creator.Key, creator.Value);
+                    _logger.LogError(ex, "create-game-all creator command timed out or failed for {AccountKey}.", creator.Key);
+                    await CompleteGameSessionAsync(
+                        ok: false,
+                        joined: 0,
+                        status: $"{creator.Key} failed to create {game.GameName}.",
+                        detail: message);
+                    await SendFollowupSafeAsync(
+                        context,
+                        $"create-game-all failed while creating {game.GameName}: {message}");
+                    return;
+                }
 
                 if (!createResult.Ok)
                 {
@@ -761,7 +779,7 @@ public sealed class DiscordBot
         catch (Exception ex)
         {
             _logger.LogError(ex, "Queued join after create-game-all failed for {AccountKey}.", entry.Key);
-            return new JoinResult(entry.Key, false, ex.Message);
+            return new JoinResult(entry.Key, false, FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value));
         }
     }
 
@@ -852,7 +870,7 @@ public sealed class DiscordBot
         catch (Exception ex)
         {
             _logger.LogError(ex, "Queued join-all failed for {AccountKey}.", entry.Key);
-            return new JoinResult(entry.Key, false, ex.Message);
+            return new JoinResult(entry.Key, false, FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value));
         }
     }
 

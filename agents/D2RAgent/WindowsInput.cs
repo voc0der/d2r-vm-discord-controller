@@ -437,7 +437,7 @@ internal sealed class WindowsInput
         }
     }
 
-    public ScreenRegionStats SampleRegion(UiPoint center, double widthRatio, double heightRatio, int sampleGrid = 17)
+    public ScreenRegionStats SampleRegion(UiPoint center, double widthRatio, double heightRatio, int sampleGrid = 9)
     {
         return SampleRegion(center, widthRatio, heightRatio, sampleGrid, coordinateProcessNames: null);
     }
@@ -447,7 +447,7 @@ internal sealed class WindowsInput
         double widthRatio,
         double heightRatio,
         IEnumerable<string> coordinateProcessNames,
-        int sampleGrid = 17)
+        int sampleGrid = 9)
     {
         return SampleRegion(center, widthRatio, heightRatio, sampleGrid, coordinateProcessNames);
     }
