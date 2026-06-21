@@ -58,7 +58,7 @@ internal sealed class WindowsInput
 
     public WindowsInput(params string[] coordinateProcessNames)
     {
-        _coordinateProcessNames = NormalizeProcessNames(coordinateProcessNames).ToArray();
+        _coordinateProcessNames = WindowsProcessIdentity.NormalizeProcessNames(coordinateProcessNames);
     }
 
     public void ShowDesktop()
@@ -265,7 +265,7 @@ internal sealed class WindowsInput
     {
         EnsureWindows();
 
-        var names = NormalizeProcessNames(processNames).ToArray();
+        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         var screenWidth = GetSystemMetrics(SmCxScreen);
         var screenHeight = GetSystemMetrics(SmCyScreen);
         var foregroundWindow = GetForegroundWindow();
@@ -596,7 +596,7 @@ internal sealed class WindowsInput
 
     private static Process? FindProcess(IEnumerable<string> processNames)
     {
-        var names = NormalizeProcessNames(processNames).ToArray();
+        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         var process = names
             .SelectMany(Process.GetProcessesByName)
             .OrderByDescending(candidate => candidate.MainWindowHandle != IntPtr.Zero)
@@ -606,7 +606,7 @@ internal sealed class WindowsInput
             return process;
         }
 
-        var titleNeedles = GetWindowTitleNeedles(names).ToArray();
+        var titleNeedles = WindowsProcessIdentity.GetWindowTitleNeedles(names);
         return titleNeedles.Length == 0
             ? null
             : Process.GetProcesses()
@@ -619,7 +619,7 @@ internal sealed class WindowsInput
 
     private CoordinateBounds GetCoordinateBounds(IEnumerable<string>? coordinateProcessNames)
     {
-        var names = NormalizeProcessNames(coordinateProcessNames).ToArray();
+        var names = WindowsProcessIdentity.NormalizeProcessNames(coordinateProcessNames);
         if (names.Length == 0)
         {
             names = _coordinateProcessNames;
@@ -663,31 +663,6 @@ internal sealed class WindowsInput
         return true;
     }
 
-    private static IEnumerable<string> NormalizeProcessNames(IEnumerable<string>? processNames)
-    {
-        return (processNames ?? [])
-            .Where(processName => !string.IsNullOrWhiteSpace(processName))
-            .Select(processName => Path.GetFileNameWithoutExtension(processName) ?? "")
-            .Where(processName => !string.IsNullOrWhiteSpace(processName))
-            .Distinct(StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static IEnumerable<string> GetWindowTitleNeedles(IEnumerable<string> processNames)
-    {
-        foreach (var processName in processNames)
-        {
-            yield return processName;
-            if (processName.StartsWith("D2R", StringComparison.OrdinalIgnoreCase))
-            {
-                yield return "Diablo II: Resurrected";
-            }
-            else if (processName.Contains("Battle.net", StringComparison.OrdinalIgnoreCase))
-            {
-                yield return "Battle.net";
-            }
-        }
-    }
-
     private static string SafeGetMainWindowTitle(Process process)
     {
         try
@@ -702,7 +677,7 @@ internal sealed class WindowsInput
 
     private static string FormatProcessNames(IEnumerable<string> processNames)
     {
-        var names = NormalizeProcessNames(processNames).ToArray();
+        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         return names.Length == 0 ? "(none)" : string.Join("/", names);
     }
 

@@ -1801,28 +1801,17 @@ public sealed class VmOperations
 
     private string[] GetBattleNetProcessNames()
     {
-        return GetConfiguredProcessNames(_config.BattleNetProcessName, _config.BattleNetProcessNames);
+        return WindowsProcessIdentity.GetConfiguredProcessNames(_config.BattleNetProcessName, _config.BattleNetProcessNames);
     }
 
     private string[] GetD2RProcessNames()
     {
-        return GetConfiguredProcessNames(_config.D2RProcessName, _config.D2RProcessNames);
-    }
-
-    private static string[] GetConfiguredProcessNames(string primaryProcessName, IEnumerable<string>? additionalProcessNames)
-    {
-        return new[] { primaryProcessName }
-            .Concat(additionalProcessNames ?? [])
-            .Where(processName => !string.IsNullOrWhiteSpace(processName))
-            .Select(processName => Path.GetFileNameWithoutExtension(processName) ?? "")
-            .Where(processName => !string.IsNullOrWhiteSpace(processName))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        return WindowsProcessIdentity.GetConfiguredProcessNames(_config.D2RProcessName, _config.D2RProcessNames);
     }
 
     private static CommandResult KillProcesses(IEnumerable<string> processNames)
     {
-        var names = GetConfiguredProcessNames("", processNames);
+        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         var processes = FindProcessesByNameOrWindowTitle(names)
             .GroupBy(process => process.Id)
             .Select(group => group.First())
@@ -1846,19 +1835,19 @@ public sealed class VmOperations
 
     private static bool IsAnyProcessRunning(IEnumerable<string> processNames)
     {
-        var names = GetConfiguredProcessNames("", processNames);
+        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         return FindProcessesByNameOrWindowTitle(names).Any();
     }
 
     private static IEnumerable<Process> FindProcessesByNameOrWindowTitle(IEnumerable<string> processNames)
     {
-        var names = GetConfiguredProcessNames("", processNames);
+        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         foreach (var process in names.SelectMany(Process.GetProcessesByName))
         {
             yield return process;
         }
 
-        var titleNeedles = GetWindowTitleNeedles(names).ToArray();
+        var titleNeedles = WindowsProcessIdentity.GetWindowTitleNeedles(names);
         if (titleNeedles.Length == 0)
         {
             yield break;
@@ -1879,22 +1868,6 @@ public sealed class VmOperations
         }
     }
 
-    private static IEnumerable<string> GetWindowTitleNeedles(IEnumerable<string> processNames)
-    {
-        foreach (var processName in processNames)
-        {
-            yield return processName;
-            if (processName.StartsWith("D2R", StringComparison.OrdinalIgnoreCase))
-            {
-                yield return "Diablo II: Resurrected";
-            }
-            else if (processName.Contains("Battle.net", StringComparison.OrdinalIgnoreCase))
-            {
-                yield return "Battle.net";
-            }
-        }
-    }
-
     private static string SafeGetMainWindowTitle(Process process)
     {
         try
@@ -1909,7 +1882,7 @@ public sealed class VmOperations
 
     private static string FormatProcessNames(IEnumerable<string> processNames)
     {
-        var names = GetConfiguredProcessNames("", processNames);
+        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         return names.Length == 0 ? "(none)" : string.Join("/", names);
     }
 
