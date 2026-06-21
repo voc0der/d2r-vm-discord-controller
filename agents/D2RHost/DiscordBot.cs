@@ -1360,8 +1360,14 @@ public sealed class DiscordBot
         var input = TryReadD2RInputSummary(agent.LastStatusJson, out var inputSummary)
             ? $", input {inputSummary}"
             : "";
+        var lastInput = TryReadLastInputActionSummary(agent.LastStatusJson, out var lastInputSummary)
+            ? $", lastInput {lastInputSummary}"
+            : "";
+        var version = string.IsNullOrWhiteSpace(agent.Version)
+            ? ""
+            : $", version {agent.Version}";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online, Battle.net {battleNet}, D2R {d2r}{activity}{input}, seen {lastSeen}";
+        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{activity}{input}{lastInput}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)
@@ -1464,6 +1470,66 @@ public sealed class DiscordBot
         }
 
         return $"{left},{top},{Math.Max(right - left, 0)}x{Math.Max(bottom - top, 0)}";
+    }
+
+    private static bool TryReadLastInputActionSummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("lastInputAction", out var action)
+                || action.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return false;
+            }
+
+            var kind = TryGetString(action, "kind", out var kindValue) ? kindValue : "?";
+            var button = TryGetString(action, "button", out var buttonValue) ? buttonValue : "?";
+            var screen = TryGetInt(action, "screenX", out var x)
+                && TryGetInt(action, "screenY", out var y)
+                ? $"{x},{y}"
+                : "?,?";
+            var cursorBefore = TryReadCursor(action, "cursorBefore");
+            var cursorAfter = TryReadCursor(action, "cursorAfter");
+            var foregroundBefore = TryGetBoolean(action, "d2rForegroundBefore", out var fgBefore)
+                ? fgBefore.ToString().ToLowerInvariant()
+                : "?";
+            var foregroundAfter = TryGetBoolean(action, "d2rForegroundAfter", out var fgAfter)
+                ? fgAfter.ToString().ToLowerInvariant()
+                : "?";
+            var processBefore = TryGetString(action, "foregroundProcessBefore", out var beforeProcess)
+                ? beforeProcess
+                : "?";
+            var processAfter = TryGetString(action, "foregroundProcessAfter", out var afterProcess)
+                ? afterProcess
+                : "?";
+
+            value = $"{kind}/{button}@{screen}, cursor={cursorBefore}->{cursorAfter}, d2rFg={foregroundBefore}->{foregroundAfter}, fg={processBefore}->{processAfter}";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string TryReadCursor(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var cursor)
+            || cursor.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            || !TryGetInt(cursor, "x", out var x)
+            || !TryGetInt(cursor, "y", out var y))
+        {
+            return "?,?";
+        }
+
+        return $"{x},{y}";
     }
 
     private static string FormatCommandResult(bool ok, string message)

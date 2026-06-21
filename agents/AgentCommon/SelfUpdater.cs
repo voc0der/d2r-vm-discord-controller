@@ -208,6 +208,7 @@ public static class SelfUpdater
             $"d2rops-update-{options.AppName}-{Guid.NewGuid():N}.ps1");
         var logPath = Path.ChangeExtension(scriptPath, ".log");
         var restartArgumentLine = string.Join(" ", options.RestartArgs.Select(WindowsArgumentQuote));
+        var restartScheduledTaskName = options.RestartScheduledTaskName ?? "";
 
         var script = $$"""
             $ErrorActionPreference = 'Stop'
@@ -217,6 +218,7 @@ public static class SelfUpdater
             $installDirectory = {{PsQuote(installDirectory)}}
             $targetExe = {{PsQuote(currentExe)}}
             $restartArgumentLine = {{PsQuote(restartArgumentLine)}}
+            $restartScheduledTaskName = {{PsQuote(restartScheduledTaskName)}}
             $logPath = {{PsQuote(logPath)}}
             $zipPath = Join-Path ([System.IO.Path]::GetTempPath()) ('d2rops-update-' + [guid]::NewGuid().ToString('N') + '.zip')
             $extractDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ('d2rops-update-' + [guid]::NewGuid().ToString('N'))
@@ -240,10 +242,32 @@ public static class SelfUpdater
                 Write-UpdateLog ('Copying files to ' + $installDirectory)
                 Copy-Item -Path (Join-Path $extractDirectory '*') -Destination $installDirectory -Recurse -Force
 
-                Write-UpdateLog ('Restarting ' + $targetExe)
-                if ($restartArgumentLine.Length -gt 0) {
+                if ($restartScheduledTaskName.Length -gt 0) {
+                    $task = Get-ScheduledTask -TaskName $restartScheduledTaskName -ErrorAction SilentlyContinue
+                    if ($null -ne $task) {
+                        Write-UpdateLog ('Restarting scheduled task ' + $restartScheduledTaskName)
+                        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                            $task = Get-ScheduledTask -TaskName $restartScheduledTaskName -ErrorAction SilentlyContinue
+                            if ($null -eq $task -or $task.State -ne 'Running') {
+                                break
+                            }
+
+                            Start-Sleep -Milliseconds 500
+                        }
+
+                        Start-ScheduledTask -TaskName $restartScheduledTaskName
+                    } elseif ($restartArgumentLine.Length -gt 0) {
+                        Write-UpdateLog ('Scheduled task not found; restarting process ' + $targetExe)
+                        Start-Process -FilePath $targetExe -ArgumentList $restartArgumentLine -WorkingDirectory $installDirectory
+                    } else {
+                        Write-UpdateLog ('Scheduled task not found; restarting process ' + $targetExe)
+                        Start-Process -FilePath $targetExe -WorkingDirectory $installDirectory
+                    }
+                } elseif ($restartArgumentLine.Length -gt 0) {
+                    Write-UpdateLog ('Restarting process ' + $targetExe)
                     Start-Process -FilePath $targetExe -ArgumentList $restartArgumentLine -WorkingDirectory $installDirectory
                 } else {
+                    Write-UpdateLog ('Restarting process ' + $targetExe)
                     Start-Process -FilePath $targetExe -WorkingDirectory $installDirectory
                 }
                 Write-UpdateLog 'Update completed.'

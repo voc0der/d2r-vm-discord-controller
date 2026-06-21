@@ -16,6 +16,7 @@ public sealed class VmOperations
     private DateTimeOffset? _characterScreenIdleSinceUtc;
     private DateTimeOffset? _lastLobbyOrGameInteractionUtc;
     private string? _lastActivityReason;
+    private LastInputActionSnapshot? _lastInputAction;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -42,6 +43,7 @@ public sealed class VmOperations
             battleNetRunning,
             d2rRunning,
             d2rInput = d2rRunning ? TryGetD2RInputDiagnostics() : null,
+            lastInputAction = _lastInputAction,
             d2rActivityState = activity.State.ToString(),
             characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
             lastLobbyOrGameInteractionUtc = activity.LastLobbyOrGameInteractionUtc,
@@ -647,8 +649,6 @@ public sealed class VmOperations
             _config.Ui.ReadyStartupSkipSeconds,
             Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
-        var blindSuccessAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(
-            Math.Clamp(_config.Ui.ReadyStartupBlindSuccessSeconds, 10, skipSeconds));
         var intervalMs = Math.Clamp(_config.Ui.ReadyStartupSkipIntervalMs, 50, 250);
         var nudges = 0;
         var lastState = ReadyScreenState.Unknown;
@@ -664,10 +664,6 @@ public sealed class VmOperations
 
             SendReadySkipKey(input);
             nudges++;
-            if (DateTimeOffset.UtcNow >= blindSuccessAt && IsD2RRunning())
-            {
-                return new ReadyWaitResult(true, nudges, lastState);
-            }
 
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
@@ -710,13 +706,52 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
+        var target = input.ResolveScreenPoint(point);
+        var beforeCursor = input.GetCursorPosition();
+        InputDiagnostics? beforeDiagnostics = null;
+        InputDiagnostics? afterDiagnostics = null;
+        try
+        {
+            beforeDiagnostics = input.GetInputDiagnostics(GetD2RProcessNames());
+        }
+        catch (Exception)
+        {
+            beforeDiagnostics = null;
+        }
+
         if (button == MouseButton.Left)
         {
             input.LeftClick(point);
-            return;
+        }
+        else
+        {
+            input.RightClick(point);
         }
 
-        input.RightClick(point);
+        var afterCursor = input.GetCursorPosition();
+        try
+        {
+            afterDiagnostics = input.GetInputDiagnostics(GetD2RProcessNames());
+        }
+        catch (Exception)
+        {
+            afterDiagnostics = null;
+        }
+
+        _lastInputAction = new LastInputActionSnapshot(
+            DateTimeOffset.UtcNow,
+            "click",
+            button.ToString(),
+            point.X,
+            point.Y,
+            target.X,
+            target.Y,
+            beforeCursor,
+            afterCursor,
+            beforeDiagnostics?.IsForeground,
+            afterDiagnostics?.IsForeground,
+            beforeDiagnostics?.ForegroundProcessName,
+            afterDiagnostics?.ForegroundProcessName);
     }
 
     private InputDiagnostics? TryGetD2RInputDiagnostics()
@@ -1896,4 +1931,19 @@ public sealed class VmOperations
         DateTimeOffset? CharacterScreenIdleSinceUtc,
         DateTimeOffset? LastLobbyOrGameInteractionUtc,
         string? Reason);
+
+    private sealed record LastInputActionSnapshot(
+        DateTimeOffset TimeUtc,
+        string Kind,
+        string Button,
+        double UiX,
+        double UiY,
+        int ScreenX,
+        int ScreenY,
+        CursorPosition? CursorBefore,
+        CursorPosition? CursorAfter,
+        bool? D2RForegroundBefore,
+        bool? D2RForegroundAfter,
+        string? ForegroundProcessBefore,
+        string? ForegroundProcessAfter);
 }

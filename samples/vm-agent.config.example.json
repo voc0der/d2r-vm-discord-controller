@@ -30,7 +30,7 @@
     "lobbyLoadSeconds": 3,
     "readyStartupSkipSeconds": 120,
     "readyStartupSkipIntervalMs": 100,
-    "readyStartupBlindSuccessSeconds": 45,
+    "readyStartupBlindSuccessSeconds": 0,
     "readyNudgeMinDelayMs": 1000,
     "readyNudgeMaxDelayMs": 2000,
     "windowFocusTimeoutSeconds": 30,

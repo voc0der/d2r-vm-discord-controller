@@ -340,6 +340,25 @@ internal sealed class WindowsInput
             ClientRect: clientRect);
     }
 
+    public CursorPosition? GetCursorPosition()
+    {
+        EnsureWindows();
+        if (!GetCursorPos(out var point))
+        {
+            return null;
+        }
+
+        return new CursorPosition(point.X, point.Y);
+    }
+
+    public (int X, int Y) ResolveScreenPoint(
+        UiPoint point,
+        IEnumerable<string>? coordinateProcessNames = null)
+    {
+        EnsureWindows();
+        return ToScreen(point, coordinateProcessNames);
+    }
+
     public void PressEscape()
     {
         Key(VkEscape);
@@ -774,36 +793,14 @@ internal sealed class WindowsInput
 
     private static void KeyDown(byte virtualKey)
     {
-        SendVirtualKey(virtualKey, keyUp: false);
+        EnsureWindows();
+        keybd_event(virtualKey, 0, 0, UIntPtr.Zero);
     }
 
     private static void KeyUp(byte virtualKey)
     {
-        SendVirtualKey(virtualKey, keyUp: true);
-    }
-
-    private static void SendVirtualKey(byte virtualKey, bool keyUp)
-    {
-        var scanCode = (byte)MapVirtualKey(virtualKey, MapVkToVsc);
-        keybd_event(virtualKey, scanCode, keyUp ? KeyEventKeyUp : 0, UIntPtr.Zero);
-
-        var sent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp) });
-        if (sent == 1)
-        {
-            return;
-        }
-
-        if (scanCode != 0)
-        {
-            sent = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp) });
-        }
-
-        if (sent == 1)
-        {
-            return;
-        }
-
-        keybd_event(virtualKey, 0, keyUp ? KeyEventKeyUp : 0, UIntPtr.Zero);
+        EnsureWindows();
+        keybd_event(virtualKey, 0, KeyEventKeyUp, UIntPtr.Zero);
     }
 
     private static void SendUnicodeChar(char character)
@@ -831,13 +828,13 @@ internal sealed class WindowsInput
     {
         var down = button == MouseButton.Left ? MouseEventLeftDown : MouseEventRightDown;
         var up = button == MouseButton.Left ? MouseEventLeftUp : MouseEventRightUp;
-        SetCursorPos(x, y);
+        var cursorMoved = SetCursorPos(x, y);
         Thread.Sleep(InputGapMilliseconds);
         mouse_event(down, 0, 0, 0, UIntPtr.Zero);
         Thread.Sleep(InputHoldMilliseconds);
         mouse_event(up, 0, 0, 0, UIntPtr.Zero);
         Thread.Sleep(InputGapMilliseconds);
-        return true;
+        return cursorMoved;
     }
 
     private static void SendLegacyMouseClick(int x, int y, MouseButton button)
@@ -933,6 +930,9 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll")]
     private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out WindowPoint point);
 
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
@@ -1252,3 +1252,5 @@ internal sealed record InputDiagnostics(
     int ScreenHeight,
     InputRect? WindowRect,
     InputRect? ClientRect);
+
+internal sealed record CursorPosition(int X, int Y);
