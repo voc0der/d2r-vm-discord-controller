@@ -465,11 +465,6 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        if (GetActivitySnapshot().State == D2RActivityState.CharacterScreenIdle)
-        {
-            return null;
-        }
-
         if (IsInGameReady(input))
         {
             return CommandResult.Failure(
@@ -478,6 +473,11 @@ public sealed class VmOperations
         }
 
         if (IsCharacterScreenReady(input))
+        {
+            return null;
+        }
+
+        if (GetActivitySnapshot().State == D2RActivityState.CharacterScreenIdle)
         {
             return null;
         }
@@ -640,6 +640,7 @@ public sealed class VmOperations
         ClickD2R(input, _config.Ui.IntroSkipPoint);
         input.PressStartupSkipKey();
         _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
+        _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -688,7 +689,14 @@ public sealed class VmOperations
             return "";
         }
 
-        return $" Input diagnostics: userInteractive={diagnostics.UserInteractive}, d2rSession={diagnostics.SessionId?.ToString() ?? "?"}, hasWindow={diagnostics.HasMainWindow}, foreground={diagnostics.IsForeground}, foregroundProcess={diagnostics.ForegroundProcessName ?? "?"}, screen={diagnostics.ScreenWidth}x{diagnostics.ScreenHeight}.";
+        return $" Input diagnostics: userInteractive={diagnostics.UserInteractive}, d2rSession={diagnostics.SessionId?.ToString() ?? "?"}, hasWindow={diagnostics.HasMainWindow}, foreground={diagnostics.IsForeground}, foregroundProcess={diagnostics.ForegroundProcessName ?? "?"}, screen={diagnostics.ScreenWidth}x{diagnostics.ScreenHeight}, window={FormatInputRect(diagnostics.WindowRect)}, client={FormatInputRect(diagnostics.ClientRect)}.";
+    }
+
+    private static string FormatInputRect(InputRect? rect)
+    {
+        return rect is null
+            ? "?"
+            : $"{rect.Left},{rect.Top},{rect.Width}x{rect.Height}";
     }
 
     private async Task<bool> ClickLobbyUntilReadyAsync(
@@ -859,11 +867,7 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        var joinTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.JoinGameTab, cancellationToken);
-        if (!joinTabReady)
-        {
-            return false;
-        }
+        _ = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.JoinGameTab, cancellationToken);
 
         await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.JoinGameNameField, args.GameName ?? "", cancellationToken);
@@ -876,11 +880,7 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        var createTabReady = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.CreateGameTab, cancellationToken);
-        if (!createTabReady)
-        {
-            return false;
-        }
+        _ = await ClickLobbyTabUntilReadyAsync(input, _config.Ui.CreateGameTab, cancellationToken);
 
         await FillTextFieldAsync(input, _config.Ui.CreateGameNameField, args.GameName ?? "", cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
@@ -1229,8 +1229,7 @@ public sealed class VmOperations
             return GameEntryWaitResult.ReturnedToMenu;
         }
 
-        await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
-        return GameEntryWaitResult.EnteredGame;
+        return GameEntryWaitResult.TimedOut;
     }
 
     private async Task ToggleLegacyGraphicsAfterEntryAsync(

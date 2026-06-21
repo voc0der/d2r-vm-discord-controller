@@ -1192,7 +1192,12 @@ public sealed class DiscordBot
             return true;
         }
 
-        return false;
+        if (!TryGetString(root, "d2rActivityState", out var activityState))
+        {
+            return true;
+        }
+
+        return activityState.Equals("Unknown", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)
@@ -1430,14 +1435,35 @@ public sealed class DiscordBot
             var session = TryGetInt(input, "sessionId", out var sessionId)
                 ? sessionId.ToString()
                 : "?";
+            var screen = TryGetInt(input, "screenWidth", out var screenWidth)
+                && TryGetInt(input, "screenHeight", out var screenHeight)
+                ? $"{screenWidth}x{screenHeight}"
+                : "?";
+            var windowRect = TryReadInputRect(input, "windowRect");
+            var clientRect = TryReadInputRect(input, "clientRect");
 
-            value = $"interactive={interactive}, session={session}, window={window}, foreground={foreground}, fg={foregroundProcess}";
+            value = $"interactive={interactive}, session={session}, window={window}, foreground={foreground}, fg={foregroundProcess}, screen={screen}, windowRect={windowRect}, client={clientRect}";
             return true;
         }
         catch (JsonException)
         {
             return false;
         }
+    }
+
+    private static string TryReadInputRect(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var rect)
+            || rect.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            || !TryGetInt(rect, "left", out var left)
+            || !TryGetInt(rect, "top", out var top)
+            || !TryGetInt(rect, "right", out var right)
+            || !TryGetInt(rect, "bottom", out var bottom))
+        {
+            return "?";
+        }
+
+        return $"{left},{top},{Math.Max(right - left, 0)}x{Math.Max(bottom - top, 0)}";
     }
 
     private static string FormatCommandResult(bool ok, string message)
