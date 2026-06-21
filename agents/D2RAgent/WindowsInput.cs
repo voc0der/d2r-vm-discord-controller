@@ -19,6 +19,8 @@ internal sealed class WindowsInput
     private const uint MouseEventLeftUp = 0x0004;
     private const uint MouseEventRightDown = 0x0008;
     private const uint MouseEventRightUp = 0x0010;
+    private const uint MouseEventMove = 0x0001;
+    private const uint MouseEventAbsolute = 0x8000;
     private const byte VkAlt = 0x12;
     private const byte VkControl = 0x11;
     private const byte VkLeftWindows = 0x5B;
@@ -34,7 +36,10 @@ internal sealed class WindowsInput
     private const uint GmemMoveable = 0x0002;
     private const uint KeyEventKeyUp = 0x0002;
     private const uint InputKeyboard = 1;
+    private const uint InputMouse = 0;
     private const uint KeyEventUnicode = 0x0004;
+    private const uint KeyEventScanCode = 0x0008;
+    private const uint MapVkToVsc = 0;
     private const int SwRestore = 9;
 
     public void ShowDesktop()
@@ -104,9 +109,13 @@ internal sealed class WindowsInput
 
         var x = (rect.Left + rect.Right) / 2;
         var y = (rect.Top + rect.Bottom) / 2;
-        SetCursorPos(x, y);
-        mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
+        if (!SendMouseClick(x, y, MouseButton.Left))
+        {
+            SetCursorPos(x, y);
+            mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
+            mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
+        }
+
         Thread.Sleep(50);
         return IsForegroundProcess(process.Id);
     }
@@ -126,6 +135,11 @@ internal sealed class WindowsInput
         EnsureWindows();
 
         var (x, y) = ToScreen(point);
+        if (SendMouseClick(x, y, button))
+        {
+            return;
+        }
+
         SetCursorPos(x, y);
         if (button == MouseButton.Left)
         {
@@ -395,7 +409,17 @@ internal sealed class WindowsInput
 
     private static void SendVirtualKey(byte virtualKey, bool keyUp)
     {
-        var sent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp) });
+        var scanCode = MapVirtualKey(virtualKey, MapVkToVsc);
+        var input = scanCode == 0
+            ? Input.ForVirtualKey(virtualKey, keyUp)
+            : Input.ForScanCode((ushort)scanCode, keyUp);
+        var sent = SendInputs(new[] { input });
+        if (sent == 1)
+        {
+            return;
+        }
+
+        sent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp) });
         if (sent == 1)
         {
             return;
@@ -423,6 +447,24 @@ internal sealed class WindowsInput
     {
         EnsureWindows();
         return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
+    }
+
+    private static bool SendMouseClick(int x, int y, MouseButton button)
+    {
+        var width = Math.Max(GetSystemMetrics(SmCxScreen) - 1, 1);
+        var height = Math.Max(GetSystemMetrics(SmCyScreen) - 1, 1);
+        var absoluteX = (int)Math.Round(x * 65535.0 / width);
+        var absoluteY = (int)Math.Round(y * 65535.0 / height);
+        var down = button == MouseButton.Left ? MouseEventLeftDown : MouseEventRightDown;
+        var up = button == MouseButton.Left ? MouseEventLeftUp : MouseEventRightUp;
+        var inputs = new[]
+        {
+            Input.ForMouse(absoluteX, absoluteY, MouseEventMove | MouseEventAbsolute),
+            Input.ForMouse(0, 0, down),
+            Input.ForMouse(0, 0, up)
+        };
+
+        return SendInputs(inputs) == inputs.Length;
     }
 
     private static void EnsureWindows()
@@ -462,6 +504,9 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
+
+    [DllImport("user32.dll")]
+    private static extern uint MapVirtualKey(uint code, uint mapType);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr GetDC(IntPtr windowHandle);
@@ -595,6 +640,39 @@ internal sealed class WindowsInput
                     {
                         VirtualKey = virtualKey,
                         Flags = keyUp ? KeyEventKeyUp : 0
+                    }
+                }
+            };
+        }
+
+        public static Input ForScanCode(ushort scanCode, bool keyUp)
+        {
+            return new Input
+            {
+                Type = InputKeyboard,
+                Union = new InputUnion
+                {
+                    Keyboard = new KeyboardInput
+                    {
+                        Scan = (char)scanCode,
+                        Flags = KeyEventScanCode | (keyUp ? KeyEventKeyUp : 0)
+                    }
+                }
+            };
+        }
+
+        public static Input ForMouse(int x, int y, uint flags)
+        {
+            return new Input
+            {
+                Type = InputMouse,
+                Union = new InputUnion
+                {
+                    Mouse = new MouseInput
+                    {
+                        X = x,
+                        Y = y,
+                        Flags = flags
                     }
                 }
             };

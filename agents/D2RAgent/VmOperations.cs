@@ -281,11 +281,11 @@ public sealed class VmOperations
                 await GetStatusAsync(cancellationToken));
         }
 
-        var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
-        if (!characterScreenReady)
+        var ready = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
+        if (!ready.Ready)
         {
             return CommandResult.Failure(
-                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s. Last detected ready state: {DescribeReadyScreenState(input)}.",
+                FormatCharacterScreenReadyFailure(ready),
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -303,11 +303,11 @@ public sealed class VmOperations
             return CommandResult.Success("Lobby was already open.", await GetStatusAsync(cancellationToken));
         }
 
-        var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
-        if (!characterScreenReady)
+        var ready = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
+        if (!ready.Ready)
         {
             return CommandResult.Failure(
-                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s. Last detected ready state: {DescribeReadyScreenState(input)}.",
+                FormatCharacterScreenReadyFailure(ready),
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -327,11 +327,11 @@ public sealed class VmOperations
     private async Task<CommandResult> PlayCharacterAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
         var input = FocusD2R();
-        var characterScreenReady = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
-        if (!characterScreenReady)
+        var ready = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
+        if (!ready.Ready)
         {
             return CommandResult.Failure(
-                $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s. Last detected ready state: {DescribeReadyScreenState(input)}.",
+                FormatCharacterScreenReadyFailure(ready),
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -527,28 +527,32 @@ public sealed class VmOperations
         await Task.Delay(TimeSpan.FromSeconds(settleSeconds), cancellationToken);
     }
 
-    private async Task<bool> WaitForCharacterScreenReadyAsync(
+    private async Task<ReadyWaitResult> WaitForCharacterScreenReadyAsync(
         WindowsInput input,
         CancellationToken cancellationToken)
     {
         var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1));
         var deadline = DateTimeOffset.UtcNow + timeout;
+        var nudges = 0;
+        var lastState = ReadyScreenState.Unknown;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var state = DetectReadyScreenState(input);
+            lastState = state;
 
             if (state == ReadyScreenState.CharacterScreen)
             {
-                return true;
+                return new ReadyWaitResult(true, nudges, lastState);
             }
 
             if (DateTimeOffset.UtcNow >= deadline)
             {
-                return false;
+                return new ReadyWaitResult(false, nudges, lastState);
             }
 
             await NudgeReadyScreenAsync(input, state, cancellationToken);
+            nudges++;
             await DelayReadyNudgeAsync(cancellationToken);
         }
     }
@@ -558,6 +562,7 @@ public sealed class VmOperations
         ReadyScreenState state,
         CancellationToken cancellationToken)
     {
+        TryPrimeD2RInput(input);
         input.LeftClick(_config.Ui.IntroSkipPoint);
         await DelayStepAsync(cancellationToken);
 
@@ -570,6 +575,18 @@ public sealed class VmOperations
         input.PressStartKey();
         await DelayStepAsync(cancellationToken);
         input.LeftClick(_config.Ui.IntroSkipPoint);
+    }
+
+    private void TryPrimeD2RInput(WindowsInput input)
+    {
+        try
+        {
+            _ = input.TryFocusProcess(_config.D2RProcessName);
+        }
+        catch (InvalidOperationException)
+        {
+            // The blind ready loop should keep nudging even if Windows cannot prove focus yet.
+        }
     }
 
     private async Task<bool> ClickLobbyUntilReadyAsync(
@@ -874,16 +891,9 @@ public sealed class VmOperations
             : ReadyScreenState.Unknown;
     }
 
-    private string DescribeReadyScreenState(WindowsInput input)
+    private string FormatCharacterScreenReadyFailure(ReadyWaitResult result)
     {
-        try
-        {
-            return DetectReadyScreenState(input).ToString();
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException)
-        {
-            return $"Unavailable ({ex.Message})";
-        }
+        return $"D2R is running, but the character screen Play/Lobby buttons were not detected within {Math.Max(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1)}s. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.";
     }
 
     private bool IsDiabloSplashScreen(WindowsInput input)
@@ -1464,6 +1474,11 @@ public sealed class VmOperations
         int DialogRetries,
         int ConnectionRetries,
         string Message);
+
+    private sealed record ReadyWaitResult(
+        bool Ready,
+        int Nudges,
+        ReadyScreenState LastState);
 
     private sealed record ActivitySnapshot(
         D2RActivityState State,
