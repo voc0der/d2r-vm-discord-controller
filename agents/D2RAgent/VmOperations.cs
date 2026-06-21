@@ -281,6 +281,8 @@ public sealed class VmOperations
                 await GetStatusAsync(cancellationToken));
         }
 
+        await PumpStartupSkipInputsAsync(input, cancellationToken);
+
         var ready = await WaitForCharacterScreenReadyAsync(input, cancellationToken);
         if (!ready.Ready)
         {
@@ -562,17 +564,51 @@ public sealed class VmOperations
         }
     }
 
+    private async Task PumpStartupSkipInputsAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        var skipSeconds = Math.Max(_config.Ui.ReadyStartupSkipSeconds, 0);
+        if (skipSeconds == 0)
+        {
+            return;
+        }
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
+        var intervalMs = Math.Max(_config.Ui.ReadyStartupSkipIntervalMs, 100);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (DetectReadyScreenState(input) == ReadyScreenState.CharacterScreen)
+            {
+                return;
+            }
+
+            SendSafeReadyInputBurst(input);
+            var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
+            if (remainingMs == 0)
+            {
+                return;
+            }
+
+            await Task.Delay((int)Math.Min(intervalMs, remainingMs), cancellationToken);
+        }
+    }
+
     private async Task NudgeReadyScreenAsync(
         WindowsInput input,
         ReadyScreenState state,
         CancellationToken cancellationToken)
     {
+        SendSafeReadyInputBurst(input);
+        await DelayStepAsync(cancellationToken);
+    }
+
+    private void SendSafeReadyInputBurst(WindowsInput input)
+    {
         TryPrimeD2RInput(input);
         input.LeftClick(_config.Ui.IntroSkipPoint);
-        await DelayStepAsync(cancellationToken);
-
         input.PressStartKey();
-        await DelayStepAsync(cancellationToken);
         input.LeftClick(_config.Ui.IntroSkipPoint);
         _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
     }

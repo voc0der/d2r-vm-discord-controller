@@ -28,6 +28,8 @@
     "toggleLegacyGraphicsAfterEnteringGame": true,
     "legacyGraphicsToggleDelaySeconds": 20,
     "lobbyLoadSeconds": 3,
+    "readyStartupSkipSeconds": 25,
+    "readyStartupSkipIntervalMs": 250,
     "readyNudgeMinDelayMs": 1000,
     "readyNudgeMaxDelayMs": 2000,
     "windowFocusTimeoutSeconds": 30,
