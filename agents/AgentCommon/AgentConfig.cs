@@ -33,12 +33,12 @@ public sealed class VmAgentConfig : AgentConfig
 
 public sealed class D2RUiAutomationConfig
 {
-    public int StepDelayMs { get; set; } = 200;
-    public int LongDelayMs { get; set; } = 800;
-    public int GameLoadSeconds { get; set; } = 3;
+    public int StepDelayMs { get; set; } = 350;
+    public int LongDelayMs { get; set; } = 1500;
+    public int GameLoadSeconds { get; set; } = 6;
     public bool ToggleLegacyGraphicsAfterEnteringGame { get; set; } = true;
     public int LegacyGraphicsToggleDelaySeconds { get; set; } = 20;
-    public int LobbyLoadSeconds { get; set; } = 2;
+    public int LobbyLoadSeconds { get; set; } = 3;
     public int ReadyStartupSkipSeconds { get; set; } = 45;
     public int ReadyStartupSkipIntervalMs { get; set; } = 100;
     public int ReadyStartupBlindSuccessSeconds { get; set; } = 0;

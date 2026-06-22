@@ -294,12 +294,12 @@ public sealed class VmOperations
         var d2rStarted = await WaitForD2RProcessStartedAsync(
             input,
             cancellationToken,
-            Math.Min(GetD2RStartTimeoutSeconds(), 8));
+            GetD2RStartTimeoutSeconds());
 
         var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken);
         if (!ready.Ready)
         {
-            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken, timeoutSeconds: 8);
+            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken);
             ready = detectorReady with
             {
                 Nudges = ready.Nudges + detectorReady.Nudges,
@@ -309,17 +309,6 @@ public sealed class VmOperations
 
         if (!ready.Ready)
         {
-            var visibleState = DetectVisibleD2RState(input);
-            if (d2rStarted.Started
-                || IsD2RRunning()
-                || visibleState is not (VisibleD2RState.NotRunning or VisibleD2RState.Unknown))
-            {
-                MarkCharacterScreenIdle("Startup inputs completed without visual confirmation.");
-                return CommandResult.Success(
-                    $"D2R startup inputs completed, but the character screen was not visually confirmed. Last detected ready state: {ready.LastState}; startup input bursts sent: {ready.Nudges}.",
-                    await GetStatusAsync(cancellationToken));
-            }
-
             return CommandResult.Failure(
                 $"{FormatCharacterScreenReadyFailure(ready)} D2R was not detected after {d2rStarted.LaunchAttempts} launch command(s) and {d2rStarted.PlayClicks} Battle.net Play click(s). Last launch result: {d2rStarted.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
                 await GetStatusAsync(cancellationToken));
@@ -1402,7 +1391,7 @@ public sealed class VmOperations
         AgentCommon.UiPoint tab,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 2));
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 2, 4));
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -2036,9 +2025,14 @@ public sealed class VmOperations
         var delaySeconds = Math.Max(
             Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1),
             Math.Max(_config.Ui.GameLoadSeconds, 1));
+        if (_config.Ui.ToggleLegacyGraphicsAfterEnteringGame)
+        {
+            delaySeconds = Math.Max(delaySeconds, Math.Max(_config.Ui.LegacyGraphicsToggleDelaySeconds, 1));
+        }
+
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(delaySeconds);
-        var returnDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 1, 2));
-        var presumedEntryAfter = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 3));
+        var returnDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5));
+        var presumedEntryAfter = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 4, 10));
         DateTimeOffset? menuAbsentSince = null;
         var sawConnectionInterrupted = false;
 
@@ -2337,7 +2331,7 @@ public sealed class VmOperations
     {
         var timeout = TimeSpan.FromSeconds(timeoutSeconds ?? GetD2RStartTimeoutSeconds());
         var deadline = DateTimeOffset.UtcNow + timeout;
-        var launchRetryDelay = TimeSpan.FromSeconds(Math.Min(GetBattleNetExecRetryDelaySeconds(), 3));
+        var launchRetryDelay = TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds());
         var nextLaunchRetryAt = DateTimeOffset.UtcNow;
         var launchAttempts = 0;
         var playClicks = 0;
@@ -2369,7 +2363,7 @@ public sealed class VmOperations
                 nextLaunchRetryAt = DateTimeOffset.UtcNow + launchRetryDelay;
             }
 
-            if (TryClickBattleNetPlayDirect(input))
+            if (TryClickBattleNetPlay(input, requireButtonReady: true))
             {
                 playClicks++;
             }
@@ -2419,28 +2413,6 @@ public sealed class VmOperations
         catch (InvalidOperationException)
         {
             // Battle.net may be running before its main window can receive input.
-            return false;
-        }
-    }
-
-    private bool TryClickBattleNetPlayDirect(WindowsInput input)
-    {
-        if (!_config.Ui.ClickBattleNetPlayWhenNeeded
-            || !IsBattleNetRunning())
-        {
-            return false;
-        }
-
-        try
-        {
-            var battleNetNames = GetBattleNetProcessNames();
-            _ = input.TryFocusProcess(battleNetNames);
-            input.LeftClick(_config.Ui.BattleNetPlayButton, battleNetNames);
-            _ = input.SendWindowClick(_config.Ui.BattleNetPlayButton, battleNetNames, MouseButton.Left);
-            return true;
-        }
-        catch (InvalidOperationException)
-        {
             return false;
         }
     }
