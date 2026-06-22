@@ -74,6 +74,8 @@ public sealed class VmOperations
             "menu_ready" => await ReadyClientAsync(cancellationToken),
             "menu_lobby" => await GoLobbyAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_play" => await PlayCharacterAsync(MenuCommandArgs.From(request.Args), cancellationToken),
+            "menu_prepare_join_game" => await PrepareJoinGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
+            "menu_submit_join_game" => await SubmitPreparedJoinGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_join_game" => await JoinGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_create_game" => await CreateGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_join_friend" => await JoinFriendAsync(MenuCommandArgs.From(request.Args), cancellationToken),
@@ -353,17 +355,61 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
-        var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
-        if (lobby is not null)
+        var prepared = await PrepareJoinGameFormAsync(input, args, cancellationToken);
+        if (prepared is not null)
         {
-            return lobby;
+            return prepared;
         }
 
-        await ClickLobbyTabDirectAsync(input, _config.Ui.JoinGameTab, cancellationToken);
+        var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
+            input,
+            _config.Ui.JoinGameButton,
+            _config.Ui.JoinGameTab,
+            () => RestoreJoinGameFormAsync(input, args, cancellationToken),
+            cancellationToken);
+        if (!joinEntry.Entered)
+        {
+            return CommandResult.Failure(
+                $"Clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {joinEntry.Message}",
+                await GetStatusAsync(cancellationToken));
+        }
 
-        await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
-        await FillTextFieldAsync(input, _config.Ui.JoinGameNameField, args.GameName, cancellationToken);
-        await FillTextFieldAsync(input, _config.Ui.JoinPasswordField, args.Password ?? "", cancellationToken);
+        MarkLobbyOrGameInteraction($"Joined game {args.GameName}.");
+        var retrySuffix = FormatEntryRecoverySuffix(joinEntry);
+        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
+    }
+
+    private async Task<CommandResult> PrepareJoinGameAsync(MenuCommandArgs args, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(args.GameName))
+        {
+            return CommandResult.Failure("gameName is required for menu_prepare_join_game.");
+        }
+
+        var input = FocusD2R();
+        var prepared = await PrepareJoinGameFormAsync(input, args, cancellationToken);
+        if (prepared is not null)
+        {
+            return prepared;
+        }
+
+        return CommandResult.Success($"Join game form prepared for {args.GameName}.", await GetStatusAsync(cancellationToken));
+    }
+
+    private async Task<CommandResult> SubmitPreparedJoinGameAsync(MenuCommandArgs args, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(args.GameName))
+        {
+            return CommandResult.Failure("gameName is required for menu_submit_join_game.");
+        }
+
+        var input = FocusD2R();
+        var prepared = await PrepareJoinGameFormAsync(input, args, cancellationToken);
+        if (prepared is not null)
+        {
+            return prepared;
+        }
+
         var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
             _config.Ui.JoinGameButton,
@@ -407,7 +453,8 @@ public sealed class VmOperations
             _config.Ui.CreateGameButton,
             _config.Ui.CreateGameTab,
             () => RestoreCreateGameFormAsync(input, args, cancellationToken),
-            cancellationToken);
+            cancellationToken,
+            "A game-entry error dialog appeared after clicking Create Game. The game name may already exist.");
         if (!createEntry.Entered)
         {
             return CommandResult.Failure(
@@ -418,6 +465,21 @@ public sealed class VmOperations
         MarkLobbyOrGameInteraction($"Created game {args.GameName}.");
         var retrySuffix = FormatEntryRecoverySuffix(createEntry);
         return CommandResult.Success($"Create game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
+    }
+
+    private async Task<CommandResult?> PrepareJoinGameFormAsync(
+        WindowsInput input,
+        MenuCommandArgs args,
+        CancellationToken cancellationToken)
+    {
+        var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
+        if (lobby is not null)
+        {
+            return lobby;
+        }
+
+        await RestoreJoinGameFormAsync(input, args, cancellationToken);
+        return null;
     }
 
     private async Task<CommandResult> JoinFriendAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -890,7 +952,8 @@ public sealed class VmOperations
         AgentCommon.UiPoint button,
         AgentCommon.UiPoint activeTab,
         Func<Task<bool>> restoreFormAsync,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? errorDialogFailureMessage = null)
     {
         var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1));
         var deadline = DateTimeOffset.UtcNow + timeout;
@@ -911,6 +974,12 @@ public sealed class VmOperations
             if (IsGameEntryErrorDialogOpen(input))
             {
                 dialogRetries++;
+                if (errorDialogFailureMessage is not null)
+                {
+                    _ = await DismissGameEntryErrorDialogAsync(input, cancellationToken);
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, errorDialogFailureMessage);
+                }
+
                 if (!await DismissGameEntryErrorDialogAsync(input, cancellationToken)
                     || !await restoreFormAsync())
                 {
@@ -968,6 +1037,21 @@ public sealed class VmOperations
                     || !await restoreFormAsync())
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu form could not be restored.");
+                }
+            }
+            else if (waitResult == GameEntryWaitResult.ErrorDialog)
+            {
+                dialogRetries++;
+                if (errorDialogFailureMessage is not null)
+                {
+                    _ = await DismissGameEntryErrorDialogAsync(input, cancellationToken);
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, errorDialogFailureMessage);
+                }
+
+                if (!await DismissGameEntryErrorDialogAsync(input, cancellationToken)
+                    || !await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "A game-entry error dialog appeared, but the menu form could not be restored.");
                 }
             }
             else if (waitResult == GameEntryWaitResult.OfflineCharacterScreen)
@@ -1126,6 +1210,7 @@ public sealed class VmOperations
         return result switch
         {
             GameEntryWaitResult.ConnectionInterrupted => "Connection interrupted was detected.",
+            GameEntryWaitResult.ErrorDialog => "A game-entry error dialog was detected.",
             GameEntryWaitResult.ReturnedToMenu => "The client returned to the menu instead of entering the game.",
             GameEntryWaitResult.ReturnedToCharacterScreen => "The client returned to character select instead of entering the game.",
             GameEntryWaitResult.OfflineCharacterScreen => "The client returned to the offline character screen instead of entering the game.",
@@ -1319,28 +1404,14 @@ public sealed class VmOperations
         var hud = SampleD2RRegion(input, _config.Ui.InGameHudBar, widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
         var modernHealth = SampleD2RRegion(input, _config.Ui.ModernHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var modernMana = SampleD2RRegion(input, _config.Ui.ModernManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        if (IsInGameHudProfile(modernHealth, modernMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        if (D2RScreenClassifier.IsInGameHudProfile(modernHealth, modernMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
         {
             return true;
         }
 
         var legacyHealth = SampleD2RRegion(input, _config.Ui.LegacyHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var legacyMana = SampleD2RRegion(input, _config.Ui.LegacyManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        return IsInGameHudProfile(legacyHealth, legacyMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18);
-    }
-
-    private static bool IsInGameHudProfile(
-        ScreenRegionStats health,
-        ScreenRegionStats mana,
-        ScreenRegionStats hud,
-        double healthRedThreshold,
-        double manaBlueThreshold)
-    {
-        return health.RedRatio > healthRedThreshold
-            && mana.BlueRatio > manaBlueThreshold
-            && hud.AverageLuminance > 35
-            && hud.LuminanceStdDev > 25
-            && hud.DarkRatio < 0.80;
+        return D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18);
     }
 
     private ScreenRegionStats SampleD2RRegion(
@@ -1433,6 +1504,10 @@ public sealed class VmOperations
             {
                 sawConnectionInterrupted = true;
             }
+            else if (IsGameEntryErrorDialogOpen(input))
+            {
+                return GameEntryWaitResult.ErrorDialog;
+            }
             else if (IsCharacterScreenOffline(input))
             {
                 return GameEntryWaitResult.OfflineCharacterScreen;
@@ -1460,6 +1535,11 @@ public sealed class VmOperations
         if (sawConnectionInterrupted)
         {
             return GameEntryWaitResult.ConnectionInterrupted;
+        }
+
+        if (IsGameEntryErrorDialogOpen(input))
+        {
+            return GameEntryWaitResult.ErrorDialog;
         }
 
         if (returnTab is not null && IsLobbyTabReady(input, returnTab))
@@ -1491,7 +1571,8 @@ public sealed class VmOperations
 
         _ = TryPrepareD2RForInput(input);
         await DelayStepAsync(cancellationToken);
-        input.PressLegacyGraphicsToggle();
+        input.PressStartupSkipKey();
+        _ = input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames());
         await DelayStepAsync(cancellationToken);
     }
 
@@ -2044,6 +2125,7 @@ public sealed class VmOperations
     {
         EnteredGame,
         ConnectionInterrupted,
+        ErrorDialog,
         ReturnedToMenu,
         ReturnedToCharacterScreen,
         OfflineCharacterScreen,

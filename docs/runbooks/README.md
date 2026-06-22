@@ -20,6 +20,7 @@ Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 - `game_no_longer_available_to_join.jpg`: Join Game modal when the selected game is no longer available.
 - `connection_interrupted.jpg`: Full-screen connection interrupted message that returns to the prior menu state.
 - `create_game.jpg`: Lobby Create Game tab.
+- `1366x768/game_exists_name.png`: Redacted Create Game modal when the chosen game name already exists.
 - `lobby_right_click_party_icon.jpg`: Lobby friends drawer opened from the party/friends icon near chat, with a friend context menu open.
 - `friend_context_join_game.jpg`: Right-click friend context menu with `Join Game` visible.
 - `save_and_exit_resurrected.jpg`: Resurrected graphics pause menu with Save and Exit.

@@ -20,6 +20,7 @@ This catalog names the UI states represented by the screenshot assets. Keep file
 | Join game unavailable | `assets/d2r-ui/game_no_longer_available_to_join.jpg` | Join Game unavailable error modal with OK button. |
 | Connection Interrupted | `assets/d2r-ui/connection_interrupted.jpg` | Full-screen connection interrupted message during game entry. |
 | Lobby Create Game | `assets/d2r-ui/create_game.jpg` | Create Game tab with name/password/difficulty/options. |
+| Create name exists | `assets/d2r-ui/1366x768/game_exists_name.png` | Create Game error modal when the chosen game name already exists. |
 | Friends drawer | `assets/d2r-ui/lobby_right_click_party_icon.jpg` | Friends drawer opened from the icon beside chat. |
 | Friend Join Game menu | `assets/d2r-ui/friend_context_join_game.jpg` | Right-click friend context menu with `Join Game`. |
 | Save and Exit | `assets/d2r-ui/save_and_exit_resurrected.jpg` | Resurrected graphics pause menu. |

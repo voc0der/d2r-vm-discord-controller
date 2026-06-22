@@ -87,6 +87,51 @@ public sealed class D2RScreenClassifierTests
         Assert.False(D2RScreenClassifier.IsOfflineCharacterPanelRegion(onlinePanel));
     }
 
+    [Fact]
+    public void InGameHudProfileAcceptsModern1366Capture()
+    {
+        var hud = Stats(averageLuminance: 38.9, luminanceStdDev: 42.5, darkRatio: 0.669);
+        var health = Stats(averageLuminance: 50.7, redRatio: 0.572);
+        var mana = Stats(averageLuminance: 38.5, blueRatio: 0.627);
+
+        Assert.True(D2RScreenClassifier.IsInGameHudProfile(
+            health,
+            mana,
+            hud,
+            healthRedThreshold: 0.20,
+            manaBlueThreshold: 0.18));
+    }
+
+    [Fact]
+    public void InGameHudProfileAcceptsLegacy1366Capture()
+    {
+        var hud = Stats(averageLuminance: 70.8, luminanceStdDev: 60.2, darkRatio: 0.365);
+        var health = Stats(averageLuminance: 23.1, redRatio: 0.830);
+        var mana = Stats(averageLuminance: 8.2, blueRatio: 0.669);
+
+        Assert.True(D2RScreenClassifier.IsInGameHudProfile(
+            health,
+            mana,
+            hud,
+            healthRedThreshold: 0.20,
+            manaBlueThreshold: 0.18));
+    }
+
+    [Fact]
+    public void InGameHudProfileRejectsLobbyCapture()
+    {
+        var hud = Stats(averageLuminance: 26.1, luminanceStdDev: 21.7, darkRatio: 0.816);
+        var health = Stats(averageLuminance: 31.1, redRatio: 0.002);
+        var mana = Stats(averageLuminance: 32.2, blueRatio: 0.0);
+
+        Assert.False(D2RScreenClassifier.IsInGameHudProfile(
+            health,
+            mana,
+            hud,
+            healthRedThreshold: 0.20,
+            manaBlueThreshold: 0.18));
+    }
+
     private static ScreenRegionStats Stats(
         double averageLuminance,
         double luminanceStdDev = 0,

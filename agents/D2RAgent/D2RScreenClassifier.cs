@@ -45,6 +45,20 @@ internal static class D2RScreenClassifier
             && tab.DarkRatio < 0.80;
     }
 
+    public static bool IsInGameHudProfile(
+        ScreenRegionStats health,
+        ScreenRegionStats mana,
+        ScreenRegionStats hud,
+        double healthRedThreshold,
+        double manaBlueThreshold)
+    {
+        return health.RedRatio > healthRedThreshold
+            && mana.BlueRatio > manaBlueThreshold
+            && hud.AverageLuminance > 35
+            && hud.LuminanceStdDev > 25
+            && hud.DarkRatio < 0.80;
+    }
+
     private static bool IsCharacterMenuButtonRegion(ScreenRegionStats stats)
     {
         return stats.AverageLuminance > 40

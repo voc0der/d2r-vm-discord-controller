@@ -64,7 +64,7 @@ Use these commands while driving clients:
 
 If `lobby`, `play`, `join-game`, `create-game`, or `follow` is requested while the latest VM status says D2R is stopped or D2R is running with an `Unknown` activity state, `D2RHost` runs `/d2r ready` first and reports that extra step in Discord.
 
-For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued. `/d2r create-game-all` warms every online client first with this stagger before the creator makes the game, so one cold client does not leave the other VMs idle on the desktop.
+For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued. `/d2r create-game-all` now starts the creator as soon as the creator is ready; side clients warm up and prepare their Join Game forms in parallel, then submit Join Game after the creator succeeds.
 
 Use `/config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/config notifications enabled:true channel-id:<channel>` to post create-game-all and join-all session updates into a Discord channel. Use `/restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
 
@@ -247,6 +247,8 @@ References:
 
 ![Create Game terror zones unavailable 1366x768](assets/d2r-ui/1366x768/lobby_create_game_terror_zones_not_available.png)
 
+![Create Game name already exists 1366x768](assets/d2r-ui/1366x768/game_exists_name.png)
+
 ![Create Game tab](assets/d2r-ui/create_game.jpg)
 
 ![Connection interrupted](assets/d2r-ui/connection_interrupted.jpg)
@@ -270,7 +272,7 @@ Automation:
 /d2r create-game hc1 character-slot:1
 ```
 
-Before typing, the VM agent clicks Lobby, clicks Create Game, then types the game/password even if visual tab confirmation is fuzzy. After typing, it clicks the final Create Game button first, then watches for game entry, connection interrupted, or return to menu. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. Restore clicks and retypes even when tab visual confirmation is fuzzy. After confirmed game entry, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
+Before typing, the VM agent clicks Lobby, clicks Create Game, then types the game/password even if visual tab confirmation is fuzzy. After typing, it clicks the final Create Game button first, then watches for game entry, connection interrupted, create-name errors, or return to menu. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. If a create error dialog appears, such as `A Game Already Exists With That Name`, create fails fast instead of retrying the same name until timeout. Restore clicks and retypes even when tab visual confirmation is fuzzy. After confirmed game entry, the agent presses `G` with both scan-code/keybd and window-message input when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
 
 ## Join Off Friend
 

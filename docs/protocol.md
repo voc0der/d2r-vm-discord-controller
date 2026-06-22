@@ -67,6 +67,8 @@ Menu automation commands use the same envelope and are handled by the VM agent:
 menu_ready
 menu_lobby
 menu_play
+menu_prepare_join_game
+menu_submit_join_game
 menu_join_game
 menu_create_game
 menu_join_friend
