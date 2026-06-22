@@ -18,7 +18,7 @@ internal static class Program
                 return 0;
             }
 
-            var config = VmAgentConfigWizard.LoadOrCreate(configPath);
+            var config = VmAgentConfigWizard.LoadOrCreate(configPath, out var wasFreshSetup);
             config = await VmAgentConfigWizard.EnsureConnectsAsync(
                 configPath,
                 config,
@@ -31,6 +31,7 @@ internal static class Program
                         TimeSpan.FromSeconds(6),
                         cancellationToken);
                 },
+                allowInteractiveRetry: wasFreshSetup,
                 CancellationToken.None);
 
             var operations = new VmOperations(config, args);

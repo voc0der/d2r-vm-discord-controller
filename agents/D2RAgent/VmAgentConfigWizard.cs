@@ -4,12 +4,15 @@ namespace D2RAgent;
 
 public static class VmAgentConfigWizard
 {
-    public static VmAgentConfig LoadOrCreate(string configPath)
+    public static VmAgentConfig LoadOrCreate(string configPath, out bool wasCreated)
     {
         if (File.Exists(configPath))
         {
+            wasCreated = false;
             return ConfigLoader.Load<VmAgentConfig>(configPath);
         }
+
+        wasCreated = true;
 
         if (!ConsolePrompt.CanPrompt)
         {
@@ -47,6 +50,7 @@ public static class VmAgentConfigWizard
         string configPath,
         VmAgentConfig config,
         Func<VmAgentConfig, CancellationToken, Task> probeAsync,
+        bool allowInteractiveRetry,
         CancellationToken cancellationToken)
     {
         while (true)
@@ -62,7 +66,9 @@ public static class VmAgentConfigWizard
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
                 Console.WriteLine($"Connection test failed: {ex.Message}");
-                if (!ConsolePrompt.CanPrompt || !ConsolePrompt.ReadBool("Update connection settings and retry", true))
+                if (!allowInteractiveRetry
+                    || !ConsolePrompt.CanPrompt
+                    || !ConsolePrompt.ReadBool("Update connection settings and retry", true))
                 {
                     Console.WriteLine("Starting reconnect loop with the current config.");
                     Console.WriteLine();
