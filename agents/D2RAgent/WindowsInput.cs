@@ -382,8 +382,10 @@ internal sealed class WindowsInput
     public void PressStartKey()
     {
         VirtualKey(VkSpace);
+        Key(VkSpace);
         Thread.Sleep(50);
         VirtualKey(VkReturn);
+        Key(VkReturn);
     }
 
     public void PressLegacyGraphicsToggle()

@@ -924,12 +924,6 @@ public sealed class VmOperations
         for (var i = 0; i < plan.IntroClickCount && DateTimeOffset.UtcNow < deadline; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            lastState = DetectReadyScreenStateStable(input);
-            if (IsReadyScreenState(lastState))
-            {
-                return new ReadyWaitResult(true, nudges, lastState, timeoutSeconds);
-            }
-
             SendReadyIntroClick(input);
             nudges++;
             await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
@@ -938,12 +932,6 @@ public sealed class VmOperations
         for (var i = 0; i < plan.TitleScreenKeyPressCount && DateTimeOffset.UtcNow < deadline; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            lastState = DetectReadyScreenStateStable(input);
-            if (IsReadyScreenState(lastState))
-            {
-                return new ReadyWaitResult(true, nudges, lastState, timeoutSeconds);
-            }
-
             SendReadyTitleSkipBurst(input);
             nudges++;
             await Task.Delay(plan.TitleScreenKeyPressDelayMs, cancellationToken);
