@@ -25,6 +25,7 @@ public sealed class VmOperations
     private D2RActivityState _activityState = D2RActivityState.Unknown;
     private DateTimeOffset? _characterScreenIdleSinceUtc;
     private DateTimeOffset? _lastLobbyOrGameInteractionUtc;
+    private DateTimeOffset? _lastObservedD2RStartUtc;
     private string? _lastActivityReason;
     private LastInputActionSnapshot? _lastInputAction;
 
@@ -39,10 +40,7 @@ public sealed class VmOperations
         cancellationToken.ThrowIfCancellationRequested();
         var battleNetRunning = IsBattleNetRunning();
         var d2rRunning = IsD2RRunning();
-        if (!d2rRunning)
-        {
-            ClearD2RActivity();
-        }
+        RefreshD2RProcessActivity(d2rRunning);
 
         var activity = DetectVisibleActivitySnapshot(d2rRunning);
 
@@ -120,9 +118,11 @@ public sealed class VmOperations
     {
         if (IsD2RRunning())
         {
+            RefreshD2RProcessActivity(d2rRunning: true);
             return CommandResult.Success("D2R is already running.", await GetStatusAsync(cancellationToken));
         }
 
+        ClearD2RActivity();
         var battleNetWasRunning = IsBattleNetRunning();
         await PrepareDesktopForD2RLaunchAsync(battleNetWasRunning, cancellationToken);
 
@@ -637,7 +637,38 @@ public sealed class VmOperations
         {
             _activityState = D2RActivityState.Unknown;
             _characterScreenIdleSinceUtc = null;
+            _lastLobbyOrGameInteractionUtc = null;
+            _lastObservedD2RStartUtc = null;
             _lastActivityReason = null;
+        }
+    }
+
+    private void RefreshD2RProcessActivity(bool d2rRunning)
+    {
+        if (!d2rRunning)
+        {
+            ClearD2RActivity();
+            return;
+        }
+
+        var processStartedUtc = TryGetD2RProcessStartUtc();
+        if (processStartedUtc is null)
+        {
+            return;
+        }
+
+        lock (_activityLock)
+        {
+            if (_lastObservedD2RStartUtc is not null
+                && Math.Abs((processStartedUtc.Value - _lastObservedD2RStartUtc.Value).TotalSeconds) > 1)
+            {
+                _activityState = D2RActivityState.Unknown;
+                _characterScreenIdleSinceUtc = null;
+                _lastLobbyOrGameInteractionUtc = null;
+                _lastActivityReason = "D2R process restarted.";
+            }
+
+            _lastObservedD2RStartUtc = processStartedUtc;
         }
     }
 
@@ -664,6 +695,15 @@ public sealed class VmOperations
         try
         {
             var input = new WindowsInput();
+            if (IsDiabloSplashScreen(input))
+            {
+                return new ActivitySnapshot(
+                    D2RActivityState.Unknown,
+                    null,
+                    activity.LastLobbyOrGameInteractionUtc,
+                    "Detected Diablo splash screen.");
+            }
+
             if (IsCharacterScreenReady(input) || IsCharacterScreenOffline(input))
             {
                 return new ActivitySnapshot(
@@ -684,10 +724,22 @@ public sealed class VmOperations
         }
         catch (Exception)
         {
-            return activity;
+            return activity.State == D2RActivityState.Unknown
+                ? activity
+                : new ActivitySnapshot(
+                    D2RActivityState.Unknown,
+                    null,
+                    activity.LastLobbyOrGameInteractionUtc,
+                    "Visible D2R state detection failed.");
         }
 
-        return activity;
+        return activity.State == D2RActivityState.Unknown
+            ? activity
+            : new ActivitySnapshot(
+                D2RActivityState.Unknown,
+                null,
+                activity.LastLobbyOrGameInteractionUtc,
+                "Visible D2R screen is not a known menu/game state.");
     }
 
     private WindowsInput FocusD2R()
@@ -817,6 +869,7 @@ public sealed class VmOperations
 
         _ = TryPrepareD2RForInput(input);
         ClickD2R(input, _config.Ui.IntroSkipPoint);
+        _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
         var beforeDiagnostics = TryGetD2RInputDiagnostics();
@@ -2211,6 +2264,15 @@ public sealed class VmOperations
         return IsAnyProcessRunning(GetD2RProcessNames());
     }
 
+    private DateTimeOffset? TryGetD2RProcessStartUtc()
+    {
+        return FindProcessesByNameOrWindowTitle(GetD2RProcessNames())
+            .Select(TryGetProcessStartUtc)
+            .Where(started => started.HasValue)
+            .OrderBy(started => started!.Value)
+            .FirstOrDefault();
+    }
+
     private string[] GetBattleNetProcessNames()
     {
         return WindowsProcessIdentity.GetConfiguredProcessNames(_config.BattleNetProcessName, _config.BattleNetProcessNames);
@@ -2296,6 +2358,22 @@ public sealed class VmOperations
         catch (InvalidOperationException)
         {
             return "";
+        }
+    }
+
+    private static DateTimeOffset? TryGetProcessStartUtc(Process process)
+    {
+        try
+        {
+            return new DateTimeOffset(process.StartTime).ToUniversalTime();
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return null;
         }
     }
 
