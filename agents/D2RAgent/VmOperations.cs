@@ -298,7 +298,17 @@ public sealed class VmOperations
                 await GetStatusAsync(cancellationToken));
         }
 
-        var ready = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken);
+        var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken);
+        if (!ready.Ready)
+        {
+            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken);
+            ready = detectorReady with
+            {
+                Nudges = ready.Nudges + detectorReady.Nudges,
+                TimeoutSeconds = ready.TimeoutSeconds + detectorReady.TimeoutSeconds
+            };
+        }
+
         if (!ready.Ready)
         {
             return CommandResult.Failure(
@@ -593,7 +603,17 @@ public sealed class VmOperations
             return null;
         }
 
-        var ready = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken, readyTimeoutSeconds);
+        var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken);
+        if (!ready.Ready)
+        {
+            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken, readyTimeoutSeconds);
+            ready = detectorReady with
+            {
+                Nudges = ready.Nudges + detectorReady.Nudges,
+                TimeoutSeconds = ready.TimeoutSeconds + detectorReady.TimeoutSeconds
+            };
+        }
+
         if (!ready.Ready)
         {
             return CommandResult.Failure(
@@ -890,6 +910,50 @@ public sealed class VmOperations
         return new ReadyWaitResult(false, nudges, lastState, skipSeconds);
     }
 
+    private async Task<ReadyWaitResult> RunStartupReadyInputPlanUntilCharacterScreenAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        var plan = StartupReadyInputPlan.FromConfig(_config.Ui);
+        var lastState = ReadyScreenState.Unknown;
+        var nudges = 0;
+
+        for (var i = 0; i < plan.IntroClickCount; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lastState = DetectReadyScreenState(input, ReadyStartupSampleGrid);
+            if (lastState is ReadyScreenState.CharacterScreen or ReadyScreenState.OfflineCharacterScreen)
+            {
+                return new ReadyWaitResult(true, nudges, lastState, plan.EstimatedTimeoutSeconds);
+            }
+
+            SendReadySkipBurst(input);
+            nudges++;
+            await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
+        }
+
+        for (var i = 0; i < plan.TitleScreenKeyPressCount; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lastState = DetectReadyScreenState(input, ReadyStartupSampleGrid);
+            if (lastState is ReadyScreenState.CharacterScreen or ReadyScreenState.OfflineCharacterScreen)
+            {
+                return new ReadyWaitResult(true, nudges, lastState, plan.EstimatedTimeoutSeconds);
+            }
+
+            SendReadySkipBurst(input);
+            nudges++;
+            await Task.Delay(plan.TitleScreenKeyPressDelayMs, cancellationToken);
+        }
+
+        lastState = DetectReadyScreenState(input, ReadyStartupSampleGrid);
+        return new ReadyWaitResult(
+            lastState is ReadyScreenState.CharacterScreen or ReadyScreenState.OfflineCharacterScreen,
+            nudges,
+            lastState,
+            plan.EstimatedTimeoutSeconds);
+    }
+
     private void SendReadySkipBurst(WindowsInput input)
     {
         if (!IsD2RRunning())
@@ -897,16 +961,37 @@ public sealed class VmOperations
             return;
         }
 
-        _ = TryPrepareD2RForInput(input);
-        ClickD2R(input, _config.Ui.IntroSkipPoint);
-        _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
         var beforeDiagnostics = TryGetD2RInputDiagnostics();
-        input.PressStartupSkipKey();
-        input.PressStartKey();
-        _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
-        _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
+        foreach (var action in StartupReadyInputPlan.BurstActions)
+        {
+            switch (action)
+            {
+                case StartupReadyInputAction.FocusD2R:
+                    _ = TryPrepareD2RForInput(input);
+                    break;
+                case StartupReadyInputAction.ClickIntroPoint:
+                    ClickD2R(input, _config.Ui.IntroSkipPoint);
+                    break;
+                case StartupReadyInputAction.SendWindowClickIntroPoint:
+                    _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
+                    break;
+                case StartupReadyInputAction.PressStartupSkipKey:
+                    input.PressStartupSkipKey();
+                    break;
+                case StartupReadyInputAction.PressStartKey:
+                    input.PressStartKey();
+                    break;
+                case StartupReadyInputAction.SendWindowStartupSkipKey:
+                    _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
+                    break;
+                case StartupReadyInputAction.SendWindowReadyBurst:
+                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
+                    break;
+            }
+        }
+
         var afterCursor = input.GetCursorPosition();
         var afterDiagnostics = TryGetD2RInputDiagnostics();
         RecordD2RInputAction(

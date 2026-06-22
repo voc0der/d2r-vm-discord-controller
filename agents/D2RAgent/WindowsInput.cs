@@ -379,24 +379,25 @@ internal sealed class WindowsInput
 
     public void PressStartKey()
     {
-        Key(VkSpace);
+        VirtualKey(VkSpace);
         Thread.Sleep(50);
-        Key(VkReturn);
+        VirtualKey(VkReturn);
     }
 
     public void PressLegacyGraphicsToggle()
     {
-        PressReadySkipKey();
+        VirtualKey(VkG);
     }
 
     public void PressReadySkipKey()
     {
-        Key(VkG);
+        VirtualKey(VkG);
     }
 
     public void PressStartupSkipKey()
     {
         ScanKey(VkG);
+        VirtualKey(VkG);
         Key(VkG);
     }
 
@@ -789,6 +790,20 @@ internal sealed class WindowsInput
         Thread.Sleep(InputHoldMilliseconds);
         KeyUp(virtualKey);
         Thread.Sleep(InputGapMilliseconds);
+    }
+
+    private static void VirtualKey(byte virtualKey)
+    {
+        EnsureWindows();
+        var downSent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp: false) });
+        Thread.Sleep(InputHoldMilliseconds);
+        var upSent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp: true) });
+        Thread.Sleep(InputGapMilliseconds);
+
+        if (downSent != 1 || upSent != 1)
+        {
+            Key(virtualKey);
+        }
     }
 
     private static void ScanKey(byte virtualKey)

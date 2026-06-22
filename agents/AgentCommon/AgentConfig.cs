@@ -58,6 +58,10 @@ public sealed class D2RUiAutomationConfig
     public UiPoint BattleNetWhatsNewTitle { get; set; } = new(0.226, 0.187);
     public UiPoint BattleNetWhatsNewCloseButton { get; set; } = new(0.843, 0.146);
     public UiPoint IntroSkipPoint { get; set; } = new(0.500, 0.500);
+    public int IntroClickCount { get; set; } = 80;
+    public int IntroClickDelayMs { get; set; } = 250;
+    public int TitleScreenKeyPressCount { get; set; } = 6;
+    public int TitleScreenKeyPressDelayMs { get; set; } = 500;
     public UiPoint[] CharacterSlots { get; set; } =
     [
         new(0.890, 0.120),
