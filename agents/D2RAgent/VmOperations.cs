@@ -8,7 +8,7 @@ public sealed class VmOperations
 {
     private const string DefaultBattleNetPath = @"C:\Program Files (x86)\Battle.net\Battle.net.exe";
     private const string DefaultBattleNetD2RArgs = "--exec=\"launch OSI\"";
-    private const int MaxD2RStartTimeoutSeconds = 60;
+    private const int MaxD2RStartTimeoutSeconds = 40;
     private const int MaxReadyStartupSkipSeconds = 45;
     private const int MaxCharacterScreenReconnectSeconds = 45;
     private const int ReadyStartupDetectionIntervalMs = 1000;
@@ -148,7 +148,7 @@ public sealed class VmOperations
 
         if (usedBattleNetExec && !battleNetWasRunning)
         {
-            await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.BattleNetExecRetryDelaySeconds, 1)), cancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds()), cancellationToken);
             if (!IsD2RRunning())
             {
                 var retry = LaunchBattleNetD2R();
@@ -161,7 +161,7 @@ public sealed class VmOperations
             }
         }
 
-        await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.LaunchGraceSeconds, 1)), cancellationToken);
+        await Task.Delay(TimeSpan.FromSeconds(GetLaunchGraceSeconds()), cancellationToken);
         var status = await GetStatusAsync(cancellationToken);
         var message = launchAttempts > 1
             ? "Battle.net cold-started; D2R launch command sent twice. Check status for final client state."
@@ -1885,6 +1885,16 @@ public sealed class VmOperations
         return Math.Clamp(_config.D2RStartTimeoutSeconds, 1, MaxD2RStartTimeoutSeconds);
     }
 
+    private int GetBattleNetExecRetryDelaySeconds()
+    {
+        return Math.Clamp(_config.BattleNetExecRetryDelaySeconds, 1, 8);
+    }
+
+    private int GetLaunchGraceSeconds()
+    {
+        return Math.Clamp(_config.LaunchGraceSeconds, 1, 5);
+    }
+
     private int GetReadyStartupSkipSeconds()
     {
         return Math.Clamp(_config.Ui.ReadyStartupSkipSeconds, 1, MaxReadyStartupSkipSeconds);
@@ -1937,7 +1947,7 @@ public sealed class VmOperations
     {
         var timeout = TimeSpan.FromSeconds(GetD2RStartTimeoutSeconds());
         var deadline = DateTimeOffset.UtcNow + timeout;
-        var launchRetryDelay = TimeSpan.FromSeconds(Math.Max(_config.BattleNetExecRetryDelaySeconds, 1));
+        var launchRetryDelay = TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds());
         var nextLaunchRetryAt = DateTimeOffset.UtcNow;
         while (true)
         {
@@ -1958,7 +1968,7 @@ public sealed class VmOperations
                 nextLaunchRetryAt = DateTimeOffset.UtcNow + launchRetryDelay;
             }
 
-            _ = TryClickBattleNetPlay(input);
+            _ = TryClickBattleNetPlay(input, requireButtonReady: false);
             await DelayReadyNudgeAsync(cancellationToken);
         }
     }
@@ -1973,7 +1983,7 @@ public sealed class VmOperations
         return LaunchBattleNetD2R();
     }
 
-    private bool TryClickBattleNetPlay(WindowsInput input)
+    private bool TryClickBattleNetPlay(WindowsInput input, bool requireButtonReady = true)
     {
         if (!_config.Ui.ClickBattleNetPlayWhenNeeded
             || !IsBattleNetRunning())
@@ -1993,7 +2003,7 @@ public sealed class VmOperations
                 return false;
             }
 
-            if (!IsBattleNetPlayButtonReady(input))
+            if (requireButtonReady && !IsBattleNetPlayButtonReady(input))
             {
                 return false;
             }
