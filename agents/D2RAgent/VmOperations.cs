@@ -14,6 +14,9 @@ public sealed class VmOperations
     private const int ReadyStartupDetectionIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
+    private const int FastMenuDelayMs = 150;
+    private const int EntryPollIntervalMs = 200;
+    private const int LobbyPollIntervalMs = 250;
 
     private readonly VmAgentConfig _config;
     private readonly object _activityLock = new();
@@ -920,7 +923,7 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1));
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 2));
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -938,7 +941,7 @@ public sealed class VmOperations
                 break;
             }
 
-            await Task.Delay((int)Math.Min(500, remainingMs), cancellationToken);
+            await Task.Delay((int)Math.Min(LobbyPollIntervalMs, remainingMs), cancellationToken);
         }
 
         return true;
@@ -949,12 +952,24 @@ public sealed class VmOperations
         AgentCommon.UiPoint tab,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt < 2; attempt++)
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 2));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
             ClickD2R(input, tab);
-            await DelayStepAsync(cancellationToken);
+            var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
+            if (remainingMs == 0)
+            {
+                break;
+            }
+
+            await Task.Delay((int)Math.Min(LobbyPollIntervalMs, remainingMs), cancellationToken);
+            if (IsLobbyTabReady(input, tab))
+            {
+                break;
+            }
         }
 
         MarkLobbyOrGameInteraction("Clicked lobby tab.");
@@ -1110,7 +1125,7 @@ public sealed class VmOperations
         cancellationToken.ThrowIfCancellationRequested();
         _ = TryPrepareD2RForInput(input);
         ClickD2R(input, button);
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
     }
 
     private async Task<bool> DismissGameEntryErrorDialogAsync(
@@ -1496,7 +1511,7 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         ClickD2R(input, GetCharacterSlotPoint(characterSlot));
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
     }
 
     private async Task FillTextFieldAsync(
@@ -1506,13 +1521,13 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         ClickD2R(input, point);
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
         ClickD2R(input, point);
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
         input.SelectAll();
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
         input.TypeText(value);
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
     }
 
     private async Task SelectJoinDifficultyAsync(
@@ -1526,9 +1541,9 @@ public sealed class VmOperations
         }
 
         ClickD2R(input, _config.Ui.JoinDifficultyDropdown);
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
         ClickD2R(input, GetJoinDifficultyPoint(difficulty));
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
     }
 
     private async Task<GameEntryWaitResult> WaitForGameEntryAsync(WindowsInput input, CancellationToken cancellationToken)
@@ -1544,14 +1559,9 @@ public sealed class VmOperations
         var delaySeconds = Math.Max(
             Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1),
             Math.Max(_config.Ui.GameLoadSeconds, 1));
-        if (_config.Ui.ToggleLegacyGraphicsAfterEnteringGame)
-        {
-            delaySeconds = Math.Max(delaySeconds, Math.Max(_config.Ui.LegacyGraphicsToggleDelaySeconds, 1));
-        }
-
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(delaySeconds);
-        var returnDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5));
-        var presumedEntryAfter = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 4, 10));
+        var returnDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 1, 2));
+        var presumedEntryAfter = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 3));
         DateTimeOffset? menuAbsentSince = null;
         var sawConnectionInterrupted = false;
 
@@ -1606,7 +1616,7 @@ public sealed class VmOperations
                 break;
             }
 
-            await Task.Delay((int)Math.Min(500, remainingMs), cancellationToken);
+            await Task.Delay((int)Math.Min(EntryPollIntervalMs, remainingMs), cancellationToken);
         }
 
         if (await TryConfirmEnteredGameAsync(input, cancellationToken))
@@ -1694,10 +1704,10 @@ public sealed class VmOperations
         }
 
         _ = TryPrepareD2RForInput(input);
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
         input.PressStartupSkipKey();
         _ = input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames());
-        await DelayStepAsync(cancellationToken);
+        await DelayFastMenuAsync(cancellationToken);
     }
 
     private AgentCommon.UiPoint GetCharacterSlotPoint(int? characterSlot)
@@ -1754,6 +1764,11 @@ public sealed class VmOperations
     private Task DelayStepAsync(CancellationToken cancellationToken)
     {
         return Task.Delay(Math.Max(_config.Ui.StepDelayMs, 50), cancellationToken);
+    }
+
+    private Task DelayFastMenuAsync(CancellationToken cancellationToken)
+    {
+        return Task.Delay(Math.Clamp(_config.Ui.StepDelayMs, 50, FastMenuDelayMs), cancellationToken);
     }
 
     private Task DelayLongAsync(CancellationToken cancellationToken)
