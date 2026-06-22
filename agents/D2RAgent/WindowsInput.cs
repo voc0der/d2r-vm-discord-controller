@@ -289,6 +289,8 @@ internal sealed class WindowsInput
             }
         }
 
+        var agentElevated = TryGetProcessIsElevated(Environment.ProcessId);
+
         var target = FindWindowTarget(names);
         if (target is null)
         {
@@ -306,7 +308,9 @@ internal sealed class WindowsInput
                 ScreenWidth: screenWidth,
                 ScreenHeight: screenHeight,
                 WindowRect: null,
-                ClientRect: null);
+                ClientRect: null,
+                AgentElevated: agentElevated,
+                TargetElevated: null);
         }
 
         InputRect? windowRect = null;
@@ -338,7 +342,9 @@ internal sealed class WindowsInput
             ScreenWidth: screenWidth,
             ScreenHeight: screenHeight,
             WindowRect: windowRect,
-            ClientRect: clientRect);
+            ClientRect: clientRect,
+            AgentElevated: agentElevated,
+            TargetElevated: TryGetProcessIsElevated(target.ProcessId));
     }
 
     public CursorPosition? GetCursorPosition()
@@ -1059,6 +1065,76 @@ internal sealed class WindowsInput
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr GlobalFree(IntPtr memory);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, int processId);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetTokenInformation(
+        IntPtr tokenHandle,
+        int tokenInformationClass,
+        IntPtr tokenInformation,
+        uint tokenInformationLength,
+        out uint returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+    private const uint TokenQuery = 0x0008;
+    private const int TokenElevation = 20;
+
+    // SendInput is subject to UIPI: a window running at a higher integrity level
+    // (e.g. launched elevated) silently swallows synthetic input from a
+    // lower-integrity caller even though SendInput itself reports success and
+    // GetForegroundWindow/SetForegroundWindow both agree the target is foreground.
+    // Surfacing both sides' elevation lets a status check distinguish "input is
+    // landing but the game isn't reacting" from "input never lands at all."
+    private static bool? TryGetProcessIsElevated(int processId)
+    {
+        var processHandle = OpenProcess(ProcessQueryLimitedInformation, false, processId);
+        if (processHandle == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (!OpenProcessToken(processHandle, TokenQuery, out var tokenHandle))
+            {
+                return null;
+            }
+
+            try
+            {
+                var elevationPtr = Marshal.AllocHGlobal(sizeof(uint));
+                try
+                {
+                    if (!GetTokenInformation(tokenHandle, TokenElevation, elevationPtr, sizeof(uint), out _))
+                    {
+                        return null;
+                    }
+
+                    return Marshal.ReadInt32(elevationPtr) != 0;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(elevationPtr);
+                }
+            }
+            finally
+            {
+                CloseHandle(tokenHandle);
+            }
+        }
+        finally
+        {
+            CloseHandle(processHandle);
+        }
+    }
+
     private static void SetClipboardText(string text)
     {
         var opened = false;
@@ -1289,6 +1365,8 @@ internal sealed record InputDiagnostics(
     int ScreenWidth,
     int ScreenHeight,
     InputRect? WindowRect,
-    InputRect? ClientRect);
+    InputRect? ClientRect,
+    bool? AgentElevated,
+    bool? TargetElevated);
 
 internal sealed record CursorPosition(int X, int Y);

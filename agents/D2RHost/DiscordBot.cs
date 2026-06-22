@@ -1609,8 +1609,14 @@ public sealed class DiscordBot
                 : "?";
             var windowRect = TryReadInputRect(input, "windowRect");
             var clientRect = TryReadInputRect(input, "clientRect");
+            var agentElevated = TryGetBoolean(input, "agentElevated", out var isAgentElevated)
+                ? isAgentElevated.ToString().ToLowerInvariant()
+                : "?";
+            var targetElevated = TryGetBoolean(input, "targetElevated", out var isTargetElevated)
+                ? isTargetElevated.ToString().ToLowerInvariant()
+                : "?";
 
-            value = $"interactive={interactive}, session={session}, target={targetProcess}, title={targetTitle}, window={window}, foreground={foreground}, fg={foregroundProcess}, screen={screen}, windowRect={windowRect}, client={clientRect}";
+            value = $"interactive={interactive}, session={session}, target={targetProcess}, title={targetTitle}, window={window}, foreground={foreground}, fg={foregroundProcess}, agentElevated={agentElevated}, targetElevated={targetElevated}, screen={screen}, windowRect={windowRect}, client={clientRect}";
             return true;
         }
         catch (JsonException)
