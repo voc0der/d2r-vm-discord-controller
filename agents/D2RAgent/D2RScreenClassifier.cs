@@ -59,6 +59,27 @@ internal static class D2RScreenClassifier
             && hud.DarkRatio < 0.80;
     }
 
+    public static bool IsInGameHudFrame(
+        ScreenRegionStats leftGlobe,
+        ScreenRegionStats rightGlobe,
+        ScreenRegionStats actionHud,
+        ScreenRegionStats bottomHud)
+    {
+        var broadGlobePair = leftGlobe.RedRatio > 0.045
+            && rightGlobe.BlueRatio > 0.045;
+        var bottomHudColors = bottomHud.RedRatio > 0.025
+            && bottomHud.BlueRatio > 0.020;
+        var actionBarVisible = actionHud.LuminanceStdDev > 30
+            && actionHud.DarkRatio < 0.85
+            && (actionHud.BrightRatio > 0.020 || actionHud.GreyRatio > 0.16);
+        var bottomHudVisible = bottomHud.LuminanceStdDev > 30
+            && bottomHud.DarkRatio < 0.85;
+
+        return actionBarVisible
+            && bottomHudVisible
+            && (broadGlobePair || bottomHudColors);
+    }
+
     private static bool IsCharacterMenuButtonRegion(ScreenRegionStats stats)
     {
         return stats.AverageLuminance > 40

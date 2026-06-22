@@ -1407,7 +1407,15 @@ public sealed class VmOperations
 
         var legacyHealth = SampleD2RRegion(input, _config.Ui.LegacyHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var legacyMana = SampleD2RRegion(input, _config.Ui.LegacyManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        return D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18);
+        if (D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        {
+            return true;
+        }
+
+        var leftGlobe = SampleD2RRegion(input, new AgentCommon.UiPoint(0.205, 0.920), widthRatio: 0.17, heightRatio: 0.15, windowRelative: windowRelative);
+        var rightGlobe = SampleD2RRegion(input, new AgentCommon.UiPoint(0.795, 0.920), widthRatio: 0.17, heightRatio: 0.15, windowRelative: windowRelative);
+        var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: windowRelative);
+        return D2RScreenClassifier.IsInGameHudFrame(leftGlobe, rightGlobe, hud, bottomHud);
     }
 
     private ScreenRegionStats SampleD2RRegion(
