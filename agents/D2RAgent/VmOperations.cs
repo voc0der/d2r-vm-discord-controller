@@ -1020,10 +1020,6 @@ public sealed class VmOperations
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(dialogRetries, connectionRetries));
             }
 
-            await Task.Delay(
-                TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5)),
-                cancellationToken);
-
             var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken);
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
@@ -1487,12 +1483,14 @@ public sealed class VmOperations
         }
 
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(delaySeconds);
+        var returnDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5));
         var sawConnectionInterrupted = false;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
+            var canDetectReturn = returnTab is not null && DateTimeOffset.UtcNow >= returnDetectionAt;
 
             if (IsInGameReady(input))
             {
@@ -1512,11 +1510,11 @@ public sealed class VmOperations
             {
                 return GameEntryWaitResult.OfflineCharacterScreen;
             }
-            else if (returnTab is not null && IsCharacterScreenReady(input))
+            else if (canDetectReturn && IsCharacterScreenReady(input))
             {
                 return GameEntryWaitResult.ReturnedToCharacterScreen;
             }
-            else if (returnTab is not null && IsLobbyTabReady(input, returnTab))
+            else if (canDetectReturn && IsLobbyTabReady(input, returnTab!))
             {
                 return sawConnectionInterrupted
                     ? GameEntryWaitResult.ConnectionInterrupted
@@ -1529,7 +1527,7 @@ public sealed class VmOperations
                 break;
             }
 
-            await Task.Delay((int)Math.Min(1000, remainingMs), cancellationToken);
+            await Task.Delay((int)Math.Min(500, remainingMs), cancellationToken);
         }
 
         if (sawConnectionInterrupted)
