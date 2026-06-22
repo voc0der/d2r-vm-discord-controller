@@ -1397,6 +1397,11 @@ public sealed class VmOperations
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
+            if (IsLobbyTabReady(input, tab))
+            {
+                break;
+            }
+
             ClickD2R(input, tab);
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
@@ -1405,10 +1410,6 @@ public sealed class VmOperations
             }
 
             await Task.Delay((int)Math.Min(LobbyPollIntervalMs, remainingMs), cancellationToken);
-            if (IsLobbyTabReady(input, tab))
-            {
-                break;
-            }
         }
 
         MarkLobbyOrGameInteraction("Clicked lobby tab.");
@@ -2333,6 +2334,7 @@ public sealed class VmOperations
         var deadline = DateTimeOffset.UtcNow + timeout;
         var launchRetryDelay = TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds());
         var nextLaunchRetryAt = DateTimeOffset.UtcNow;
+        var nextPlayClickAt = DateTimeOffset.UtcNow;
         var launchAttempts = 0;
         var playClicks = 0;
         var lastLaunchMessage = "(none)";
@@ -2363,9 +2365,11 @@ public sealed class VmOperations
                 nextLaunchRetryAt = DateTimeOffset.UtcNow + launchRetryDelay;
             }
 
-            if (TryClickBattleNetPlay(input, requireButtonReady: true))
+            if (DateTimeOffset.UtcNow >= nextPlayClickAt
+                && TryClickBattleNetPlay(input, requireButtonReady: true))
             {
                 playClicks++;
+                nextPlayClickAt = DateTimeOffset.UtcNow + launchRetryDelay;
             }
 
             await Task.Delay(500, cancellationToken);
