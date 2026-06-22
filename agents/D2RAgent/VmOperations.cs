@@ -969,11 +969,20 @@ public sealed class VmOperations
                 case StartupReadyInputAction.FocusD2R:
                     _ = TryPrepareD2RForInput(input);
                     break;
+                case StartupReadyInputAction.ClickWindowCenter:
+                    _ = TryClickD2RWindowCenter(input);
+                    break;
                 case StartupReadyInputAction.ClickIntroPoint:
                     ClickD2R(input, _config.Ui.IntroSkipPoint);
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
                     _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
+                    break;
+                case StartupReadyInputAction.PressStartupSkipKey:
+                    input.PressStartupSkipKey();
+                    break;
+                case StartupReadyInputAction.SendWindowStartupSkipKey:
+                    _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
                     break;
             }
         }
@@ -995,6 +1004,9 @@ public sealed class VmOperations
             {
                 case StartupReadyInputAction.FocusD2R:
                     _ = TryPrepareD2RForInput(input);
+                    break;
+                case StartupReadyInputAction.ClickWindowCenter:
+                    _ = TryClickD2RWindowCenter(input);
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
                     input.PressStartupSkipKey();
@@ -1040,6 +1052,9 @@ public sealed class VmOperations
             {
                 case StartupReadyInputAction.FocusD2R:
                     _ = TryPrepareD2RForInput(input);
+                    break;
+                case StartupReadyInputAction.ClickWindowCenter:
+                    _ = TryClickD2RWindowCenter(input);
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
                     ClickD2R(input, _config.Ui.IntroSkipPoint);
@@ -1261,10 +1276,15 @@ public sealed class VmOperations
             }
         }
 
-        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
-        await ClickLobbyDirectAsync(input, cancellationToken);
-        MarkLobbyOrGameInteraction("Clicked Lobby.");
-        return null;
+        if (await OpenLobbyFromCharacterScreenAsync(input, args, cancellationToken))
+        {
+            MarkLobbyOrGameInteraction("Clicked Lobby from character screen.");
+            return null;
+        }
+
+        return CommandResult.Failure(
+            $"D2R is at the character screen, but clicking Lobby did not reveal the lobby menu within {Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)}s.{FormatInputDiagnosticsSuffix()}",
+            await GetStatusAsync(cancellationToken));
     }
 
     private async Task<bool> TryOpenLobbyFromCurrentScreenAsync(
@@ -1288,16 +1308,45 @@ public sealed class VmOperations
             return false;
         }
 
+        if (IsCharacterScreenReady(input))
+        {
+            return await OpenLobbyFromCharacterScreenAsync(input, args, cancellationToken);
+        }
+
+        if (DetectReadyScreenStateStable(input) == ReadyScreenState.CharacterScreen)
+        {
+            return await OpenLobbyFromCharacterScreenAsync(input, args, cancellationToken);
+        }
+
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
-        return await ClickLobbyDirectAsync(input, cancellationToken)
-            && IsAnyLobbyEntryMenuVisible(input);
+        return await ClickLobbyDirectAsync(input, cancellationToken);
+    }
+
+    private async Task<bool> OpenLobbyFromCharacterScreenAsync(
+        WindowsInput input,
+        MenuCommandArgs args,
+        CancellationToken cancellationToken)
+    {
+        if (IsCharacterScreenOffline(input)
+            && !await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
+        {
+            return false;
+        }
+
+        if (await ClickLobbyDirectAsync(input, cancellationToken))
+        {
+            return true;
+        }
+
+        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+        return await ClickLobbyDirectAsync(input, cancellationToken);
     }
 
     private async Task<bool> ClickLobbyDirectAsync(
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 2));
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 2, 4));
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {

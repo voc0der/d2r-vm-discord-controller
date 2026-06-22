@@ -24,14 +24,18 @@ public sealed class StartupReadyInputPlanTests
         Assert.Equal(
             [
                 StartupReadyInputAction.FocusD2R,
+                StartupReadyInputAction.ClickWindowCenter,
                 StartupReadyInputAction.ClickIntroPoint,
-                StartupReadyInputAction.SendWindowClickIntroPoint
+                StartupReadyInputAction.SendWindowClickIntroPoint,
+                StartupReadyInputAction.PressStartupSkipKey,
+                StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.IntroActions);
 
         Assert.Equal(
             [
                 StartupReadyInputAction.FocusD2R,
+                StartupReadyInputAction.ClickWindowCenter,
                 StartupReadyInputAction.PressStartupSkipKey,
                 StartupReadyInputAction.PressStartKey,
                 StartupReadyInputAction.SendWindowStartupSkipKey,
@@ -42,6 +46,7 @@ public sealed class StartupReadyInputPlanTests
         Assert.Equal(
             [
                 StartupReadyInputAction.FocusD2R,
+                StartupReadyInputAction.ClickWindowCenter,
                 StartupReadyInputAction.ClickIntroPoint,
                 StartupReadyInputAction.SendWindowClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,

@@ -5,6 +5,7 @@ namespace D2RAgent;
 internal enum StartupReadyInputAction
 {
     FocusD2R,
+    ClickWindowCenter,
     ClickIntroPoint,
     SendWindowClickIntroPoint,
     PressStartupSkipKey,
@@ -25,13 +26,17 @@ internal sealed record StartupReadyInputPlan(
     public static readonly IReadOnlyList<StartupReadyInputAction> IntroActions =
     [
         StartupReadyInputAction.FocusD2R,
+        StartupReadyInputAction.ClickWindowCenter,
         StartupReadyInputAction.ClickIntroPoint,
-        StartupReadyInputAction.SendWindowClickIntroPoint
+        StartupReadyInputAction.SendWindowClickIntroPoint,
+        StartupReadyInputAction.PressStartupSkipKey,
+        StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 
     public static readonly IReadOnlyList<StartupReadyInputAction> TitleActions =
     [
         StartupReadyInputAction.FocusD2R,
+        StartupReadyInputAction.ClickWindowCenter,
         StartupReadyInputAction.PressStartupSkipKey,
         StartupReadyInputAction.PressStartKey,
         StartupReadyInputAction.SendWindowStartupSkipKey,
@@ -41,6 +46,7 @@ internal sealed record StartupReadyInputPlan(
     public static readonly IReadOnlyList<StartupReadyInputAction> BurstActions =
     [
         StartupReadyInputAction.FocusD2R,
+        StartupReadyInputAction.ClickWindowCenter,
         StartupReadyInputAction.ClickIntroPoint,
         StartupReadyInputAction.SendWindowClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
