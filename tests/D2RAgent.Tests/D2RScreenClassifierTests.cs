@@ -135,34 +135,41 @@ public sealed class D2RScreenClassifierTests
     [Fact]
     public void InGameHudFrameAcceptsBroadModern1366Capture()
     {
-        var leftGlobe = Stats(averageLuminance: 26.6, luminanceStdDev: 25.8, darkRatio: 0.733, redRatio: 0.119);
-        var rightGlobe = Stats(averageLuminance: 25.3, luminanceStdDev: 25.6, darkRatio: 0.752, blueRatio: 0.142);
         var actionHud = Stats(averageLuminance: 36.7, luminanceStdDev: 39.2, brightRatio: 0.047, greyRatio: 0.216, darkRatio: 0.697);
         var bottomHud = Stats(averageLuminance: 29.9, luminanceStdDev: 32.7, darkRatio: 0.755, redRatio: 0.036, blueRatio: 0.027);
+        var centerHud = Stats(averageLuminance: 35.5, luminanceStdDev: 35.5, brightRatio: 0.037, greyRatio: 0.221, darkRatio: 0.695);
 
-        Assert.True(D2RScreenClassifier.IsInGameHudFrame(leftGlobe, rightGlobe, actionHud, bottomHud));
+        Assert.True(D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud));
     }
 
     [Fact]
-    public void InGameHudFrameAcceptsAnimatedGlobesWithWeakPreciseSamples()
+    public void InGameHudFrameAcceptsVariablePotionAndGlobeColors()
     {
-        var leftGlobe = Stats(averageLuminance: 25, luminanceStdDev: 24, darkRatio: 0.75, redRatio: 0.055);
-        var rightGlobe = Stats(averageLuminance: 24, luminanceStdDev: 25, darkRatio: 0.76, blueRatio: 0.058);
         var actionHud = Stats(averageLuminance: 37, luminanceStdDev: 36, brightRatio: 0.025, greyRatio: 0.18, darkRatio: 0.72);
-        var bottomHud = Stats(averageLuminance: 30, luminanceStdDev: 34, darkRatio: 0.74, redRatio: 0.018, blueRatio: 0.014);
+        var bottomHud = Stats(averageLuminance: 30, luminanceStdDev: 34, darkRatio: 0.74);
+        var centerHud = Stats(averageLuminance: 38, luminanceStdDev: 36, brightRatio: 0.030, greyRatio: 0.22, darkRatio: 0.68);
 
-        Assert.True(D2RScreenClassifier.IsInGameHudFrame(leftGlobe, rightGlobe, actionHud, bottomHud));
+        Assert.True(D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud));
     }
 
     [Fact]
     public void InGameHudFrameRejectsLobbyCapture()
     {
-        var leftGlobe = Stats(averageLuminance: 26.6, luminanceStdDev: 23.5, darkRatio: 0.775, redRatio: 0.012);
-        var rightGlobe = Stats(averageLuminance: 24.2, luminanceStdDev: 25.2, darkRatio: 0.829, blueRatio: 0.002);
         var actionHud = Stats(averageLuminance: 25.9, luminanceStdDev: 21.0, brightRatio: 0.008, greyRatio: 0.145, darkRatio: 0.818);
         var bottomHud = Stats(averageLuminance: 25.9, luminanceStdDev: 22.0, darkRatio: 0.811, redRatio: 0.013, blueRatio: 0.0);
+        var centerHud = Stats(averageLuminance: 26.9, luminanceStdDev: 22.6, brightRatio: 0.013, greyRatio: 0.181, darkRatio: 0.805);
 
-        Assert.False(D2RScreenClassifier.IsInGameHudFrame(leftGlobe, rightGlobe, actionHud, bottomHud));
+        Assert.False(D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud));
+    }
+
+    [Fact]
+    public void InGameHudFrameRejectsCharacterSelectBottomBar()
+    {
+        var actionHud = Stats(averageLuminance: 38.8, luminanceStdDev: 20.2, brightRatio: 0.007, greyRatio: 0.459, darkRatio: 0.495);
+        var bottomHud = Stats(averageLuminance: 39.4, luminanceStdDev: 25.6, brightRatio: 0.013, greyRatio: 0.431, darkRatio: 0.532);
+        var centerHud = Stats(averageLuminance: 45.6, luminanceStdDev: 25.7, brightRatio: 0.015, greyRatio: 0.614, darkRatio: 0.313);
+
+        Assert.False(D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud));
     }
 
     private static ScreenRegionStats Stats(

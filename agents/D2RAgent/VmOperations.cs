@@ -1412,10 +1412,9 @@ public sealed class VmOperations
             return true;
         }
 
-        var leftGlobe = SampleD2RRegion(input, new AgentCommon.UiPoint(0.205, 0.920), widthRatio: 0.17, heightRatio: 0.15, windowRelative: windowRelative);
-        var rightGlobe = SampleD2RRegion(input, new AgentCommon.UiPoint(0.795, 0.920), widthRatio: 0.17, heightRatio: 0.15, windowRelative: windowRelative);
         var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: windowRelative);
-        return D2RScreenClassifier.IsInGameHudFrame(leftGlobe, rightGlobe, hud, bottomHud);
+        var centerHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.22, heightRatio: 0.08, windowRelative: windowRelative);
+        return D2RScreenClassifier.IsInGameHudFrame(hud, bottomHud, centerHud);
     }
 
     private ScreenRegionStats SampleD2RRegion(
