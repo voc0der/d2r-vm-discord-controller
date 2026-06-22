@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 using AgentCommon;
 using Discord;
@@ -1456,7 +1457,17 @@ public sealed class DiscordBot
 
     private string FormatAllAccountStatuses()
     {
-        return string.Join("\n", _config.Accounts.Select(pair => FormatAccountStatusLine(pair.Key, pair.Value)));
+        var lines = _config.Accounts.Select(pair => FormatAccountStatusLine(pair.Key, pair.Value));
+        return string.Join("\n", new[] { $"D2RHost version: {GetHostVersionText()}" }.Concat(lines));
+    }
+
+    private static string GetHostVersionText()
+    {
+        var assembly = Assembly.GetEntryAssembly() ?? typeof(DiscordBot).Assembly;
+        return assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion
+            ?? "0.0.0";
     }
 
     private string FormatAccountStatus(string accountKey)
