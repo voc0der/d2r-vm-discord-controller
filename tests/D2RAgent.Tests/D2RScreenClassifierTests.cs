@@ -182,6 +182,25 @@ public sealed class D2RScreenClassifierTests
         Assert.False(D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud));
     }
 
+    [Theory]
+    [InlineData(true, false, false, false)]
+    [InlineData(true, true, false, true)]
+    [InlineData(true, false, true, true)]
+    [InlineData(false, true, true, true)]
+    [InlineData(false, true, false, false)]
+    [InlineData(false, false, true, false)]
+    public void GameEntryMenuVisibleRequiresCoherentMenuEvidence(
+        bool tabReady,
+        bool entryButtonReady,
+        bool formPanelReady,
+        bool expected)
+    {
+        Assert.Equal(expected, D2RScreenClassifier.IsGameEntryMenuVisible(
+            tabReady,
+            entryButtonReady,
+            formPanelReady));
+    }
+
     private static ScreenRegionStats Stats(
         double averageLuminance,
         double luminanceStdDev = 0,

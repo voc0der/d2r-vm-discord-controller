@@ -920,12 +920,25 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt < 2; attempt++)
+        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
+            if (IsAnyLobbyEntryMenuVisible(input))
+            {
+                return true;
+            }
+
             ClickD2R(input, _config.Ui.CharacterLobbyButton);
-            await DelayLongAsync(cancellationToken);
+            var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
+            if (remainingMs == 0)
+            {
+                break;
+            }
+
+            await Task.Delay((int)Math.Min(500, remainingMs), cancellationToken);
         }
 
         return true;
@@ -965,9 +978,8 @@ public sealed class VmOperations
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
 
-            if (IsInGameReady(input))
+            if (await TryConfirmEnteredGameAsync(input, cancellationToken))
             {
-                await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
             }
 
@@ -1017,6 +1029,11 @@ public sealed class VmOperations
 
             if (DateTimeOffset.UtcNow >= deadline)
             {
+                if (await TryConfirmEnteredGameAsync(input, cancellationToken))
+                {
+                    return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game at timeout boundary.");
+                }
+
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, activeTab, dialogRetries, connectionRetries));
             }
 
@@ -1024,6 +1041,11 @@ public sealed class VmOperations
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
+            }
+
+            if (await TryConfirmEnteredGameAsync(input, cancellationToken))
+            {
+                return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game after wait result.");
             }
 
             if (waitResult == GameEntryWaitResult.ConnectionInterrupted)
@@ -1224,8 +1246,9 @@ public sealed class VmOperations
         var entry = IsLobbyEntryButtonReady(input);
         var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
         var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
-        var visible = tab || entry && (formScreen || formWindow);
-        return $"Menu samples: visible={visible}, tab={tab}, entry={entry}, formScreen={formScreen}, formWindow={formWindow}.";
+        var hudReady = IsInGameReady(input);
+        var visible = !hudReady && D2RScreenClassifier.IsGameEntryMenuVisible(tab, entry, formScreen || formWindow);
+        return $"Menu samples: visible={visible}, hudReady={hudReady}, tab={tab}, entry={entry}, formScreen={formScreen}, formWindow={formWindow}.";
     }
 
     private static string FormatGameEntryWaitFailure(GameEntryWaitResult result)
@@ -1538,9 +1561,8 @@ public sealed class VmOperations
             _ = TryPrepareD2RForInput(input);
             var canDetectReturn = returnTab is not null && DateTimeOffset.UtcNow >= returnDetectionAt;
 
-            if (IsInGameReady(input))
+            if (await TryConfirmEnteredGameAsync(input, cancellationToken))
             {
-                await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
                 return GameEntryWaitResult.EnteredGame;
             }
 
@@ -1587,6 +1609,11 @@ public sealed class VmOperations
             await Task.Delay((int)Math.Min(500, remainingMs), cancellationToken);
         }
 
+        if (await TryConfirmEnteredGameAsync(input, cancellationToken))
+        {
+            return GameEntryWaitResult.EnteredGame;
+        }
+
         if (sawConnectionInterrupted)
         {
             return GameEntryWaitResult.ConnectionInterrupted;
@@ -1617,14 +1644,44 @@ public sealed class VmOperations
 
     private bool IsGameEntryMenuStillVisible(WindowsInput input, AgentCommon.UiPoint returnTab)
     {
-        if (IsLobbyTabReady(input, returnTab))
+        if (IsInGameReady(input))
         {
-            return true;
+            return false;
         }
 
-        return IsLobbyEntryButtonReady(input)
-            && (IsLobbyFormPanelReady(input, windowRelative: false)
-                || IsLobbyFormPanelReady(input, windowRelative: true));
+        var tab = IsLobbyTabReady(input, returnTab);
+        var entry = IsLobbyEntryButtonReady(input);
+        var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
+        var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
+        return D2RScreenClassifier.IsGameEntryMenuVisible(tab, entry, formScreen || formWindow);
+    }
+
+    private bool IsAnyLobbyEntryMenuVisible(WindowsInput input)
+    {
+        if (IsInGameReady(input) || IsCharacterScreenReady(input) || IsCharacterScreenOffline(input))
+        {
+            return false;
+        }
+
+        var createTab = IsLobbyTabReady(input, _config.Ui.CreateGameTab);
+        var joinTab = IsLobbyTabReady(input, _config.Ui.JoinGameTab);
+        var entry = IsLobbyEntryButtonReady(input);
+        var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
+        var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
+        return D2RScreenClassifier.IsGameEntryMenuVisible(createTab || joinTab, entry, formScreen || formWindow);
+    }
+
+    private async Task<bool> TryConfirmEnteredGameAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        if (!IsInGameReady(input))
+        {
+            return false;
+        }
+
+        await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
+        return true;
     }
 
     private async Task ToggleLegacyGraphicsAfterEntryAsync(

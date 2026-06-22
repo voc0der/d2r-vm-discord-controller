@@ -78,6 +78,16 @@ internal static class D2RScreenClassifier
             && centerHudVisible;
     }
 
+    public static bool IsGameEntryMenuVisible(
+        bool tabReady,
+        bool entryButtonReady,
+        bool formPanelReady)
+    {
+        return tabReady
+            ? entryButtonReady || formPanelReady
+            : entryButtonReady && formPanelReady;
+    }
+
     private static bool IsCharacterMenuButtonRegion(ScreenRegionStats stats)
     {
         return stats.AverageLuminance > 40
