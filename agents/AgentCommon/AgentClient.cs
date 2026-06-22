@@ -12,6 +12,8 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(20);
+
     private readonly TConfig _config;
     private readonly string _agentKind;
     private readonly Action<string> _log;
@@ -76,7 +78,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         using var socket = new ClientWebSocket();
         using var sendLock = new SemaphoreSlim(1, 1);
 
-        await socket.ConnectAsync(new Uri(_config.ControllerUrl), timeoutCts.Token);
+        await ConnectWithTimeoutAsync(socket, new Uri(_config.ControllerUrl), timeout, cancellationToken);
         await SendHelloAsync(socket, sendLock, probeOnly: true, timeoutCts.Token);
 
         var raw = await ReceiveStringAsync(socket, timeoutCts.Token)
@@ -109,7 +111,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         using var sendLock = new SemaphoreSlim(1, 1);
 
         _log($"Connecting to {_config.ControllerUrl} as {_config.AgentId}...");
-        await socket.ConnectAsync(new Uri(_config.ControllerUrl), cancellationToken);
+        await ConnectWithTimeoutAsync(socket, new Uri(_config.ControllerUrl), ConnectTimeout, cancellationToken);
         await SendHelloAsync(socket, sendLock, probeOnly: false, cancellationToken);
 
         _log("Connected to controller.");
@@ -280,6 +282,29 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
 
         _lastConnectionState = state;
         _connectionStateChanged?.Invoke(state);
+    }
+
+    private static async Task ConnectWithTimeoutAsync(
+        ClientWebSocket socket,
+        Uri uri,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+
+        var connectTask = socket.ConnectAsync(uri, timeoutCts.Token);
+        var timeoutTask = Task.Delay(Timeout.Infinite, timeoutCts.Token);
+        var completed = await Task.WhenAny(connectTask, timeoutTask);
+        if (completed == connectTask)
+        {
+            await connectTask;
+            return;
+        }
+
+        _ = connectTask.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+        cancellationToken.ThrowIfCancellationRequested();
+        throw new TimeoutException($"Connecting to {uri} timed out after {timeout.TotalSeconds:N0}s.");
     }
 
     private static async Task SendAsync(
