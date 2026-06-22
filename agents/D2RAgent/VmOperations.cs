@@ -42,7 +42,8 @@ public sealed class VmOperations
         var d2rRunning = IsD2RRunning();
         RefreshD2RProcessActivity(d2rRunning);
 
-        var activity = DetectVisibleActivitySnapshot(d2rRunning);
+        var visibleState = DetectVisibleD2RState(d2rRunning);
+        var activity = DetectVisibleActivitySnapshot(d2rRunning, visibleState);
 
         return Task.FromResult<object>(new
         {
@@ -50,6 +51,7 @@ public sealed class VmOperations
             userName = Environment.UserName,
             battleNetRunning,
             d2rRunning,
+            d2rVisibleState = visibleState.ToString(),
             d2rInput = d2rRunning ? TryGetD2RInputDiagnostics() : null,
             lastInputAction = _lastInputAction,
             d2rActivityState = activity.State.ToString(),
@@ -684,7 +686,7 @@ public sealed class VmOperations
         }
     }
 
-    private ActivitySnapshot DetectVisibleActivitySnapshot(bool d2rRunning)
+    private ActivitySnapshot DetectVisibleActivitySnapshot(bool d2rRunning, VisibleD2RState visibleState)
     {
         var activity = GetActivitySnapshot();
         if (!d2rRunning || !OperatingSystem.IsWindows())
@@ -692,54 +694,81 @@ public sealed class VmOperations
             return activity;
         }
 
-        try
+        return visibleState switch
         {
-            var input = new WindowsInput();
-            if (IsDiabloSplashScreen(input))
-            {
-                return new ActivitySnapshot(
-                    D2RActivityState.Unknown,
-                    null,
-                    activity.LastLobbyOrGameInteractionUtc,
-                    "Detected Diablo splash screen.");
-            }
-
-            if (IsCharacterScreenReady(input) || IsCharacterScreenOffline(input))
-            {
-                return new ActivitySnapshot(
-                    D2RActivityState.CharacterScreenIdle,
-                    activity.CharacterScreenIdleSinceUtc ?? DateTimeOffset.UtcNow,
-                    activity.LastLobbyOrGameInteractionUtc,
-                    activity.Reason ?? "Detected character screen.");
-            }
-
-            if (IsAnyLobbyEntryMenuVisible(input) || IsInGameReady(input))
-            {
-                return new ActivitySnapshot(
-                    D2RActivityState.LobbyOrGame,
-                    null,
-                    activity.LastLobbyOrGameInteractionUtc ?? DateTimeOffset.UtcNow,
-                    activity.Reason ?? "Detected lobby or in-game UI.");
-            }
-        }
-        catch (Exception)
-        {
-            return activity.State == D2RActivityState.Unknown
+            VisibleD2RState.CharacterScreen or VisibleD2RState.OfflineCharacterScreen => new ActivitySnapshot(
+                D2RActivityState.CharacterScreenIdle,
+                activity.CharacterScreenIdleSinceUtc ?? DateTimeOffset.UtcNow,
+                activity.LastLobbyOrGameInteractionUtc,
+                activity.Reason ?? "Detected character screen."),
+            VisibleD2RState.LobbyOrGame or VisibleD2RState.InGame => new ActivitySnapshot(
+                D2RActivityState.LobbyOrGame,
+                null,
+                activity.LastLobbyOrGameInteractionUtc ?? DateTimeOffset.UtcNow,
+                activity.Reason ?? "Detected lobby or in-game UI."),
+            VisibleD2RState.DiabloSplash => new ActivitySnapshot(
+                D2RActivityState.Unknown,
+                null,
+                activity.LastLobbyOrGameInteractionUtc,
+                "Detected Diablo splash screen."),
+            VisibleD2RState.Unknown => activity.State == D2RActivityState.Unknown
                 ? activity
                 : new ActivitySnapshot(
                     D2RActivityState.Unknown,
                     null,
                     activity.LastLobbyOrGameInteractionUtc,
-                    "Visible D2R state detection failed.");
+                    "Visible D2R screen is not a known menu/game state."),
+            _ => activity
+        };
+    }
+
+    private VisibleD2RState DetectVisibleD2RState(bool d2rRunning)
+    {
+        if (!d2rRunning)
+        {
+            return VisibleD2RState.NotRunning;
         }
 
-        return activity.State == D2RActivityState.Unknown
-            ? activity
-            : new ActivitySnapshot(
-                D2RActivityState.Unknown,
-                null,
-                activity.LastLobbyOrGameInteractionUtc,
-                "Visible D2R screen is not a known menu/game state.");
+        if (!OperatingSystem.IsWindows())
+        {
+            return VisibleD2RState.Unknown;
+        }
+
+        try
+        {
+            return DetectVisibleD2RState(new WindowsInput());
+        }
+        catch (Exception)
+        {
+            return VisibleD2RState.Unknown;
+        }
+    }
+
+    private VisibleD2RState DetectVisibleD2RState(WindowsInput input)
+    {
+        if (IsDiabloSplashScreen(input))
+        {
+            return VisibleD2RState.DiabloSplash;
+        }
+
+        if (IsCharacterScreenOffline(input))
+        {
+            return VisibleD2RState.OfflineCharacterScreen;
+        }
+
+        if (IsCharacterScreenReady(input))
+        {
+            return VisibleD2RState.CharacterScreen;
+        }
+
+        if (IsInGameReady(input))
+        {
+            return VisibleD2RState.InGame;
+        }
+
+        return IsAnyLobbyEntryMenuVisible(input)
+            ? VisibleD2RState.LobbyOrGame
+            : VisibleD2RState.Unknown;
     }
 
     private WindowsInput FocusD2R()
@@ -833,8 +862,6 @@ public sealed class VmOperations
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            SendReadySkipKey(input);
-            nudges++;
 
             if (DateTimeOffset.UtcNow >= nextDetectionAt)
             {
@@ -848,6 +875,9 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
+            SendReadySkipBurst(input);
+            nudges++;
+
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
             {
@@ -860,7 +890,7 @@ public sealed class VmOperations
         return new ReadyWaitResult(false, nudges, lastState, skipSeconds);
     }
 
-    private void SendReadySkipKey(WindowsInput input)
+    private void SendReadySkipBurst(WindowsInput input)
     {
         if (!IsD2RRunning())
         {
@@ -874,12 +904,14 @@ public sealed class VmOperations
         var beforeCursor = input.GetCursorPosition();
         var beforeDiagnostics = TryGetD2RInputDiagnostics();
         input.PressStartupSkipKey();
+        input.PressStartKey();
         _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
+        _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
         var afterCursor = input.GetCursorPosition();
         var afterDiagnostics = TryGetD2RInputDiagnostics();
         RecordD2RInputAction(
             kind: "key",
-            button: "G",
+            button: "G/Space/Enter",
             point: _config.Ui.IntroSkipPoint,
             target,
             beforeCursor,
@@ -2491,6 +2523,17 @@ public sealed class VmOperations
         Unknown,
         CharacterScreenIdle,
         LobbyOrGame
+    }
+
+    private enum VisibleD2RState
+    {
+        NotRunning,
+        Unknown,
+        DiabloSplash,
+        CharacterScreen,
+        OfflineCharacterScreen,
+        LobbyOrGame,
+        InGame
     }
 
     private enum ReadyScreenState

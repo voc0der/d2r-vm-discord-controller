@@ -1296,6 +1296,12 @@ public sealed class DiscordBot
             return false;
         }
 
+        if (agent.LastSeenAt is null
+            || DateTimeOffset.UtcNow - agent.LastSeenAt.Value > TimeSpan.FromSeconds(45))
+        {
+            return true;
+        }
+
         return MenuReadyPolicy.ShouldRunReadyFirstFromStatusJson(agent.Connected, agent.LastStatusJson);
     }
 
@@ -1466,6 +1472,9 @@ public sealed class DiscordBot
         var status = ParseStatus(agent.LastStatusJson);
         var battleNet = FormatRunning(status.TryGetValue("battleNetRunning", out var battleNetRunning) ? battleNetRunning : null);
         var d2r = FormatRunning(status.TryGetValue("d2rRunning", out var d2rRunning) ? d2rRunning : null);
+        var visible = TryReadStatusString(agent.LastStatusJson, "d2rVisibleState", out var visibleState)
+            ? $", visible {visibleState}"
+            : "";
         var activity = TryReadStatusString(agent.LastStatusJson, "d2rActivityState", out var activityState)
             ? $", state {activityState}"
             : "";
@@ -1479,7 +1488,7 @@ public sealed class DiscordBot
             ? ""
             : $", version {agent.Version}";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{activity}{input}{lastInput}, seen {lastSeen}";
+        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{input}{lastInput}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)

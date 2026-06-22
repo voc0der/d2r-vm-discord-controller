@@ -37,6 +37,16 @@ public static class MenuReadyPolicy
             return true;
         }
 
+        if (TryGetString(root, "d2rVisibleState", out var visibleState))
+        {
+            return visibleState switch
+            {
+                "CharacterScreen" or "OfflineCharacterScreen" or "LobbyOrGame" or "InGame" => false,
+                "NotRunning" or "Unknown" or "DiabloSplash" => true,
+                _ => true
+            };
+        }
+
         if (!TryGetString(root, "d2rActivityState", out var activityState))
         {
             return true;
