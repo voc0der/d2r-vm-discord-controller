@@ -1296,34 +1296,7 @@ public sealed class DiscordBot
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(agent.LastStatusJson))
-        {
-            return true;
-        }
-
-        JsonElement root;
-        try
-        {
-            using var document = JsonDocument.Parse(agent.LastStatusJson);
-            root = document.RootElement.Clone();
-        }
-        catch (JsonException ex)
-        {
-            _logger.LogDebug(ex, "Could not parse last status JSON for {AgentId}.", account.AgentId);
-            return true;
-        }
-
-        if (!TryGetBoolean(root, "d2rRunning", out var d2rRunning))
-        {
-            return true;
-        }
-
-        if (!d2rRunning)
-        {
-            return true;
-        }
-
-        return false;
+        return MenuReadyPolicy.ShouldRunReadyFirstFromStatusJson(agent.Connected, agent.LastStatusJson);
     }
 
     private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)
