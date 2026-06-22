@@ -34,7 +34,11 @@ internal static class Program
                 CancellationToken.None);
 
             var operations = new VmOperations(config, args);
-            var client = new AgentClient<VmAgentConfig>(config, "vm", Console.WriteLine);
+            var client = new AgentClient<VmAgentConfig>(
+                config,
+                "vm",
+                Console.WriteLine,
+                ConsoleWindowVisibility.ApplyConnectionState);
 
             using var cts = new CancellationTokenSource();
             Console.CancelKeyPress += (_, eventArgs) =>

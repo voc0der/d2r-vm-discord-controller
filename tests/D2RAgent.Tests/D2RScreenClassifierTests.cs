@@ -153,6 +153,16 @@ public sealed class D2RScreenClassifierTests
     }
 
     [Fact]
+    public void InGameHudFrameAcceptsReportedCreatorInGameCapture()
+    {
+        var actionHud = Stats(averageLuminance: 38.8, luminanceStdDev: 42.3, brightRatio: 0.030, greyRatio: 0.170, darkRatio: 0.617);
+        var bottomHud = Stats(averageLuminance: 30.0, luminanceStdDev: 29.5, darkRatio: 0.679);
+        var centerHud = Stats(averageLuminance: 35.0, luminanceStdDev: 39.7, brightRatio: 0.062, greyRatio: 0.160, darkRatio: 0.778);
+
+        Assert.True(D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud));
+    }
+
+    [Fact]
     public void InGameHudFrameRejectsLobbyCapture()
     {
         var actionHud = Stats(averageLuminance: 25.9, luminanceStdDev: 21.0, brightRatio: 0.008, greyRatio: 0.145, darkRatio: 0.818);

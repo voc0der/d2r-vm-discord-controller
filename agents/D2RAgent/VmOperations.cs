@@ -1017,7 +1017,7 @@ public sealed class VmOperations
 
             if (DateTimeOffset.UtcNow >= deadline)
             {
-                return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, dialogRetries, connectionRetries));
+                return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, activeTab, dialogRetries, connectionRetries));
             }
 
             var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken);
@@ -1180,9 +1180,13 @@ public sealed class VmOperations
             : $" Recovered from {string.Join(" and ", parts)}.";
     }
 
-    private string FormatEntryTimeoutMessage(WindowsInput input, int dialogRetries, int connectionRetries)
+    private string FormatEntryTimeoutMessage(
+        WindowsInput input,
+        AgentCommon.UiPoint activeTab,
+        int dialogRetries,
+        int connectionRetries)
     {
-        var diagnostics = FormatInGameHudDiagnostics(input);
+        var diagnostics = $"{FormatInGameHudDiagnostics(input)} {FormatGameEntryMenuDiagnostics(input, activeTab)}";
         if (dialogRetries == 0 && connectionRetries == 0)
         {
             return $"No game-entry error state was detected. {diagnostics}";
@@ -1204,17 +1208,24 @@ public sealed class VmOperations
 
     private string FormatInGameHudDiagnostics(WindowsInput input)
     {
-        var modernHealth = SampleD2RRegion(input, _config.Ui.ModernHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: true);
-        var modernMana = SampleD2RRegion(input, _config.Ui.ModernManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: true);
-        var actionHud = SampleD2RRegion(input, _config.Ui.InGameHudBar, widthRatio: 0.42, heightRatio: 0.08, windowRelative: true);
-        var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: true);
-        var centerHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.22, heightRatio: 0.08, windowRelative: true);
+        var evidence = SampleInGameHudEvidence(input, windowRelative: true);
         return "HUD samples: "
-            + $"health(r={modernHealth.RedRatio:N3},b={modernHealth.BlueRatio:N3}), "
-            + $"mana(r={modernMana.RedRatio:N3},b={modernMana.BlueRatio:N3}), "
-            + $"action(avg={actionHud.AverageLuminance:N1},std={actionHud.LuminanceStdDev:N1},dark={actionHud.DarkRatio:N3}), "
-            + $"bottom(std={bottomHud.LuminanceStdDev:N1},dark={bottomHud.DarkRatio:N3}), "
-            + $"center(std={centerHud.LuminanceStdDev:N1},bright={centerHud.BrightRatio:N3},grey={centerHud.GreyRatio:N3},dark={centerHud.DarkRatio:N3}).";
+            + $"ready={IsInGameHudEvidenceReady(evidence)}, "
+            + $"health(r={evidence.ModernHealth.RedRatio:N3},b={evidence.ModernHealth.BlueRatio:N3}), "
+            + $"mana(r={evidence.ModernMana.RedRatio:N3},b={evidence.ModernMana.BlueRatio:N3}), "
+            + $"action(avg={evidence.ActionHud.AverageLuminance:N1},std={evidence.ActionHud.LuminanceStdDev:N1},dark={evidence.ActionHud.DarkRatio:N3}), "
+            + $"bottom(std={evidence.BottomHud.LuminanceStdDev:N1},dark={evidence.BottomHud.DarkRatio:N3}), "
+            + $"center(std={evidence.CenterHud.LuminanceStdDev:N1},bright={evidence.CenterHud.BrightRatio:N3},grey={evidence.CenterHud.GreyRatio:N3},dark={evidence.CenterHud.DarkRatio:N3}).";
+    }
+
+    private string FormatGameEntryMenuDiagnostics(WindowsInput input, AgentCommon.UiPoint activeTab)
+    {
+        var tab = IsLobbyTabReady(input, activeTab);
+        var entry = IsLobbyEntryButtonReady(input);
+        var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
+        var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
+        var visible = tab || entry && (formScreen || formWindow);
+        return $"Menu samples: visible={visible}, tab={tab}, entry={entry}, formScreen={formScreen}, formWindow={formWindow}.";
     }
 
     private static string FormatGameEntryWaitFailure(GameEntryWaitResult result)
@@ -1413,24 +1424,34 @@ public sealed class VmOperations
 
     private bool IsInGameReady(WindowsInput input, bool windowRelative)
     {
-        var hud = SampleD2RRegion(input, _config.Ui.InGameHudBar, widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
+        return IsInGameHudEvidenceReady(SampleInGameHudEvidence(input, windowRelative));
+    }
+
+    private InGameHudEvidence SampleInGameHudEvidence(WindowsInput input, bool windowRelative)
+    {
+        var actionHud = SampleD2RRegion(input, _config.Ui.InGameHudBar, widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
         var modernHealth = SampleD2RRegion(input, _config.Ui.ModernHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var modernMana = SampleD2RRegion(input, _config.Ui.ModernManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        if (D2RScreenClassifier.IsInGameHudProfile(modernHealth, modernMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
-        {
-            return true;
-        }
-
         var legacyHealth = SampleD2RRegion(input, _config.Ui.LegacyHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var legacyMana = SampleD2RRegion(input, _config.Ui.LegacyManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        if (D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, hud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: windowRelative);
+        var centerHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.22, heightRatio: 0.08, windowRelative: windowRelative);
+        return new InGameHudEvidence(modernHealth, modernMana, legacyHealth, legacyMana, actionHud, bottomHud, centerHud);
+    }
+
+    private static bool IsInGameHudEvidenceReady(InGameHudEvidence evidence)
+    {
+        if (D2RScreenClassifier.IsInGameHudProfile(evidence.ModernHealth, evidence.ModernMana, evidence.ActionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
         {
             return true;
         }
 
-        var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: windowRelative);
-        var centerHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.22, heightRatio: 0.08, windowRelative: windowRelative);
-        return D2RScreenClassifier.IsInGameHudFrame(hud, bottomHud, centerHud);
+        if (D2RScreenClassifier.IsInGameHudProfile(evidence.LegacyHealth, evidence.LegacyMana, evidence.ActionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        {
+            return true;
+        }
+
+        return D2RScreenClassifier.IsInGameHudFrame(evidence.ActionHud, evidence.BottomHud, evidence.CenterHud);
     }
 
     private ScreenRegionStats SampleD2RRegion(
@@ -1596,10 +1617,14 @@ public sealed class VmOperations
 
     private bool IsGameEntryMenuStillVisible(WindowsInput input, AgentCommon.UiPoint returnTab)
     {
-        return IsLobbyTabReady(input, returnTab)
-            || IsLobbyEntryButtonReady(input)
-            || IsLobbyFormPanelReady(input, windowRelative: false)
-            || IsLobbyFormPanelReady(input, windowRelative: true);
+        if (IsLobbyTabReady(input, returnTab))
+        {
+            return true;
+        }
+
+        return IsLobbyEntryButtonReady(input)
+            && (IsLobbyFormPanelReady(input, windowRelative: false)
+                || IsLobbyFormPanelReady(input, windowRelative: true));
     }
 
     private async Task ToggleLegacyGraphicsAfterEntryAsync(
@@ -2190,6 +2215,15 @@ public sealed class VmOperations
         DateTimeOffset? CharacterScreenIdleSinceUtc,
         DateTimeOffset? LastLobbyOrGameInteractionUtc,
         string? Reason);
+
+    private sealed record InGameHudEvidence(
+        ScreenRegionStats ModernHealth,
+        ScreenRegionStats ModernMana,
+        ScreenRegionStats LegacyHealth,
+        ScreenRegionStats LegacyMana,
+        ScreenRegionStats ActionHud,
+        ScreenRegionStats BottomHud,
+        ScreenRegionStats CenterHud);
 
     private sealed record LastInputActionSnapshot(
         DateTimeOffset TimeUtc,

@@ -67,7 +67,7 @@ internal static class D2RScreenClassifier
         var actionBarVisible = actionHud.LuminanceStdDev > 30
             && actionHud.DarkRatio < 0.85
             && (actionHud.BrightRatio > 0.020 || actionHud.GreyRatio > 0.16);
-        var bottomHudVisible = bottomHud.LuminanceStdDev > 30
+        var bottomHudVisible = bottomHud.LuminanceStdDev > 28
             && bottomHud.DarkRatio < 0.85;
         var centerHudVisible = centerHud.LuminanceStdDev > 32
             && centerHud.DarkRatio < 0.80

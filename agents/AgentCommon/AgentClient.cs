@@ -15,12 +15,19 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
     private readonly TConfig _config;
     private readonly string _agentKind;
     private readonly Action<string> _log;
+    private readonly Action<AgentConnectionState>? _connectionStateChanged;
+    private AgentConnectionState? _lastConnectionState;
 
-    public AgentClient(TConfig config, string agentKind, Action<string>? log = null)
+    public AgentClient(
+        TConfig config,
+        string agentKind,
+        Action<string>? log = null,
+        Action<AgentConnectionState>? connectionStateChanged = null)
     {
         _config = config;
         _agentKind = agentKind;
         _log = log ?? Console.WriteLine;
+        _connectionStateChanged = connectionStateChanged;
     }
 
     public async Task RunForeverAsync(
@@ -34,7 +41,9 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         {
             try
             {
+                NotifyConnectionState(AgentConnectionState.Connecting);
                 var exitRequested = await RunOnceAsync(statusFactory, commandHandler, cancellationToken);
+                NotifyConnectionState(AgentConnectionState.Disconnected);
                 if (exitRequested)
                 {
                     break;
@@ -48,6 +57,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
             }
             catch (Exception ex)
             {
+                NotifyConnectionState(AgentConnectionState.Disconnected);
                 _log($"Controller connection failed: {ex.Message}");
                 await Task.Delay(delay, cancellationToken);
                 delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 30));
@@ -103,6 +113,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         await SendHelloAsync(socket, sendLock, probeOnly: false, cancellationToken);
 
         _log("Connected to controller.");
+        NotifyConnectionState(AgentConnectionState.Connected);
 
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var heartbeatTask = SendHeartbeatAsync(socket, sendLock, statusFactory, linkedCts.Token);
@@ -258,6 +269,17 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion
             ?? "0.0.0";
+    }
+
+    private void NotifyConnectionState(AgentConnectionState state)
+    {
+        if (_lastConnectionState == state)
+        {
+            return;
+        }
+
+        _lastConnectionState = state;
+        _connectionStateChanged?.Invoke(state);
     }
 
     private static async Task SendAsync(
