@@ -22,6 +22,22 @@ internal sealed record StartupReadyInputPlan(
     private const int MaxIntroClickCount = 120;
     private const int MaxTitleScreenKeyPressCount = 30;
 
+    public static readonly IReadOnlyList<StartupReadyInputAction> IntroActions =
+    [
+        StartupReadyInputAction.FocusD2R,
+        StartupReadyInputAction.ClickIntroPoint,
+        StartupReadyInputAction.SendWindowClickIntroPoint
+    ];
+
+    public static readonly IReadOnlyList<StartupReadyInputAction> TitleActions =
+    [
+        StartupReadyInputAction.FocusD2R,
+        StartupReadyInputAction.PressStartupSkipKey,
+        StartupReadyInputAction.PressStartKey,
+        StartupReadyInputAction.SendWindowStartupSkipKey,
+        StartupReadyInputAction.SendWindowReadyBurst
+    ];
+
     public static readonly IReadOnlyList<StartupReadyInputAction> BurstActions =
     [
         StartupReadyInputAction.FocusD2R,

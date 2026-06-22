@@ -747,12 +747,10 @@ public sealed class DiscordBot
         await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
         try
         {
-            var readyResult = await _registry.SendCommandAsync(
-                entry.Value.AgentId,
-                "menu_ready",
-                args,
-                ReadyCommandTimeout);
-            return new ReadyResult(entry.Key, readyResult.Ok, readyResult.Message, RanReady: true);
+            var readyResult = await SendReadyIfNotMenuReadyAsync(entry.Value, args);
+            return readyResult is null
+                ? new ReadyResult(entry.Key, true, "Already menu-ready.", RanReady: false)
+                : new ReadyResult(entry.Key, readyResult.Ok, readyResult.Message, RanReady: true);
         }
         catch (Exception ex)
         {
@@ -1281,11 +1279,33 @@ public sealed class DiscordBot
             return null;
         }
 
-        return await _registry.SendCommandAsync(
+        try
+        {
+            var result = await _registry.SendCommandAsync(
+                account.AgentId,
+                "menu_ready",
+                args,
+                ReadyCommandTimeout);
+            return result.Ok || ShouldRunReadyFirst(account)
+                ? result
+                : ReadySucceededFromCurrentStatus(account, result.Message);
+        }
+        catch (Exception ex) when (!ShouldRunReadyFirst(account))
+        {
+            return ReadySucceededFromCurrentStatus(
+                account,
+                FormatExceptionWithAccountStatus(ex, account));
+        }
+    }
+
+    private static CommandResultInfo ReadySucceededFromCurrentStatus(AccountConfig account, string failureMessage)
+    {
+        return new CommandResultInfo(
             account.AgentId,
-            "menu_ready",
-            args,
-            ReadyCommandTimeout);
+            "menu-ready-status-fallback",
+            Ok: true,
+            $"Ready command did not complete cleanly, but current status is already menu-ready. Previous ready result: {failureMessage}",
+            Data: null);
     }
 
     private bool ShouldRunReadyFirst(AccountConfig account)
