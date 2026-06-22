@@ -132,6 +132,7 @@ internal sealed class WindowsInput
             return false;
         }
 
+        _ = TrySetForegroundProcess(process);
         ShowWindow(process.MainWindowHandle, SwRestore);
         if (!GetWindowRect(process.MainWindowHandle, out var rect))
         {
@@ -180,6 +181,7 @@ internal sealed class WindowsInput
         }
 
         ShowWindow(process.MainWindowHandle, SwRestore);
+        _ = TrySetForegroundProcess(process);
         var (x, y) = ToScreen(point, processNames);
         SendWindowMouseClick(process.MainWindowHandle, x, y, button);
         return true;

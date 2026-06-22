@@ -292,17 +292,17 @@ public sealed class VmOperations
         await DelayLongAsync(cancellationToken);
 
         var d2rStarted = await WaitForD2RProcessStartedAsync(input, cancellationToken);
-        if (!d2rStarted)
+        if (!d2rStarted.Started)
         {
             return CommandResult.Failure(
-                $"D2R was not detected within {GetD2RStartTimeoutSeconds()}s after repeated launch/Play attempts.",
+                $"D2R was not detected within {GetD2RStartTimeoutSeconds()}s after {d2rStarted.LaunchAttempts} launch command(s) and {d2rStarted.PlayClicks} Battle.net Play click(s). Last launch result: {d2rStarted.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
                 await GetStatusAsync(cancellationToken));
         }
 
         var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken);
         if (!ready.Ready)
         {
-            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken);
+            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken, timeoutSeconds: 8);
             ready = detectorReady with
             {
                 Nudges = ready.Nudges + detectorReady.Nudges,
@@ -916,16 +916,18 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         var plan = StartupReadyInputPlan.FromConfig(_config.Ui);
+        var timeoutSeconds = GetReadyStartupSkipSeconds();
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(timeoutSeconds);
         var lastState = ReadyScreenState.Unknown;
         var nudges = 0;
 
-        for (var i = 0; i < plan.IntroClickCount; i++)
+        for (var i = 0; i < plan.IntroClickCount && DateTimeOffset.UtcNow < deadline; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             lastState = DetectReadyScreenStateStable(input);
             if (IsReadyScreenState(lastState))
             {
-                return new ReadyWaitResult(true, nudges, lastState, plan.EstimatedTimeoutSeconds);
+                return new ReadyWaitResult(true, nudges, lastState, timeoutSeconds);
             }
 
             SendReadyIntroClick(input);
@@ -933,13 +935,13 @@ public sealed class VmOperations
             await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
         }
 
-        for (var i = 0; i < plan.TitleScreenKeyPressCount; i++)
+        for (var i = 0; i < plan.TitleScreenKeyPressCount && DateTimeOffset.UtcNow < deadline; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             lastState = DetectReadyScreenStateStable(input);
             if (IsReadyScreenState(lastState))
             {
-                return new ReadyWaitResult(true, nudges, lastState, plan.EstimatedTimeoutSeconds);
+                return new ReadyWaitResult(true, nudges, lastState, timeoutSeconds);
             }
 
             SendReadyTitleSkipBurst(input);
@@ -952,7 +954,7 @@ public sealed class VmOperations
             IsReadyScreenState(lastState),
             nudges,
             lastState,
-            plan.EstimatedTimeoutSeconds);
+            timeoutSeconds);
     }
 
     private void SendReadyIntroClick(WindowsInput input)
@@ -980,6 +982,9 @@ public sealed class VmOperations
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
                     input.PressStartupSkipKey();
+                    break;
+                case StartupReadyInputAction.PressStartKey:
+                    input.PressStartKey();
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
                     _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
@@ -1210,6 +1215,24 @@ public sealed class VmOperations
         }
 
         return $" Input diagnostics: userInteractive={diagnostics.UserInteractive}, d2rSession={diagnostics.SessionId?.ToString() ?? "?"}, hasWindow={diagnostics.HasMainWindow}, foreground={diagnostics.IsForeground}, foregroundProcess={diagnostics.ForegroundProcessName ?? "?"}, screen={diagnostics.ScreenWidth}x{diagnostics.ScreenHeight}, window={FormatInputRect(diagnostics.WindowRect)}, client={FormatInputRect(diagnostics.ClientRect)}.";
+    }
+
+    private string FormatD2RProcessDiscoverySuffix()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return "";
+        }
+
+        var discovery = WindowsProcessFinder.Discover(GetD2RProcessNames());
+        var search = discovery.SearchNames.Length == 0
+            ? "?"
+            : string.Join("/", discovery.SearchNames);
+        var matches = discovery.Matches.Length == 0
+            ? "0"
+            : string.Join("|", discovery.Matches.Take(3).Select(match =>
+                $"{match.ProcessName}#{match.ProcessId}:{(match.HasMainWindow ? "window" : "noWindow")}"));
+        return $" Process discovery: search={search}, matches={matches}.";
     }
 
     private static string FormatInputRect(InputRect? rect)
@@ -2303,35 +2326,44 @@ public sealed class VmOperations
         }
     }
 
-    private async Task<bool> WaitForD2RProcessStartedAsync(
+    private async Task<D2RStartWaitResult> WaitForD2RProcessStartedAsync(
         WindowsInput input,
         CancellationToken cancellationToken)
     {
         var timeout = TimeSpan.FromSeconds(GetD2RStartTimeoutSeconds());
         var deadline = DateTimeOffset.UtcNow + timeout;
-        var launchRetryDelay = TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds());
+        var launchRetryDelay = TimeSpan.FromSeconds(Math.Min(GetBattleNetExecRetryDelaySeconds(), 3));
         var nextLaunchRetryAt = DateTimeOffset.UtcNow;
+        var launchAttempts = 0;
+        var playClicks = 0;
+        var lastLaunchMessage = "(none)";
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (IsD2RRunning())
             {
-                return true;
+                return new D2RStartWaitResult(true, launchAttempts, playClicks, lastLaunchMessage);
             }
 
             if (DateTimeOffset.UtcNow >= deadline)
             {
-                return false;
+                return new D2RStartWaitResult(false, launchAttempts, playClicks, lastLaunchMessage);
             }
 
             if (DateTimeOffset.UtcNow >= nextLaunchRetryAt)
             {
-                _ = TrySendD2RLaunchCommand();
+                var launch = TrySendD2RLaunchCommand();
+                launchAttempts++;
+                lastLaunchMessage = launch.Message;
                 nextLaunchRetryAt = DateTimeOffset.UtcNow + launchRetryDelay;
             }
 
-            _ = TryClickBattleNetPlay(input, requireButtonReady: false);
-            await DelayReadyNudgeAsync(cancellationToken);
+            if (TryClickBattleNetPlayDirect(input))
+            {
+                playClicks++;
+            }
+
+            await Task.Delay(500, cancellationToken);
         }
     }
 
@@ -2360,10 +2392,8 @@ public sealed class VmOperations
                 return false;
             }
 
-            if (TryDismissBattleNetWhatsNewPopup(input))
-            {
-                return false;
-            }
+            _ = TryDismissBattleNetWhatsNewPopup(input);
+            Thread.Sleep(100);
 
             if (requireButtonReady && !IsBattleNetPlayButtonReady(input))
             {
@@ -2378,6 +2408,28 @@ public sealed class VmOperations
         catch (InvalidOperationException)
         {
             // Battle.net may be running before its main window can receive input.
+            return false;
+        }
+    }
+
+    private bool TryClickBattleNetPlayDirect(WindowsInput input)
+    {
+        if (!_config.Ui.ClickBattleNetPlayWhenNeeded
+            || !IsBattleNetRunning())
+        {
+            return false;
+        }
+
+        try
+        {
+            var battleNetNames = GetBattleNetProcessNames();
+            _ = input.TryFocusProcess(battleNetNames);
+            input.LeftClick(_config.Ui.BattleNetPlayButton, battleNetNames);
+            _ = input.SendWindowClick(_config.Ui.BattleNetPlayButton, battleNetNames, MouseButton.Left);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
             return false;
         }
     }
@@ -2744,6 +2796,12 @@ public sealed class VmOperations
         int Nudges,
         ReadyScreenState LastState,
         int TimeoutSeconds);
+
+    private sealed record D2RStartWaitResult(
+        bool Started,
+        int LaunchAttempts,
+        int PlayClicks,
+        string LastLaunchMessage);
 
     private sealed record ActivitySnapshot(
         D2RActivityState State,

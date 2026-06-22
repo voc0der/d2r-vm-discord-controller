@@ -30,6 +30,7 @@ internal sealed record StartupReadyInputPlan(
         StartupReadyInputAction.ClickIntroPoint,
         StartupReadyInputAction.SendWindowClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
+        StartupReadyInputAction.PressStartKey,
         StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 

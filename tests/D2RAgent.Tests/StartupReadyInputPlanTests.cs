@@ -28,6 +28,7 @@ public sealed class StartupReadyInputPlanTests
                 StartupReadyInputAction.ClickIntroPoint,
                 StartupReadyInputAction.SendWindowClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
+                StartupReadyInputAction.PressStartKey,
                 StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.IntroActions);
