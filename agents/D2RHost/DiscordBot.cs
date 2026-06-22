@@ -691,19 +691,16 @@ public sealed class DiscordBot
                 }
 
                 await UpdateGameSessionAsync(
-                    $"Game created by {creator.Key}; prepared joiners entering.",
+                    $"Game created by {creator.Key}; joiners entering as they finish preparing.",
                     joined: 1,
                     detail: createResult.Message);
 
-                var prepareResults = await Task.WhenAll(prepareJoinerTasks.Values);
-                var prepareByAccount = prepareResults.ToDictionary(result => result.AccountKey, StringComparer.OrdinalIgnoreCase);
-                var failedPrepareJoiners = prepareResults.Where(result => !result.Ok).ToArray();
-                var preparedEntries = joiners
-                    .Where(entry => prepareByAccount.TryGetValue(entry.Key, out var prepared) && prepared.Ok)
-                    .ToArray();
-                var joinResults = await Task.WhenAll(preparedEntries.Select(entry =>
-                    RunCreateGameAllPreparedJoinerAsync(entry, argsByAccount[entry.Key], game.GameName)));
-                var allJoinResults = failedPrepareJoiners.Concat(joinResults).ToArray();
+                var allJoinResults = await Task.WhenAll(joiners.Select(entry =>
+                    RunCreateGameAllJoinerAfterCreateAsync(
+                        entry,
+                        prepareJoinerTasks[entry.Key],
+                        argsByAccount[entry.Key],
+                        game.GameName)));
                 var joinedCount = 1 + allJoinResults.Count(result => result.Ok);
                 var allOk = allJoinResults.All(result => result.Ok);
                 await CompleteGameSessionAsync(
@@ -818,6 +815,21 @@ public sealed class DiscordBot
             _logger.LogError(ex, "Queued prepared join after create-game-all failed for {AccountKey}.", entry.Key);
             return new JoinResult(entry.Key, false, FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value));
         }
+    }
+
+    private async Task<JoinResult> RunCreateGameAllJoinerAfterCreateAsync(
+        KeyValuePair<string, AccountConfig> entry,
+        Task<JoinResult> prepareTask,
+        object joinArgs,
+        string gameName)
+    {
+        var prepareResult = await prepareTask;
+        if (!prepareResult.Ok)
+        {
+            return prepareResult;
+        }
+
+        return await RunCreateGameAllPreparedJoinerAsync(entry, joinArgs, gameName);
     }
 
     private async Task QueueJoinAllAsync(SlashContext context, GameInput game)
