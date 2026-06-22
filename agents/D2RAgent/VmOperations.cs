@@ -1017,7 +1017,7 @@ public sealed class VmOperations
 
             if (DateTimeOffset.UtcNow >= deadline)
             {
-                return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(dialogRetries, connectionRetries));
+                return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, dialogRetries, connectionRetries));
             }
 
             var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken);
@@ -1180,11 +1180,12 @@ public sealed class VmOperations
             : $" Recovered from {string.Join(" and ", parts)}.";
     }
 
-    private static string FormatEntryTimeoutMessage(int dialogRetries, int connectionRetries)
+    private string FormatEntryTimeoutMessage(WindowsInput input, int dialogRetries, int connectionRetries)
     {
+        var diagnostics = FormatInGameHudDiagnostics(input);
         if (dialogRetries == 0 && connectionRetries == 0)
         {
-            return "No game-entry error state was detected.";
+            return $"No game-entry error state was detected. {diagnostics}";
         }
 
         var parts = new List<string>();
@@ -1198,7 +1199,22 @@ public sealed class VmOperations
             parts.Add($"{connectionRetries} connection interruption(s)");
         }
 
-        return $"Recovered from {string.Join(" and ", parts)}, but the menu tab stayed visible.";
+        return $"Recovered from {string.Join(" and ", parts)}, but the menu tab stayed visible. {diagnostics}";
+    }
+
+    private string FormatInGameHudDiagnostics(WindowsInput input)
+    {
+        var modernHealth = SampleD2RRegion(input, _config.Ui.ModernHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: true);
+        var modernMana = SampleD2RRegion(input, _config.Ui.ModernManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: true);
+        var actionHud = SampleD2RRegion(input, _config.Ui.InGameHudBar, widthRatio: 0.42, heightRatio: 0.08, windowRelative: true);
+        var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: true);
+        var centerHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.22, heightRatio: 0.08, windowRelative: true);
+        return "HUD samples: "
+            + $"health(r={modernHealth.RedRatio:N3},b={modernHealth.BlueRatio:N3}), "
+            + $"mana(r={modernMana.RedRatio:N3},b={modernMana.BlueRatio:N3}), "
+            + $"action(avg={actionHud.AverageLuminance:N1},std={actionHud.LuminanceStdDev:N1},dark={actionHud.DarkRatio:N3}), "
+            + $"bottom(std={bottomHud.LuminanceStdDev:N1},dark={bottomHud.DarkRatio:N3}), "
+            + $"center(std={centerHud.LuminanceStdDev:N1},bright={centerHud.BrightRatio:N3},grey={centerHud.GreyRatio:N3},dark={centerHud.DarkRatio:N3}).";
     }
 
     private static string FormatGameEntryWaitFailure(GameEntryWaitResult result)
@@ -1491,6 +1507,8 @@ public sealed class VmOperations
 
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(delaySeconds);
         var returnDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5));
+        var presumedEntryAfter = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 4, 10));
+        DateTimeOffset? menuAbsentSince = null;
         var sawConnectionInterrupted = false;
 
         while (DateTimeOffset.UtcNow < deadline)
@@ -1517,15 +1535,26 @@ public sealed class VmOperations
             {
                 return GameEntryWaitResult.OfflineCharacterScreen;
             }
-            else if (canDetectReturn && IsCharacterScreenReady(input))
+            else if (canDetectReturn)
             {
-                return GameEntryWaitResult.ReturnedToCharacterScreen;
-            }
-            else if (canDetectReturn && IsLobbyTabReady(input, returnTab!))
-            {
-                return sawConnectionInterrupted
-                    ? GameEntryWaitResult.ConnectionInterrupted
-                    : GameEntryWaitResult.ReturnedToMenu;
+                if (IsCharacterScreenReady(input))
+                {
+                    return GameEntryWaitResult.ReturnedToCharacterScreen;
+                }
+
+                if (IsGameEntryMenuStillVisible(input, returnTab!))
+                {
+                    return sawConnectionInterrupted
+                        ? GameEntryWaitResult.ConnectionInterrupted
+                        : GameEntryWaitResult.ReturnedToMenu;
+                }
+
+                menuAbsentSince ??= DateTimeOffset.UtcNow;
+                if (DateTimeOffset.UtcNow - menuAbsentSince >= presumedEntryAfter)
+                {
+                    await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
+                    return GameEntryWaitResult.EnteredGame;
+                }
             }
 
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
@@ -1547,7 +1576,7 @@ public sealed class VmOperations
             return GameEntryWaitResult.ErrorDialog;
         }
 
-        if (returnTab is not null && IsLobbyTabReady(input, returnTab))
+        if (returnTab is not null && IsGameEntryMenuStillVisible(input, returnTab))
         {
             return GameEntryWaitResult.ReturnedToMenu;
         }
@@ -1563,6 +1592,14 @@ public sealed class VmOperations
         }
 
         return GameEntryWaitResult.TimedOut;
+    }
+
+    private bool IsGameEntryMenuStillVisible(WindowsInput input, AgentCommon.UiPoint returnTab)
+    {
+        return IsLobbyTabReady(input, returnTab)
+            || IsLobbyEntryButtonReady(input)
+            || IsLobbyFormPanelReady(input, windowRelative: false)
+            || IsLobbyFormPanelReady(input, windowRelative: true);
     }
 
     private async Task ToggleLegacyGraphicsAfterEntryAsync(
