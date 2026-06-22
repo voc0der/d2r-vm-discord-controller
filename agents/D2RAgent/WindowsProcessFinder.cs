@@ -66,6 +66,13 @@ internal static class WindowsProcessFinder
             || FindProcessesByNameOrWindowTitle(processNames).Any();
     }
 
+    public static bool IsAnyNamedProcessRunning(IEnumerable<string> processNames)
+    {
+        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
+        return names.SelectMany(GetProcessesByNameSafe)
+            .Any(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id));
+    }
+
     public static ProcessDiscoverySnapshot Discover(IEnumerable<string> processNames)
     {
         var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
@@ -233,9 +240,8 @@ internal static class WindowsProcessFinder
             var processMatches = normalized.Any(name =>
                 !string.IsNullOrWhiteSpace(processName)
                 && name.Equals(processName, StringComparison.OrdinalIgnoreCase));
-            var titleMatches = titleNeedles.Any(needle =>
-                !string.IsNullOrWhiteSpace(title)
-                && title.Contains(needle, StringComparison.OrdinalIgnoreCase));
+            var titleMatches = titleNeedles.Length > 0
+                && WindowsProcessIdentity.IsWindowTitleMatch(normalized, processName, title);
             if (!processMatches && !titleMatches)
             {
                 continue;

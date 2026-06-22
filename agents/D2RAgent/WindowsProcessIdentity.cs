@@ -3,6 +3,7 @@ namespace D2RAgent;
 internal static class WindowsProcessIdentity
 {
     private static readonly string[] DefaultD2RProcessNames = ["D2R"];
+    private const string DiabloWindowTitle = "Diablo II: Resurrected";
 
     public static string[] GetConfiguredProcessNames(
         string primaryProcessName,
@@ -37,9 +38,45 @@ internal static class WindowsProcessIdentity
             .ToArray();
     }
 
+    public static bool IsWindowTitleMatch(IEnumerable<string> processNames, string? actualProcessName, string? windowTitle)
+    {
+        if (string.IsNullOrWhiteSpace(windowTitle))
+        {
+            return false;
+        }
+
+        var names = NormalizeProcessNames(processNames);
+        var normalizedProcessName = NormalizeProcessName(actualProcessName);
+        if (names.Any(IsD2RProcessName))
+        {
+            if (!windowTitle.Contains(DiabloWindowTitle, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (IsD2RProcessName(normalizedProcessName))
+            {
+                return true;
+            }
+
+            return string.IsNullOrWhiteSpace(normalizedProcessName)
+                && windowTitle.Equals(DiabloWindowTitle, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return GetWindowTitleNeedles(names)
+            .Any(needle => windowTitle.Contains(needle, StringComparison.OrdinalIgnoreCase));
+    }
+
     public static bool IsCurrentProcess(int processId)
     {
         return processId == Environment.ProcessId;
+    }
+
+    public static bool IsD2RProcessName(string? processName)
+    {
+        var normalized = NormalizeProcessName(processName);
+        return normalized.Equals("D2R", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("D2R_", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeProcessName(string? processName)
@@ -62,7 +99,7 @@ internal static class WindowsProcessIdentity
         if (processName.Equals("D2R", StringComparison.OrdinalIgnoreCase)
             || processName.StartsWith("D2R_", StringComparison.OrdinalIgnoreCase))
         {
-            yield return "Diablo II: Resurrected";
+            yield return DiabloWindowTitle;
             yield break;
         }
 

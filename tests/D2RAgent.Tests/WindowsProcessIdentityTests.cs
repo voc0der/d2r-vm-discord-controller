@@ -40,6 +40,42 @@ public sealed class WindowsProcessIdentityTests
     }
 
     [Fact]
+    public void D2RTitleFallbackRejectsBattleNetProductWindow()
+    {
+        Assert.False(WindowsProcessIdentity.IsWindowTitleMatch(
+            ["D2R"],
+            "Battle.net",
+            "Diablo II: Resurrected - Battle.net"));
+    }
+
+    [Fact]
+    public void D2RTitleFallbackAcceptsD2RWindow()
+    {
+        Assert.True(WindowsProcessIdentity.IsWindowTitleMatch(
+            ["D2R"],
+            "D2R",
+            "Diablo II: Resurrected"));
+    }
+
+    [Fact]
+    public void D2RTitleFallbackAcceptsExactTitleWhenProcessNameIsUnavailable()
+    {
+        Assert.True(WindowsProcessIdentity.IsWindowTitleMatch(
+            ["D2R"],
+            "",
+            "Diablo II: Resurrected"));
+    }
+
+    [Fact]
+    public void D2RTitleFallbackRejectsDecoratedTitleWhenProcessNameIsUnavailable()
+    {
+        Assert.False(WindowsProcessIdentity.IsWindowTitleMatch(
+            ["D2R"],
+            "",
+            "Diablo II: Resurrected - Battle.net"));
+    }
+
+    [Fact]
     public void CurrentProcessIsRejectedAsAutomationTarget()
     {
         Assert.True(WindowsProcessIdentity.IsCurrentProcess(Environment.ProcessId));

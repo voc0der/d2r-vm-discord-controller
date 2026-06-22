@@ -119,7 +119,7 @@ public sealed class VmOperations
 
     private async Task<CommandResult> LaunchD2RAsync(CancellationToken cancellationToken)
     {
-        if (IsD2RRunning())
+        if (IsD2RNamedProcessRunning())
         {
             RefreshD2RProcessActivity(d2rRunning: true);
             return CommandResult.Success("D2R is already running.", await GetStatusAsync(cancellationToken));
@@ -153,7 +153,7 @@ public sealed class VmOperations
         if (usedBattleNetExec && !battleNetWasRunning)
         {
             await Task.Delay(TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds()), cancellationToken);
-            if (!IsD2RRunning())
+            if (!IsD2RNamedProcessRunning())
             {
                 var retry = LaunchBattleNetD2R();
                 if (!retry.Ok)
@@ -2574,6 +2574,11 @@ public sealed class VmOperations
     private bool IsD2RRunning()
     {
         return IsAnyProcessRunning(GetD2RProcessNames());
+    }
+
+    private bool IsD2RNamedProcessRunning()
+    {
+        return WindowsProcessFinder.IsAnyNamedProcessRunning(GetD2RProcessNames());
     }
 
     private DateTimeOffset? TryGetD2RProcessStartUtc()
