@@ -20,6 +20,7 @@ public sealed class VmOperations
     private const int LobbyPollIntervalMs = 250;
 
     private readonly VmAgentConfig _config;
+    private readonly SemaphoreSlim _commandGate = new(1, 1);
     private readonly object _activityLock = new();
     private readonly string[] _restartArgs;
     private D2RActivityState _activityState = D2RActivityState.Unknown;
@@ -35,7 +36,20 @@ public sealed class VmOperations
         _restartArgs = restartArgs ?? [];
     }
 
-    public Task<object> GetStatusAsync(CancellationToken cancellationToken)
+    public async Task<object> GetStatusAsync(CancellationToken cancellationToken)
+    {
+        await _commandGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await CollectStatusAsync(cancellationToken);
+        }
+        finally
+        {
+            _commandGate.Release();
+        }
+    }
+
+    private Task<object> CollectStatusAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var battleNetRunning = IsBattleNetRunning();
@@ -67,9 +81,22 @@ public sealed class VmOperations
 
     public async Task<CommandResult> HandleCommandAsync(CommandRequest request, CancellationToken cancellationToken)
     {
+        await _commandGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await ExecuteCommandAsync(request, cancellationToken);
+        }
+        finally
+        {
+            _commandGate.Release();
+        }
+    }
+
+    private async Task<CommandResult> ExecuteCommandAsync(CommandRequest request, CancellationToken cancellationToken)
+    {
         return request.Command switch
         {
-            "status" => CommandResult.Success("Status collected.", await GetStatusAsync(cancellationToken)),
+            "status" => CommandResult.Success("Status collected.", await CollectStatusAsync(cancellationToken)),
             "launch_battlenet" => LaunchBattleNet(),
             "launch_d2r" => await LaunchD2RAsync(cancellationToken),
             "kill_d2r" => KillD2R(),
@@ -122,7 +149,7 @@ public sealed class VmOperations
         if (IsD2RNamedProcessRunning())
         {
             RefreshD2RProcessActivity(d2rRunning: true);
-            return CommandResult.Success("D2R is already running.", await GetStatusAsync(cancellationToken));
+            return CommandResult.Success("D2R is already running.", await CollectStatusAsync(cancellationToken));
         }
 
         ClearD2RActivity();
@@ -166,7 +193,7 @@ public sealed class VmOperations
         }
 
         await Task.Delay(TimeSpan.FromSeconds(GetLaunchGraceSeconds()), cancellationToken);
-        var status = await GetStatusAsync(cancellationToken);
+        var status = await CollectStatusAsync(cancellationToken);
         var message = launchAttempts > 1
             ? "Battle.net cold-started; D2R launch command sent twice. Check status for final client state."
             : "Launch command sent. Check status for final client state.";
@@ -215,7 +242,15 @@ public sealed class VmOperations
             await Task.Delay(interval, cancellationToken);
             try
             {
-                await QuitIfCharacterScreenIdleAsync(log ?? (_ => { }), cancellationToken);
+                await _commandGate.WaitAsync(cancellationToken);
+                try
+                {
+                    await QuitIfCharacterScreenIdleAsync(log ?? (_ => { }), cancellationToken);
+                }
+                finally
+                {
+                    _commandGate.Release();
+                }
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
@@ -264,7 +299,7 @@ public sealed class VmOperations
         if (!IsD2RRunning())
         {
             ClearD2RActivity();
-            return CommandResult.Success("D2R is not running.", await GetStatusAsync(cancellationToken));
+            return CommandResult.Success("D2R is not running.", await CollectStatusAsync(cancellationToken));
         }
 
         var input = new WindowsInput();
@@ -277,7 +312,7 @@ public sealed class VmOperations
         input.PressAltF4();
         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         ClearD2RActivity();
-        return CommandResult.Success("Alt+F4 sent to D2R.", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success("Alt+F4 sent to D2R.", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> ReadyClientAsync(CancellationToken cancellationToken)
@@ -311,7 +346,7 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 $"{FormatCharacterScreenReadyFailure(ready)} D2R was not detected after {d2rStarted.LaunchAttempts} launch command(s) and {d2rStarted.PlayClicks} Battle.net Play click(s). Last launch result: {d2rStarted.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         await DelayCharacterScreenSettleAsync(cancellationToken);
@@ -319,11 +354,11 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 $"D2R reached the offline character screen, but clicking Online did not reveal the online character list within {GetCharacterScreenReconnectSeconds()}s.{FormatInputDiagnosticsSuffix()}",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         MarkCharacterScreenIdle("Ready flow completed.");
-        return CommandResult.Success("D2R ready flow completed.", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success("D2R ready flow completed.", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> GoLobbyAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -335,7 +370,7 @@ public sealed class VmOperations
             return lobbyReady;
         }
 
-        return CommandResult.Success("Lobby command completed.", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success("Lobby command completed.", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> PlayCharacterAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -354,11 +389,11 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 $"Clicked Play, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {FormatGameEntryWaitFailure(entry)}",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         MarkLobbyOrGameInteraction("Clicked Play.");
-        return CommandResult.Success("Play character command completed.", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success("Play character command completed.", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> JoinGameAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -385,12 +420,12 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 $"Clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {joinEntry.Message}",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         MarkLobbyOrGameInteraction($"Joined game {args.GameName}.");
         var retrySuffix = FormatEntryRecoverySuffix(joinEntry);
-        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> PrepareJoinGameAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -407,7 +442,7 @@ public sealed class VmOperations
             return prepared;
         }
 
-        return CommandResult.Success($"Join game form prepared for {args.GameName}.", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success($"Join game form prepared for {args.GameName}.", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> SubmitPreparedJoinGameAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -434,12 +469,12 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 $"Clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {joinEntry.Message}",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         MarkLobbyOrGameInteraction($"Joined game {args.GameName}.");
         var retrySuffix = FormatEntryRecoverySuffix(joinEntry);
-        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success($"Join game flow completed for {args.GameName}.{retrySuffix}", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> CreateGameAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -473,12 +508,12 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 $"Clicked Create Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {createEntry.Message}",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         MarkLobbyOrGameInteraction($"Created game {args.GameName}.");
         var retrySuffix = FormatEntryRecoverySuffix(createEntry);
-        return CommandResult.Success($"Create game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success($"Create game flow completed for {args.GameName}.{retrySuffix}", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult?> PrepareJoinGameFormWithTimeoutAsync(
@@ -498,7 +533,7 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 $"Join Game form preparation timed out after {timeoutSeconds}s while activity state was {GetActivitySnapshot().State}.{FormatInputDiagnosticsSuffix()}",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
     }
 
@@ -511,7 +546,7 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 "D2R is already in a game; use /d2r save-exit before character-screen menu automation.",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         if (CanUseRememberedLobbyOrGameState(input))
@@ -550,11 +585,11 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 $"Clicked friend Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {FormatGameEntryWaitFailure(entry)}",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         MarkLobbyOrGameInteraction("Joined friend game.");
-        return CommandResult.Success("Join friend/follow flow completed.", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success("Join friend/follow flow completed.", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult> SaveAndExitAsync(CancellationToken cancellationToken)
@@ -565,7 +600,7 @@ public sealed class VmOperations
         ClickD2R(input, _config.Ui.SaveAndExitButton);
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)), cancellationToken);
         MarkCharacterScreenIdle("Save and Exit completed.");
-        return CommandResult.Success("Save and Exit flow completed.", await GetStatusAsync(cancellationToken));
+        return CommandResult.Success("Save and Exit flow completed.", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult?> EnsureCharacterScreenReadyForMenuAsync(
@@ -577,7 +612,7 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 "D2R is already in a game; use /d2r save-exit before character-screen menu automation.",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         if (IsCharacterScreenOffline(input))
@@ -587,7 +622,7 @@ public sealed class VmOperations
             {
                 return CommandResult.Failure(
                     $"D2R is at the offline character screen, and the Online tab did not reconnect within {GetCharacterScreenReconnectSeconds()}s.{FormatInputDiagnosticsSuffix()}",
-                    await GetStatusAsync(cancellationToken));
+                    await CollectStatusAsync(cancellationToken));
             }
         }
 
@@ -616,7 +651,7 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 FormatCharacterScreenReadyFailure(ready),
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         await DelayCharacterScreenSettleAsync(cancellationToken);
@@ -1264,7 +1299,7 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 "D2R is already in a game; use /d2r save-exit before character-screen menu automation.",
-                await GetStatusAsync(cancellationToken));
+                await CollectStatusAsync(cancellationToken));
         }
 
         if (CanUseRememberedLobbyOrGameState(input))
@@ -1300,7 +1335,7 @@ public sealed class VmOperations
 
         return CommandResult.Failure(
             $"D2R is at the character screen, but clicking Lobby did not reveal the lobby menu within {Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)}s.{FormatInputDiagnosticsSuffix()}",
-            await GetStatusAsync(cancellationToken));
+            await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<bool> TryOpenLobbyFromCurrentScreenAsync(
