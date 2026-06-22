@@ -97,13 +97,9 @@ try
 }
 catch (Exception ex)
 {
+    // This process is respawned unattended (e.g. via the /restart Discord command),
+    // so blocking on Console.ReadLine() here would hang forever with nobody at the
+    // console to answer it.
     Console.Error.WriteLine(ex);
-    if (ConsolePrompt.CanPrompt)
-    {
-        Console.WriteLine();
-        Console.WriteLine("Press Enter to exit.");
-        Console.ReadLine();
-    }
-
     return 1;
 }

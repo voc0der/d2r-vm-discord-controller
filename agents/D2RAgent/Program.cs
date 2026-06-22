@@ -70,14 +70,11 @@ internal static class Program
         }
         catch (Exception ex)
         {
+            // This process runs unattended on VM satellites, including right after
+            // an automated self-update relaunch with nobody at the console. Blocking
+            // here on Console.ReadLine() left the agent hung until someone manually
+            // rebooted the VM, every time an unhandled exception hit this path.
             Console.Error.WriteLine(ex);
-            if (ConsolePrompt.CanPrompt)
-            {
-                Console.WriteLine();
-                Console.WriteLine("Press Enter to exit.");
-                Console.ReadLine();
-            }
-
             return 1;
         }
     }
