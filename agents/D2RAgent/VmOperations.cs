@@ -11,6 +11,7 @@ public sealed class VmOperations
     private const int MaxD2RStartTimeoutSeconds = 40;
     private const int MaxReadyStartupSkipSeconds = 45;
     private const int MaxCharacterScreenReconnectSeconds = 45;
+    private const int MaxJoinPrepareSeconds = 25;
     private const int ReadyStartupDetectionIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
@@ -358,7 +359,7 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
-        var prepared = await PrepareJoinGameFormAsync(input, args, cancellationToken);
+        var prepared = await PrepareJoinGameFormWithTimeoutAsync(input, args, cancellationToken);
         if (prepared is not null)
         {
             return prepared;
@@ -390,7 +391,7 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
-        var prepared = await PrepareJoinGameFormAsync(input, args, cancellationToken);
+        var prepared = await PrepareJoinGameFormWithTimeoutAsync(input, args, cancellationToken);
         if (prepared is not null)
         {
             return prepared;
@@ -407,7 +408,7 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
-        var prepared = await PrepareJoinGameFormAsync(input, args, cancellationToken);
+        var prepared = await PrepareJoinGameFormWithTimeoutAsync(input, args, cancellationToken);
         if (prepared is not null)
         {
             return prepared;
@@ -470,11 +471,46 @@ public sealed class VmOperations
         return CommandResult.Success($"Create game flow completed for {args.GameName}.{retrySuffix}", await GetStatusAsync(cancellationToken));
     }
 
+    private async Task<CommandResult?> PrepareJoinGameFormWithTimeoutAsync(
+        WindowsInput input,
+        MenuCommandArgs args,
+        CancellationToken cancellationToken)
+    {
+        var timeoutSeconds = GetJoinPrepareTimeoutSeconds();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+        try
+        {
+            return await PrepareJoinGameFormAsync(input, args, timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            return CommandResult.Failure(
+                $"Join Game form preparation timed out after {timeoutSeconds}s while activity state was {GetActivitySnapshot().State}.{FormatInputDiagnosticsSuffix()}",
+                await GetStatusAsync(cancellationToken));
+        }
+    }
+
     private async Task<CommandResult?> PrepareJoinGameFormAsync(
         WindowsInput input,
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
+        if (IsInGameReady(input))
+        {
+            return CommandResult.Failure(
+                "D2R is already in a game; use /d2r save-exit before character-screen menu automation.",
+                await GetStatusAsync(cancellationToken));
+        }
+
+        if (CanUseRememberedLobbyOrGameState(input))
+        {
+            MarkLobbyOrGameInteraction("Preparing Join Game from existing lobby state.");
+            await RestoreJoinGameFormAsync(input, args, cancellationToken);
+            return null;
+        }
+
         var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
         if (lobby is not null)
         {
@@ -928,6 +964,19 @@ public sealed class VmOperations
             : $"{rect.Left},{rect.Top},{rect.Width}x{rect.Height}";
     }
 
+    private bool CanUseRememberedLobbyOrGameState(WindowsInput input)
+    {
+        if (IsCharacterScreenReady(input)
+            || IsCharacterScreenOffline(input)
+            || IsConnectionInterruptedScreen(input))
+        {
+            return false;
+        }
+
+        return IsAnyLobbyEntryMenuVisible(input)
+            || GetActivitySnapshot().State == D2RActivityState.LobbyOrGame;
+    }
+
     private async Task<CommandResult?> EnsureLobbyOpenedAsync(
         WindowsInput input,
         MenuCommandArgs args,
@@ -945,6 +994,12 @@ public sealed class VmOperations
             return CommandResult.Failure(
                 "D2R is already in a game; use /d2r save-exit before character-screen menu automation.",
                 await GetStatusAsync(cancellationToken));
+        }
+
+        if (CanUseRememberedLobbyOrGameState(input))
+        {
+            MarkLobbyOrGameInteraction("Using existing lobby state for menu automation.");
+            return null;
         }
 
         if (await TryOpenLobbyFromCurrentScreenAsync(input, args, cancellationToken))
@@ -1908,6 +1963,11 @@ public sealed class VmOperations
     private int GetCharacterScreenReconnectSeconds()
     {
         return Math.Clamp(_config.Ui.CharacterScreenReadyTimeoutSeconds, 1, MaxCharacterScreenReconnectSeconds);
+    }
+
+    private int GetJoinPrepareTimeoutSeconds()
+    {
+        return Math.Clamp(_config.Ui.LobbyReadyTimeoutSeconds, 8, MaxJoinPrepareSeconds);
     }
 
     private async Task<bool> TryFocusProcessUntilAsync(

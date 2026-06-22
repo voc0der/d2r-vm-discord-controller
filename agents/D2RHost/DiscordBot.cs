@@ -9,6 +9,7 @@ namespace D2RHost;
 public sealed class DiscordBot
 {
     private static readonly TimeSpan ReadyCommandTimeout = TimeSpan.FromSeconds(150);
+    private static readonly TimeSpan JoinPrepareCommandTimeout = TimeSpan.FromSeconds(35);
 
     private readonly HostConfig _config;
     private readonly HostRuntimeOptions _runtime;
@@ -781,7 +782,7 @@ public sealed class DiscordBot
                 entry.Value.AgentId,
                 "menu_prepare_join_game",
                 joinArgs,
-                TimeSpan.FromSeconds(210));
+                JoinPrepareCommandTimeout);
             return new JoinResult(entry.Key, prepareResult.Ok, prepareResult.Message);
         }
         catch (Exception ex)
@@ -922,7 +923,7 @@ public sealed class DiscordBot
                 entry.Value.AgentId,
                 "menu_prepare_join_game",
                 args,
-                TimeSpan.FromSeconds(210));
+                JoinPrepareCommandTimeout);
 
             return new JoinResult(entry.Key, prepareResult.Ok, prepareResult.Message);
         }
@@ -1322,7 +1323,7 @@ public sealed class DiscordBot
             return true;
         }
 
-        return !d2rRunning;
+        return false;
     }
 
     private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)
