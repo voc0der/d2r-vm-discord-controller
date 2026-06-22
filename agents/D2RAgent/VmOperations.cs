@@ -109,6 +109,17 @@ public sealed class VmOperations
 
     public async Task<CommandResult> HandleCommandAsync(CommandRequest request, CancellationToken cancellationToken)
     {
+        // self_update doesn't touch D2R/Battle.net window state, so it never needs
+        // to wait behind (or block) the gate that serializes UI automation. Routing
+        // it through the gate meant a host-triggered update check - which fires
+        // automatically on every agent reconnect, e.g. after a D2RHost restart -
+        // could sit ahead of a real menu_ready/launch_d2r command and starve it for
+        // the command's entire timeout before any launch was ever attempted.
+        if (string.Equals(request.Command, "self_update", StringComparison.OrdinalIgnoreCase))
+        {
+            return await SelfUpdateAsync(cancellationToken);
+        }
+
         await _commandGate.WaitAsync(cancellationToken);
         try
         {
@@ -140,7 +151,6 @@ public sealed class VmOperations
             "menu_create_game" => await CreateGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_join_friend" => await JoinFriendAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_save_exit" => await SaveAndExitAsync(cancellationToken),
-            "self_update" => await SelfUpdateAsync(cancellationToken),
             _ => CommandResult.Failure($"Unsupported VM command: {request.Command}")
         };
     }
