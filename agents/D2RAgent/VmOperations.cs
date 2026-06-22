@@ -29,6 +29,7 @@ public sealed class VmOperations
     private DateTimeOffset? _lastObservedD2RStartUtc;
     private string? _lastActivityReason;
     private LastInputActionSnapshot? _lastInputAction;
+    private object? _lastStatusSnapshot;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -38,10 +39,37 @@ public sealed class VmOperations
 
     public async Task<object> GetStatusAsync(CancellationToken cancellationToken)
     {
+        // A running command holds _commandGate for as long as it takes (up to the
+        // controller's command timeout). Blocking the heartbeat on that same gate
+        // would silently stop reporting status for the whole duration, making a
+        // perfectly healthy in-progress command look like a hung/dead agent from
+        // the host's point of view. Take a snapshot if the gate is free; otherwise
+        // report the last known snapshot so "seen" keeps advancing.
+        if (await _commandGate.WaitAsync(0, cancellationToken))
+        {
+            try
+            {
+                var status = await CollectStatusAsync(cancellationToken);
+                _lastStatusSnapshot = status;
+                return status;
+            }
+            finally
+            {
+                _commandGate.Release();
+            }
+        }
+
+        if (_lastStatusSnapshot is not null)
+        {
+            return _lastStatusSnapshot;
+        }
+
         await _commandGate.WaitAsync(cancellationToken);
         try
         {
-            return await CollectStatusAsync(cancellationToken);
+            var status = await CollectStatusAsync(cancellationToken);
+            _lastStatusSnapshot = status;
+            return status;
         }
         finally
         {
