@@ -43,7 +43,7 @@ public sealed class VmOperations
             ClearD2RActivity();
         }
 
-        var activity = GetActivitySnapshot();
+        var activity = DetectVisibleActivitySnapshot(d2rRunning);
 
         return Task.FromResult<object>(new
         {
@@ -524,7 +524,8 @@ public sealed class VmOperations
 
     private async Task<CommandResult?> EnsureCharacterScreenReadyForMenuAsync(
         WindowsInput input,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? readyTimeoutSeconds = null)
     {
         if (IsInGameReady(input))
         {
@@ -554,7 +555,7 @@ public sealed class VmOperations
             return null;
         }
 
-        var ready = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken);
+        var ready = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken, readyTimeoutSeconds);
         if (!ready.Ready)
         {
             return CommandResult.Failure(
@@ -614,6 +615,43 @@ public sealed class VmOperations
                 _lastLobbyOrGameInteractionUtc,
                 _lastActivityReason);
         }
+    }
+
+    private ActivitySnapshot DetectVisibleActivitySnapshot(bool d2rRunning)
+    {
+        var activity = GetActivitySnapshot();
+        if (!d2rRunning || !OperatingSystem.IsWindows())
+        {
+            return activity;
+        }
+
+        try
+        {
+            var input = new WindowsInput();
+            if (IsCharacterScreenReady(input) || IsCharacterScreenOffline(input))
+            {
+                return new ActivitySnapshot(
+                    D2RActivityState.CharacterScreenIdle,
+                    activity.CharacterScreenIdleSinceUtc ?? DateTimeOffset.UtcNow,
+                    activity.LastLobbyOrGameInteractionUtc,
+                    activity.Reason ?? "Detected character screen.");
+            }
+
+            if (IsAnyLobbyEntryMenuVisible(input) || IsInGameReady(input))
+            {
+                return new ActivitySnapshot(
+                    D2RActivityState.LobbyOrGame,
+                    null,
+                    activity.LastLobbyOrGameInteractionUtc ?? DateTimeOffset.UtcNow,
+                    activity.Reason ?? "Detected lobby or in-game UI.");
+            }
+        }
+        catch (Exception)
+        {
+            return activity;
+        }
+
+        return activity;
     }
 
     private WindowsInput FocusD2R()
@@ -695,9 +733,10 @@ public sealed class VmOperations
 
     private async Task<ReadyWaitResult> PumpStartupSkipInputsUntilCharacterScreenAsync(
         WindowsInput input,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? timeoutSeconds = null)
     {
-        var skipSeconds = GetReadyLoopTimeoutSeconds();
+        var skipSeconds = timeoutSeconds ?? GetReadyLoopTimeoutSeconds();
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
         var intervalMs = Math.Clamp(_config.Ui.ReadyStartupSkipIntervalMs, 50, 250);
         var nudges = 0;
@@ -715,7 +754,7 @@ public sealed class VmOperations
                 lastState = state;
                 if (state is ReadyScreenState.CharacterScreen or ReadyScreenState.OfflineCharacterScreen)
                 {
-                    return new ReadyWaitResult(true, nudges, lastState);
+                    return new ReadyWaitResult(true, nudges, lastState, skipSeconds);
                 }
 
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
@@ -730,7 +769,7 @@ public sealed class VmOperations
             await Task.Delay((int)Math.Min(intervalMs, remainingMs), cancellationToken);
         }
 
-        return new ReadyWaitResult(false, nudges, lastState);
+        return new ReadyWaitResult(false, nudges, lastState, skipSeconds);
     }
 
     private void SendReadySkipKey(WindowsInput input)
@@ -894,19 +933,33 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        var activity = GetActivitySnapshot();
-        if (activity.State == D2RActivityState.LobbyOrGame)
+        _ = TryPrepareD2RForInput(input);
+        if (IsAnyLobbyEntryMenuVisible(input))
         {
-            _ = TryPrepareD2RForInput(input);
-            if (!IsCharacterScreenReady(input) && !IsCharacterScreenOffline(input))
-            {
-                return null;
-            }
+            MarkLobbyOrGameInteraction("Lobby already visible.");
+            return null;
         }
 
+        if (IsInGameReady(input))
+        {
+            return CommandResult.Failure(
+                "D2R is already in a game; use /d2r save-exit before character-screen menu automation.",
+                await GetStatusAsync(cancellationToken));
+        }
+
+        if (await TryOpenLobbyFromCurrentScreenAsync(input, args, cancellationToken))
+        {
+            MarkLobbyOrGameInteraction("Opened Lobby from current screen.");
+            return null;
+        }
+
+        var activity = GetActivitySnapshot();
         if (activity.State != D2RActivityState.CharacterScreenIdle)
         {
-            var menuReady = await EnsureCharacterScreenReadyForMenuAsync(input, cancellationToken);
+            var menuReady = await EnsureCharacterScreenReadyForMenuAsync(
+                input,
+                cancellationToken,
+                readyTimeoutSeconds: Math.Min(GetReadyLoopTimeoutSeconds(), 8));
             if (menuReady is not null)
             {
                 return menuReady;
@@ -917,6 +970,32 @@ public sealed class VmOperations
         await ClickLobbyDirectAsync(input, cancellationToken);
         MarkLobbyOrGameInteraction("Clicked Lobby.");
         return null;
+    }
+
+    private async Task<bool> TryOpenLobbyFromCurrentScreenAsync(
+        WindowsInput input,
+        MenuCommandArgs args,
+        CancellationToken cancellationToken)
+    {
+        if (IsAnyLobbyEntryMenuVisible(input))
+        {
+            return true;
+        }
+
+        if (IsCharacterScreenOffline(input)
+            && !await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
+        {
+            return false;
+        }
+
+        if (IsInGameReady(input))
+        {
+            return false;
+        }
+
+        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+        return await ClickLobbyDirectAsync(input, cancellationToken)
+            && IsAnyLobbyEntryMenuVisible(input);
     }
 
     private async Task<bool> ClickLobbyDirectAsync(
@@ -944,7 +1023,7 @@ public sealed class VmOperations
             await Task.Delay((int)Math.Min(LobbyPollIntervalMs, remainingMs), cancellationToken);
         }
 
-        return true;
+        return IsAnyLobbyEntryMenuVisible(input);
     }
 
     private async Task ClickLobbyTabDirectAsync(
@@ -1022,6 +1101,10 @@ public sealed class VmOperations
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu form could not be restored.");
                 }
+
+                deadline = DateTimeOffset.UtcNow + timeout;
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                continue;
             }
 
             if (IsCharacterScreenOffline(input))
@@ -1071,6 +1154,10 @@ public sealed class VmOperations
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the menu form could not be restored.");
                 }
+
+                deadline = DateTimeOffset.UtcNow + timeout;
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                continue;
             }
             else if (waitResult == GameEntryWaitResult.ErrorDialog)
             {
@@ -1108,6 +1195,12 @@ public sealed class VmOperations
                      && !await restoreFormAsync())
             {
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned from game entry, but the menu form could not be restored.");
+            }
+            else if (waitResult == GameEntryWaitResult.ReturnedToMenu)
+            {
+                deadline = DateTimeOffset.UtcNow + timeout;
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                continue;
             }
 
             if (DateTimeOffset.UtcNow < deadline)
@@ -1152,13 +1245,13 @@ public sealed class VmOperations
         AgentCommon.UiPoint activeTab,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1));
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameEntryStartTimeoutSeconds, 3, 8));
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
-            if (!IsConnectionInterruptedScreen(input) && IsLobbyTabReady(input, activeTab))
+            if (!IsConnectionInterruptedScreen(input))
             {
                 return true;
             }
@@ -1359,7 +1452,7 @@ public sealed class VmOperations
     private string FormatCharacterScreenReadyFailure(ReadyWaitResult result)
     {
         return IsD2RRunning()
-            ? $"D2R is running, but the character screen was not reached within {GetReadyLoopTimeoutSeconds()}s. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.{FormatInputDiagnosticsSuffix()}"
+            ? $"D2R is running, but the character screen was not reached within {result.TimeoutSeconds}s. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.{FormatInputDiagnosticsSuffix()}"
             : $"D2R stopped before the ready loop finished. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.";
     }
 
@@ -2280,7 +2373,8 @@ public sealed class VmOperations
     private sealed record ReadyWaitResult(
         bool Ready,
         int Nudges,
-        ReadyScreenState LastState);
+        ReadyScreenState LastState,
+        int TimeoutSeconds);
 
     private sealed record ActivitySnapshot(
         D2RActivityState State,

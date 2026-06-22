@@ -847,6 +847,7 @@ public sealed class DiscordBot
         var readyFirstCount = entries.Count(entry => ShouldRunReadyFirst(entry.Value));
         await context.Command.RespondAsync(
             $"Queued join-all for {entries.Length} online account(s) into {game.GameName} with {staggerSeconds}s stagger."
+                + " Accounts will prepare Join Game first, then submit."
                 + FormatReadyFirstSuffix(readyFirstCount)
                 + FormatOfflineSkipSuffix(offlineEntries),
             ephemeral: true);
@@ -860,8 +861,23 @@ public sealed class DiscordBot
         {
             try
             {
-                var joinResults = await Task.WhenAll(entries.Select((entry, index) =>
-                    RunJoinAllEntryAsync(entry, index, staggerSeconds, game, context)));
+                var argsByAccount = entries.ToDictionary(
+                    entry => entry.Key,
+                    entry => BuildMenuArgs(entry.Key, entry.Value, game, context),
+                    StringComparer.OrdinalIgnoreCase);
+                var prepareTasks = entries
+                    .Select((entry, index) => new
+                    {
+                        entry.Key,
+                        Task = RunJoinAllPrepareEntryAsync(entry, index, staggerSeconds, argsByAccount[entry.Key])
+                    })
+                    .ToDictionary(item => item.Key, item => item.Task, StringComparer.OrdinalIgnoreCase);
+                var joinResults = await Task.WhenAll(entries.Select(entry =>
+                    RunJoinAllPreparedEntryAsync(
+                        entry,
+                        prepareTasks[entry.Key],
+                        argsByAccount[entry.Key],
+                        game.GameName)));
                 var joinedCount = joinResults.Count(result => result.Ok);
                 var allOk = joinResults.All(result => result.Ok);
                 var summary = FormatJoinAllResult(game.GameName, joinResults);
@@ -887,38 +903,65 @@ public sealed class DiscordBot
         });
     }
 
-    private async Task<JoinResult> RunJoinAllEntryAsync(
+    private async Task<JoinResult> RunJoinAllPrepareEntryAsync(
         KeyValuePair<string, AccountConfig> entry,
         int index,
         int staggerSeconds,
-        GameInput game,
-        SlashContext context)
+        object args)
     {
         await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
-        var args = BuildMenuArgs(entry.Key, entry.Value, game, context);
         try
         {
             var readyResult = await SendReadyIfNotMenuReadyAsync(entry.Value, args);
             if (readyResult?.Ok == false)
             {
-                return new JoinResult(entry.Key, false, $"ready failed before join: {readyResult.Message}");
+                return new JoinResult(entry.Key, false, $"ready failed before join prepare: {readyResult.Message}");
             }
 
+            var prepareResult = await _registry.SendCommandAsync(
+                entry.Value.AgentId,
+                "menu_prepare_join_game",
+                args,
+                TimeSpan.FromSeconds(210));
+
+            return new JoinResult(entry.Key, prepareResult.Ok, prepareResult.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Queued join-all prepare failed for {AccountKey}.", entry.Key);
+            return new JoinResult(entry.Key, false, FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value));
+        }
+    }
+
+    private async Task<JoinResult> RunJoinAllPreparedEntryAsync(
+        KeyValuePair<string, AccountConfig> entry,
+        Task<JoinResult> prepareTask,
+        object args,
+        string gameName)
+    {
+        var prepareResult = await prepareTask;
+        if (!prepareResult.Ok)
+        {
+            return prepareResult;
+        }
+
+        try
+        {
             var joinResult = await _registry.SendCommandAsync(
                 entry.Value.AgentId,
-                "menu_join_game",
+                "menu_submit_join_game",
                 args,
                 TimeSpan.FromSeconds(210));
             if (joinResult.Ok)
             {
-                await IncrementGameSessionJoinedAsync($"{entry.Key} joined {game.GameName}.");
+                await IncrementGameSessionJoinedAsync($"{entry.Key} joined {gameName}.");
             }
 
             return new JoinResult(entry.Key, joinResult.Ok, joinResult.Message);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Queued join-all failed for {AccountKey}.", entry.Key);
+            _logger.LogError(ex, "Queued prepared join-all submit failed for {AccountKey}.", entry.Key);
             return new JoinResult(entry.Key, false, FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value));
         }
     }
@@ -1279,12 +1322,7 @@ public sealed class DiscordBot
             return true;
         }
 
-        if (!TryGetString(root, "d2rActivityState", out var activityState))
-        {
-            return true;
-        }
-
-        return activityState.Equals("Unknown", StringComparison.OrdinalIgnoreCase);
+        return !d2rRunning;
     }
 
     private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)
