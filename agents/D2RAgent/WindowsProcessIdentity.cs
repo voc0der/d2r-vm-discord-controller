@@ -2,11 +2,22 @@ namespace D2RAgent;
 
 internal static class WindowsProcessIdentity
 {
+    private static readonly string[] DefaultD2RProcessNames = ["D2R"];
+
     public static string[] GetConfiguredProcessNames(
         string primaryProcessName,
         IEnumerable<string>? additionalProcessNames)
     {
         return NormalizeProcessNames(new[] { primaryProcessName }.Concat(additionalProcessNames ?? []));
+    }
+
+    public static string[] GetD2RProcessNames(
+        string primaryProcessName,
+        IEnumerable<string>? additionalProcessNames)
+    {
+        return NormalizeProcessNames(DefaultD2RProcessNames
+            .Concat(new[] { primaryProcessName })
+            .Concat(additionalProcessNames ?? []));
     }
 
     public static string[] NormalizeProcessNames(IEnumerable<string>? processNames)

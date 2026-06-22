@@ -1498,6 +1498,10 @@ public sealed class DiscordBot
         var activity = TryReadStatusString(agent.LastStatusJson, "d2rActivityState", out var activityState)
             ? $", state {activityState}"
             : "";
+        var processDiscovery = d2rRunning != true
+            && TryReadD2RProcessDiscoverySummary(agent.LastStatusJson, out var processDiscoverySummary)
+            ? $", process {processDiscoverySummary}"
+            : "";
         var input = TryReadD2RInputSummary(agent.LastStatusJson, out var inputSummary)
             ? $", input {inputSummary}"
             : "";
@@ -1508,7 +1512,7 @@ public sealed class DiscordBot
             ? ""
             : $", version {agent.Version}";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{input}{lastInput}, seen {lastSeen}";
+        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{processDiscovery}{input}{lastInput}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)
@@ -1596,6 +1600,65 @@ public sealed class DiscordBot
             var clientRect = TryReadInputRect(input, "clientRect");
 
             value = $"interactive={interactive}, session={session}, target={targetProcess}, title={targetTitle}, window={window}, foreground={foreground}, fg={foregroundProcess}, screen={screen}, windowRect={windowRect}, client={clientRect}";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadD2RProcessDiscoverySummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("d2rProcessDiscovery", out var discovery)
+                || discovery.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return false;
+            }
+
+            var searchNames = discovery.TryGetProperty("searchNames", out var searchNamesElement)
+                && searchNamesElement.ValueKind == JsonValueKind.Array
+                    ? string.Join("/", searchNamesElement.EnumerateArray()
+                        .Where(item => item.ValueKind == JsonValueKind.String)
+                        .Select(item => item.GetString())
+                        .Where(item => !string.IsNullOrWhiteSpace(item)))
+                    : "?";
+
+            if (!discovery.TryGetProperty("matches", out var matches)
+                || matches.ValueKind != JsonValueKind.Array)
+            {
+                value = $"search={searchNames}, matches=?";
+                return true;
+            }
+
+            var matchSummaries = matches.EnumerateArray()
+                .Take(3)
+                .Select(match =>
+                {
+                    var name = TryGetString(match, "processName", out var processName) ? processName : "?";
+                    var id = match.TryGetProperty("processId", out var processId)
+                        && processId.TryGetInt32(out var pid)
+                            ? pid.ToString()
+                            : "?";
+                    var window = TryGetBoolean(match, "hasMainWindow", out var hasMainWindow)
+                        ? (hasMainWindow ? "window" : "noWindow")
+                        : "window?";
+                    return $"{name}#{id}:{window}";
+                })
+                .ToArray();
+
+            value = matchSummaries.Length == 0
+                ? $"search={searchNames}, matches=0"
+                : $"search={searchNames}, matches={string.Join("|", matchSummaries)}";
             return true;
         }
         catch (JsonException)

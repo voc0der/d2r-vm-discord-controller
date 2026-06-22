@@ -52,6 +52,7 @@ public sealed class VmOperations
             battleNetRunning,
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
+            d2rProcessDiscovery = OperatingSystem.IsWindows() ? WindowsProcessFinder.Discover(GetD2RProcessNames()) : null,
             d2rInput = d2rRunning ? TryGetD2RInputDiagnostics() : null,
             lastInputAction = _lastInputAction,
             d2rActivityState = activity.State.ToString(),
@@ -2479,7 +2480,7 @@ public sealed class VmOperations
 
     private string[] GetD2RProcessNames()
     {
-        return WindowsProcessIdentity.GetConfiguredProcessNames(_config.D2RProcessName, _config.D2RProcessNames);
+        return WindowsProcessIdentity.GetD2RProcessNames(_config.D2RProcessName, _config.D2RProcessNames);
     }
 
     private static CommandResult KillProcesses(IEnumerable<string> processNames)
@@ -2508,56 +2509,17 @@ public sealed class VmOperations
 
     private static bool IsAnyProcessRunning(IEnumerable<string> processNames)
     {
-        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
-        return FindProcessesByNameOrWindowTitle(names).Any();
+        return WindowsProcessFinder.IsAnyProcessRunning(processNames);
     }
 
     private static IEnumerable<Process> FindProcessesByNameOrWindowTitle(IEnumerable<string> processNames)
     {
-        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
-        foreach (var process in names
-                     .SelectMany(Process.GetProcessesByName)
-                     .Where(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id)))
-        {
-            yield return process;
-        }
-
-        var titleNeedles = WindowsProcessIdentity.GetWindowTitleNeedles(names);
-        if (titleNeedles.Length == 0)
-        {
-            yield break;
-        }
-
-        foreach (var process in Process.GetProcesses())
-        {
-            if (process.MainWindowHandle == IntPtr.Zero)
-            {
-                continue;
-            }
-
-            if (WindowsProcessIdentity.IsCurrentProcess(process.Id))
-            {
-                continue;
-            }
-
-            var title = SafeGetMainWindowTitle(process);
-            if (titleNeedles.Any(needle => title.Contains(needle, StringComparison.OrdinalIgnoreCase)))
-            {
-                yield return process;
-            }
-        }
+        return WindowsProcessFinder.FindProcessesByNameOrWindowTitle(processNames);
     }
 
     private static string SafeGetMainWindowTitle(Process process)
     {
-        try
-        {
-            return process.MainWindowTitle ?? "";
-        }
-        catch (InvalidOperationException)
-        {
-            return "";
-        }
+        return WindowsProcessFinder.SafeGetMainWindowTitle(process);
     }
 
     private static DateTimeOffset? TryGetProcessStartUtc(Process process)

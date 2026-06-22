@@ -597,27 +597,7 @@ internal sealed class WindowsInput
 
     private static Process? FindProcess(IEnumerable<string> processNames)
     {
-        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
-        var process = names
-            .SelectMany(Process.GetProcessesByName)
-            .Where(candidate => !WindowsProcessIdentity.IsCurrentProcess(candidate.Id))
-            .OrderByDescending(candidate => candidate.MainWindowHandle != IntPtr.Zero)
-            .FirstOrDefault();
-        if (process is not null)
-        {
-            return process;
-        }
-
-        var titleNeedles = WindowsProcessIdentity.GetWindowTitleNeedles(names);
-        return titleNeedles.Length == 0
-            ? null
-            : Process.GetProcesses()
-                .Where(candidate => candidate.MainWindowHandle != IntPtr.Zero)
-                .Select(candidate => new { Process = candidate, Title = SafeGetMainWindowTitle(candidate) })
-                .Where(candidate => !WindowsProcessIdentity.IsCurrentProcess(candidate.Process.Id))
-                .Where(candidate => titleNeedles.Any(needle => candidate.Title.Contains(needle, StringComparison.OrdinalIgnoreCase)))
-                .Select(candidate => candidate.Process)
-                .FirstOrDefault();
+        return WindowsProcessFinder.FindProcess(processNames);
     }
 
     private CoordinateBounds GetCoordinateBounds(IEnumerable<string>? coordinateProcessNames)
@@ -668,14 +648,7 @@ internal sealed class WindowsInput
 
     private static string SafeGetMainWindowTitle(Process process)
     {
-        try
-        {
-            return process.MainWindowTitle ?? "";
-        }
-        catch (InvalidOperationException)
-        {
-            return "";
-        }
+        return WindowsProcessFinder.SafeGetMainWindowTitle(process);
     }
 
     private static string FormatProcessNames(IEnumerable<string> processNames)

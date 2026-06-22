@@ -28,6 +28,18 @@ public sealed class WindowsProcessIdentityTests
     }
 
     [Fact]
+    public void D2RProcessNamesAlwaysIncludeRealExecutableName()
+    {
+        var names = WindowsProcessIdentity.GetD2RProcessNames(
+            "D2R_1",
+            [@"C:\Games\SomethingElse.exe"]);
+
+        Assert.Contains("D2R", names);
+        Assert.Contains("D2R_1", names);
+        Assert.Contains("SomethingElse", names);
+    }
+
+    [Fact]
     public void CurrentProcessIsRejectedAsAutomationTarget()
     {
         Assert.True(WindowsProcessIdentity.IsCurrentProcess(Environment.ProcessId));
