@@ -2604,15 +2604,34 @@ public sealed class VmOperations
             UseShellExecute = true
         };
 
+        Process? process;
         try
         {
-            Process.Start(startInfo);
-            return CommandResult.Success($"Started {(isProtocolLaunch ? path : Path.GetFileName(path))}.");
+            process = Process.Start(startInfo);
         }
         catch (Exception ex)
         {
             return CommandResult.Failure($"Failed to start {path}: {ex.Message}");
         }
+
+        // UseShellExecute can hand off to the shell without ever throwing - e.g. it
+        // silently shows an error dialog, or routes to an existing single-instance
+        // window - so a clean return here does not prove anything actually launched.
+        // Confirm a live PID directly instead of trusting the absence of an exception.
+        var target = isProtocolLaunch ? path : Path.GetFileName(path);
+        if (process is null)
+        {
+            return CommandResult.Success($"Started {target} (no process handle was returned by the shell).");
+        }
+
+        Thread.Sleep(500);
+        if (process.HasExited)
+        {
+            return CommandResult.Success(
+                $"Started {target}, but pid {process.Id} exited within 500ms (exit code {process.ExitCode}).");
+        }
+
+        return CommandResult.Success($"Started {target} (pid {process.Id} confirmed running).");
     }
 
     private bool IsBattleNetRunning()
