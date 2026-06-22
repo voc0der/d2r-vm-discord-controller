@@ -97,19 +97,18 @@ internal sealed class WindowsInput
     {
         EnsureWindows();
 
-        var process = FindProcess(processNames);
-
-        if (process is null)
+        var target = FindWindowTarget(processNames);
+        if (target is null)
         {
             throw new InvalidOperationException($"Process is not running: {FormatProcessNames(processNames)}");
         }
 
-        if (process.MainWindowHandle == IntPtr.Zero)
+        if (target.WindowHandle == IntPtr.Zero)
         {
             return false;
         }
 
-        return TrySetForegroundProcess(process);
+        return TrySetForegroundWindowTarget(target.WindowHandle, target.ProcessId);
     }
 
     public bool TryClickProcessWindowCenter(string processName)
@@ -121,20 +120,20 @@ internal sealed class WindowsInput
     {
         EnsureWindows();
 
-        var process = FindProcess(processNames);
-        if (process is null)
+        var target = FindWindowTarget(processNames);
+        if (target is null)
         {
             throw new InvalidOperationException($"Process is not running: {FormatProcessNames(processNames)}");
         }
 
-        if (process.MainWindowHandle == IntPtr.Zero)
+        if (target.WindowHandle == IntPtr.Zero)
         {
             return false;
         }
 
-        _ = TrySetForegroundProcess(process);
-        ShowWindow(process.MainWindowHandle, SwRestore);
-        if (!GetWindowRect(process.MainWindowHandle, out var rect))
+        _ = TrySetForegroundWindowTarget(target.WindowHandle, target.ProcessId);
+        ShowWindow(target.WindowHandle, SwRestore);
+        if (!GetWindowRect(target.WindowHandle, out var rect))
         {
             return false;
         }
@@ -174,16 +173,16 @@ internal sealed class WindowsInput
     {
         EnsureWindows();
 
-        var process = FindProcess(processNames);
-        if (process is null || process.MainWindowHandle == IntPtr.Zero)
+        var target = FindWindowTarget(processNames);
+        if (target is null || target.WindowHandle == IntPtr.Zero)
         {
             return false;
         }
 
-        ShowWindow(process.MainWindowHandle, SwRestore);
-        _ = TrySetForegroundProcess(process);
+        ShowWindow(target.WindowHandle, SwRestore);
+        _ = TrySetForegroundWindowTarget(target.WindowHandle, target.ProcessId);
         var (x, y) = ToScreen(point, processNames);
-        SendWindowMouseClick(process.MainWindowHandle, x, y, button);
+        SendWindowMouseClick(target.WindowHandle, x, y, button);
         return true;
     }
 
@@ -220,15 +219,15 @@ internal sealed class WindowsInput
     {
         EnsureWindows();
 
-        var process = FindProcess(processNames);
-        if (process is null || process.MainWindowHandle == IntPtr.Zero)
+        var target = FindWindowTarget(processNames);
+        if (target is null || target.WindowHandle == IntPtr.Zero)
         {
             return false;
         }
 
-        var windowHandle = process.MainWindowHandle;
+        var windowHandle = target.WindowHandle;
         ShowWindow(windowHandle, SwRestore);
-        _ = TrySetForegroundProcess(process);
+        _ = TrySetForegroundWindowTarget(windowHandle, target.ProcessId);
         var (x, y) = ToScreen(point, processNames);
 
         SendWindowMouseClick(windowHandle, x, y, MouseButton.Left);
@@ -247,14 +246,14 @@ internal sealed class WindowsInput
     {
         EnsureWindows();
 
-        var process = FindProcess(processNames);
-        if (process is null || process.MainWindowHandle == IntPtr.Zero)
+        var target = FindWindowTarget(processNames);
+        if (target is null || target.WindowHandle == IntPtr.Zero)
         {
             return false;
         }
 
-        ShowWindow(process.MainWindowHandle, SwRestore);
-        SendWindowKey(process.MainWindowHandle, VkG);
+        ShowWindow(target.WindowHandle, SwRestore);
+        SendWindowKey(target.WindowHandle, VkG);
         return true;
     }
 
@@ -290,8 +289,8 @@ internal sealed class WindowsInput
             }
         }
 
-        var process = FindProcess(names);
-        if (process is null)
+        var target = FindWindowTarget(names);
+        if (target is null)
         {
             return new InputDiagnostics(
                 ProcessFound: false,
@@ -312,9 +311,9 @@ internal sealed class WindowsInput
 
         InputRect? windowRect = null;
         InputRect? clientRect = null;
-        if (process.MainWindowHandle != IntPtr.Zero)
+        if (target.WindowHandle != IntPtr.Zero)
         {
-            if (GetWindowRect(process.MainWindowHandle, out var window))
+            if (GetWindowRect(target.WindowHandle, out var window))
             {
                 windowRect = new InputRect(window.Left, window.Top, window.Right, window.Bottom);
             }
@@ -327,13 +326,13 @@ internal sealed class WindowsInput
 
         return new InputDiagnostics(
             ProcessFound: true,
-            ProcessId: process.Id,
-            ProcessName: process.ProcessName,
-            SessionId: SafeGetSessionId(process),
+            ProcessId: target.ProcessId,
+            ProcessName: target.ProcessName,
+            SessionId: target.SessionId,
             UserInteractive: Environment.UserInteractive,
-            HasMainWindow: process.MainWindowHandle != IntPtr.Zero,
-            MainWindowTitle: process.MainWindowTitle,
-            IsForeground: IsForegroundProcess(process.Id),
+            HasMainWindow: target.WindowHandle != IntPtr.Zero,
+            MainWindowTitle: target.MainWindowTitle,
+            IsForeground: IsForegroundTarget(target.WindowHandle, target.ProcessId),
             ForegroundProcessId: foregroundProcessId,
             ForegroundProcessName: foregroundProcessName,
             ScreenWidth: screenWidth,
@@ -381,10 +380,8 @@ internal sealed class WindowsInput
 
     public void PressStartKey()
     {
-        VirtualKey(VkSpace);
         Key(VkSpace);
         Thread.Sleep(50);
-        VirtualKey(VkReturn);
         Key(VkReturn);
     }
 
@@ -400,8 +397,6 @@ internal sealed class WindowsInput
 
     public void PressStartupSkipKey()
     {
-        ScanKey(VkG);
-        VirtualKey(VkG);
         Key(VkG);
     }
 
@@ -604,6 +599,11 @@ internal sealed class WindowsInput
         return WindowsProcessFinder.FindProcess(processNames);
     }
 
+    private static ProcessWindowTarget? FindWindowTarget(IEnumerable<string> processNames)
+    {
+        return WindowsProcessFinder.FindWindowTarget(processNames);
+    }
+
     private CoordinateBounds GetCoordinateBounds(IEnumerable<string>? coordinateProcessNames)
     {
         var names = WindowsProcessIdentity.NormalizeProcessNames(coordinateProcessNames);
@@ -620,13 +620,13 @@ internal sealed class WindowsInput
     private static bool TryGetProcessClientBounds(IEnumerable<string> processNames, out CoordinateBounds bounds)
     {
         bounds = default;
-        var process = FindProcess(processNames);
-        if (process is null || process.MainWindowHandle == IntPtr.Zero)
+        var target = FindWindowTarget(processNames);
+        if (target is null || target.WindowHandle == IntPtr.Zero)
         {
             return false;
         }
 
-        var windowHandle = process.MainWindowHandle;
+        var windowHandle = target.WindowHandle;
         ShowWindow(windowHandle, SwRestore);
         if (!GetClientRect(windowHandle, out var clientRect))
         {
@@ -675,16 +675,21 @@ internal sealed class WindowsInput
 
     private static bool TrySetForegroundProcess(Process process)
     {
-        ShowWindow(process.MainWindowHandle, SwRestore);
-        if (IsForegroundProcess(process.Id))
+        return TrySetForegroundWindowTarget(process.MainWindowHandle, process.Id);
+    }
+
+    private static bool TrySetForegroundWindowTarget(IntPtr windowHandle, int? processId)
+    {
+        ShowWindow(windowHandle, SwRestore);
+        if (IsForegroundTarget(windowHandle, processId))
         {
             return true;
         }
 
-        if (SetForegroundWindow(process.MainWindowHandle))
+        if (SetForegroundWindow(windowHandle))
         {
             Thread.Sleep(50);
-            if (IsForegroundProcess(process.Id))
+            if (IsForegroundTarget(windowHandle, processId))
             {
                 return true;
             }
@@ -693,7 +698,7 @@ internal sealed class WindowsInput
         KeyDown(VkAlt);
         try
         {
-            _ = SetForegroundWindow(process.MainWindowHandle);
+            _ = SetForegroundWindow(windowHandle);
         }
         finally
         {
@@ -701,7 +706,7 @@ internal sealed class WindowsInput
         }
 
         Thread.Sleep(50);
-        if (IsForegroundProcess(process.Id))
+        if (IsForegroundTarget(windowHandle, processId))
         {
             return true;
         }
@@ -710,7 +715,7 @@ internal sealed class WindowsInput
         var foregroundThread = foregroundWindow == IntPtr.Zero
             ? 0
             : GetWindowThreadProcessId(foregroundWindow, out _);
-        var targetThread = GetWindowThreadProcessId(process.MainWindowHandle, out _);
+        var targetThread = GetWindowThreadProcessId(windowHandle, out _);
         var currentThread = GetCurrentThreadId();
         var attachedForeground = false;
         var attachedTarget = false;
@@ -727,10 +732,10 @@ internal sealed class WindowsInput
                 attachedTarget = AttachThreadInput(currentThread, targetThread, attach: true);
             }
 
-            _ = BringWindowToTop(process.MainWindowHandle);
-            _ = SetForegroundWindow(process.MainWindowHandle);
-            _ = SetActiveWindow(process.MainWindowHandle);
-            _ = SetFocus(process.MainWindowHandle);
+            _ = BringWindowToTop(windowHandle);
+            _ = SetForegroundWindow(windowHandle);
+            _ = SetActiveWindow(windowHandle);
+            _ = SetFocus(windowHandle);
         }
         finally
         {
@@ -746,7 +751,27 @@ internal sealed class WindowsInput
         }
 
         Thread.Sleep(50);
-        return IsForegroundProcess(process.Id);
+        return IsForegroundTarget(windowHandle, processId);
+    }
+
+    private static bool IsForegroundTarget(IntPtr windowHandle, int? processId)
+    {
+        var foregroundWindow = GetForegroundWindow();
+        if (foregroundWindow == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        if (processId.HasValue)
+        {
+            _ = GetWindowThreadProcessId(foregroundWindow, out var foregroundProcessId);
+            if (foregroundProcessId == (uint)processId.Value)
+            {
+                return true;
+            }
+        }
+
+        return foregroundWindow == windowHandle;
     }
 
     private static bool IsForegroundProcess(int processId)

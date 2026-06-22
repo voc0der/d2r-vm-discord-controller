@@ -291,13 +291,10 @@ public sealed class VmOperations
         var input = new WindowsInput();
         await DelayLongAsync(cancellationToken);
 
-        var d2rStarted = await WaitForD2RProcessStartedAsync(input, cancellationToken);
-        if (!d2rStarted.Started)
-        {
-            return CommandResult.Failure(
-                $"D2R was not detected within {GetD2RStartTimeoutSeconds()}s after {d2rStarted.LaunchAttempts} launch command(s) and {d2rStarted.PlayClicks} Battle.net Play click(s). Last launch result: {d2rStarted.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
-                await GetStatusAsync(cancellationToken));
-        }
+        var d2rStarted = await WaitForD2RProcessStartedAsync(
+            input,
+            cancellationToken,
+            Math.Min(GetD2RStartTimeoutSeconds(), 8));
 
         var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken);
         if (!ready.Ready)
@@ -312,8 +309,19 @@ public sealed class VmOperations
 
         if (!ready.Ready)
         {
+            var visibleState = DetectVisibleD2RState(input);
+            if (d2rStarted.Started
+                || IsD2RRunning()
+                || visibleState is not (VisibleD2RState.NotRunning or VisibleD2RState.Unknown))
+            {
+                MarkCharacterScreenIdle("Startup inputs completed without visual confirmation.");
+                return CommandResult.Success(
+                    $"D2R startup inputs completed, but the character screen was not visually confirmed. Last detected ready state: {ready.LastState}; startup input bursts sent: {ready.Nudges}.",
+                    await GetStatusAsync(cancellationToken));
+            }
+
             return CommandResult.Failure(
-                FormatCharacterScreenReadyFailure(ready),
+                $"{FormatCharacterScreenReadyFailure(ready)} D2R was not detected after {d2rStarted.LaunchAttempts} launch command(s) and {d2rStarted.PlayClicks} Battle.net Play click(s). Last launch result: {d2rStarted.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -745,24 +753,24 @@ public sealed class VmOperations
 
     private VisibleD2RState DetectVisibleD2RState(bool d2rRunning)
     {
-        if (!d2rRunning)
-        {
-            return VisibleD2RState.NotRunning;
-        }
-
         if (!OperatingSystem.IsWindows())
         {
-            return VisibleD2RState.Unknown;
+            return d2rRunning ? VisibleD2RState.Unknown : VisibleD2RState.NotRunning;
         }
 
         try
         {
-            return DetectVisibleD2RState(new WindowsInput());
+            var visibleState = DetectVisibleD2RState(new WindowsInput());
+            if (visibleState != VisibleD2RState.Unknown)
+            {
+                return visibleState;
+            }
         }
         catch (Exception)
         {
-            return VisibleD2RState.Unknown;
         }
+
+        return d2rRunning ? VisibleD2RState.Unknown : VisibleD2RState.NotRunning;
     }
 
     private VisibleD2RState DetectVisibleD2RState(WindowsInput input)
@@ -920,10 +928,22 @@ public sealed class VmOperations
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(timeoutSeconds);
         var lastState = ReadyScreenState.Unknown;
         var nudges = 0;
+        var nextDetectionAt = DateTimeOffset.UtcNow;
 
         for (var i = 0; i < plan.IntroClickCount && DateTimeOffset.UtcNow < deadline; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (DateTimeOffset.UtcNow >= nextDetectionAt)
+            {
+                lastState = DetectReadyScreenStateStable(input);
+                if (IsReadyScreenState(lastState))
+                {
+                    return new ReadyWaitResult(true, nudges, lastState, timeoutSeconds);
+                }
+
+                nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
+            }
+
             SendReadyIntroClick(input);
             nudges++;
             await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
@@ -932,6 +952,17 @@ public sealed class VmOperations
         for (var i = 0; i < plan.TitleScreenKeyPressCount && DateTimeOffset.UtcNow < deadline; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (DateTimeOffset.UtcNow >= nextDetectionAt)
+            {
+                lastState = DetectReadyScreenStateStable(input);
+                if (IsReadyScreenState(lastState))
+                {
+                    return new ReadyWaitResult(true, nudges, lastState, timeoutSeconds);
+                }
+
+                nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
+            }
+
             SendReadyTitleSkipBurst(input);
             nudges++;
             await Task.Delay(plan.TitleScreenKeyPressDelayMs, cancellationToken);
@@ -947,11 +978,6 @@ public sealed class VmOperations
 
     private void SendReadyIntroClick(WindowsInput input)
     {
-        if (!IsD2RRunning())
-        {
-            return;
-        }
-
         foreach (var action in StartupReadyInputPlan.IntroActions)
         {
             switch (action)
@@ -983,11 +1009,6 @@ public sealed class VmOperations
 
     private void SendReadyTitleSkipBurst(WindowsInput input)
     {
-        if (!IsD2RRunning())
-        {
-            return;
-        }
-
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
         var beforeDiagnostics = TryGetD2RInputDiagnostics();
@@ -1031,11 +1052,6 @@ public sealed class VmOperations
 
     private void SendReadySkipBurst(WindowsInput input)
     {
-        if (!IsD2RRunning())
-        {
-            return;
-        }
-
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
         var beforeDiagnostics = TryGetD2RInputDiagnostics();
@@ -2316,9 +2332,10 @@ public sealed class VmOperations
 
     private async Task<D2RStartWaitResult> WaitForD2RProcessStartedAsync(
         WindowsInput input,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? timeoutSeconds = null)
     {
-        var timeout = TimeSpan.FromSeconds(GetD2RStartTimeoutSeconds());
+        var timeout = TimeSpan.FromSeconds(timeoutSeconds ?? GetD2RStartTimeoutSeconds());
         var deadline = DateTimeOffset.UtcNow + timeout;
         var launchRetryDelay = TimeSpan.FromSeconds(Math.Min(GetBattleNetExecRetryDelaySeconds(), 3));
         var nextLaunchRetryAt = DateTimeOffset.UtcNow;
@@ -2329,6 +2346,12 @@ public sealed class VmOperations
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (IsD2RRunning())
+            {
+                return new D2RStartWaitResult(true, launchAttempts, playClicks, lastLaunchMessage);
+            }
+
+            var visibleState = DetectVisibleD2RState(input);
+            if (visibleState is not (VisibleD2RState.NotRunning or VisibleD2RState.Unknown))
             {
                 return new D2RStartWaitResult(true, launchAttempts, playClicks, lastLaunchMessage);
             }
