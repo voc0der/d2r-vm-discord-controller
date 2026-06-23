@@ -19,11 +19,13 @@ internal static class Program
             }
 
             var config = VmAgentConfigWizard.LoadOrCreate(configPath, out var wasFreshSetup);
+            _ = WindowsFirewallSelfHeal.EnsureAgentControllerOutboundTcp(config.ControllerUrl, Console.WriteLine);
             config = await VmAgentConfigWizard.EnsureConnectsAsync(
                 configPath,
                 config,
                 async (candidate, cancellationToken) =>
                 {
+                    _ = WindowsFirewallSelfHeal.EnsureAgentControllerOutboundTcp(candidate.ControllerUrl, Console.WriteLine);
                     var probeOperations = new VmOperations(candidate);
                     var probeClient = new AgentClient<VmAgentConfig>(candidate, "vm", Console.WriteLine);
                     await probeClient.ProbeConnectionAsync(

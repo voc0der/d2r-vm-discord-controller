@@ -29,6 +29,7 @@ try
         ?? @"C:\D2ROps\d2r-host.config.json";
 
     var config = HostConfigLoader.LoadOrCreate(configPath);
+    _ = WindowsFirewallSelfHeal.EnsureHostInboundTcp(config.HttpPort, Console.WriteLine);
 
     var builder = WebApplication.CreateBuilder(args);
     builder.WebHost.UseUrls($"http://0.0.0.0:{config.HttpPort}");
