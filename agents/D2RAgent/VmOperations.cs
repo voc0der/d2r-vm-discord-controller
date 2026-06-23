@@ -129,6 +129,16 @@ public sealed class VmOperations
             return await TakeScreenshotAsync(cancellationToken);
         }
 
+        // status only reads process/window state - it never sends input - so it must not
+        // wait on _commandGate either, for the exact same reason GetStatusAsync (the
+        // heartbeat path) already bypasses it: a long-running menu_ready/menu_create_game
+        // command can hold the gate for minutes, and a live on-demand status check queued
+        // behind it would just time out instead of reporting what's actually happening.
+        if (string.Equals(request.Command, "status", StringComparison.OrdinalIgnoreCase))
+        {
+            return CommandResult.Success("Status collected.", await CollectStatusAsync(cancellationToken));
+        }
+
         await _commandGate.WaitAsync(cancellationToken);
         try
         {
@@ -144,7 +154,6 @@ public sealed class VmOperations
     {
         return request.Command switch
         {
-            "status" => CommandResult.Success("Status collected.", await CollectStatusAsync(cancellationToken)),
             "launch_battlenet" => LaunchBattleNet(),
             "launch_d2r" => await LaunchD2RAsync(cancellationToken),
             "kill_d2r" => KillD2R(),
