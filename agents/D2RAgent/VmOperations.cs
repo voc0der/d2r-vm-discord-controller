@@ -1401,7 +1401,10 @@ public sealed class VmOperations
             ? "0"
             : string.Join("|", discovery.Matches.Take(3).Select(match =>
                 $"{match.ProcessName}#{match.ProcessId}:{(match.HasMainWindow ? "window" : "noWindow")}"));
-        return $" Process discovery: search={search}, matches={matches}.";
+        var fallback = discovery.FallbackMatches.Length == 0
+            ? ""
+            : $" Unmatched processes with a d2r/diablo-like name: {string.Join("|", discovery.FallbackMatches.Take(5).Select(match => $"{match.ProcessName}#{match.ProcessId}:{(match.HasMainWindow ? "window" : "noWindow")}"))}.";
+        return $" Process discovery: search={search}, matches={matches}.{fallback}";
     }
 
     private static string FormatInputRect(InputRect? rect)

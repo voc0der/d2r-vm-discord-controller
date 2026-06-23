@@ -1664,31 +1664,47 @@ public sealed class DiscordBot
                 return true;
             }
 
-            var matchSummaries = matches.EnumerateArray()
-                .Take(3)
-                .Select(match =>
-                {
-                    var name = TryGetString(match, "processName", out var processName) ? processName : "?";
-                    var id = match.TryGetProperty("processId", out var processId)
-                        && processId.TryGetInt32(out var pid)
-                            ? pid.ToString()
-                            : "?";
-                    var window = TryGetBoolean(match, "hasMainWindow", out var hasMainWindow)
-                        ? (hasMainWindow ? "window" : "noWindow")
-                        : "window?";
-                    return $"{name}#{id}:{window}";
-                })
-                .ToArray();
-
+            var matchSummaries = FormatProcessMatchSummaries(matches);
             value = matchSummaries.Length == 0
                 ? $"search={searchNames}, matches=0"
                 : $"search={searchNames}, matches={string.Join("|", matchSummaries)}";
+
+            if (matchSummaries.Length == 0
+                && discovery.TryGetProperty("fallbackMatches", out var fallbackMatches)
+                && fallbackMatches.ValueKind == JsonValueKind.Array)
+            {
+                var fallbackSummaries = FormatProcessMatchSummaries(fallbackMatches);
+                if (fallbackSummaries.Length > 0)
+                {
+                    value += $", unmatchedD2rLike={string.Join("|", fallbackSummaries)}";
+                }
+            }
+
             return true;
         }
         catch (JsonException)
         {
             return false;
         }
+    }
+
+    private static string[] FormatProcessMatchSummaries(JsonElement matches)
+    {
+        return matches.EnumerateArray()
+            .Take(3)
+            .Select(match =>
+            {
+                var name = TryGetString(match, "processName", out var processName) ? processName : "?";
+                var id = match.TryGetProperty("processId", out var processId)
+                    && processId.TryGetInt32(out var pid)
+                        ? pid.ToString()
+                        : "?";
+                var window = TryGetBoolean(match, "hasMainWindow", out var hasMainWindow)
+                    ? (hasMainWindow ? "window" : "noWindow")
+                    : "window?";
+                return $"{name}#{id}:{window}";
+            })
+            .ToArray();
     }
 
     private static string TryReadInputRect(JsonElement root, string propertyName)

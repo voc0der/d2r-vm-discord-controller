@@ -6,7 +6,8 @@ namespace D2RAgent;
 
 internal sealed record ProcessDiscoverySnapshot(
     string[] SearchNames,
-    ProcessDiscoveryMatch[] Matches);
+    ProcessDiscoveryMatch[] Matches,
+    ProcessDiscoveryMatch[] FallbackMatches);
 
 internal sealed record ProcessDiscoveryMatch(
     int ProcessId,
@@ -94,7 +95,53 @@ internal static class WindowsProcessFinder
             .ThenBy(match => match.ProcessId)
             .ToArray();
 
-        return new ProcessDiscoverySnapshot(names, matches);
+        // The configured search names need an exact match (Process.GetProcessesByName has no
+        // fuzzy mode), so a real, running D2R process under any other name - a build variant,
+        // a renamed/wrapped executable, anything not literally "D2R" - reads as a permanent
+        // zero, indistinguishable from D2R simply not running. Only spend the full
+        // GetProcesses() scan once the strict search has already failed, and report whatever
+        // it finds so the actual name is visible without manual Task Manager lookup.
+        var fallbackMatches = matches.Length == 0
+            ? FindLikelyD2RProcesses()
+            : [];
+
+        return new ProcessDiscoverySnapshot(names, matches, fallbackMatches);
+    }
+
+    private static ProcessDiscoveryMatch[] FindLikelyD2RProcesses()
+    {
+        return GetProcessesSafe()
+            .Where(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id))
+            .Select(process => (process, name: SafeGetProcessName(process)))
+            .Where(entry => ContainsLikelyD2RName(entry.name))
+            .Select(entry => new ProcessDiscoveryMatch(
+                entry.process.Id,
+                entry.name,
+                HasMainWindow(entry.process),
+                SafeGetMainWindowTitle(entry.process)))
+            .ToArray();
+    }
+
+    private static bool ContainsLikelyD2RName(string processName)
+    {
+        return processName.Contains("d2r", StringComparison.OrdinalIgnoreCase)
+            || processName.Contains("diablo", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string SafeGetProcessName(Process process)
+    {
+        try
+        {
+            return process.ProcessName;
+        }
+        catch (InvalidOperationException)
+        {
+            return "?";
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return "?";
+        }
     }
 
     public static IEnumerable<Process> FindProcessesByNameOrWindowTitle(IEnumerable<string> processNames)
