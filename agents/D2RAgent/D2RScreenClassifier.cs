@@ -21,9 +21,14 @@ internal static class D2RScreenClassifier
 
     public static bool IsConnectingToBattleNetDialogRegion(ScreenRegionStats dialog)
     {
-        return dialog.AverageLuminance > 25
-            && dialog.GreyRatio > 0.30
-            && dialog.OrangeRatio < 0.05;
+        // The dialog's interior is a flat, near-black fill - not the lighter grey box it
+        // looks like at a glance. The reliable signal is contrast: the same screen region
+        // shows high-variance flame texture and a real orange ratio on the plain splash
+        // (logo flicker), and goes flat/dark with no orange once the modal covers it.
+        // Measured against real reference captures: plain splash at this region reads
+        // orange=0.25/stdDev=75; the connecting dialog reads orange=0.00/stdDev=3.
+        return dialog.OrangeRatio < 0.05
+            && dialog.LuminanceStdDev < 20;
     }
 
     public static bool IsOnlineCharacterListRegion(ScreenRegionStats stats)

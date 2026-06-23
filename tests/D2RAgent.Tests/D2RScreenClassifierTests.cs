@@ -182,6 +182,40 @@ public sealed class D2RScreenClassifierTests
         Assert.False(D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud));
     }
 
+    [Fact]
+    public void ConnectingToBattleNetDialogRejectsPlainSplashFlameTexture()
+    {
+        // Measured from docs/runbooks/assets/d2r-ui/1366x768/post_intro_splash_screen.png at
+        // the dialog sample region: flickering flame letters give high luminance variance and
+        // a real orange ratio there.
+        var dialog = Stats(
+            averageLuminance: 108.9,
+            luminanceStdDev: 74.9,
+            brightRatio: 0.42,
+            greyRatio: 0.00,
+            darkRatio: 0.25,
+            orangeRatio: 0.25);
+
+        Assert.False(D2RScreenClassifier.IsConnectingToBattleNetDialogRegion(dialog));
+    }
+
+    [Fact]
+    public void ConnectingToBattleNetDialogAcceptsActualDialogCapture()
+    {
+        // Measured from docs/runbooks/assets/d2r-ui/1366x768/d2r_splash_logging_in.png at the
+        // same sample region: the modal's flat near-black interior has no orange and almost no
+        // luminance variance, unlike the flame texture it's covering.
+        var dialog = Stats(
+            averageLuminance: 16.0,
+            luminanceStdDev: 3.4,
+            brightRatio: 0.00,
+            greyRatio: 0.00,
+            darkRatio: 1.00,
+            orangeRatio: 0.00);
+
+        Assert.True(D2RScreenClassifier.IsConnectingToBattleNetDialogRegion(dialog));
+    }
+
     [Theory]
     [InlineData(true, false, false, false)]
     [InlineData(true, true, false, true)]

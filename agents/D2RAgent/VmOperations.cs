@@ -1886,21 +1886,20 @@ public sealed class VmOperations
 
     private ReadyScreenState DetectReadyScreenState(WindowsInput input, int sampleGrid = MenuSampleGrid)
     {
-        // Checked before DiabloSplash: the "Connecting to Battle.net" dialog renders as a
-        // modal box layered on top of the same splash background, so the splash logo/prompt
-        // regions can still pass their own thresholds while this dialog is up. Treating that
-        // overlap as plain DiabloSplash made the ready loop keep firing Escape/Enter/Space at
-        // a screen that's actually waiting on a live login handshake - input here doesn't
-        // speed anything up and Escape in particular can cancel the connection attempt and
-        // bounce back to title, manufacturing a retry loop that looks like a multi-minute hang.
-        if (IsConnectingToBattleNetDialog(input, sampleGrid))
-        {
-            return ReadyScreenState.ConnectingToBattleNet;
-        }
-
+        // The "Connecting to Battle.net" dialog renders as a modal box layered on top of the
+        // same splash background, so the splash logo/prompt regions still pass their own
+        // thresholds while this dialog is up - checked only once we already know we're on
+        // the splash screen family, so a transient dark/low-contrast cinematic frame elsewhere
+        // in the ready window can't be mistaken for it. Treating the dialog as plain
+        // DiabloSplash made the ready loop keep firing Escape/Enter/Space at a screen that's
+        // actually waiting on a live login handshake - input here doesn't speed anything up
+        // and Escape in particular can cancel the connection attempt and bounce back to title,
+        // manufacturing a retry loop that looks like a multi-minute hang.
         if (IsDiabloSplashScreen(input, sampleGrid))
         {
-            return ReadyScreenState.DiabloSplash;
+            return IsConnectingToBattleNetDialog(input, sampleGrid)
+                ? ReadyScreenState.ConnectingToBattleNet
+                : ReadyScreenState.DiabloSplash;
         }
 
         if (IsCharacterScreenOffline(input, sampleGrid: sampleGrid))
