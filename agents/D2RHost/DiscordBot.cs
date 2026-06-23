@@ -836,7 +836,11 @@ public sealed class DiscordBot
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Could not append to create-game-all-watch log {LogPath}.", logPath);
+            // Was LogDebug - silent by default, so a dropped tick (eg. a transient lock right
+            // after the log directory is created) left the file missing lines the live message
+            // still showed, with nothing in the logs to explain the gap. Warn so a dropped tick
+            // is at least visible instead of indistinguishable from "nothing happened."
+            _logger.LogWarning(ex, "Could not append to create-game-all-watch log {LogPath}.", logPath);
         }
     }
 
