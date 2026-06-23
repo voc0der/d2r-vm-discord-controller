@@ -6,16 +6,55 @@ namespace D2RAgent.Tests;
 
 public sealed class D2RScreenSnippetAssetTests
 {
+    // Online character-screen chrome (play/lobby buttons, online tab) renders identically
+    // regardless of which act the character's last save was in or whether a character row
+    // is even selected - verified byte-for-byte against every act1-5 and not-selected
+    // capture in the assets directory, not assumed. Same for the lobby create/join tabs and
+    // entry buttons: every other lobby capture (party icon, friends tab, terror zones
+    // warning, filled form) is just a different overlay/state on top of the same chrome.
     public static TheoryData<string, string, int, int, int, int> SnippetSources => new()
     {
         { "character_play_button_text.png", "char_screen_act1.png", 545, 683, 624, 699 },
+        { "character_play_button_text.png", "char_screen_act2.png", 545, 683, 624, 699 },
+        { "character_play_button_text.png", "char_screen_act3.png", 545, 683, 624, 699 },
+        { "character_play_button_text.png", "char_screen_act4.png", 545, 683, 624, 699 },
+        { "character_play_button_text.png", "char_screen_act5.png", 545, 683, 624, 699 },
+        { "character_play_button_text.png", "char_screen_not_selected.png", 545, 683, 624, 699 },
         { "character_lobby_button_text.png", "char_screen_act1.png", 749, 683, 838, 700 },
+        { "character_lobby_button_text.png", "char_screen_act2.png", 749, 683, 838, 700 },
+        { "character_lobby_button_text.png", "char_screen_act3.png", 749, 683, 838, 700 },
+        { "character_lobby_button_text.png", "char_screen_act4.png", 749, 683, 838, 700 },
+        { "character_lobby_button_text.png", "char_screen_act5.png", 749, 683, 838, 700 },
+        { "character_lobby_button_text.png", "char_screen_not_selected.png", 749, 683, 838, 700 },
         { "character_online_tab_text.png", "char_screen_act1.png", 1132, 31, 1210, 48 },
+        { "character_online_tab_text.png", "char_screen_act2.png", 1132, 31, 1210, 48 },
+        { "character_online_tab_text.png", "char_screen_act3.png", 1132, 31, 1210, 48 },
+        { "character_online_tab_text.png", "char_screen_act4.png", 1132, 31, 1210, 48 },
+        { "character_online_tab_text.png", "char_screen_act5.png", 1132, 31, 1210, 48 },
+        { "character_online_tab_text.png", "char_screen_not_selected.png", 1132, 31, 1210, 48 },
         { "character_offline_tab_text.png", "character_screen_but_offline.png", 1255, 31, 1334, 49 },
         { "lobby_create_game_tab_text.png", "lobby_create_game_screen.png", 846, 49, 961, 66 },
+        { "lobby_create_game_tab_text.png", "lobby_create_game_filled.png", 846, 49, 961, 66 },
+        { "lobby_create_game_tab_text.png", "lobby_create_game_terror_zones_not_available.png", 846, 49, 961, 66 },
+        { "lobby_create_game_tab_text.png", "lobby_click_party_icon.png", 846, 49, 961, 66 },
+        { "lobby_create_game_tab_text.png", "lobby_click_party_icon_hover_friends_tab.png", 846, 49, 961, 66 },
+        { "lobby_create_game_tab_text.png", "lobby_hover_party_icon_chat.png", 846, 49, 961, 66 },
+        { "lobby_create_game_tab_text.png", "lobby_friends_tab_party.png", 846, 49, 961, 66 },
+        { "lobby_create_game_tab_text.png", "lobby_right_click_friend_join_game_available.png", 846, 49, 961, 66 },
+        { "lobby_create_game_tab_text.png", "lobby_right_click_friend_nojoin_game_available.png", 846, 49, 961, 66 },
         { "lobby_join_game_tab_text.png", "lobby_join_game_screen.png", 973, 49, 1085, 66 },
+        { "lobby_join_game_tab_text.png", "lobby_join_game_screen_difficulty_dropdown.png", 973, 49, 1085, 66 },
         { "create_game_button_text.png", "lobby_create_game_screen.png", 991, 466, 1115, 489 },
+        { "create_game_button_text.png", "lobby_create_game_filled.png", 991, 466, 1115, 489 },
+        { "create_game_button_text.png", "lobby_create_game_terror_zones_not_available.png", 991, 466, 1115, 489 },
+        { "create_game_button_text.png", "lobby_click_party_icon.png", 991, 466, 1115, 489 },
+        { "create_game_button_text.png", "lobby_click_party_icon_hover_friends_tab.png", 991, 466, 1115, 489 },
+        { "create_game_button_text.png", "lobby_hover_party_icon_chat.png", 991, 466, 1115, 489 },
+        { "create_game_button_text.png", "lobby_friends_tab_party.png", 991, 466, 1115, 489 },
+        { "create_game_button_text.png", "lobby_right_click_friend_join_game_available.png", 991, 466, 1115, 489 },
+        { "create_game_button_text.png", "lobby_right_click_friend_nojoin_game_available.png", 991, 466, 1115, 489 },
         { "join_game_button_text.png", "lobby_join_game_screen.png", 986, 466, 1098, 489 },
+        { "join_game_button_text.png", "lobby_join_game_screen_difficulty_dropdown.png", 986, 466, 1098, 489 },
         { "character_offline_empty_panel.png", "character_screen_but_offline.png", 1070, 133, 1340, 579 },
         { "modern_health_globe.png", "just_landed_in_game_checkforhealthandmanaglobes.png", 319, 652, 400, 742 },
         { "modern_mana_globe.png", "just_landed_in_game_checkforhealthandmanaglobes.png", 967, 652, 1047, 742 }
