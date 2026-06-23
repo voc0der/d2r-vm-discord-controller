@@ -175,6 +175,8 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
             cancellationToken);
     }
 
+    private static readonly TimeSpan HeartbeatStatusTimeout = TimeSpan.FromSeconds(15);
+
     private async Task SendHeartbeatAsync(
         ClientWebSocket socket,
         SemaphoreSlim sendLock,
@@ -185,7 +187,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
 
         while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
         {
-            var status = await statusFactory(cancellationToken);
+            var status = await CollectHeartbeatStatusAsync(statusFactory, HeartbeatStatusTimeout, cancellationToken);
             await SendAsync(
                 socket,
                 sendLock,
@@ -199,6 +201,29 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
 
             await Task.Delay(interval, cancellationToken);
         }
+    }
+
+    // statusFactory's underlying Win32 calls (screen sampling, window enumeration) don't
+    // observe CancellationToken once inside a blocking call, so a single wedged detection
+    // call could previously hang this await forever - the heartbeat would silently stop,
+    // "seen" would freeze, and the host would keep reporting the agent as healthy on a
+    // stale timestamp with no signal that detection itself had stalled. Race it against a
+    // timeout instead of trusting it to return, and abandon the slow task rather than
+    // waiting on it again next cycle.
+    private static async Task<object> CollectHeartbeatStatusAsync(
+        Func<CancellationToken, Task<object>> statusFactory,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var statusTask = statusFactory(cancellationToken);
+        var completed = await Task.WhenAny(statusTask, Task.Delay(timeout, cancellationToken));
+        cancellationToken.ThrowIfCancellationRequested();
+        if (completed == statusTask)
+        {
+            return await statusTask;
+        }
+
+        return new { error = $"Status collection did not return within {timeout.TotalSeconds:N0}s; a detection call is likely stuck." };
     }
 
     private async Task<bool> HandleControllerMessageAsync(
