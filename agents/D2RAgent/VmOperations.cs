@@ -858,7 +858,19 @@ public sealed class VmOperations
         }
 
         var input = new WindowsInput();
-        _ = TryPrepareD2RForInput(input);
+        if (!TryPrepareD2RForInput(input))
+        {
+            // ClickD2R/PressKey route through SendInput, which delivers to whatever
+            // window currently has focus - not to a specific HWND. If D2R never
+            // became the foreground window, every click and keypress for the rest
+            // of the command lands on whatever does have focus instead (commonly an
+            // operator's own Task Manager/RDP window), and the command silently
+            // grinds for its full timeout instead of failing in milliseconds. Fail
+            // fast and name the window that actually has focus.
+            var foregroundProcessName = input.GetInputDiagnostics(processNames).ForegroundProcessName;
+            throw new InvalidOperationException(
+                $"Could not bring D2R to the foreground; focus is on {foregroundProcessName ?? "an unknown window"} instead. Close or minimize whatever currently has focus on the VM and retry.");
+        }
 
         return input;
     }
