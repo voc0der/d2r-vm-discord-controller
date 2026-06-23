@@ -1056,18 +1056,15 @@ public sealed class VmOperations
 
     private void SendReadyIntroClick(WindowsInput input)
     {
-        var d2rHasFocus = false;
         foreach (var action in StartupReadyInputPlan.IntroActions)
         {
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
                     _ = TryPrepareD2RForInput(input);
-                    d2rHasFocus = IsD2RForeground();
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
                     _ = TryClickD2RWindowCenter(input);
-                    d2rHasFocus = IsD2RForeground();
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
                     ClickD2R(input, _config.Ui.IntroSkipPoint);
@@ -1076,18 +1073,10 @@ public sealed class VmOperations
                     _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
-                    if (d2rHasFocus)
-                    {
-                        input.PressStartupSkipKey();
-                    }
-
+                    input.PressStartupSkipKey();
                     break;
                 case StartupReadyInputAction.PressStartKey:
-                    if (d2rHasFocus)
-                    {
-                        input.PressStartKey();
-                    }
-
+                    input.PressStartKey();
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
                     _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
@@ -1106,32 +1095,21 @@ public sealed class VmOperations
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
         var beforeDiagnostics = TryGetD2RInputDiagnostics();
-        var d2rHasFocus = false;
         foreach (var action in StartupReadyInputPlan.TitleActions)
         {
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
                     _ = TryPrepareD2RForInput(input);
-                    d2rHasFocus = IsD2RForeground();
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
                     _ = TryClickD2RWindowCenter(input);
-                    d2rHasFocus = IsD2RForeground();
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
-                    if (d2rHasFocus)
-                    {
-                        input.PressStartupSkipKey();
-                    }
-
+                    input.PressStartupSkipKey();
                     break;
                 case StartupReadyInputAction.PressStartKey:
-                    if (d2rHasFocus)
-                    {
-                        input.PressStartKey();
-                    }
-
+                    input.PressStartKey();
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
                     _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
@@ -1160,18 +1138,15 @@ public sealed class VmOperations
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
         var beforeDiagnostics = TryGetD2RInputDiagnostics();
-        var d2rHasFocus = false;
         foreach (var action in StartupReadyInputPlan.BurstActions)
         {
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
                     _ = TryPrepareD2RForInput(input);
-                    d2rHasFocus = IsD2RForeground();
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
                     _ = TryClickD2RWindowCenter(input);
-                    d2rHasFocus = IsD2RForeground();
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
                     ClickD2R(input, _config.Ui.IntroSkipPoint);
@@ -1180,18 +1155,10 @@ public sealed class VmOperations
                     _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
-                    if (d2rHasFocus)
-                    {
-                        input.PressStartupSkipKey();
-                    }
-
+                    input.PressStartupSkipKey();
                     break;
                 case StartupReadyInputAction.PressStartKey:
-                    if (d2rHasFocus)
-                    {
-                        input.PressStartKey();
-                    }
-
+                    input.PressStartKey();
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
                     _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
