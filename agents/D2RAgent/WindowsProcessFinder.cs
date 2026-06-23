@@ -102,7 +102,42 @@ internal static class WindowsProcessFinder
         }
 
         var windowTarget = FindTopLevelWindowTargets(names, cache).FirstOrDefault();
-        return windowTarget ?? processFallback;
+        if (windowTarget is not null)
+        {
+            return windowTarget;
+        }
+
+        if (processFallback is not null)
+        {
+            return processFallback;
+        }
+
+        // Both the exact-name search and the window-title fallback (matching against e.g.
+        // "Diablo II: Resurrected") came up empty. The title fallback specifically can't see a
+        // window whose message queue is busy servicing a loading screen or cinematic - GetWindowTitle
+        // aborts rather than risk hanging - so a real, visible D2R window can be invisible to both
+        // checks at exactly the moment input delivery matters most. Without this, every SendWindow*
+        // call (escape key, ready-skip key, click) silently returns false and the ready loop spins
+        // doing nothing until it times out, with no error. Widen to the same product-specific
+        // fuzzy name scan used for discovery as a last resort.
+        return FindFuzzyWindowTarget(WindowsProcessIdentity.GetFallbackProcessNameNeedles(names));
+    }
+
+    private static ProcessWindowTarget? FindFuzzyWindowTarget(string[] fallbackNeedles)
+    {
+        if (fallbackNeedles.Length == 0)
+        {
+            return null;
+        }
+
+        return GetProcessesSafe()
+            .Where(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id))
+            .Select(process => (process, name: SafeGetProcessName(process)))
+            .Where(entry => fallbackNeedles.Any(needle => entry.name.Contains(needle, StringComparison.OrdinalIgnoreCase)))
+            .Select(entry => ToWindowTarget(entry.process))
+            .Where(target => target is not null)
+            .OrderByDescending(target => target!.WindowHandle != IntPtr.Zero)
+            .FirstOrDefault();
     }
 
     public static bool IsAnyProcessRunning(IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)

@@ -160,10 +160,12 @@ public sealed class DiscordBot
 
         if (subcommand == "status")
         {
+            await context.Command.DeferAsync(ephemeral: true);
             var accountKey = context.GetString("account");
-            await context.Command.RespondAsync(
-                accountKey is null ? FormatAllAccountStatuses() : FormatAccountStatus(accountKey),
-                ephemeral: true);
+            var content = accountKey is null
+                ? await FormatAllAccountStatusesLiveAsync(CancellationToken.None)
+                : await FormatAccountStatusLiveAsync(accountKey, CancellationToken.None);
+            await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = content);
             return;
         }
 
@@ -1465,6 +1467,13 @@ public sealed class DiscordBot
         return string.Join("\n", new[] { $"D2RHost version: {GetHostVersionText()}" }.Concat(lines));
     }
 
+    private async Task<string> FormatAllAccountStatusesLiveAsync(CancellationToken cancellationToken)
+    {
+        var lines = await Task.WhenAll(_config.Accounts.Select(
+            pair => FormatAccountStatusLineLiveAsync(pair.Key, pair.Value, cancellationToken)));
+        return string.Join("\n", new[] { $"D2RHost version: {GetHostVersionText()}" }.Concat(lines));
+    }
+
     private static string GetHostVersionText()
     {
         var assembly = Assembly.GetEntryAssembly() ?? typeof(DiscordBot).Assembly;
@@ -1478,6 +1487,12 @@ public sealed class DiscordBot
     {
         var (_, account) = RequireAccount(accountKey);
         return FormatAccountStatusLine(accountKey, account);
+    }
+
+    private async Task<string> FormatAccountStatusLiveAsync(string accountKey, CancellationToken cancellationToken)
+    {
+        var (_, account) = RequireAccount(accountKey);
+        return await FormatAccountStatusLineLiveAsync(accountKey, account, cancellationToken);
     }
 
     private string FormatExceptionWithAccountStatus(Exception ex, AccountConfig account)
@@ -1495,32 +1510,75 @@ public sealed class DiscordBot
 
     private string FormatAccountStatusLine(string accountKey, AccountConfig account)
     {
-        var name = string.IsNullOrWhiteSpace(account.DisplayName)
-            ? accountKey
-            : $"{accountKey} ({account.DisplayName})";
+        var name = FormatAccountDisplayName(accountKey, account);
         var agent = _registry.GetAgent(account.AgentId);
         if (agent?.Connected != true)
         {
             return $"{name}: offline";
         }
 
-        var status = ParseStatus(agent.LastStatusJson);
+        return FormatStatusLine(name, agent, agent.LastStatusJson);
+    }
+
+    // /d2r status used to read whatever the last heartbeat happened to cache, which could be
+    // tens of seconds stale and - while status collection was timing out - could be a frozen
+    // "unknown" snapshot from before the operator even asked. Sending a live "status" command
+    // gets a real-time read every time the user actually asks.
+    private async Task<string> FormatAccountStatusLineLiveAsync(
+        string accountKey, AccountConfig account, CancellationToken cancellationToken)
+    {
+        var name = FormatAccountDisplayName(accountKey, account);
+        var agent = _registry.GetAgent(account.AgentId);
+        if (agent?.Connected != true)
+        {
+            return $"{name}: offline";
+        }
+
+        CommandResultInfo result;
+        try
+        {
+            result = await _registry.SendCommandAsync(
+                account.AgentId, "status", args: null, TimeSpan.FromSeconds(20), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            return $"{name}: live status check failed ({ex.Message}); last cached: {FormatStatusLine(name, agent, agent.LastStatusJson)}";
+        }
+
+        if (!result.Ok || result.Data is not { } data)
+        {
+            return $"{name}: live status check failed: {result.Message}; last cached: {FormatStatusLine(name, agent, agent.LastStatusJson)}";
+        }
+
+        return FormatStatusLine(name, agent, data.GetRawText());
+    }
+
+    private static string FormatAccountDisplayName(string accountKey, AccountConfig account)
+    {
+        return string.IsNullOrWhiteSpace(account.DisplayName)
+            ? accountKey
+            : $"{accountKey} ({account.DisplayName})";
+    }
+
+    private static string FormatStatusLine(string name, AgentSnapshot agent, string? statusJson)
+    {
+        var status = ParseStatus(statusJson);
         var battleNet = FormatRunning(status.TryGetValue("battleNetRunning", out var battleNetRunning) ? battleNetRunning : null);
         var d2r = FormatRunning(status.TryGetValue("d2rRunning", out var d2rRunning) ? d2rRunning : null);
-        var visible = TryReadStatusString(agent.LastStatusJson, "d2rVisibleState", out var visibleState)
+        var visible = TryReadStatusString(statusJson, "d2rVisibleState", out var visibleState)
             ? $", visible {visibleState}"
             : "";
-        var activity = TryReadStatusString(agent.LastStatusJson, "d2rActivityState", out var activityState)
+        var activity = TryReadStatusString(statusJson, "d2rActivityState", out var activityState)
             ? $", state {activityState}"
             : "";
         var processDiscovery = d2rRunning != true
-            && TryReadD2RProcessDiscoverySummary(agent.LastStatusJson, out var processDiscoverySummary)
+            && TryReadD2RProcessDiscoverySummary(statusJson, out var processDiscoverySummary)
             ? $", process {processDiscoverySummary}"
             : "";
-        var input = TryReadD2RInputSummary(agent.LastStatusJson, out var inputSummary)
+        var input = TryReadD2RInputSummary(statusJson, out var inputSummary)
             ? $", input {inputSummary}"
             : "";
-        var lastInput = TryReadLastInputActionSummary(agent.LastStatusJson, out var lastInputSummary)
+        var lastInput = TryReadLastInputActionSummary(statusJson, out var lastInputSummary)
             ? $", lastInput {lastInputSummary}"
             : "";
         var version = string.IsNullOrWhiteSpace(agent.Version)
