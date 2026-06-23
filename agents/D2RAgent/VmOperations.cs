@@ -1690,28 +1690,11 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 2, 4));
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            _ = TryPrepareD2RForInput(input);
-            if (IsAnyLobbyEntryMenuVisible(input))
-            {
-                return true;
-            }
-
-            ClickD2R(input, _config.Ui.CharacterLobbyButton);
-            var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
-            if (remainingMs == 0)
-            {
-                break;
-            }
-
-            await Task.Delay((int)Math.Min(LobbyPollIntervalMs, remainingMs), cancellationToken);
-        }
-
-        return IsAnyLobbyEntryMenuVisible(input);
+        cancellationToken.ThrowIfCancellationRequested();
+        _ = TryPrepareD2RForInput(input);
+        ClickD2R(input, _config.Ui.CharacterLobbyButton);
+        await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)), cancellationToken);
+        return true;
     }
 
     private async Task ClickLobbyTabDirectAsync(
@@ -1719,27 +1702,12 @@ public sealed class VmOperations
         AgentCommon.UiPoint tab,
         CancellationToken cancellationToken)
     {
-        var timeout = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 2, 4));
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            _ = TryPrepareD2RForInput(input);
-            if (IsLobbyTabReady(input, tab))
-            {
-                break;
-            }
-
-            ClickD2R(input, tab);
-            var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
-            if (remainingMs == 0)
-            {
-                break;
-            }
-
-            await Task.Delay((int)Math.Min(LobbyPollIntervalMs, remainingMs), cancellationToken);
-        }
-
+        cancellationToken.ThrowIfCancellationRequested();
+        _ = TryPrepareD2RForInput(input);
+        ClickD2R(input, tab);
+        await DelayStepAsync(cancellationToken);
+        ClickD2R(input, tab);
+        await DelayStepAsync(cancellationToken);
         MarkLobbyOrGameInteraction("Clicked lobby tab.");
     }
 
