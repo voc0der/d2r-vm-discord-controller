@@ -332,7 +332,7 @@ internal sealed class WindowsInput
                 windowRect = new InputRect(window.Left, window.Top, window.Right, window.Bottom);
             }
 
-            if (TryGetProcessClientBounds(names, out var client))
+            if (TryGetProcessClientBounds(names, out var client, restoreWindow: false))
             {
                 clientRect = new InputRect(client.Left, client.Top, client.Left + client.Width, client.Top + client.Height);
             }
@@ -568,12 +568,12 @@ internal sealed class WindowsInput
             names = _coordinateProcessNames;
         }
 
-        return names.Length > 0 && TryGetProcessClientBounds(names, out var bounds)
+        return names.Length > 0 && TryGetProcessClientBounds(names, out var bounds, restoreWindow: true)
             ? bounds
             : new CoordinateBounds(0, 0, GetSystemMetrics(SmCxScreen), GetSystemMetrics(SmCyScreen));
     }
 
-    private static bool TryGetProcessClientBounds(IEnumerable<string> processNames, out CoordinateBounds bounds)
+    private static bool TryGetProcessClientBounds(IEnumerable<string> processNames, out CoordinateBounds bounds, bool restoreWindow)
     {
         bounds = default;
         var target = FindWindowTarget(processNames);
@@ -583,7 +583,17 @@ internal sealed class WindowsInput
         }
 
         var windowHandle = target.WindowHandle;
-        ShowWindow(windowHandle, SwRestore);
+        if (restoreWindow)
+        {
+            // ShowWindow sends a synchronous message to the target window's thread - unlike
+            // GetWindowTitle elsewhere in this file, it has no SendMessageTimeout-style cap.
+            // Diagnostic/status reads call this with restoreWindow: false specifically so a
+            // busy/loading D2R UI thread can't stall a passive status poll indefinitely; only
+            // the actual click-coordinate path (which genuinely needs the window un-minimized
+            // to land a click) opts into the restore and its blocking risk.
+            ShowWindow(windowHandle, SwRestore);
+        }
+
         if (!GetClientRect(windowHandle, out var clientRect))
         {
             return false;
