@@ -491,100 +491,39 @@ internal sealed class WindowsInput
             throw new InvalidOperationException($"GetDC failed. LastError={Marshal.GetLastWin32Error()}");
         }
 
-        var count = 0;
-        var luminanceSum = 0.0;
-        var luminanceSquaredSum = 0.0;
-        var bright = 0;
-        var grey = 0;
-        var dark = 0;
-        var orange = 0;
-        var redPixels = 0;
-        var bluePixels = 0;
-
         try
         {
-            for (var yIndex = 0; yIndex < grid; yIndex++)
-            {
-                var y = Math.Clamp(
-                    (int)Math.Round(centerY - (regionHeight / 2) + ((yIndex + 0.5) * regionHeight / grid)),
-                    0,
-                    screenHeight - 1);
-
-                for (var xIndex = 0; xIndex < grid; xIndex++)
-                {
-                    var x = Math.Clamp(
-                        (int)Math.Round(centerX - (regionWidth / 2) + ((xIndex + 0.5) * regionWidth / grid)),
-                        0,
-                        screenWidth - 1);
-                    var color = GetPixel(hdc, x, y);
-                    var red = (int)(color & 0x000000FF);
-                    var green = (int)((color & 0x0000FF00) >> 8);
-                    var blue = (int)((color & 0x00FF0000) >> 16);
-                    var luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
-
-                    count++;
-                    luminanceSum += luminance;
-                    luminanceSquaredSum += luminance * luminance;
-
-                    if (luminance > 130)
-                    {
-                        bright++;
-                    }
-
-                    if (luminance < 35)
-                    {
-                        dark++;
-                    }
-
-                    if (red > 110
-                        && green > 45
-                        && blue < 45
-                        && red > green * 1.25)
-                    {
-                        orange++;
-                    }
-
-                    if (red > 95
-                        && green < 75
-                        && blue < 75
-                        && red > green * 1.40
-                        && red > blue * 1.40)
-                    {
-                        redPixels++;
-                    }
-
-                    if (blue > 80
-                        && blue > green * 1.05
-                        && blue > red * 1.35)
-                    {
-                        bluePixels++;
-                    }
-
-                    if (Math.Max(red, Math.Max(green, blue)) - Math.Min(red, Math.Min(green, blue)) < 45
-                        && luminance is > 35 and < 170)
-                    {
-                        grey++;
-                    }
-                }
-            }
+            return ScreenRegionStatsCalculator.FromPixels(EnumerateGridPixels(hdc, centerX, centerY, regionWidth, regionHeight, grid, screenWidth, screenHeight));
         }
         finally
         {
             ReleaseDC(IntPtr.Zero, hdc);
         }
+    }
 
-        var average = luminanceSum / count;
-        var variance = Math.Max((luminanceSquaredSum / count) - (average * average), 0);
-        return new ScreenRegionStats(
-            average,
-            Math.Sqrt(variance),
-            (double)bright / count,
-            (double)grey / count,
-            (double)dark / count,
-            (double)orange / count,
-            (double)redPixels / count,
-            (double)bluePixels / count,
-            count);
+    private static IEnumerable<(byte Red, byte Green, byte Blue)> EnumerateGridPixels(
+        IntPtr hdc, double centerX, double centerY, double regionWidth, double regionHeight, int grid, int screenWidth, int screenHeight)
+    {
+        for (var yIndex = 0; yIndex < grid; yIndex++)
+        {
+            var y = Math.Clamp(
+                (int)Math.Round(centerY - (regionHeight / 2) + ((yIndex + 0.5) * regionHeight / grid)),
+                0,
+                screenHeight - 1);
+
+            for (var xIndex = 0; xIndex < grid; xIndex++)
+            {
+                var x = Math.Clamp(
+                    (int)Math.Round(centerX - (regionWidth / 2) + ((xIndex + 0.5) * regionWidth / grid)),
+                    0,
+                    screenWidth - 1);
+                var color = GetPixel(hdc, x, y);
+                yield return (
+                    (byte)(color & 0x000000FF),
+                    (byte)((color & 0x0000FF00) >> 8),
+                    (byte)((color & 0x00FF0000) >> 16));
+            }
+        }
     }
 
     private void PasteText(string text)

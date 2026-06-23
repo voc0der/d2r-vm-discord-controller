@@ -1586,6 +1586,14 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         _ = TryPrepareD2RForInput(input);
+        var activity = GetActivitySnapshot();
+        if (activity.State == D2RActivityState.CharacterScreenIdle)
+        {
+            await ClickLobbyFromRememberedCharacterScreenAsync(input, cancellationToken);
+            MarkLobbyOrGameInteraction("Clicked Lobby from remembered character screen.");
+            return null;
+        }
+
         if (IsAnyLobbyEntryMenuVisible(input))
         {
             MarkLobbyOrGameInteraction("Lobby already visible.");
@@ -1611,7 +1619,6 @@ public sealed class VmOperations
             return null;
         }
 
-        var activity = GetActivitySnapshot();
         if (activity.State != D2RActivityState.CharacterScreenIdle)
         {
             var menuReady = await EnsureCharacterScreenReadyForMenuAsync(
@@ -1633,6 +1640,16 @@ public sealed class VmOperations
         return CommandResult.Failure(
             $"D2R is at the character screen, but clicking Lobby did not reveal the lobby menu within {Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)}s.{FormatInputDiagnosticsSuffix()}",
             await CollectStatusAsync(cancellationToken));
+    }
+
+    private async Task ClickLobbyFromRememberedCharacterScreenAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _ = TryPrepareD2RForInput(input);
+        ClickD2R(input, _config.Ui.CharacterLobbyButton);
+        await DelayLongAsync(cancellationToken);
     }
 
     private async Task<bool> TryOpenLobbyFromCurrentScreenAsync(
@@ -2279,11 +2296,7 @@ public sealed class VmOperations
     private bool IsLobbyEntryButtonReady(WindowsInput input, bool windowRelative)
     {
         var stats = SampleD2RRegion(input, _config.Ui.CreateGameButton, widthRatio: 0.16, heightRatio: 0.055, windowRelative: windowRelative);
-        return stats.AverageLuminance > 30
-            && stats.AverageLuminance < 90
-            && stats.GreyRatio > 0.30
-            && stats.DarkRatio > 0.25
-            && stats.DarkRatio < 0.70;
+        return D2RScreenClassifier.IsLobbyEntryButtonReady(stats);
     }
 
     private bool IsLobbyFormPanelReady(WindowsInput input, bool windowRelative)

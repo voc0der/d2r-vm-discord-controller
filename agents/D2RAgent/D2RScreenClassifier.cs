@@ -68,6 +68,19 @@ internal static class D2RScreenClassifier
             && stats.GreyRatio < 0.18;
     }
 
+    public static bool IsLobbyEntryButtonReady(ScreenRegionStats stats)
+    {
+        // The previous DarkRatio > 0.25 lower bound and AverageLuminance < 90 upper bound
+        // were never satisfiable by the real button: docs/runbooks/assets/d2r-ui/1366x768/
+        // snippets/{join,create}_game_button_text.png - the actual ready-state captures these
+        // thresholds were supposed to recognize - measure DarkRatio=0.00 and AverageLuminance
+        // up to 90.5 (bright label text on a light/grey panel, no dark pixels at all).
+        return stats.AverageLuminance > 30
+            && stats.AverageLuminance < 110
+            && stats.GreyRatio > 0.30
+            && stats.DarkRatio < 0.70;
+    }
+
     public static bool IsLobbyTabReady(
         ScreenRegionStats tab,
         bool characterButtonPairReady,
