@@ -173,11 +173,19 @@ internal static class WindowsProcessFinder
             .Where(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id))
             .Select(process => (process, name: SafeGetProcessName(process)))
             .Where(entry => nameNeedles.Any(needle => entry.name.Contains(needle, StringComparison.OrdinalIgnoreCase)))
-            .Select(entry => new ProcessDiscoveryMatch(
-                entry.process.Id,
-                entry.name,
-                HasMainWindow(entry.process),
-                SafeGetMainWindowTitle(entry.process)))
+            .Select(entry =>
+            {
+                // Same hang hazard as ToWindowTarget above: SafeGetMainWindowTitle reaches
+                // Process.MainWindowTitle, which is not timeout-protected like GetWindowTitle.
+                // Resolve the handle once and only risk the title fetch when a real window
+                // exists to fetch it from.
+                var handle = SafeGetMainWindowHandle(entry.process);
+                return new ProcessDiscoveryMatch(
+                    entry.process.Id,
+                    entry.name,
+                    handle != IntPtr.Zero,
+                    handle != IntPtr.Zero ? GetWindowTitle(handle) : "");
+            })
             .ToArray();
     }
 
@@ -249,11 +257,6 @@ internal static class WindowsProcessFinder
         }
     }
 
-    public static bool HasMainWindow(Process process)
-    {
-        return SafeGetMainWindowHandle(process) != IntPtr.Zero;
-    }
-
     public static IntPtr SafeGetMainWindowHandle(Process process)
     {
         try
@@ -285,7 +288,13 @@ internal static class WindowsProcessFinder
                 process.ProcessName,
                 SafeGetSessionId(process),
                 handle,
-                handle == IntPtr.Zero ? SafeGetMainWindowTitle(process) : GetWindowTitle(handle));
+                // SafeGetMainWindowTitle goes through Process.MainWindowTitle, which is not
+                // timeout-protected the way GetWindowTitle is - it's the exact blocking
+                // SendMessage-to-an-unresponsive-window hazard described above, just reached
+                // through the BCL instead of a raw Win32 call. A zero handle means there's no
+                // window to title in the first place, so there's nothing worth risking a hang
+                // to fetch.
+                handle == IntPtr.Zero ? "" : GetWindowTitle(handle));
         }
         catch (InvalidOperationException)
         {
