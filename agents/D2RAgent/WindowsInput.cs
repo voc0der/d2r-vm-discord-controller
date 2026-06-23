@@ -140,10 +140,8 @@ internal sealed class WindowsInput
 
         var x = (rect.Left + rect.Right) / 2;
         var y = (rect.Top + rect.Bottom) / 2;
-        if (!SendVirtualMouseClick(x, y, MouseButton.Left))
-        {
-            SendLegacyMouseClick(x, y, MouseButton.Left);
-        }
+        SendVirtualMouseClick(x, y, MouseButton.Left);
+        SendLegacyMouseClick(x, y, MouseButton.Left);
 
         Thread.Sleep(50);
         return true;
@@ -196,11 +194,13 @@ internal sealed class WindowsInput
         EnsureWindows();
 
         var (x, y) = ToScreen(point, coordinateProcessNames);
-        if (SendVirtualMouseClick(x, y, button))
-        {
-            return;
-        }
-
+        // SendVirtualMouseClick's return value only reflects whether SendInput accepted the
+        // event into the synthetic input queue - that's true almost unconditionally and proves
+        // nothing about whether D2R's engine actually reacted to it. Gating the legacy
+        // mouse_event call on that signal (the original shape of this code) meant the one
+        // mechanism that demonstrably worked before SendInput was added almost never ran again.
+        // Always fire both; mouse_event is cheap and idempotent on top of a real click.
+        SendVirtualMouseClick(x, y, button);
         SendLegacyMouseClick(x, y, button);
     }
 
@@ -779,15 +779,17 @@ internal sealed class WindowsInput
     private static void VirtualKey(byte virtualKey)
     {
         EnsureWindows();
-        var downSent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp: false) });
+        SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp: false) });
         Thread.Sleep(InputHoldMilliseconds);
-        var upSent = SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp: true) });
+        SendInputs(new[] { Input.ForVirtualKey(virtualKey, keyUp: true) });
         Thread.Sleep(InputGapMilliseconds);
 
-        if (downSent != 1 || upSent != 1)
-        {
-            Key(virtualKey);
-        }
+        // SendInput's return value only reflects whether the OS accepted the event into the
+        // synthetic input queue, not whether D2R's engine reacted to it - that's true almost
+        // unconditionally, so gating the legacy keybd_event fallback on it meant the one
+        // mechanism that demonstrably worked before SendInput was added almost never ran again.
+        // Always also send the legacy event.
+        Key(virtualKey);
     }
 
     private static void ScanKey(byte virtualKey)
@@ -800,15 +802,12 @@ internal sealed class WindowsInput
         }
 
         var extendedKey = IsExtendedVirtualKey(virtualKey);
-        var downSent = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: false, extendedKey) });
+        SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: false, extendedKey) });
         Thread.Sleep(InputHoldMilliseconds);
-        var upSent = SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: true, extendedKey) });
+        SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: true, extendedKey) });
         Thread.Sleep(InputGapMilliseconds);
 
-        if (downSent != 1 || upSent != 1)
-        {
-            Key(virtualKey);
-        }
+        Key(virtualKey);
     }
 
     private static void KeyDown(byte virtualKey)
