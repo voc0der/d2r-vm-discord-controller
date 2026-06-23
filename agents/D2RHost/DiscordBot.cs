@@ -904,7 +904,44 @@ public sealed class DiscordBot
             : "";
         var frame = TryReadFrameSummary(statusJson, out var frameSummary) ? frameSummary : "frame unknown";
         var lastInput = TryReadLastInputActionWatchSummary(statusJson, out var inputSummary) ? inputSummary : "no input yet";
-        return $"{name}: {frame}{degraded} | last {lastInput}";
+        // lastObservedFrame/lastInputAction only update once a step finishes, so a command stuck
+        // mid-step (the exact failure mode under investigation: one click lands, then nothing for
+        // minutes) shows stale values for both with no hint of what it's actually doing right now.
+        // lastCommandCheckpoint is set at the start of each step, so it still moves even while
+        // everything else looks frozen, and pinpoints which call the run is stuck in.
+        var checkpoint = TryReadCheckpointSummary(statusJson, out var checkpointSummary)
+            ? $" | at {checkpointSummary}"
+            : "";
+        return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}";
+    }
+
+    private static bool TryReadCheckpointSummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!TryGetString(document.RootElement, "lastCommandCheckpoint", out var checkpoint)
+                || string.IsNullOrWhiteSpace(checkpoint))
+            {
+                return false;
+            }
+
+            var age = TryReadDateTimeOffset(document.RootElement, "lastCommandCheckpointUtc", out var reachedAt)
+                ? FormatAge(DateTimeOffset.UtcNow - reachedAt)
+                : "?";
+            value = $"{checkpoint} ({age} ago)";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static bool TryReadStatusBool(string? json, string propertyName, out bool value)

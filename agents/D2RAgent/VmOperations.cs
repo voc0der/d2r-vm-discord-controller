@@ -44,6 +44,8 @@ public sealed class VmOperations
     private LastInputActionSnapshot? _lastInputAction;
     private string? _lastObservedFrame;
     private DateTimeOffset? _lastObservedFrameUtc;
+    private string? _lastCommandCheckpoint;
+    private DateTimeOffset? _lastCommandCheckpointUtc;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -134,6 +136,8 @@ public sealed class VmOperations
             lastInputAction = _lastInputAction,
             lastObservedFrame = _lastObservedFrame,
             lastObservedFrameUtc = _lastObservedFrameUtc,
+            lastCommandCheckpoint = _lastCommandCheckpoint,
+            lastCommandCheckpointUtc = _lastCommandCheckpointUtc,
             d2rActivityState = activity.State.ToString(),
             characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
             lastLobbyOrGameInteractionUtc = activity.LastLobbyOrGameInteractionUtc,
@@ -170,6 +174,8 @@ public sealed class VmOperations
             lastInputAction = _lastInputAction,
             lastObservedFrame = _lastObservedFrame,
             lastObservedFrameUtc = _lastObservedFrameUtc,
+            lastCommandCheckpoint = _lastCommandCheckpoint,
+            lastCommandCheckpointUtc = _lastCommandCheckpointUtc,
             d2rActivityState = activity.State.ToString(),
             characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
             lastLobbyOrGameInteractionUtc = activity.LastLobbyOrGameInteractionUtc,
@@ -618,14 +624,17 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
+        MarkCommandCheckpoint("CreateGameAsync: EnsureLobbyOpenedAsync");
         var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
         if (lobby is not null)
         {
             return lobby;
         }
 
+        MarkCommandCheckpoint("CreateGameAsync: ClickLobbyTabDirectAsync(CreateGameTab)");
         await ClickLobbyTabDirectAsync(input, _config.Ui.CreateGameTab, cancellationToken);
 
+        MarkCommandCheckpoint("CreateGameAsync: filling game name/password fields");
         await FillTextFieldAsync(input, _config.Ui.CreateGameNameField, args.GameName, cancellationToken);
         await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
         ClickD2R(input, GetCreateDifficultyPoint(args.Difficulty));
@@ -810,6 +819,19 @@ public sealed class VmOperations
             _characterScreenIdleSinceUtc = DateTimeOffset.UtcNow;
             _lastActivityReason = reason;
         }
+    }
+
+    private void MarkCommandCheckpoint(string checkpoint)
+    {
+        // Every other surfaced field (lastObservedFrame, lastInputAction, lastActivityReason)
+        // only updates after a step finishes - successfully or not. None of them can show
+        // "this is what the command is doing right now," which is exactly the visibility
+        // missing when a command goes silent for minutes with no further click/key logged:
+        // there was no way to tell whether it was stuck before, during, or after any specific
+        // step. This is set at the start of each meaningful step so a stalled run's last
+        // checkpoint points at the actual stuck call instead of leaving that to guesswork.
+        _lastCommandCheckpoint = checkpoint;
+        _lastCommandCheckpointUtc = DateTimeOffset.UtcNow;
     }
 
     private void MarkLobbyOrGameInteraction(string reason)
@@ -1645,11 +1667,14 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
+        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: start");
         _ = TryPrepareD2RForInput(input);
         var activity = GetActivitySnapshot();
         if (activity.State == D2RActivityState.CharacterScreenIdle)
         {
+            MarkCommandCheckpoint("EnsureLobbyOpenedAsync: remembered-character-screen click");
             await ClickLobbyFromRememberedCharacterScreenAsync(input, cancellationToken);
+            MarkCommandCheckpoint("EnsureLobbyOpenedAsync: remembered-character-screen verify");
             if (IsAnyLobbyEntryMenuVisible(input))
             {
                 MarkLobbyOrGameInteraction("Clicked Lobby from remembered character screen.");
@@ -1662,12 +1687,14 @@ public sealed class VmOperations
             // through to the verified detection/retry path below instead of declaring success.
         }
 
+        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: checking lobby already visible");
         if (IsAnyLobbyEntryMenuVisible(input))
         {
             MarkLobbyOrGameInteraction("Lobby already visible.");
             return null;
         }
 
+        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: checking in-game");
         if (IsInGameReady(input))
         {
             return CommandResult.Failure(
@@ -1675,12 +1702,14 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
+        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: checking remembered lobby/game state");
         if (CanUseRememberedLobbyOrGameState(input))
         {
             MarkLobbyOrGameInteraction("Using existing lobby state for menu automation.");
             return null;
         }
 
+        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: TryOpenLobbyFromCurrentScreenAsync");
         if (await TryOpenLobbyFromCurrentScreenAsync(input, args, cancellationToken))
         {
             MarkLobbyOrGameInteraction("Opened Lobby from current screen.");
@@ -1689,6 +1718,7 @@ public sealed class VmOperations
 
         if (activity.State != D2RActivityState.CharacterScreenIdle)
         {
+            MarkCommandCheckpoint("EnsureLobbyOpenedAsync: EnsureCharacterScreenReadyForMenuAsync");
             var menuReady = await EnsureCharacterScreenReadyForMenuAsync(
                 input,
                 cancellationToken,
@@ -1699,6 +1729,7 @@ public sealed class VmOperations
             }
         }
 
+        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: OpenLobbyFromCharacterScreenAsync");
         if (await OpenLobbyFromCharacterScreenAsync(input, args, cancellationToken))
         {
             MarkLobbyOrGameInteraction("Clicked Lobby from character screen.");
@@ -1798,9 +1829,12 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        MarkCommandCheckpoint("ClickLobbyTabDirectAsync: TryPrepareD2RForInput");
         _ = TryPrepareD2RForInput(input);
+        MarkCommandCheckpoint("ClickLobbyTabDirectAsync: first ClickD2R");
         ClickD2R(input, tab);
         await DelayStepAsync(cancellationToken);
+        MarkCommandCheckpoint("ClickLobbyTabDirectAsync: second ClickD2R");
         ClickD2R(input, tab);
         await DelayStepAsync(cancellationToken);
         MarkLobbyOrGameInteraction("Clicked lobby tab.");
