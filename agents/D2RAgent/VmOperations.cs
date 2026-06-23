@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json.Serialization;
 using AgentCommon;
 
 namespace D2RAgent;
@@ -2968,8 +2969,8 @@ public sealed class VmOperations
         int ScreenY,
         CursorPosition? CursorBefore,
         CursorPosition? CursorAfter,
-        bool? D2RForegroundBefore,
-        bool? D2RForegroundAfter,
+        [property: JsonPropertyName("d2rForegroundBefore")] bool? D2RForegroundBefore,
+        [property: JsonPropertyName("d2rForegroundAfter")] bool? D2RForegroundAfter,
         string? ForegroundProcessBefore,
         string? ForegroundProcessAfter);
 }
