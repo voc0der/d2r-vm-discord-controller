@@ -1434,39 +1434,18 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
-        var processNames = GetD2RProcessNames();
-        var target = input.ResolveScreenPoint(point, processNames);
+        var target = input.ResolveScreenPoint(point);
         var beforeCursor = input.GetCursorPosition();
-        InputDiagnostics? beforeDiagnostics = null;
-        InputDiagnostics? afterDiagnostics = null;
-        try
-        {
-            beforeDiagnostics = input.GetInputDiagnostics(processNames);
-        }
-        catch (Exception)
-        {
-            beforeDiagnostics = null;
-        }
-
         if (button == MouseButton.Left)
         {
-            input.LeftClick(point, processNames);
+            input.LeftClick(point);
         }
         else
         {
-            input.RightClick(point, processNames);
+            input.RightClick(point);
         }
 
         var afterCursor = input.GetCursorPosition();
-        try
-        {
-            afterDiagnostics = input.GetInputDiagnostics(processNames);
-        }
-        catch (Exception)
-        {
-            afterDiagnostics = null;
-        }
-
         RecordD2RInputAction(
             kind: "click",
             button: button.ToString(),
@@ -1474,8 +1453,8 @@ public sealed class VmOperations
             target,
             beforeCursor,
             afterCursor,
-            beforeDiagnostics,
-            afterDiagnostics);
+            beforeDiagnostics: null,
+            afterDiagnostics: null);
     }
 
     private void RecordD2RInputAction(
