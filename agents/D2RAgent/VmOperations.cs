@@ -1504,6 +1504,15 @@ public sealed class VmOperations
             input.RightClick(point, processNames);
         }
 
+        // SendInput above only lands if D2R is genuinely the foreground/topmost window at these
+        // screen coordinates - the same focus dependency that "fg lost" in the watch log already
+        // caught happening for real. The intro/title skip bursts never rely on SendInput alone;
+        // they always also post the click straight to D2R's HWND via SendWindowClick, which works
+        // regardless of focus or z-order. Every other click in the lobby/create-game flow only
+        // ever went through SendInput, so once focus is wrong post-character-screen, every one of
+        // those clicks silently lands nowhere. Back it up the same way the intro path does.
+        _ = input.SendWindowClick(point, processNames, button);
+
         var afterCursor = input.GetCursorPosition();
         var afterDiagnostics = TryGetD2RInputDiagnostics();
         RecordD2RInputAction(
