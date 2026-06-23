@@ -1973,7 +1973,7 @@ public sealed class VmOperations
         int dialogRetries,
         int connectionRetries)
     {
-        var diagnostics = $"{FormatInGameHudDiagnostics(input)} {FormatGameEntryMenuDiagnostics(input, activeTab)}";
+        var diagnostics = $"{FormatInGameHudDiagnostics(input)} {FormatGameEntryMenuDiagnostics(input, activeTab)}{FormatInputDiagnosticsSuffix()}";
         if (dialogRetries == 0 && connectionRetries == 0)
         {
             return $"No game-entry error state was detected. {diagnostics}";
