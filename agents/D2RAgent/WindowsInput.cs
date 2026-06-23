@@ -257,6 +257,21 @@ internal sealed class WindowsInput
         return true;
     }
 
+    public bool SendWindowEscapeKey(IEnumerable<string> processNames)
+    {
+        EnsureWindows();
+
+        var target = FindWindowTarget(processNames);
+        if (target is null || target.WindowHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        ShowWindow(target.WindowHandle, SwRestore);
+        SendWindowKey(target.WindowHandle, VkEscape);
+        return true;
+    }
+
     public bool SendWindowLegacyGraphicsToggle(IEnumerable<string> processNames)
     {
         return SendWindowReadySkipKey(processNames);

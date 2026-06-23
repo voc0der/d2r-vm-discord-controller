@@ -11,7 +11,9 @@ internal enum StartupReadyInputAction
     PressStartupSkipKey,
     PressStartKey,
     SendWindowStartupSkipKey,
-    SendWindowReadyBurst
+    SendWindowReadyBurst,
+    PressEscapeKey,
+    SendWindowEscapeKey
 }
 
 internal sealed record StartupReadyInputPlan(
@@ -27,6 +29,8 @@ internal sealed record StartupReadyInputPlan(
     [
         StartupReadyInputAction.FocusD2R,
         StartupReadyInputAction.ClickWindowCenter,
+        StartupReadyInputAction.PressEscapeKey,
+        StartupReadyInputAction.SendWindowEscapeKey,
         StartupReadyInputAction.ClickIntroPoint,
         StartupReadyInputAction.SendWindowClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,

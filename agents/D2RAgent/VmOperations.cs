@@ -1066,6 +1066,12 @@ public sealed class VmOperations
                 case StartupReadyInputAction.ClickWindowCenter:
                     _ = TryClickD2RWindowCenter(input);
                     break;
+                case StartupReadyInputAction.PressEscapeKey:
+                    input.PressEscape();
+                    break;
+                case StartupReadyInputAction.SendWindowEscapeKey:
+                    _ = input.SendWindowEscapeKey(GetD2RProcessNames());
+                    break;
                 case StartupReadyInputAction.ClickIntroPoint:
                     ClickD2R(input, _config.Ui.IntroSkipPoint);
                     break;
@@ -1115,7 +1121,7 @@ public sealed class VmOperations
                     _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
+                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: true);
                     break;
             }
         }
@@ -1164,7 +1170,7 @@ public sealed class VmOperations
                     _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
+                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: true);
                     break;
             }
         }

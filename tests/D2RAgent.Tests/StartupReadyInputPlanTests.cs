@@ -25,6 +25,8 @@ public sealed class StartupReadyInputPlanTests
             [
                 StartupReadyInputAction.FocusD2R,
                 StartupReadyInputAction.ClickWindowCenter,
+                StartupReadyInputAction.PressEscapeKey,
+                StartupReadyInputAction.SendWindowEscapeKey,
                 StartupReadyInputAction.ClickIntroPoint,
                 StartupReadyInputAction.SendWindowClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
