@@ -35,3 +35,5 @@ The host and VM-agent implementation supports launch, status, screenshots, remot
 See [client-menu-flows.md](client-menu-flows.md).
 
 Friend-list targeting notes live in [friend-selector-design.md](friend-selector-design.md). Do not commit screenshots that show real Battle.net tags.
+
+If `/d2r status` looks stuck/wrong or commands time out for no clear reason, see [detection-and-status-troubleshooting.md](detection-and-status-troubleshooting.md) first - it covers verified, previously-confirmed root causes (session/elevation mismatch, stale status during long commands, focus-stealing failures) so they don't need re-diagnosing each time.
