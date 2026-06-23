@@ -479,7 +479,14 @@ internal sealed class WindowsInput
         EnsureWindows();
         var screenWidth = GetSystemMetrics(SmCxScreen);
         var screenHeight = GetSystemMetrics(SmCyScreen);
-        var bounds = GetCoordinateBounds(coordinateProcessNames);
+        // Sampling reads pixels to classify what's on screen - it must never force the
+        // target window to restore/un-minimize as a side effect. That ShowWindow call is
+        // a synchronous, uncapped message to the target's UI thread (see
+        // TryGetProcessClientBounds), and DetectVisibleD2RState alone samples a dozen-plus
+        // regions per status check; restoring on each one is what was actually stalling
+        // status collection for minutes whenever D2R's UI thread was busy, not just the
+        // single GetInputDiagnostics call fixed earlier.
+        var bounds = GetCoordinateBounds(coordinateProcessNames, restoreWindow: false);
         var centerX = bounds.Left + (center.X * bounds.Width);
         var centerY = bounds.Top + (center.Y * bounds.Height);
         var regionWidth = Math.Max(bounds.Width * widthRatio, sampleGrid);
@@ -539,7 +546,7 @@ internal sealed class WindowsInput
     {
         var screenWidth = GetSystemMetrics(SmCxScreen);
         var screenHeight = GetSystemMetrics(SmCyScreen);
-        var bounds = GetCoordinateBounds(coordinateProcessNames);
+        var bounds = GetCoordinateBounds(coordinateProcessNames, restoreWindow: true);
         var x = Math.Clamp((int)Math.Round(bounds.Left + (point.X * bounds.Width)), 0, screenWidth - 1);
         var y = Math.Clamp((int)Math.Round(bounds.Top + (point.Y * bounds.Height)), 0, screenHeight - 1);
         return (x, y);
@@ -560,7 +567,7 @@ internal sealed class WindowsInput
         return WindowsProcessFinder.FindWindowTarget(processNames, cache);
     }
 
-    private CoordinateBounds GetCoordinateBounds(IEnumerable<string>? coordinateProcessNames)
+    private CoordinateBounds GetCoordinateBounds(IEnumerable<string>? coordinateProcessNames, bool restoreWindow)
     {
         var names = WindowsProcessIdentity.NormalizeProcessNames(coordinateProcessNames);
         if (names.Length == 0)
@@ -568,7 +575,7 @@ internal sealed class WindowsInput
             names = _coordinateProcessNames;
         }
 
-        return names.Length > 0 && TryGetProcessClientBounds(names, out var bounds, restoreWindow: true)
+        return names.Length > 0 && TryGetProcessClientBounds(names, out var bounds, restoreWindow)
             ? bounds
             : new CoordinateBounds(0, 0, GetSystemMetrics(SmCxScreen), GetSystemMetrics(SmCyScreen));
     }
