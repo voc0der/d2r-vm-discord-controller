@@ -132,7 +132,7 @@ internal sealed class WindowsInput
         }
 
         _ = TrySetForegroundWindowTarget(target.WindowHandle, target.ProcessId);
-        ShowWindow(target.WindowHandle, SwRestore);
+        ShowWindowAsync(target.WindowHandle, SwRestore);
         if (!GetWindowRect(target.WindowHandle, out var rect))
         {
             return false;
@@ -179,7 +179,7 @@ internal sealed class WindowsInput
             return false;
         }
 
-        ShowWindow(target.WindowHandle, SwRestore);
+        ShowWindowAsync(target.WindowHandle, SwRestore);
         _ = TrySetForegroundWindowTarget(target.WindowHandle, target.ProcessId);
         var (x, y) = ToScreen(point, processNames);
         SendWindowMouseClick(target.WindowHandle, x, y, button);
@@ -220,7 +220,7 @@ internal sealed class WindowsInput
         }
 
         var windowHandle = target.WindowHandle;
-        ShowWindow(windowHandle, SwRestore);
+        ShowWindowAsync(windowHandle, SwRestore);
         _ = TrySetForegroundWindowTarget(windowHandle, target.ProcessId);
         var (x, y) = ToScreen(point, processNames);
 
@@ -246,7 +246,7 @@ internal sealed class WindowsInput
             return false;
         }
 
-        ShowWindow(target.WindowHandle, SwRestore);
+        ShowWindowAsync(target.WindowHandle, SwRestore);
         SendWindowKey(target.WindowHandle, VkG);
         return true;
     }
@@ -261,7 +261,7 @@ internal sealed class WindowsInput
             return false;
         }
 
-        ShowWindow(target.WindowHandle, SwRestore);
+        ShowWindowAsync(target.WindowHandle, SwRestore);
         SendWindowKey(target.WindowHandle, VkEscape);
         return true;
     }
@@ -480,12 +480,11 @@ internal sealed class WindowsInput
         var screenWidth = GetSystemMetrics(SmCxScreen);
         var screenHeight = GetSystemMetrics(SmCyScreen);
         // Sampling reads pixels to classify what's on screen - it must never force the
-        // target window to restore/un-minimize as a side effect. That ShowWindow call is
-        // a synchronous, uncapped message to the target's UI thread (see
-        // TryGetProcessClientBounds), and DetectVisibleD2RState alone samples a dozen-plus
-        // regions per status check; restoring on each one is what was actually stalling
-        // status collection for minutes whenever D2R's UI thread was busy, not just the
-        // single GetInputDiagnostics call fixed earlier.
+        // target window to restore/un-minimize as a side effect (see TryGetProcessClientBounds),
+        // and DetectVisibleD2RState alone samples a dozen-plus regions per status check;
+        // restoring on each one is what was actually stalling status collection for minutes
+        // whenever D2R's UI thread was busy, not just the single GetInputDiagnostics call
+        // fixed earlier.
         var bounds = GetCoordinateBounds(coordinateProcessNames, restoreWindow: false);
         var centerX = bounds.Left + (center.X * bounds.Width);
         var centerY = bounds.Top + (center.Y * bounds.Height);
@@ -592,13 +591,12 @@ internal sealed class WindowsInput
         var windowHandle = target.WindowHandle;
         if (restoreWindow)
         {
-            // ShowWindow sends a synchronous message to the target window's thread - unlike
-            // GetWindowTitle elsewhere in this file, it has no SendMessageTimeout-style cap.
             // Diagnostic/status reads call this with restoreWindow: false specifically so a
-            // busy/loading D2R UI thread can't stall a passive status poll indefinitely; only
-            // the actual click-coordinate path (which genuinely needs the window un-minimized
-            // to land a click) opts into the restore and its blocking risk.
-            ShowWindow(windowHandle, SwRestore);
+            // busy/loading D2R UI thread can't stall a passive status poll; the click-coordinate
+            // path (which genuinely needs the window un-minimized to land a click) opts into the
+            // restore. ShowWindowAsync (not ShowWindow) posts the restore without waiting for the
+            // target thread to process it, since that thread can be busy for minutes at a time.
+            ShowWindowAsync(windowHandle, SwRestore);
         }
 
         if (!GetClientRect(windowHandle, out var clientRect))
@@ -653,7 +651,7 @@ internal sealed class WindowsInput
 
     private static bool TrySetForegroundWindowTarget(IntPtr windowHandle, int? processId)
     {
-        ShowWindow(windowHandle, SwRestore);
+        ShowWindowAsync(windowHandle, SwRestore);
         if (IsForegroundTarget(windowHandle, processId))
         {
             return true;
@@ -976,8 +974,16 @@ internal sealed class WindowsInput
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
 
+    // ShowWindow marshals to the target window's owning thread and blocks until that
+    // thread's message loop processes it - if D2R's UI thread is busy (e.g. doing a
+    // synchronous network call right after landing on character select), every restore
+    // call below can hang for as long as that thread stays unresponsive, which is exactly
+    // what produced multi-minute stalls between "ready" and the first real click of
+    // menu_create_game/menu_prepare_join_game. ShowWindowAsync posts the same request
+    // without waiting for the target thread to process it - it's the documented Win32
+    // replacement for restoring windows that might belong to a hung/busy thread.
     [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr windowHandle, int command);
+    private static extern bool ShowWindowAsync(IntPtr windowHandle, int command);
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr windowHandle, out WindowRect rect);
