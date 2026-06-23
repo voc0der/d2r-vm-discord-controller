@@ -1049,6 +1049,9 @@ public sealed class VmOperations
 
     private void SendReadyIntroClick(WindowsInput input)
     {
+        var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
+        var beforeCursor = input.GetCursorPosition();
+        var beforeDiagnostics = TryGetD2RInputDiagnostics();
         foreach (var action in StartupReadyInputPlan.IntroActions)
         {
             switch (action)
@@ -1082,6 +1085,18 @@ public sealed class VmOperations
                     break;
             }
         }
+
+        var afterCursor = input.GetCursorPosition();
+        var afterDiagnostics = TryGetD2RInputDiagnostics();
+        RecordD2RInputAction(
+            kind: "key",
+            button: "Escape/G/Space/Enter",
+            point: _config.Ui.IntroSkipPoint,
+            target,
+            beforeCursor,
+            afterCursor,
+            beforeDiagnostics,
+            afterDiagnostics);
     }
 
     private bool IsD2RForeground()
