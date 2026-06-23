@@ -198,6 +198,8 @@ If a character-screen menu command is sent while D2R is running but still on an 
 
 After launch/ready or Save and Exit leaves D2R at the character screen, the VM agent starts a character-screen idle timer. If no lobby/game command touches that client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 
+Confirmed via Task Manager Details on a live VM: the game process is literally named `D2R.exe` (matches the default configured process name), and `D2R.exe`, `D2RAgent.exe`, and `ctfmon.exe` all run under a dedicated Windows account named `D2R`, not the RDP/interactive login account. `/d2r status` has been observed reporting `process search=D2R, matches=0` (and Battle.net/D2R both "stopped") for several minutes at a stretch while both were visibly open and responsive on screen, which then cascades into menu commands (e.g. `menu_create_game`) timing out because the lobby/character-screen readiness checks depend on the same process/window resolution. The process name itself is confirmed correct, so if this recurs, check session/window-station placement next: confirm the `D2R VM Agent` scheduled task runs in the same interactive desktop session as the `D2R` account's D2R/Battle.net windows (see the `LogonType Interactive`/`RunLevel Highest` guidance above) rather than a non-interactive session that can enumerate process names but not their windows.
+
 ## Character Screen To Existing Game
 
 References:
