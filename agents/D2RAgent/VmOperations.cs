@@ -850,6 +850,11 @@ public sealed class VmOperations
 
     private VisibleD2RState DetectVisibleD2RState(WindowsInput input)
     {
+        if (!HasD2RWindow())
+        {
+            return VisibleD2RState.Unknown;
+        }
+
         if (IsDiabloSplashScreen(input))
         {
             return VisibleD2RState.DiabloSplash;
@@ -1293,7 +1298,7 @@ public sealed class VmOperations
             return "";
         }
 
-        return $" Input diagnostics: userInteractive={diagnostics.UserInteractive}, d2rSession={diagnostics.SessionId?.ToString() ?? "?"}, hasWindow={diagnostics.HasMainWindow}, foreground={diagnostics.IsForeground}, foregroundProcess={diagnostics.ForegroundProcessName ?? "?"}, agentElevated={diagnostics.AgentElevated?.ToString() ?? "?"}, targetElevated={diagnostics.TargetElevated?.ToString() ?? "?"}, screen={diagnostics.ScreenWidth}x{diagnostics.ScreenHeight}, window={FormatInputRect(diagnostics.WindowRect)}, client={FormatInputRect(diagnostics.ClientRect)}.";
+        return $" Input diagnostics: userInteractive={diagnostics.UserInteractive}, d2rSession={diagnostics.SessionId?.ToString() ?? "?"}, sessionActive={diagnostics.TargetSessionActive?.ToString() ?? "?"}, hasWindow={diagnostics.HasMainWindow}, foreground={diagnostics.IsForeground}, foregroundProcess={diagnostics.ForegroundProcessName ?? "?"}, agentElevated={diagnostics.AgentElevated?.ToString() ?? "?"}, targetElevated={diagnostics.TargetElevated?.ToString() ?? "?"}, screen={diagnostics.ScreenWidth}x{diagnostics.ScreenHeight}, window={FormatInputRect(diagnostics.WindowRect)}, client={FormatInputRect(diagnostics.ClientRect)}.";
     }
 
     private string FormatD2RProcessDiscoverySuffix()
@@ -1839,6 +1844,11 @@ public sealed class VmOperations
 
     private ReadyScreenState DetectReadyScreenState(WindowsInput input, int sampleGrid = MenuSampleGrid)
     {
+        if (!HasD2RWindow())
+        {
+            return ReadyScreenState.Unknown;
+        }
+
         if (IsDiabloSplashScreen(input, sampleGrid))
         {
             return ReadyScreenState.DiabloSplash;
@@ -2660,6 +2670,19 @@ public sealed class VmOperations
     private bool IsD2RNamedProcessRunning()
     {
         return WindowsProcessFinder.IsAnyNamedProcessRunning(GetD2RProcessNames());
+    }
+
+    // Pixel classifiers (IsDiabloSplashScreen, IsCharacterScreenReady, etc.) sample
+    // via GetCoordinateBounds, which silently falls back to the whole screen when no
+    // real window can be resolved for the target process. Without this guard, a "D2R"
+    // process that exists but has no window yet (still loading, or already exited
+    // into a windowless zombie state) would get its screen state guessed from
+    // whatever happens to be on the desktop at those coordinates instead of failing
+    // closed to Unknown.
+    private bool HasD2RWindow()
+    {
+        return WindowsProcessFinder.FindWindowTarget(GetD2RProcessNames())?.WindowHandle is { } handle
+            && handle != IntPtr.Zero;
     }
 
     private DateTimeOffset? TryGetD2RProcessStartUtc()

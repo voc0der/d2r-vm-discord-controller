@@ -310,7 +310,8 @@ internal sealed class WindowsInput
                 WindowRect: null,
                 ClientRect: null,
                 AgentElevated: agentElevated,
-                TargetElevated: null);
+                TargetElevated: null,
+                TargetSessionActive: null);
         }
 
         InputRect? windowRect = null;
@@ -344,7 +345,8 @@ internal sealed class WindowsInput
             WindowRect: windowRect,
             ClientRect: clientRect,
             AgentElevated: agentElevated,
-            TargetElevated: TryGetProcessIsElevated(target.ProcessId));
+            TargetElevated: TryGetProcessIsElevated(target.ProcessId),
+            TargetSessionActive: TryIsSessionActive(target.SessionId));
     }
 
     public CursorPosition? GetCursorPosition()
@@ -1135,6 +1137,67 @@ internal sealed class WindowsInput
         }
     }
 
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSEnumerateSessionsW(
+        IntPtr serverHandle,
+        int reserved,
+        int version,
+        out IntPtr sessionInfo,
+        out int count);
+
+    [DllImport("wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr memory);
+
+    private const int WtsActive = 0;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WtsSessionInfo
+    {
+        public int SessionId;
+        public IntPtr WinStationName;
+        public int State;
+    }
+
+    // A target window can hold a perfectly valid HWND, report itself as
+    // foreground, and keep rendering correctly while running in an RDP/console
+    // session nobody is currently attached to - Win32's foreground/window
+    // checks are scoped per-session and have no idea whether a human is
+    // actually looking at that session's desktop. Cross-checking the target's
+    // session against the set of sessions Windows itself marks "active" tells
+    // status checks apart from "window state is wrong" vs "right window, wrong
+    // session - nobody is watching this".
+    private static bool? TryIsSessionActive(int? sessionId)
+    {
+        if (sessionId is null)
+        {
+            return null;
+        }
+
+        if (!WTSEnumerateSessionsW(IntPtr.Zero, 0, 1, out var sessionInfoPtr, out var count))
+        {
+            return null;
+        }
+
+        try
+        {
+            var size = Marshal.SizeOf<WtsSessionInfo>();
+            for (var i = 0; i < count; i++)
+            {
+                var info = Marshal.PtrToStructure<WtsSessionInfo>(sessionInfoPtr + (i * size));
+                if (info.SessionId == sessionId.Value)
+                {
+                    return info.State == WtsActive;
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            WTSFreeMemory(sessionInfoPtr);
+        }
+    }
+
     private static void SetClipboardText(string text)
     {
         var opened = false;
@@ -1367,6 +1430,7 @@ internal sealed record InputDiagnostics(
     InputRect? WindowRect,
     InputRect? ClientRect,
     bool? AgentElevated,
-    bool? TargetElevated);
+    bool? TargetElevated,
+    bool? TargetSessionActive);
 
 internal sealed record CursorPosition(int X, int Y);
