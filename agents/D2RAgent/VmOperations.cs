@@ -39,7 +39,6 @@ public sealed class VmOperations
     private DateTimeOffset? _lastObservedD2RStartUtc;
     private string? _lastActivityReason;
     private LastInputActionSnapshot? _lastInputAction;
-    private object? _lastStatusSnapshot;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -47,44 +46,16 @@ public sealed class VmOperations
         _restartArgs = restartArgs ?? [];
     }
 
-    public async Task<object> GetStatusAsync(CancellationToken cancellationToken)
+    public Task<object> GetStatusAsync(CancellationToken cancellationToken)
     {
-        // A running command holds _commandGate for as long as it takes (up to the
-        // controller's command timeout). Blocking the heartbeat on that same gate
-        // would silently stop reporting status for the whole duration, making a
-        // perfectly healthy in-progress command look like a hung/dead agent from
-        // the host's point of view. Take a snapshot if the gate is free; otherwise
-        // report the last known snapshot so "seen" keeps advancing.
-        if (await _commandGate.WaitAsync(0, cancellationToken))
-        {
-            try
-            {
-                var status = await CollectStatusAsync(cancellationToken);
-                _lastStatusSnapshot = status;
-                return status;
-            }
-            finally
-            {
-                _commandGate.Release();
-            }
-        }
-
-        if (_lastStatusSnapshot is not null)
-        {
-            return _lastStatusSnapshot;
-        }
-
-        await _commandGate.WaitAsync(cancellationToken);
-        try
-        {
-            var status = await CollectStatusAsync(cancellationToken);
-            _lastStatusSnapshot = status;
-            return status;
-        }
-        finally
-        {
-            _commandGate.Release();
-        }
+        // CollectStatusAsync only reads process/window state - it never sends input -
+        // so it must not wait on _commandGate. A long-running menu_ready/menu_create_game
+        // command can legitimately hold that gate for minutes; gating status on it meant
+        // every status check during that window served a snapshot frozen from before the
+        // command started, making live detection look broken for as long as the command
+        // ran (sometimes ~10 minutes) even though the agent was tracking reality fine the
+        // moment the gate freed up. Read live, every time.
+        return CollectStatusAsync(cancellationToken);
     }
 
     private Task<object> CollectStatusAsync(CancellationToken cancellationToken)
