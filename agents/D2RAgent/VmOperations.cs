@@ -24,6 +24,7 @@ public sealed class VmOperations
     private const int MaxJoinPrepareSeconds = 25;
     private const int ReadyStartupDetectionIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
+    private const int MaxConnectingToBattleNetWaitMs = 15000;
     private const int MenuSampleGrid = 9;
     private const int FastMenuDelayMs = 150;
     private const int EntryPollIntervalMs = 200;
@@ -1065,6 +1066,7 @@ public sealed class VmOperations
         var lastState = ReadyScreenState.Unknown;
         var nextDetectionAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
+        DateTimeOffset? connectingToBattleNetSince = null;
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1096,13 +1098,28 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
+            if (lastState == ReadyScreenState.ConnectingToBattleNet)
+            {
+                connectingToBattleNetSince ??= DateTimeOffset.UtcNow;
+            }
+            else
+            {
+                connectingToBattleNetSince = null;
+            }
+
+            var stillWaitingOnHandshake = lastState == ReadyScreenState.ConnectingToBattleNet
+                && DateTimeOffset.UtcNow - connectingToBattleNetSince!.Value < TimeSpan.FromMilliseconds(MaxConnectingToBattleNetWaitMs);
+
             if (lastState == ReadyScreenState.DiabloSplash)
             {
                 SendReadySplashContinueBurst(input);
                 nudges++;
             }
-            else if (lastState != ReadyScreenState.ConnectingToBattleNet)
+            else if (!stillWaitingOnHandshake)
             {
+                // Stuck on ConnectingToBattleNet far longer than a real handshake takes is a
+                // misread of a quiet/dark stretch of the splash background, not a real dialog -
+                // stop trusting it instead of silently waiting out the rest of the deadline.
                 SendReadySkipBurst(input);
                 nudges++;
             }
@@ -1130,6 +1147,7 @@ public sealed class VmOperations
         var nudges = 0;
         var nextDetectionAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
+        DateTimeOffset? connectingToBattleNetSince = null;
 
         for (var i = 0; i < plan.IntroClickCount && DateTimeOffset.UtcNow < deadline; i++)
         {
@@ -1160,9 +1178,22 @@ public sealed class VmOperations
 
             if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
-                i--;
-                await Task.Delay(ReadyStartupDetectionIntervalMs, cancellationToken);
-                continue;
+                connectingToBattleNetSince ??= DateTimeOffset.UtcNow;
+                if (DateTimeOffset.UtcNow - connectingToBattleNetSince.Value < TimeSpan.FromMilliseconds(MaxConnectingToBattleNetWaitMs))
+                {
+                    i--;
+                    await Task.Delay(ReadyStartupDetectionIntervalMs, cancellationToken);
+                    continue;
+                }
+
+                // Stuck on this classification far longer than a real Battle.net handshake
+                // takes - it's a misread of a quiet/dark stretch of the splash background, not
+                // a real dialog. Stop trusting it so we don't silently burn the rest of the
+                // deadline on a screen that was skippable the whole time.
+            }
+            else
+            {
+                connectingToBattleNetSince = null;
             }
 
             if (lastState == ReadyScreenState.DiabloSplash)
@@ -1204,9 +1235,17 @@ public sealed class VmOperations
 
             if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
-                i--;
-                await Task.Delay(ReadyStartupDetectionIntervalMs, cancellationToken);
-                continue;
+                connectingToBattleNetSince ??= DateTimeOffset.UtcNow;
+                if (DateTimeOffset.UtcNow - connectingToBattleNetSince.Value < TimeSpan.FromMilliseconds(MaxConnectingToBattleNetWaitMs))
+                {
+                    i--;
+                    await Task.Delay(ReadyStartupDetectionIntervalMs, cancellationToken);
+                    continue;
+                }
+            }
+            else
+            {
+                connectingToBattleNetSince = null;
             }
 
             if (lastState == ReadyScreenState.DiabloSplash)
@@ -1601,8 +1640,16 @@ public sealed class VmOperations
         if (activity.State == D2RActivityState.CharacterScreenIdle)
         {
             await ClickLobbyFromRememberedCharacterScreenAsync(input, cancellationToken);
-            MarkLobbyOrGameInteraction("Clicked Lobby from remembered character screen.");
-            return null;
+            if (IsAnyLobbyEntryMenuVisible(input))
+            {
+                MarkLobbyOrGameInteraction("Clicked Lobby from remembered character screen.");
+                return null;
+            }
+
+            // The remembered "we were just at an idle character screen" assumption didn't hold -
+            // the on-screen state moved on since the ready flow marked it idle (reconnect, a
+            // missed click, a slower transition) and this click landed nowhere useful. Fall
+            // through to the verified detection/retry path below instead of declaring success.
         }
 
         if (IsAnyLobbyEntryMenuVisible(input))
@@ -1726,7 +1773,13 @@ public sealed class VmOperations
         _ = TryPrepareD2RForInput(input);
         ClickD2R(input, _config.Ui.CharacterLobbyButton);
         await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)), cancellationToken);
-        return true;
+
+        // This used to return true unconditionally - the click was fired, so it was treated as
+        // having worked. Every caller chains straight into form-filling and the Create/Join Game
+        // button on that assumption, so when the Lobby click didn't actually land (wrong screen,
+        // lost focus, slow transition), the whole flow kept clicking into whatever was really on
+        // screen with no way to detect it, fail fast, or retry. Confirm the lobby is actually up.
+        return IsAnyLobbyEntryMenuVisible(input);
     }
 
     private async Task ClickLobbyTabDirectAsync(
