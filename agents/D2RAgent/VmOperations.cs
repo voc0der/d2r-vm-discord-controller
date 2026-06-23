@@ -1455,6 +1455,7 @@ public sealed class VmOperations
         var processNames = GetD2RProcessNames();
         var target = input.ResolveScreenPoint(point, processNames);
         var beforeCursor = input.GetCursorPosition();
+        var beforeDiagnostics = TryGetD2RInputDiagnostics();
         if (button == MouseButton.Left)
         {
             input.LeftClick(point, processNames);
@@ -1465,6 +1466,7 @@ public sealed class VmOperations
         }
 
         var afterCursor = input.GetCursorPosition();
+        var afterDiagnostics = TryGetD2RInputDiagnostics();
         RecordD2RInputAction(
             kind: "click",
             button: button.ToString(),
@@ -1472,8 +1474,8 @@ public sealed class VmOperations
             target,
             beforeCursor,
             afterCursor,
-            beforeDiagnostics: null,
-            afterDiagnostics: null);
+            beforeDiagnostics,
+            afterDiagnostics);
     }
 
     // Both the status path (DetectVisibleD2RState) and the ready loop (DetectReadyScreenStateStable)
