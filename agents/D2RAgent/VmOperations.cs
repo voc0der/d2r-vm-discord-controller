@@ -55,7 +55,15 @@ public sealed class VmOperations
         // command started, making live detection look broken for as long as the command
         // ran (sometimes ~10 minutes) even though the agent was tracking reality fine the
         // moment the gate freed up. Read live, every time.
-        return CollectStatusAsync(cancellationToken);
+        //
+        // CollectStatusAsync itself is synchronous - it has no await in it, it just returns
+        // Task.FromResult at the end. Calling it directly therefore blocks the calling
+        // thread for the full duration of its Win32 detection calls before any Task even
+        // exists to race against a timeout, which made the heartbeat's bounded-timeout
+        // race (CollectHeartbeatStatusAsync) a no-op for exactly the case it was meant to
+        // catch: a wedged Win32 call. Run it on the thread pool so callers actually get a
+        // pending Task back immediately and can bound/abandon it.
+        return Task.Run(() => CollectStatusAsync(cancellationToken), cancellationToken);
     }
 
     private Task<object> CollectStatusAsync(CancellationToken cancellationToken)
