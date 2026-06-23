@@ -73,6 +73,11 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
+        // ProbeConnectionAsync is a startup transport/auth check. Do not collect
+        // full VM status here: Win32 detection can block, and if it blocks before
+        // RunForeverAsync starts, the agent sits forever at "Testing connection..."
+        // without ever opening the command/heartbeat WebSocket.
+        _ = statusFactory;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
 
@@ -99,8 +104,6 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
                 : "Handshake was rejected.";
             throw new InvalidOperationException(message);
         }
-
-        _ = await statusFactory(timeoutCts.Token);
     }
 
     private async Task<bool> RunOnceAsync(
