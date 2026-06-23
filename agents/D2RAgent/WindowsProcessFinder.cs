@@ -120,24 +120,47 @@ internal static class WindowsProcessFinder
         // call (escape key, ready-skip key, click) silently returns false and the ready loop spins
         // doing nothing until it times out, with no error. Widen to the same product-specific
         // fuzzy name scan used for discovery as a last resort.
-        return FindFuzzyWindowTarget(WindowsProcessIdentity.GetFallbackProcessNameNeedles(names));
+        return FindFuzzyWindowTarget(WindowsProcessIdentity.GetFallbackProcessNameNeedles(names), cache);
     }
 
-    private static ProcessWindowTarget? FindFuzzyWindowTarget(string[] fallbackNeedles)
+    // Must stay bounded to the same single cached EnumWindows pass everything else uses. An
+    // earlier version of this scanned every process on the system via GetProcessesSafe() and
+    // called ToWindowTarget on each match, which - for any process without a MainWindowHandle of
+    // its own (e.g. Battle.net's helper processes) - ran its own *uncached* full-desktop
+    // EnumWindows pass via FindTopLevelWindowHandleForProcess per match. With several
+    // Battle.net-shaped processes alive at once that multiplied into many redundant desktop
+    // scans per status check, which is what made status collection and launch polling time out.
+    private static ProcessWindowTarget? FindFuzzyWindowTarget(string[] fallbackNeedles, DesktopWindowScanCache? cache)
     {
-        if (fallbackNeedles.Length == 0)
+        if (fallbackNeedles.Length == 0 || !OperatingSystem.IsWindows())
         {
             return null;
         }
 
-        return GetProcessesSafe()
-            .Where(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id))
-            .Select(process => (process, name: SafeGetProcessName(process)))
-            .Where(entry => fallbackNeedles.Any(needle => entry.name.Contains(needle, StringComparison.OrdinalIgnoreCase)))
-            .Select(entry => ToWindowTarget(entry.process))
-            .Where(target => target is not null)
-            .OrderByDescending(target => target!.WindowHandle != IntPtr.Zero)
-            .FirstOrDefault();
+        var windows = cache is null
+            ? EnumerateTopLevelWindows().Where(IsWindowVisible).ToList()
+            : cache.GetVisibleWindows(() => EnumerateTopLevelWindows().Where(IsWindowVisible).ToList());
+
+        foreach (var window in windows)
+        {
+            var (pid, processName, sessionId) = cache is null
+                ? ResolveWindowInfo(window)
+                : cache.GetWindowInfo(window, () => ResolveWindowInfo(window));
+            if (pid == 0 || WindowsProcessIdentity.IsCurrentProcess(pid) || string.IsNullOrWhiteSpace(processName))
+            {
+                continue;
+            }
+
+            if (!fallbackNeedles.Any(needle => processName.Contains(needle, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var title = cache is null ? GetWindowTitle(window) : cache.GetTitle(window, () => GetWindowTitle(window));
+            return new ProcessWindowTarget(pid, processName, sessionId, window, title);
+        }
+
+        return null;
     }
 
     public static bool IsAnyProcessRunning(IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)
