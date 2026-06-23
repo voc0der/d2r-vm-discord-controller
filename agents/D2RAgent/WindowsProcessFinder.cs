@@ -212,7 +212,13 @@ internal static class WindowsProcessFinder
                 continue;
             }
 
-            var title = GetWindowTitle(window);
+            // PID lookup is a direct kernel call and never blocks. GetWindowTitle, for a
+            // window owned by another process, is backed by SendMessage(WM_GETTEXT) under
+            // the hood and can stall for seconds if that window's message queue isn't being
+            // serviced (e.g. mid cinematic/loading transition) - exactly when detection
+            // matters most. Resolve the process name first so the common case (name already
+            // matches) never has to touch the window's message queue at all, and only ask
+            // for a title when title-based matching is actually configured and needed.
             _ = GetWindowThreadProcessId(window, out var pid);
             if (pid == 0 || WindowsProcessIdentity.IsCurrentProcess((int)pid))
             {
@@ -240,7 +246,13 @@ internal static class WindowsProcessFinder
             var processMatches = normalized.Any(name =>
                 !string.IsNullOrWhiteSpace(processName)
                 && name.Equals(processName, StringComparison.OrdinalIgnoreCase));
-            var titleMatches = titleNeedles.Length > 0
+            if (!processMatches && titleNeedles.Length == 0)
+            {
+                continue;
+            }
+
+            var title = GetWindowTitle(window);
+            var titleMatches = !processMatches
                 && WindowsProcessIdentity.IsWindowTitleMatch(normalized, processName, title);
             if (!processMatches && !titleMatches)
             {
@@ -307,18 +319,31 @@ internal static class WindowsProcessFinder
         return windows;
     }
 
+    private const uint WmGetText = 0x000D;
+    private const uint WmGetTextLength = 0x000E;
+    private const uint SmtoAbortIfHung = 0x0002;
+    private const uint WindowTitleTimeoutMs = 200;
+
     private static string GetWindowTitle(IntPtr windowHandle)
     {
-        var length = GetWindowTextLength(windowHandle);
-        if (length <= 0)
+        // GetWindowText/GetWindowTextLength are implemented as a blocking SendMessage to
+        // the target window for any window not owned by this process. If that window's
+        // message queue isn't being serviced - mid loading screen, mid cinematic, just
+        // generally busy - the call can stall for seconds, and this runs once per visible
+        // desktop window on every detection pass. SendMessageTimeout with a short,
+        // hung-aborting timeout caps the damage from any one unresponsive window.
+        var lengthSent = SendMessageTimeout(
+            windowHandle, WmGetTextLength, IntPtr.Zero, IntPtr.Zero, SmtoAbortIfHung, WindowTitleTimeoutMs, out var lengthResult);
+        var length = (int)lengthResult;
+        if (lengthSent == IntPtr.Zero || length <= 0)
         {
             return "";
         }
 
         var builder = new StringBuilder(length + 1);
-        return GetWindowText(windowHandle, builder, builder.Capacity) > 0
-            ? builder.ToString()
-            : "";
+        var textSent = SendMessageTimeout(
+            windowHandle, WmGetText, (IntPtr)builder.Capacity, builder, SmtoAbortIfHung, WindowTitleTimeoutMs, out _);
+        return textSent != IntPtr.Zero ? builder.ToString() : "";
     }
 
     private static IEnumerable<Process> GetProcessesByNameSafe(string processName)
@@ -361,11 +386,13 @@ internal static class WindowsProcessFinder
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr windowHandle);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetWindowText(IntPtr windowHandle, StringBuilder text, int maxCount);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr SendMessageTimeout(
+        IntPtr windowHandle, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint timeoutMs, out IntPtr result);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetWindowTextLength(IntPtr windowHandle);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr SendMessageTimeout(
+        IntPtr windowHandle, uint message, IntPtr wParam, StringBuilder lParam, uint flags, uint timeoutMs, out IntPtr result);
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
