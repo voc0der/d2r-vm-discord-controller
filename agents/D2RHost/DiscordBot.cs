@@ -1571,6 +1571,13 @@ public sealed class DiscordBot
         var activity = TryReadStatusString(statusJson, "d2rActivityState", out var activityState)
             ? $", state {activityState}"
             : "";
+        var statusMode = TryReadStatusString(statusJson, "statusMode", out var mode)
+            ? $", statusMode {mode}"
+            : "";
+        var statusError = TryReadStatusString(statusJson, "statusError", out var error)
+            && !string.IsNullOrWhiteSpace(error)
+                ? $", statusError {error}"
+                : "";
         var processDiscovery = d2rRunning != true
             && TryReadD2RProcessDiscoverySummary(statusJson, out var processDiscoverySummary)
             ? $", process {processDiscoverySummary}"
@@ -1585,7 +1592,7 @@ public sealed class DiscordBot
             ? ""
             : $", version {agent.Version}";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{processDiscovery}{input}{lastInput}, seen {lastSeen}";
+        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)

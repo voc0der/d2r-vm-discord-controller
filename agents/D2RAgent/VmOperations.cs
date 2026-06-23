@@ -28,9 +28,11 @@ public sealed class VmOperations
     private const int FastMenuDelayMs = 150;
     private const int EntryPollIntervalMs = 200;
     private const int LobbyPollIntervalMs = 250;
+    private const int StatusCollectionTimeoutSeconds = 4;
 
     private readonly VmAgentConfig _config;
     private readonly SemaphoreSlim _commandGate = new(1, 1);
+    private readonly SemaphoreSlim _statusGate = new(1, 1);
     private readonly object _activityLock = new();
     private readonly string[] _restartArgs;
     private D2RActivityState _activityState = D2RActivityState.Unknown;
@@ -56,17 +58,45 @@ public sealed class VmOperations
         // ran (sometimes ~10 minutes) even though the agent was tracking reality fine the
         // moment the gate freed up. Read live, every time.
         //
-        // CollectStatusAsync itself is synchronous - it has no await in it, it just returns
-        // Task.FromResult at the end. Calling it directly therefore blocks the calling
-        // thread for the full duration of its Win32 detection calls before any Task even
-        // exists to race against a timeout, which made the heartbeat's bounded-timeout
-        // race (CollectHeartbeatStatusAsync) a no-op for exactly the case it was meant to
-        // catch: a wedged Win32 call. Run it on the thread pool so callers actually get a
-        // pending Task back immediately and can bound/abandon it.
-        return Task.Run(() => CollectStatusAsync(cancellationToken), cancellationToken);
+        return CollectStatusAsync(cancellationToken);
     }
 
-    private Task<object> CollectStatusAsync(CancellationToken cancellationToken)
+    private async Task<object> CollectStatusAsync(CancellationToken cancellationToken)
+    {
+        if (!_statusGate.Wait(0))
+        {
+            return CollectProcessOnlyStatus(
+                "Detailed status collection is still running; using process-only fallback.",
+                cancellationToken);
+        }
+
+        var statusTask = Task.Run(() => CollectDetailedStatus(cancellationToken), cancellationToken);
+        var completed = await Task.WhenAny(
+            statusTask,
+            Task.Delay(TimeSpan.FromSeconds(StatusCollectionTimeoutSeconds), cancellationToken));
+        if (completed == statusTask)
+        {
+            try
+            {
+                return await statusTask;
+            }
+            finally
+            {
+                _statusGate.Release();
+            }
+        }
+
+        _ = statusTask.ContinueWith(
+            _ => _statusGate.Release(),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return CollectProcessOnlyStatus(
+            $"Detailed status collection did not return within {StatusCollectionTimeoutSeconds}s; using process-only fallback.",
+            cancellationToken);
+    }
+
+    private object CollectDetailedStatus(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -83,10 +113,13 @@ public sealed class VmOperations
         var visibleState = DetectVisibleD2RState(d2rRunning);
         var activity = DetectVisibleActivitySnapshot(d2rRunning, visibleState);
 
-        return Task.FromResult<object>(new
+        return new
         {
             hostName = Environment.MachineName,
             userName = Environment.UserName,
+            statusMode = "detailed",
+            statusDegraded = false,
+            statusError = (string?)null,
             battleNetRunning,
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
@@ -103,7 +136,41 @@ public sealed class VmOperations
             idleQuitEnabled = _config.IdleQuitEnabled,
             idleQuitMinutes = _config.IdleQuitMinutes,
             timeUtc = DateTimeOffset.UtcNow
-        });
+        };
+    }
+
+    private object CollectProcessOnlyStatus(string reason, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var battleNetRunning = OperatingSystem.IsWindows()
+            && WindowsProcessFinder.IsAnyNamedProcessRunning(GetBattleNetProcessNames());
+        var d2rRunning = OperatingSystem.IsWindows()
+            && WindowsProcessFinder.IsAnyNamedProcessRunning(GetD2RProcessNames());
+        RefreshD2RProcessActivity(d2rRunning);
+        var activity = GetActivitySnapshot();
+
+        return new
+        {
+            hostName = Environment.MachineName,
+            userName = Environment.UserName,
+            statusMode = "processOnly",
+            statusDegraded = true,
+            statusError = reason,
+            battleNetRunning,
+            d2rRunning,
+            d2rVisibleState = VisibleD2RState.Unknown.ToString(),
+            d2rProcessDiscovery = new ProcessDiscoverySnapshot(GetD2RProcessNames(), [], []),
+            d2rInput = (InputDiagnostics?)null,
+            lastInputAction = _lastInputAction,
+            d2rActivityState = activity.State.ToString(),
+            characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
+            lastLobbyOrGameInteractionUtc = activity.LastLobbyOrGameInteractionUtc,
+            lastActivityReason = activity.Reason,
+            idleQuitEnabled = _config.IdleQuitEnabled,
+            idleQuitMinutes = _config.IdleQuitMinutes,
+            timeUtc = DateTimeOffset.UtcNow
+        };
     }
 
     public async Task<CommandResult> HandleCommandAsync(CommandRequest request, CancellationToken cancellationToken)
