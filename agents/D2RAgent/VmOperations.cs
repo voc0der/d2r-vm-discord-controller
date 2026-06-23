@@ -1434,15 +1434,23 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
-        var target = input.ResolveScreenPoint(point);
+        // point is a proportional (0..1) coordinate meant to be resolved against D2R's own
+        // client rect. Resolving it with no process names falls back to the full primary
+        // screen bounds instead - same proportional math, wrong rectangle - so every click
+        // lands off-target whenever D2R isn't exactly at (0,0) filling the whole display,
+        // while detection (which still resolves screen samples against the D2R window
+        // elsewhere) keeps reading the right pixels. That split is exactly "detection works,
+        // clicks don't."
+        var processNames = GetD2RProcessNames();
+        var target = input.ResolveScreenPoint(point, processNames);
         var beforeCursor = input.GetCursorPosition();
         if (button == MouseButton.Left)
         {
-            input.LeftClick(point);
+            input.LeftClick(point, processNames);
         }
         else
         {
-            input.RightClick(point);
+            input.RightClick(point, processNames);
         }
 
         var afterCursor = input.GetCursorPosition();
