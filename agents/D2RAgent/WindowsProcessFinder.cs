@@ -22,6 +22,50 @@ internal sealed record ProcessWindowTarget(
     IntPtr WindowHandle,
     string? MainWindowTitle);
 
+// EnumWindows + per-window GetWindowTitle (a SendMessage under the hood, up to 200ms each) is
+// the expensive part of detection. Every top-level caller in a single status collection
+// (Battle.net check, D2R check, process discovery, input diagnostics) used to pay that cost
+// independently - up to 7 full desktop window passes for one /d2r status call - which is what
+// pushed status collection past its heartbeat timeout and made detection look 100% broken.
+// Passing one of these through a single detection pass memoizes both the window enumeration
+// and any per-window title lookups, so the cost is paid at most once no matter how many
+// different name searches consult it.
+internal sealed class DesktopWindowScanCache
+{
+    private List<IntPtr>? _visibleWindows;
+    private readonly Dictionary<IntPtr, (int Pid, string ProcessName, int? SessionId)> _windowInfo = new();
+    private readonly Dictionary<IntPtr, string> _titles = new();
+
+    public List<IntPtr> GetVisibleWindows(Func<List<IntPtr>> enumerate)
+    {
+        return _visibleWindows ??= enumerate();
+    }
+
+    public (int Pid, string ProcessName, int? SessionId) GetWindowInfo(IntPtr handle, Func<(int, string, int?)> resolve)
+    {
+        if (_windowInfo.TryGetValue(handle, out var cached))
+        {
+            return cached;
+        }
+
+        var resolved = resolve();
+        _windowInfo[handle] = resolved;
+        return resolved;
+    }
+
+    public string GetTitle(IntPtr handle, Func<string> resolve)
+    {
+        if (_titles.TryGetValue(handle, out var cached))
+        {
+            return cached;
+        }
+
+        var title = resolve();
+        _titles[handle] = title;
+        return title;
+    }
+}
+
 internal static class WindowsProcessFinder
 {
     public static Process? FindProcess(IEnumerable<string> processNames)
@@ -31,7 +75,7 @@ internal static class WindowsProcessFinder
             .FirstOrDefault();
     }
 
-    public static ProcessWindowTarget? FindWindowTarget(IEnumerable<string> processNames)
+    public static ProcessWindowTarget? FindWindowTarget(IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)
     {
         var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         ProcessWindowTarget? processFallback = null;
@@ -57,14 +101,25 @@ internal static class WindowsProcessFinder
             processFallback ??= target;
         }
 
-        var windowTarget = FindTopLevelWindowTargets(names).FirstOrDefault();
+        var windowTarget = FindTopLevelWindowTargets(names, cache).FirstOrDefault();
         return windowTarget ?? processFallback;
     }
 
-    public static bool IsAnyProcessRunning(IEnumerable<string> processNames)
+    public static bool IsAnyProcessRunning(IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)
     {
-        return FindWindowTarget(processNames) is not null
-            || FindProcessesByNameOrWindowTitle(processNames).Any();
+        var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
+
+        // Same primitive as a bare Process.GetProcessesByName(name).Length > 0 - the simple,
+        // long-reliable check - tried first. It is exact-match only, so it can't be the whole
+        // story (a renamed/wrapped build won't match), but when it does hit there is no reason
+        // to ever touch EnumWindows for this check.
+        if (IsAnyNamedProcessRunning(names))
+        {
+            return true;
+        }
+
+        return FindWindowTarget(names, cache) is not null
+            || FindProcessesByNameOrWindowTitle(names, cache).Any();
     }
 
     public static bool IsAnyNamedProcessRunning(IEnumerable<string> processNames)
@@ -74,14 +129,15 @@ internal static class WindowsProcessFinder
             .Any(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id));
     }
 
-    public static ProcessDiscoverySnapshot Discover(IEnumerable<string> processNames)
+    public static ProcessDiscoverySnapshot Discover(IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)
     {
         var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
-        var processMatches = FindProcessesByNameOrWindowTitle(names)
+        var processMatches = names.SelectMany(GetProcessesByNameSafe)
+            .Where(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id))
             .Select(ToWindowTarget)
             .Where(match => match is not null)
             .Cast<ProcessWindowTarget>();
-        var windowMatches = FindTopLevelWindowTargets(names);
+        var windowMatches = FindTopLevelWindowTargets(names, cache);
         var matches = processMatches
             .Concat(windowMatches)
             .GroupBy(match => match.ProcessId)
@@ -99,33 +155,30 @@ internal static class WindowsProcessFinder
         // fuzzy mode), so a real, running D2R process under any other name - a build variant,
         // a renamed/wrapped executable, anything not literally "D2R" - reads as a permanent
         // zero, indistinguishable from D2R simply not running. Only spend the full
-        // GetProcesses() scan once the strict search has already failed, and report whatever
-        // it finds so the actual name is visible without manual Task Manager lookup.
-        var fallbackMatches = matches.Length == 0
-            ? FindLikelyD2RProcesses()
+        // GetProcesses() scan once the strict search has already failed, and only match
+        // substrings relevant to what was actually being searched for (D2R search names never
+        // fall back to a Battle.net-shaped name, and vice versa) so the fallback can't misreport
+        // one product as the other.
+        var fallbackNeedles = WindowsProcessIdentity.GetFallbackProcessNameNeedles(names);
+        var fallbackMatches = matches.Length == 0 && fallbackNeedles.Length > 0
+            ? FindLikelyProcesses(fallbackNeedles)
             : [];
 
         return new ProcessDiscoverySnapshot(names, matches, fallbackMatches);
     }
 
-    private static ProcessDiscoveryMatch[] FindLikelyD2RProcesses()
+    private static ProcessDiscoveryMatch[] FindLikelyProcesses(string[] nameNeedles)
     {
         return GetProcessesSafe()
             .Where(process => !WindowsProcessIdentity.IsCurrentProcess(process.Id))
             .Select(process => (process, name: SafeGetProcessName(process)))
-            .Where(entry => ContainsLikelyD2RName(entry.name))
+            .Where(entry => nameNeedles.Any(needle => entry.name.Contains(needle, StringComparison.OrdinalIgnoreCase)))
             .Select(entry => new ProcessDiscoveryMatch(
                 entry.process.Id,
                 entry.name,
                 HasMainWindow(entry.process),
                 SafeGetMainWindowTitle(entry.process)))
             .ToArray();
-    }
-
-    private static bool ContainsLikelyD2RName(string processName)
-    {
-        return processName.Contains("d2r", StringComparison.OrdinalIgnoreCase)
-            || processName.Contains("diablo", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string SafeGetProcessName(Process process)
@@ -144,7 +197,8 @@ internal static class WindowsProcessFinder
         }
     }
 
-    public static IEnumerable<Process> FindProcessesByNameOrWindowTitle(IEnumerable<string> processNames)
+    public static IEnumerable<Process> FindProcessesByNameOrWindowTitle(
+        IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)
     {
         var names = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         foreach (var process in names.SelectMany(GetProcessesByNameSafe))
@@ -155,7 +209,7 @@ internal static class WindowsProcessFinder
             }
         }
 
-        foreach (var target in FindTopLevelWindowTargets(names))
+        foreach (var target in FindTopLevelWindowTargets(names, cache))
         {
             Process? process = null;
             try
@@ -243,7 +297,8 @@ internal static class WindowsProcessFinder
         }
     }
 
-    private static IEnumerable<ProcessWindowTarget> FindTopLevelWindowTargets(string[] processNames)
+    private static IEnumerable<ProcessWindowTarget> FindTopLevelWindowTargets(
+        string[] processNames, DesktopWindowScanCache? cache = null)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -252,42 +307,28 @@ internal static class WindowsProcessFinder
 
         var normalized = WindowsProcessIdentity.NormalizeProcessNames(processNames);
         var titleNeedles = WindowsProcessIdentity.GetWindowTitleNeedles(normalized);
-        foreach (var window in EnumerateTopLevelWindows())
-        {
-            if (!IsWindowVisible(window))
-            {
-                continue;
-            }
+        var windows = cache is null
+            ? EnumerateTopLevelWindows().Where(IsWindowVisible).ToList()
+            : cache.GetVisibleWindows(() => EnumerateTopLevelWindows().Where(IsWindowVisible).ToList());
 
+        foreach (var window in windows)
+        {
             // PID lookup is a direct kernel call and never blocks. GetWindowTitle, for a
             // window owned by another process, is backed by SendMessage(WM_GETTEXT) under
             // the hood and can stall for seconds if that window's message queue isn't being
             // serviced (e.g. mid cinematic/loading transition) - exactly when detection
             // matters most. Resolve the process name first so the common case (name already
             // matches) never has to touch the window's message queue at all, and only ask
-            // for a title when title-based matching is actually configured and needed.
-            _ = GetWindowThreadProcessId(window, out var pid);
-            if (pid == 0 || WindowsProcessIdentity.IsCurrentProcess((int)pid))
+            // for a title when title-based matching is actually configured and needed. When a
+            // cache is supplied, both the PID/process-name resolution and the title are
+            // memoized per window handle so a second search (e.g. Battle.net right after D2R)
+            // within the same detection pass never repeats either cost.
+            var (pid, processName, sessionId) = cache is null
+                ? ResolveWindowInfo(window)
+                : cache.GetWindowInfo(window, () => ResolveWindowInfo(window));
+            if (pid == 0 || WindowsProcessIdentity.IsCurrentProcess(pid))
             {
                 continue;
-            }
-
-            var processName = "";
-            int? sessionId = null;
-            try
-            {
-                using var process = Process.GetProcessById((int)pid);
-                processName = process.ProcessName;
-                sessionId = SafeGetSessionId(process);
-            }
-            catch (ArgumentException)
-            {
-            }
-            catch (InvalidOperationException)
-            {
-            }
-            catch (System.ComponentModel.Win32Exception)
-            {
             }
 
             var processMatches = normalized.Any(name =>
@@ -298,7 +339,9 @@ internal static class WindowsProcessFinder
                 continue;
             }
 
-            var title = GetWindowTitle(window);
+            var title = cache is null
+                ? GetWindowTitle(window)
+                : cache.GetTitle(window, () => GetWindowTitle(window));
             var titleMatches = !processMatches
                 && WindowsProcessIdentity.IsWindowTitleMatch(normalized, processName, title);
             if (!processMatches && !titleMatches)
@@ -307,7 +350,7 @@ internal static class WindowsProcessFinder
             }
 
             yield return new ProcessWindowTarget(
-                (int)pid,
+                pid,
                 string.IsNullOrWhiteSpace(processName) ? "?" : processName,
                 sessionId,
                 window,
@@ -337,6 +380,35 @@ internal static class WindowsProcessFinder
         }
 
         return IntPtr.Zero;
+    }
+
+    private static (int Pid, string ProcessName, int? SessionId) ResolveWindowInfo(IntPtr window)
+    {
+        _ = GetWindowThreadProcessId(window, out var pid);
+        if (pid == 0)
+        {
+            return (0, "", null);
+        }
+
+        var processName = "";
+        int? sessionId = null;
+        try
+        {
+            using var process = Process.GetProcessById((int)pid);
+            processName = process.ProcessName;
+            sessionId = SafeGetSessionId(process);
+        }
+        catch (ArgumentException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+        }
+
+        return ((int)pid, processName, sessionId);
     }
 
     private static int? SafeGetSessionId(Process process)

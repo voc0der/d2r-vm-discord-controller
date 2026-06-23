@@ -69,8 +69,15 @@ public sealed class VmOperations
     private Task<object> CollectStatusAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var battleNetRunning = IsBattleNetRunning();
-        var d2rRunning = IsD2RRunning();
+
+        // Battle.net check, D2R check, process discovery, and input diagnostics each used to
+        // run their own independent EnumWindows + per-window GetWindowTitle pass - up to 7 full
+        // desktop scans for one status collection whenever exact-name matching failed, which is
+        // exactly the case under investigation. Sharing one cache across all of them means the
+        // window enumeration and any title lookups happen at most once per status call.
+        var windowScanCache = OperatingSystem.IsWindows() ? new DesktopWindowScanCache() : null;
+        var battleNetRunning = IsBattleNetRunning(windowScanCache);
+        var d2rRunning = IsD2RRunning(windowScanCache);
         RefreshD2RProcessActivity(d2rRunning);
 
         var visibleState = DetectVisibleD2RState(d2rRunning);
@@ -83,11 +90,11 @@ public sealed class VmOperations
             battleNetRunning,
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
-            d2rProcessDiscovery = OperatingSystem.IsWindows() ? WindowsProcessFinder.Discover(GetD2RProcessNames()) : null,
+            d2rProcessDiscovery = OperatingSystem.IsWindows() ? WindowsProcessFinder.Discover(GetD2RProcessNames(), windowScanCache) : null,
             // Gating this on d2rRunning blacked out the one field (foregroundProcessName) that
             // would show what's actually focused/visible when process-name matching itself is
             // what's failing - exactly the case where this is most needed.
-            d2rInput = OperatingSystem.IsWindows() ? TryGetD2RInputDiagnostics() : null,
+            d2rInput = OperatingSystem.IsWindows() ? TryGetD2RInputDiagnostics(windowScanCache) : null,
             lastInputAction = _lastInputAction,
             d2rActivityState = activity.State.ToString(),
             characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
@@ -1363,11 +1370,11 @@ public sealed class VmOperations
         }
     }
 
-    private InputDiagnostics? TryGetD2RInputDiagnostics()
+    private InputDiagnostics? TryGetD2RInputDiagnostics(DesktopWindowScanCache? cache = null)
     {
         try
         {
-            return new WindowsInput().GetInputDiagnostics(GetD2RProcessNames());
+            return new WindowsInput().GetInputDiagnostics(GetD2RProcessNames(), cache);
         }
         catch (Exception)
         {
@@ -2801,14 +2808,14 @@ public sealed class VmOperations
         return CommandResult.Success($"Started {target} (pid {process.Id} confirmed running).");
     }
 
-    private bool IsBattleNetRunning()
+    private bool IsBattleNetRunning(DesktopWindowScanCache? cache = null)
     {
-        return IsAnyProcessRunning(GetBattleNetProcessNames());
+        return IsAnyProcessRunning(GetBattleNetProcessNames(), cache);
     }
 
-    private bool IsD2RRunning()
+    private bool IsD2RRunning(DesktopWindowScanCache? cache = null)
     {
-        return IsAnyProcessRunning(GetD2RProcessNames());
+        return IsAnyProcessRunning(GetD2RProcessNames(), cache);
     }
 
     private bool IsD2RNamedProcessRunning()
@@ -2859,9 +2866,9 @@ public sealed class VmOperations
         return CommandResult.Success($"Killed {processes.Length} {FormatProcessNames(names)} process(es).");
     }
 
-    private static bool IsAnyProcessRunning(IEnumerable<string> processNames)
+    private static bool IsAnyProcessRunning(IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)
     {
-        return WindowsProcessFinder.IsAnyProcessRunning(processNames);
+        return WindowsProcessFinder.IsAnyProcessRunning(processNames, cache);
     }
 
     private static IEnumerable<Process> FindProcessesByNameOrWindowTitle(IEnumerable<string> processNames)

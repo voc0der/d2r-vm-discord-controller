@@ -81,4 +81,35 @@ public sealed class WindowsProcessIdentityTests
         Assert.True(WindowsProcessIdentity.IsCurrentProcess(Environment.ProcessId));
         Assert.False(WindowsProcessIdentity.IsCurrentProcess(Environment.ProcessId + 1));
     }
+
+    [Fact]
+    public void D2RFallbackNeedlesExcludeBattleNetTerms()
+    {
+        var needles = WindowsProcessIdentity.GetFallbackProcessNameNeedles(["D2R"]);
+
+        Assert.Contains("d2r", needles, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("diablo", needles, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("battle.net", needles, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("blizzard", needles, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BattleNetFallbackNeedlesExcludeD2RTerms()
+    {
+        var needles = WindowsProcessIdentity.GetFallbackProcessNameNeedles(["Battle.net"]);
+
+        Assert.Contains("battle.net", needles, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("battlenet", needles, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("blizzard", needles, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("d2r", needles, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("diablo", needles, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void UnknownProcessNameProducesNoFallbackNeedles()
+    {
+        var needles = WindowsProcessIdentity.GetFallbackProcessNameNeedles(["SomeUnrelatedTool"]);
+
+        Assert.Empty(needles);
+    }
 }

@@ -271,7 +271,7 @@ internal sealed class WindowsInput
         return SendWindowReadySkipKey(processNames);
     }
 
-    public InputDiagnostics GetInputDiagnostics(IEnumerable<string> processNames)
+    public InputDiagnostics GetInputDiagnostics(IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)
     {
         EnsureWindows();
 
@@ -300,7 +300,7 @@ internal sealed class WindowsInput
 
         var agentElevated = TryGetProcessIsElevated(Environment.ProcessId);
 
-        var target = FindWindowTarget(names);
+        var target = FindWindowTarget(names, cache);
         if (target is null)
         {
             return new InputDiagnostics(
@@ -616,9 +616,9 @@ internal sealed class WindowsInput
         return WindowsProcessFinder.FindProcess(processNames);
     }
 
-    private static ProcessWindowTarget? FindWindowTarget(IEnumerable<string> processNames)
+    private static ProcessWindowTarget? FindWindowTarget(IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)
     {
-        return WindowsProcessFinder.FindWindowTarget(processNames);
+        return WindowsProcessFinder.FindWindowTarget(processNames, cache);
     }
 
     private CoordinateBounds GetCoordinateBounds(IEnumerable<string>? coordinateProcessNames)

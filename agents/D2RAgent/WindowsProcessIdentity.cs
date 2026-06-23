@@ -38,6 +38,20 @@ internal static class WindowsProcessIdentity
             .ToArray();
     }
 
+    // A strict exact-name search that finds nothing is indistinguishable from "not running" -
+    // it could just as easily be a renamed/wrapped build. The fallback scan widens to a
+    // substring match against every running process, but only against substrings that are
+    // actually relevant to what was being searched for: a D2R search must never be satisfied by
+    // a Battle.net-shaped process name, and vice versa, or the fallback would misreport one
+    // product as the other.
+    public static string[] GetFallbackProcessNameNeedles(IEnumerable<string> processNames)
+    {
+        return NormalizeProcessNames(processNames)
+            .SelectMany(GetFallbackProcessNameNeedlesForProcessName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public static bool IsWindowTitleMatch(IEnumerable<string> processNames, string? actualProcessName, string? windowTitle)
     {
         if (string.IsNullOrWhiteSpace(windowTitle))
@@ -108,6 +122,25 @@ internal static class WindowsProcessIdentity
             || processName.StartsWith("Battle.net ", StringComparison.OrdinalIgnoreCase))
         {
             yield return "Battle.net";
+        }
+    }
+
+    private static IEnumerable<string> GetFallbackProcessNameNeedlesForProcessName(string processName)
+    {
+        if (IsD2RProcessName(processName))
+        {
+            yield return "d2r";
+            yield return "diablo";
+            yield break;
+        }
+
+        if (processName.Equals("Battle", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("Battle.net", StringComparison.OrdinalIgnoreCase)
+            || processName.StartsWith("Battle.net ", StringComparison.OrdinalIgnoreCase))
+        {
+            yield return "battle.net";
+            yield return "battlenet";
+            yield return "blizzard";
         }
     }
 }
