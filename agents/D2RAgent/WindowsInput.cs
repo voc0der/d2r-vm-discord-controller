@@ -385,7 +385,7 @@ internal sealed class WindowsInput
 
     public void PressEscape()
     {
-        Key(VkEscape);
+        VirtualKey(VkEscape);
     }
 
     public void PressAltF4()
@@ -403,9 +403,9 @@ internal sealed class WindowsInput
 
     public void PressStartKey()
     {
-        Key(VkSpace);
+        VirtualKey(VkSpace);
         Thread.Sleep(50);
-        Key(VkReturn);
+        VirtualKey(VkReturn);
     }
 
     public void PressLegacyGraphicsToggle()
@@ -420,7 +420,7 @@ internal sealed class WindowsInput
 
     public void PressStartupSkipKey()
     {
-        Key(VkG);
+        VirtualKey(VkG);
     }
 
     public void SelectAll()
