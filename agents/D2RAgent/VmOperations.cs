@@ -101,6 +101,16 @@ public sealed class VmOperations
             return await SelfUpdateAsync(cancellationToken);
         }
 
+        // screenshot only captures the screen via a separate process - it never sends
+        // input - so it doesn't need the gate either. It's also the main tool for
+        // diagnosing a stuck automation command from the outside, which is exactly when
+        // it's most needed and was previously most blocked (queued for the full length
+        // of whatever menu_ready/menu_create_game was already running).
+        if (string.Equals(request.Command, "screenshot", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TakeScreenshotAsync(cancellationToken);
+        }
+
         await _commandGate.WaitAsync(cancellationToken);
         try
         {
@@ -367,7 +377,7 @@ public sealed class VmOperations
         if (!ready.Ready)
         {
             return CommandResult.Failure(
-                $"{FormatCharacterScreenReadyFailure(ready)} D2R was not detected after {d2rStarted.LaunchAttempts} launch command(s) and {d2rStarted.PlayClicks} Battle.net Play click(s). Last launch result: {d2rStarted.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
+                $"{FormatCharacterScreenReadyFailure(ready, input)} D2R was not detected after {d2rStarted.LaunchAttempts} launch command(s) and {d2rStarted.PlayClicks} Battle.net Play click(s). Last launch result: {d2rStarted.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
                 await CollectStatusAsync(cancellationToken));
         }
 
@@ -675,7 +685,7 @@ public sealed class VmOperations
         if (!ready.Ready)
         {
             return CommandResult.Failure(
-                FormatCharacterScreenReadyFailure(ready),
+                FormatCharacterScreenReadyFailure(ready, input),
                 await CollectStatusAsync(cancellationToken));
         }
 
@@ -1906,11 +1916,47 @@ public sealed class VmOperations
         return D2RScreenClassifier.IsOnlineCharacterListRegion(characterList);
     }
 
-    private string FormatCharacterScreenReadyFailure(ReadyWaitResult result)
+    private string FormatCharacterScreenReadyFailure(ReadyWaitResult result, WindowsInput input)
     {
         return IsD2RRunning()
-            ? $"D2R is running, but the character screen was not reached within {result.TimeoutSeconds}s. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.{FormatInputDiagnosticsSuffix()}"
+            ? $"D2R is running, but the character screen was not reached within {result.TimeoutSeconds}s. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.{FormatInputDiagnosticsSuffix()}{FormatCharacterScreenClassifierDiagnostics(input)}"
             : $"D2R stopped before the ready loop finished. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.";
+    }
+
+    // The ready loop's "is this the character screen" check is a handful of pixel-region
+    // color-ratio heuristics (D2RScreenClassifier), tuned against specific UI coordinates.
+    // When the loop times out, "Unknown" alone doesn't say whether the screen genuinely
+    // isn't the character screen or whether one sample region's thresholds just don't match
+    // the current UI rendering/resolution. Report the actual computed stats for every region
+    // the classifier checks so a failure is diagnosable from the log instead of guessed at.
+    private string FormatCharacterScreenClassifierDiagnostics(WindowsInput input)
+    {
+        try
+        {
+            var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: false, sampleGrid: MenuSampleGrid);
+            var options = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.405), widthRatio: 0.13, heightRatio: 0.05, windowRelative: false, sampleGrid: MenuSampleGrid);
+            var cinematics = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.460), widthRatio: 0.13, heightRatio: 0.05, windowRelative: false, sampleGrid: MenuSampleGrid);
+            var play = SampleD2RRegion(input, _config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: false, sampleGrid: MenuSampleGrid);
+            var lobby = SampleD2RRegion(input, _config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: false, sampleGrid: MenuSampleGrid);
+            var characterList = SampleD2RRegion(input, new AgentCommon.UiPoint(0.890, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: false, sampleGrid: MenuSampleGrid);
+
+            static string Fmt(string name, ScreenRegionStats stats) =>
+                $"{name}(lum={stats.AverageLuminance:F0},grey={stats.GreyRatio:F2},dark={stats.DarkRatio:F2},orange={stats.OrangeRatio:F2})";
+
+            return " Classifier samples: "
+                + string.Join(", ",
+                    Fmt("logo", logo),
+                    Fmt("options", options),
+                    Fmt("cinematics", cinematics),
+                    Fmt("play", play),
+                    Fmt("lobby", lobby),
+                    Fmt("charList", characterList))
+                + ".";
+        }
+        catch (Exception)
+        {
+            return "";
+        }
     }
 
     private bool IsDiabloSplashScreen(WindowsInput input, int sampleGrid = MenuSampleGrid)
