@@ -729,6 +729,7 @@ public sealed class VmOperations
     {
         var input = FocusD2R();
         input.PressEscape();
+        _ = input.SendWindowEscapeKey(GetD2RProcessNames());
         await DelayStepAsync(cancellationToken);
         ClickD2R(input, _config.Ui.SaveAndExitButton);
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)), cancellationToken);
