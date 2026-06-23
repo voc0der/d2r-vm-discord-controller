@@ -983,8 +983,11 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            SendReadySkipBurst(input);
-            nudges++;
+            if (lastState != ReadyScreenState.ConnectingToBattleNet)
+            {
+                SendReadySkipBurst(input);
+                nudges++;
+            }
 
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
             if (remainingMs == 0)
@@ -1023,6 +1026,13 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
+            if (lastState == ReadyScreenState.ConnectingToBattleNet)
+            {
+                i--;
+                await Task.Delay(ReadyStartupDetectionIntervalMs, cancellationToken);
+                continue;
+            }
+
             SendReadyIntroClick(input);
             nudges++;
             await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
@@ -1040,6 +1050,13 @@ public sealed class VmOperations
                 }
 
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
+            }
+
+            if (lastState == ReadyScreenState.ConnectingToBattleNet)
+            {
+                i--;
+                await Task.Delay(ReadyStartupDetectionIntervalMs, cancellationToken);
+                continue;
             }
 
             SendReadyTitleSkipBurst(input);
@@ -1869,6 +1886,18 @@ public sealed class VmOperations
 
     private ReadyScreenState DetectReadyScreenState(WindowsInput input, int sampleGrid = MenuSampleGrid)
     {
+        // Checked before DiabloSplash: the "Connecting to Battle.net" dialog renders as a
+        // modal box layered on top of the same splash background, so the splash logo/prompt
+        // regions can still pass their own thresholds while this dialog is up. Treating that
+        // overlap as plain DiabloSplash made the ready loop keep firing Escape/Enter/Space at
+        // a screen that's actually waiting on a live login handshake - input here doesn't
+        // speed anything up and Escape in particular can cancel the connection attempt and
+        // bounce back to title, manufacturing a retry loop that looks like a multi-minute hang.
+        if (IsConnectingToBattleNetDialog(input, sampleGrid))
+        {
+            return ReadyScreenState.ConnectingToBattleNet;
+        }
+
         if (IsDiabloSplashScreen(input, sampleGrid))
         {
             return ReadyScreenState.DiabloSplash;
@@ -1980,6 +2009,12 @@ public sealed class VmOperations
         {
             return "";
         }
+    }
+
+    private bool IsConnectingToBattleNetDialog(WindowsInput input, int sampleGrid = MenuSampleGrid)
+    {
+        var dialog = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.490), widthRatio: 0.30, heightRatio: 0.12, sampleGrid: sampleGrid);
+        return D2RScreenClassifier.IsConnectingToBattleNetDialogRegion(dialog);
     }
 
     private bool IsDiabloSplashScreen(WindowsInput input, int sampleGrid = MenuSampleGrid)
@@ -2936,6 +2971,7 @@ public sealed class VmOperations
     {
         Unknown,
         DiabloSplash,
+        ConnectingToBattleNet,
         OfflineCharacterScreen,
         CharacterScreen
     }

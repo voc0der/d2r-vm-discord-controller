@@ -19,6 +19,13 @@ internal static class D2RScreenClassifier
             && IsCharacterMenuButtonRegion(cinematics);
     }
 
+    public static bool IsConnectingToBattleNetDialogRegion(ScreenRegionStats dialog)
+    {
+        return dialog.AverageLuminance > 25
+            && dialog.GreyRatio > 0.30
+            && dialog.OrangeRatio < 0.05;
+    }
+
     public static bool IsOnlineCharacterListRegion(ScreenRegionStats stats)
     {
         return stats.AverageLuminance > 30

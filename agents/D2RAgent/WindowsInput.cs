@@ -140,7 +140,7 @@ internal sealed class WindowsInput
 
         var x = (rect.Left + rect.Right) / 2;
         var y = (rect.Top + rect.Bottom) / 2;
-        if (!SendMouseClick(x, y, MouseButton.Left))
+        if (!SendVirtualMouseClick(x, y, MouseButton.Left))
         {
             SendLegacyMouseClick(x, y, MouseButton.Left);
         }
@@ -196,14 +196,8 @@ internal sealed class WindowsInput
         EnsureWindows();
 
         var (x, y) = ToScreen(point, coordinateProcessNames);
-        if (SendMouseClick(x, y, button))
+        if (SendVirtualMouseClick(x, y, button))
         {
-            return;
-        }
-
-        if (button == MouseButton.Left)
-        {
-            SendLegacyMouseClick(x, y, button);
             return;
         }
 
@@ -885,17 +879,18 @@ internal sealed class WindowsInput
         return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
     }
 
-    private static bool SendMouseClick(int x, int y, MouseButton button)
+    private static bool SendVirtualMouseClick(int x, int y, MouseButton button)
     {
+        EnsureWindows();
         var down = button == MouseButton.Left ? MouseEventLeftDown : MouseEventRightDown;
         var up = button == MouseButton.Left ? MouseEventLeftUp : MouseEventRightUp;
         var cursorMoved = SetCursorPos(x, y);
         Thread.Sleep(InputGapMilliseconds);
-        mouse_event(down, 0, 0, 0, UIntPtr.Zero);
+        var downSent = SendInputs(new[] { Input.ForMouse(0, 0, down) });
         Thread.Sleep(InputHoldMilliseconds);
-        mouse_event(up, 0, 0, 0, UIntPtr.Zero);
+        var upSent = SendInputs(new[] { Input.ForMouse(0, 0, up) });
         Thread.Sleep(InputGapMilliseconds);
-        return cursorMoved;
+        return cursorMoved && downSent == 1 && upSent == 1;
     }
 
     private static void SendLegacyMouseClick(int x, int y, MouseButton button)
