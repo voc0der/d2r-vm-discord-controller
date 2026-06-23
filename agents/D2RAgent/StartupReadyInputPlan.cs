@@ -48,6 +48,18 @@ internal sealed record StartupReadyInputPlan(
         StartupReadyInputAction.SendWindowReadyBurst
     ];
 
+    public static readonly IReadOnlyList<StartupReadyInputAction> SplashActions =
+    [
+        StartupReadyInputAction.FocusD2R,
+        StartupReadyInputAction.ClickWindowCenter,
+        StartupReadyInputAction.ClickIntroPoint,
+        StartupReadyInputAction.SendWindowClickIntroPoint,
+        StartupReadyInputAction.PressStartupSkipKey,
+        StartupReadyInputAction.PressStartKey,
+        StartupReadyInputAction.SendWindowStartupSkipKey,
+        StartupReadyInputAction.SendWindowReadyBurst
+    ];
+
     public static readonly IReadOnlyList<StartupReadyInputAction> BurstActions =
     [
         StartupReadyInputAction.FocusD2R,

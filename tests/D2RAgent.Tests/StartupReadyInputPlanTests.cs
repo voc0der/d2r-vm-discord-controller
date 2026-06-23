@@ -57,6 +57,19 @@ public sealed class StartupReadyInputPlanTests
                 StartupReadyInputAction.SendWindowStartupSkipKey,
                 StartupReadyInputAction.SendWindowReadyBurst
             ],
+            StartupReadyInputPlan.SplashActions);
+
+        Assert.Equal(
+            [
+                StartupReadyInputAction.FocusD2R,
+                StartupReadyInputAction.ClickWindowCenter,
+                StartupReadyInputAction.ClickIntroPoint,
+                StartupReadyInputAction.SendWindowClickIntroPoint,
+                StartupReadyInputAction.PressStartupSkipKey,
+                StartupReadyInputAction.PressStartKey,
+                StartupReadyInputAction.SendWindowStartupSkipKey,
+                StartupReadyInputAction.SendWindowReadyBurst
+            ],
             StartupReadyInputPlan.BurstActions);
     }
 

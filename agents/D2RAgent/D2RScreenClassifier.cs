@@ -31,6 +31,29 @@ internal static class D2RScreenClassifier
             && dialog.LuminanceStdDev < 20;
     }
 
+    public static bool IsDiabloSplashScreen(ScreenRegionStats logo, ScreenRegionStats prompt)
+    {
+        var darkSplashBackdrop = logo.DarkRatio > 0.45
+            && prompt.DarkRatio > 0.45;
+        var logoHasFlameTexture = logo.OrangeRatio > 0.05
+            && logo.LuminanceStdDev > 25;
+        var promptHasPressAnyKeyTexture = prompt.OrangeRatio > 0.04
+            || (prompt.RedRatio > 0.08 && prompt.LuminanceStdDev > 25);
+        var classicSplash = logoHasFlameTexture && promptHasPressAnyKeyTexture;
+
+        // A sparse sample grid can land between the thin prompt letters on the
+        // 1366x768 post-intro splash. The logo region is much larger and more
+        // stable, so accept strong logo evidence plus a dark/contrasty prompt band.
+        var logoDominantSplash = logo.OrangeRatio > 0.08
+            && logo.BrightRatio > 0.04
+            && logo.LuminanceStdDev > 45
+            && prompt.LuminanceStdDev > 20
+            && prompt.DarkRatio > 0.55;
+
+        return darkSplashBackdrop
+            && (classicSplash || logoDominantSplash);
+    }
+
     public static bool IsOnlineCharacterListRegion(ScreenRegionStats stats)
     {
         return stats.AverageLuminance > 30

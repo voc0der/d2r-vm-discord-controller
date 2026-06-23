@@ -216,6 +216,73 @@ public sealed class D2RScreenClassifierTests
         Assert.True(D2RScreenClassifier.IsConnectingToBattleNetDialogRegion(dialog));
     }
 
+    [Fact]
+    public void DiabloSplashScreenAcceptsPostIntroSplashCaptureStats()
+    {
+        var logo = Stats(
+            averageLuminance: 49.8,
+            luminanceStdDev: 71.8,
+            brightRatio: 0.185,
+            darkRatio: 0.654,
+            orangeRatio: 0.173,
+            redRatio: 0.136);
+        var prompt = Stats(
+            averageLuminance: 36.3,
+            luminanceStdDev: 43.1,
+            brightRatio: 0.074,
+            darkRatio: 0.667,
+            orangeRatio: 0.111,
+            redRatio: 0.173);
+
+        Assert.True(D2RScreenClassifier.IsDiabloSplashScreen(logo, prompt));
+    }
+
+    [Fact]
+    public void DiabloSplashScreenAcceptsSparsePromptSampleFromPostIntroSplash()
+    {
+        var logo = Stats(
+            averageLuminance: 49.8,
+            luminanceStdDev: 71.8,
+            brightRatio: 0.185,
+            darkRatio: 0.60,
+            orangeRatio: 0.20,
+            redRatio: 0.16);
+        var sparsePrompt = Stats(
+            averageLuminance: 30.0,
+            luminanceStdDev: 36.0,
+            darkRatio: 0.76,
+            orangeRatio: 0.00,
+            redRatio: 0.00);
+
+        Assert.True(D2RScreenClassifier.IsDiabloSplashScreen(logo, sparsePrompt));
+    }
+
+    [Fact]
+    public void DiabloSplashScreenRejectsBlackIntroFrame()
+    {
+        var logo = Stats(averageLuminance: 1.0, luminanceStdDev: 0.7, darkRatio: 1.0);
+        var prompt = Stats(averageLuminance: 1.2, luminanceStdDev: 1.2, darkRatio: 1.0);
+
+        Assert.False(D2RScreenClassifier.IsDiabloSplashScreen(logo, prompt));
+    }
+
+    [Fact]
+    public void DiabloSplashScreenRejectsCharacterSelectBackground()
+    {
+        var logo = Stats(
+            averageLuminance: 41.3,
+            luminanceStdDev: 29.8,
+            greyRatio: 0.383,
+            darkRatio: 0.593);
+        var prompt = Stats(
+            averageLuminance: 34.7,
+            luminanceStdDev: 23.4,
+            greyRatio: 0.210,
+            darkRatio: 0.679);
+
+        Assert.False(D2RScreenClassifier.IsDiabloSplashScreen(logo, prompt));
+    }
+
     [Theory]
     [InlineData(true, false, false, false)]
     [InlineData(true, true, false, true)]

@@ -1085,7 +1085,12 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            if (lastState != ReadyScreenState.ConnectingToBattleNet)
+            if (lastState == ReadyScreenState.DiabloSplash)
+            {
+                SendReadySplashContinueBurst(input);
+                nudges++;
+            }
+            else if (lastState != ReadyScreenState.ConnectingToBattleNet)
             {
                 SendReadySkipBurst(input);
                 nudges++;
@@ -1149,6 +1154,14 @@ public sealed class VmOperations
                 continue;
             }
 
+            if (lastState == ReadyScreenState.DiabloSplash)
+            {
+                SendReadySplashContinueBurst(input);
+                nudges++;
+                await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
+                continue;
+            }
+
             SendReadyIntroClick(input);
             nudges++;
             await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
@@ -1182,6 +1195,14 @@ public sealed class VmOperations
             {
                 i--;
                 await Task.Delay(ReadyStartupDetectionIntervalMs, cancellationToken);
+                continue;
+            }
+
+            if (lastState == ReadyScreenState.DiabloSplash)
+            {
+                SendReadySplashContinueBurst(input);
+                nudges++;
+                await Task.Delay(plan.TitleScreenKeyPressDelayMs, cancellationToken);
                 continue;
             }
 
@@ -1290,6 +1311,55 @@ public sealed class VmOperations
         RecordD2RInputAction(
             kind: "key",
             button: "G/Space/Enter",
+            point: _config.Ui.IntroSkipPoint,
+            target,
+            beforeCursor,
+            afterCursor,
+            beforeDiagnostics,
+            afterDiagnostics);
+    }
+
+    private void SendReadySplashContinueBurst(WindowsInput input)
+    {
+        var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
+        var beforeCursor = input.GetCursorPosition();
+        var beforeDiagnostics = TryGetD2RInputDiagnostics();
+        foreach (var action in StartupReadyInputPlan.SplashActions)
+        {
+            switch (action)
+            {
+                case StartupReadyInputAction.FocusD2R:
+                    _ = TryPrepareD2RForInput(input);
+                    break;
+                case StartupReadyInputAction.ClickWindowCenter:
+                    _ = TryClickD2RWindowCenter(input);
+                    break;
+                case StartupReadyInputAction.ClickIntroPoint:
+                    ClickD2R(input, _config.Ui.IntroSkipPoint);
+                    break;
+                case StartupReadyInputAction.SendWindowClickIntroPoint:
+                    _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
+                    break;
+                case StartupReadyInputAction.PressStartupSkipKey:
+                    input.PressStartupSkipKey();
+                    break;
+                case StartupReadyInputAction.PressStartKey:
+                    input.PressStartKey();
+                    break;
+                case StartupReadyInputAction.SendWindowStartupSkipKey:
+                    _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
+                    break;
+                case StartupReadyInputAction.SendWindowReadyBurst:
+                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
+                    break;
+            }
+        }
+
+        var afterCursor = input.GetCursorPosition();
+        var afterDiagnostics = TryGetD2RInputDiagnostics();
+        RecordD2RInputAction(
+            kind: "key",
+            button: "SplashContinue/G/Space/Enter",
             point: _config.Ui.IntroSkipPoint,
             target,
             beforeCursor,
@@ -2154,10 +2224,7 @@ public sealed class VmOperations
     {
         var logo = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.290), widthRatio: 0.45, heightRatio: 0.22, sampleGrid: sampleGrid);
         var prompt = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.600), widthRatio: 0.32, heightRatio: 0.055, sampleGrid: sampleGrid);
-        return logo.OrangeRatio > 0.05
-            && prompt.OrangeRatio > 0.04
-            && logo.DarkRatio > 0.45
-            && prompt.DarkRatio > 0.45;
+        return D2RScreenClassifier.IsDiabloSplashScreen(logo, prompt);
     }
 
     private bool IsGameEntryErrorDialogOpen(WindowsInput input)
