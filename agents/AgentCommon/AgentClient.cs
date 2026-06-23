@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Reflection;
 using System.Text;
@@ -118,30 +119,45 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         NotifyConnectionState(AgentConnectionState.Connected);
 
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var exitRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runningCommands = new ConcurrentDictionary<string, Task>();
         var heartbeatTask = SendHeartbeatAsync(socket, sendLock, statusFactory, linkedCts.Token);
 
         try
         {
-            while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+            while (socket.State == WebSocketState.Open && !linkedCts.Token.IsCancellationRequested)
             {
-                var raw = await ReceiveStringAsync(socket, cancellationToken);
+                var raw = await ReceiveStringAsync(socket, linkedCts.Token);
                 if (raw is null)
                 {
                     break;
                 }
 
-                var exitRequested = await HandleControllerMessageAsync(socket, sendLock, raw, commandHandler, cancellationToken);
-                if (exitRequested)
-                {
-                    return true;
-                }
+                // Keep the receive loop moving while commands run. Heartbeats already
+                // send on a separate task; if the receive loop awaits a long menu
+                // command, later live status/screenshot commands sit unread and the
+                // host reports timeouts despite fresh heartbeat cache.
+                HandleControllerMessage(
+                    socket,
+                    sendLock,
+                    raw,
+                    commandHandler,
+                    linkedCts,
+                    exitRequested,
+                    runningCommands);
             }
 
-            return false;
+            return exitRequested.Task.IsCompletedSuccessfully;
+        }
+        catch (OperationCanceledException) when (linkedCts.IsCancellationRequested
+                                                && !cancellationToken.IsCancellationRequested)
+        {
+            return exitRequested.Task.IsCompletedSuccessfully;
         }
         finally
         {
             linkedCts.Cancel();
+            await WaitForRunningCommandsToSettleAsync(runningCommands.Values);
             try
             {
                 await heartbeatTask;
@@ -226,35 +242,70 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         return new { error = $"Status collection did not return within {timeout.TotalSeconds:N0}s; a detection call is likely stuck." };
     }
 
-    private async Task<bool> HandleControllerMessageAsync(
+    private void HandleControllerMessage(
         ClientWebSocket socket,
         SemaphoreSlim sendLock,
         string raw,
         Func<CommandRequest, CancellationToken, Task<CommandResult>> commandHandler,
-        CancellationToken cancellationToken)
+        CancellationTokenSource connectionCts,
+        TaskCompletionSource exitRequested,
+        ConcurrentDictionary<string, Task> runningCommands)
     {
         using var document = JsonDocument.Parse(raw);
         var type = document.RootElement.GetProperty("type").GetString();
         if (!string.Equals(type, "command", StringComparison.OrdinalIgnoreCase))
         {
-            return false;
+            return;
         }
 
         var envelope = JsonSerializer.Deserialize<ControllerCommandEnvelope>(raw, JsonOptions)
             ?? throw new InvalidOperationException("Controller command payload was invalid.");
 
+        var task = Task.Run(
+            () => ExecuteControllerCommandAsync(
+                socket,
+                sendLock,
+                envelope,
+                commandHandler,
+                connectionCts,
+                exitRequested),
+            CancellationToken.None);
+        runningCommands[envelope.CommandId] = task;
+        _ = task.ContinueWith(
+            completed =>
+            {
+                runningCommands.TryRemove(envelope.CommandId, out _);
+                if (completed.Exception is not null
+                    && completed.Exception.GetBaseException() is not OperationCanceledException)
+                {
+                    _log($"Controller command \"{envelope.Command}\" failed before a result could be sent: {completed.Exception.GetBaseException().Message}");
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task ExecuteControllerCommandAsync(
+        ClientWebSocket socket,
+        SemaphoreSlim sendLock,
+        ControllerCommandEnvelope envelope,
+        Func<CommandRequest, CancellationToken, Task<CommandResult>> commandHandler,
+        CancellationTokenSource connectionCts,
+        TaskCompletionSource exitRequested)
+    {
         var commandTimeout = envelope.TimeoutMs is > 0
             ? TimeSpan.FromMilliseconds(envelope.TimeoutMs.Value)
             : (TimeSpan?)null;
         using var commandTimeoutCts = commandTimeout.HasValue
-            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            ? CancellationTokenSource.CreateLinkedTokenSource(connectionCts.Token)
             : null;
         if (commandTimeout.HasValue)
         {
             commandTimeoutCts!.CancelAfter(commandTimeout.Value);
         }
 
-        var commandToken = commandTimeoutCts?.Token ?? cancellationToken;
+        var commandToken = commandTimeoutCts?.Token ?? connectionCts.Token;
         CommandResult result;
         try
         {
@@ -262,7 +313,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
             result = await commandHandler(request, commandToken);
         }
         catch (OperationCanceledException) when (commandTimeoutCts?.IsCancellationRequested == true
-                                                && !cancellationToken.IsCancellationRequested)
+                                                && !connectionCts.IsCancellationRequested)
         {
             result = CommandResult.Failure(
                 $"Command \"{envelope.Command}\" exceeded agent-side timeout of {commandTimeout!.Value.TotalSeconds:N0}s.");
@@ -284,9 +335,38 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
                 message = result.Message,
                 data = result.Data
             },
-            cancellationToken);
+            connectionCts.Token);
 
-        return result.ExitAfterResult;
+        if (result.ExitAfterResult)
+        {
+            exitRequested.TrySetResult();
+            connectionCts.Cancel();
+        }
+    }
+
+    private static async Task WaitForRunningCommandsToSettleAsync(IEnumerable<Task> commands)
+    {
+        var tasks = commands.ToArray();
+        if (tasks.Length == 0)
+        {
+            return;
+        }
+
+        var allCommands = Task.WhenAll(tasks);
+        var settled = await Task.WhenAny(allCommands, Task.Delay(TimeSpan.FromSeconds(5)));
+        if (settled == allCommands)
+        {
+            try
+            {
+                await allCommands;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch
+            {
+            }
+        }
     }
 
     private static string GetCurrentVersionText()
