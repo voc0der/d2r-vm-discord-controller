@@ -189,7 +189,7 @@ public sealed class DiscordBot
 
         if (subcommand == "create-game-all")
         {
-            await QueueCreateGameAllAsync(context, ResolveGameInput(context));
+            await QueueCreateGameAllAsync(context, ResolveGameInput(context), watch: context.GetBool("watch") ?? false);
             return;
         }
 
@@ -589,7 +589,7 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task QueueCreateGameAllAsync(SlashContext context, GameInput game)
+    private async Task QueueCreateGameAllAsync(SlashContext context, GameInput game, bool watch)
     {
         var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
@@ -617,6 +617,12 @@ public sealed class DiscordBot
             game.GameName,
             entries.Length,
             $"Queued create-game-all. {creator.Key} will create; {joiners.Length} account(s) will join.");
+
+        var watchCts = new CancellationTokenSource();
+        if (watch)
+        {
+            _ = RunCreateGameAllWatchTickerAsync(context, game.GameName, entries, watchCts.Token);
+        }
 
         _ = Task.Run(async () =>
         {
@@ -737,7 +743,218 @@ public sealed class DiscordBot
                     detail: ex.Message);
                 await SendFollowupSafeAsync(context, $"create-game-all failed while creating {game.GameName}: {ex.Message}");
             }
+            finally
+            {
+                watchCts.Cancel();
+            }
         });
+    }
+
+    // The regular game-session message only updates at orchestration milestones (creator ready,
+    // game created, joiners done) - it can't show what's happening *between* those, which is
+    // exactly the gap the operator is trying to see when a run looks stuck. This posts a second,
+    // separate message and re-polls live status for every account on a short interval so it shows
+    // per-account click attempts and detected screen state as they happen, not just at milestones.
+    private async Task RunCreateGameAllWatchTickerAsync(
+        SlashContext context,
+        string gameName,
+        KeyValuePair<string, AccountConfig>[] entries,
+        CancellationToken cancellationToken)
+    {
+        var startedUtc = DateTimeOffset.UtcNow;
+        IUserMessage message;
+        try
+        {
+            message = await context.Command.Channel.SendMessageAsync(
+                FormatWatchHeader(gameName, startedUtc) + "\nStarting...");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not start create-game-all-watch message.");
+            return;
+        }
+
+        while (true)
+        {
+            var lines = await Task.WhenAll(
+                entries.Select(entry => FormatAccountWatchLineAsync(entry.Key, entry.Value, CancellationToken.None)));
+            var content = string.Join("\n", new[] { FormatWatchHeader(gameName, startedUtc) }.Concat(lines));
+
+            try
+            {
+                await message.ModifyAsync(properties => properties.Content = content);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not update create-game-all-watch message.");
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private static string FormatWatchHeader(string gameName, DateTimeOffset startedUtc)
+    {
+        return $"Watching create-game-all: {gameName} (elapsed {FormatElapsed(DateTimeOffset.UtcNow - startedUtc)})";
+    }
+
+    // Condensed for screenshots: frame + the single most recent input attempt, not the full
+    // verbose /d2r status line (Battle.net/D2R running flags, process discovery, etc).
+    private async Task<string> FormatAccountWatchLineAsync(
+        string accountKey, AccountConfig account, CancellationToken cancellationToken)
+    {
+        var name = FormatAccountDisplayName(accountKey, account);
+        var agent = _registry.GetAgent(account.AgentId);
+        if (agent?.Connected != true)
+        {
+            return $"{name}: offline";
+        }
+
+        CommandResultInfo result;
+        try
+        {
+            result = await _registry.SendCommandAsync(
+                account.AgentId, "status", args: null, TimeSpan.FromSeconds(6), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            return $"{name}: watch check failed ({ex.Message})";
+        }
+
+        if (!result.Ok || result.Data is not { } data)
+        {
+            return $"{name}: status unavailable ({result.Message})";
+        }
+
+        return FormatWatchLine(name, data.GetRawText());
+    }
+
+    private static string FormatWatchLine(string name, string? statusJson)
+    {
+        var degraded = TryReadStatusBool(statusJson, "statusDegraded", out var isDegraded) && isDegraded
+            ? " [degraded]"
+            : "";
+        var frame = TryReadFrameSummary(statusJson, out var frameSummary) ? frameSummary : "frame unknown";
+        var lastInput = TryReadLastInputActionWatchSummary(statusJson, out var inputSummary) ? inputSummary : "no input yet";
+        return $"{name}: {frame}{degraded} | last {lastInput}";
+    }
+
+    private static bool TryReadStatusBool(string? json, string propertyName, out bool value)
+    {
+        value = false;
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return TryGetBoolean(document.RootElement, propertyName, out value);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadFrameSummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!TryGetString(document.RootElement, "lastObservedFrame", out var frame)
+                || string.IsNullOrWhiteSpace(frame))
+            {
+                return false;
+            }
+
+            var age = TryReadDateTimeOffset(document.RootElement, "lastObservedFrameUtc", out var observedAt)
+                ? FormatAge(DateTimeOffset.UtcNow - observedAt)
+                : "?";
+            value = $"frame {frame} ({age} ago)";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadLastInputActionWatchSummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("lastInputAction", out var action)
+                || action.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return false;
+            }
+
+            var kind = TryGetString(action, "kind", out var kindValue) ? kindValue : "?";
+            var button = TryGetString(action, "button", out var buttonValue) ? buttonValue : "?";
+            var screen = TryGetInt(action, "screenX", out var x) && TryGetInt(action, "screenY", out var y)
+                ? $"{x},{y}"
+                : "?,?";
+            var age = TryReadDateTimeOffset(action, "timeUtc", out var actedAt)
+                ? FormatAge(DateTimeOffset.UtcNow - actedAt)
+                : "?";
+            var fgAfter = TryGetBoolean(action, "d2rForegroundAfter", out var fgAfterValue)
+                ? (fgAfterValue ? "fg ok" : "fg lost")
+                : "fg ?";
+
+            value = $"{kind}/{button}@{screen} ({age} ago), {fgAfter}";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadDateTimeOffset(JsonElement root, string propertyName, out DateTimeOffset value)
+    {
+        value = default;
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+            && property.TryGetDateTimeOffset(out value);
+    }
+
+    private static string FormatAge(TimeSpan age)
+    {
+        if (age < TimeSpan.Zero)
+        {
+            age = TimeSpan.Zero;
+        }
+
+        return age.TotalMinutes >= 1
+            ? $"{(int)age.TotalMinutes}m{age.Seconds}s"
+            : $"{(int)age.TotalSeconds}s";
     }
 
     private async Task<ReadyResult> RunCreateGameAllReadyAsync(

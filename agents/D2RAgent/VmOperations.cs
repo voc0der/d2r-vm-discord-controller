@@ -41,6 +41,8 @@ public sealed class VmOperations
     private DateTimeOffset? _lastObservedD2RStartUtc;
     private string? _lastActivityReason;
     private LastInputActionSnapshot? _lastInputAction;
+    private string? _lastObservedFrame;
+    private DateTimeOffset? _lastObservedFrameUtc;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -129,6 +131,8 @@ public sealed class VmOperations
             // what's failing - exactly the case where this is most needed.
             d2rInput = OperatingSystem.IsWindows() ? TryGetD2RInputDiagnostics(windowScanCache) : null,
             lastInputAction = _lastInputAction,
+            lastObservedFrame = _lastObservedFrame,
+            lastObservedFrameUtc = _lastObservedFrameUtc,
             d2rActivityState = activity.State.ToString(),
             characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
             lastLobbyOrGameInteractionUtc = activity.LastLobbyOrGameInteractionUtc,
@@ -163,6 +167,8 @@ public sealed class VmOperations
             d2rProcessDiscovery = new ProcessDiscoverySnapshot(GetD2RProcessNames(), [], []),
             d2rInput = (InputDiagnostics?)null,
             lastInputAction = _lastInputAction,
+            lastObservedFrame = _lastObservedFrame,
+            lastObservedFrameUtc = _lastObservedFrameUtc,
             d2rActivityState = activity.State.ToString(),
             characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
             lastLobbyOrGameInteractionUtc = activity.LastLobbyOrGameInteractionUtc,
@@ -908,7 +914,9 @@ public sealed class VmOperations
     {
         if (!OperatingSystem.IsWindows())
         {
-            return d2rRunning ? VisibleD2RState.Unknown : VisibleD2RState.NotRunning;
+            var unsupported = d2rRunning ? VisibleD2RState.Unknown : VisibleD2RState.NotRunning;
+            RecordObservedFrame(unsupported.ToString());
+            return unsupported;
         }
 
         try
@@ -916,6 +924,7 @@ public sealed class VmOperations
             var visibleState = DetectVisibleD2RState(new WindowsInput());
             if (visibleState != VisibleD2RState.Unknown)
             {
+                RecordObservedFrame(visibleState.ToString());
                 return visibleState;
             }
         }
@@ -923,7 +932,9 @@ public sealed class VmOperations
         {
         }
 
-        return d2rRunning ? VisibleD2RState.Unknown : VisibleD2RState.NotRunning;
+        var fallback = d2rRunning ? VisibleD2RState.Unknown : VisibleD2RState.NotRunning;
+        RecordObservedFrame(fallback.ToString());
+        return fallback;
     }
 
     private VisibleD2RState DetectVisibleD2RState(WindowsInput input)
@@ -1463,6 +1474,17 @@ public sealed class VmOperations
             afterCursor,
             beforeDiagnostics: null,
             afterDiagnostics: null);
+    }
+
+    // Both the status path (DetectVisibleD2RState) and the ready loop (DetectReadyScreenStateStable)
+    // run their own classifier passes on independent timers, and CollectProcessOnlyStatus's fast
+    // fallback never recomputes a screen state at all - it just hardcodes Unknown. Stamping every
+    // classifier result here, regardless of which caller produced it, gives /d2r status a live
+    // "what did we last actually see" answer even while detailed status collection is stuck.
+    private void RecordObservedFrame(string frame)
+    {
+        _lastObservedFrame = frame;
+        _lastObservedFrameUtc = DateTimeOffset.UtcNow;
     }
 
     private void RecordD2RInputAction(
@@ -2089,9 +2111,13 @@ public sealed class VmOperations
     private ReadyScreenState DetectReadyScreenStateStable(WindowsInput input)
     {
         var state = DetectReadyScreenState(input);
-        return state == ReadyScreenState.Unknown
-            ? DetectReadyScreenState(input, ReadyStartupSampleGrid)
-            : state;
+        if (state == ReadyScreenState.Unknown)
+        {
+            state = DetectReadyScreenState(input, ReadyStartupSampleGrid);
+        }
+
+        RecordObservedFrame(state.ToString());
+        return state;
     }
 
     private static bool IsReadyScreenState(ReadyScreenState state)

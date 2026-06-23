@@ -28,7 +28,7 @@ public static class DiscordSlashCommands
                     Sub("follow", "Join off a friend from the Lobby friends drawer", Account(), CharacterSlot(), FriendRow()),
                     Sub("save-exit", "Open the in-game menu and click Save and Exit", Account()),
                     Sub("leave", "Alias for Save and Exit", Account()),
-                    Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot()),
+                    Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot()),
                     Sub("follow-all", "Stagger all accounts into a friend's game", CharacterSlot(), FriendRow()),
                     Sub("save-exit-all", "Stagger Save and Exit across all accounts"),
@@ -170,6 +170,15 @@ public static class DiscordSlashCommands
             .WithRequired(true)
             .WithMinValue(0)
             .WithMaxValue(300);
+    }
+
+    private static SlashCommandOptionBuilder Watch()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("watch")
+            .WithDescription("Post a live-updating diagnostics message (frame/click attempts) while this runs")
+            .WithType(ApplicationCommandOptionType.Boolean)
+            .WithRequired(false);
     }
 
     private static SlashCommandOptionBuilder BoolOption(string name, string description)
