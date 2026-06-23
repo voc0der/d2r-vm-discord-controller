@@ -774,6 +774,8 @@ public sealed class DiscordBot
             return;
         }
 
+        var logPath = GetWatchLogPath(gameName, startedUtc);
+
         while (true)
         {
             var lines = await Task.WhenAll(
@@ -789,9 +791,11 @@ public sealed class DiscordBot
                 _logger.LogDebug(ex, "Could not update create-game-all-watch message.");
             }
 
+            AppendWatchLogTick(logPath, lines);
+
             if (cancellationToken.IsCancellationRequested)
             {
-                return;
+                break;
             }
 
             try
@@ -800,8 +804,56 @@ public sealed class DiscordBot
             }
             catch (OperationCanceledException)
             {
-                return;
+                break;
             }
+        }
+
+        await SendWatchLogAttachmentAsync(context, gameName, logPath);
+    }
+
+    // The live message only ever shows the latest tick - once a run is done, the operator can't
+    // scroll back to see what the frame/click history looked like a minute ago. Every tick is
+    // also appended to a plain-text log file on the host and the full file is attached to the
+    // channel when the run ends, so the entire history can be pulled up (or handed to someone
+    // else for review) after the fact, not just whatever was on screen at the moment of a
+    // screenshot.
+    private string GetWatchLogPath(string gameName, DateTimeOffset startedUtc)
+    {
+        var configDirectory = Path.GetDirectoryName(Path.GetFullPath(_runtime.ConfigPath)) ?? ".";
+        var logsDirectory = Path.Combine(configDirectory, "logs");
+        Directory.CreateDirectory(logsDirectory);
+
+        var safeName = new string(gameName.Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray());
+        return Path.Combine(logsDirectory, $"watch-{safeName}-{startedUtc:yyyyMMdd-HHmmss}.log");
+    }
+
+    private void AppendWatchLogTick(string logPath, IEnumerable<string> lines)
+    {
+        var timestamp = DateTimeOffset.UtcNow.ToString("u");
+        try
+        {
+            File.AppendAllLines(logPath, lines.Select(line => $"{timestamp} {line}"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not append to create-game-all-watch log {LogPath}.", logPath);
+        }
+    }
+
+    private async Task SendWatchLogAttachmentAsync(SlashContext context, string gameName, string logPath)
+    {
+        if (!File.Exists(logPath))
+        {
+            return;
+        }
+
+        try
+        {
+            await context.Command.Channel.SendFileAsync(logPath, $"Full watch log for {gameName}.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not upload create-game-all-watch log {LogPath}.", logPath);
         }
     }
 
