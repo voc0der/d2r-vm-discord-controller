@@ -84,7 +84,10 @@ public sealed class VmOperations
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
             d2rProcessDiscovery = OperatingSystem.IsWindows() ? WindowsProcessFinder.Discover(GetD2RProcessNames()) : null,
-            d2rInput = d2rRunning ? TryGetD2RInputDiagnostics() : null,
+            // Gating this on d2rRunning blacked out the one field (foregroundProcessName) that
+            // would show what's actually focused/visible when process-name matching itself is
+            // what's failing - exactly the case where this is most needed.
+            d2rInput = OperatingSystem.IsWindows() ? TryGetD2RInputDiagnostics() : null,
             lastInputAction = _lastInputAction,
             d2rActivityState = activity.State.ToString(),
             characterScreenIdleSinceUtc = activity.CharacterScreenIdleSinceUtc,
@@ -967,12 +970,28 @@ public sealed class VmOperations
         var nudges = 0;
         var lastState = ReadyScreenState.Unknown;
         var nextDetectionAt = DateTimeOffset.UtcNow;
+        var sawD2RProcessRunning = false;
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             if (DateTimeOffset.UtcNow >= nextDetectionAt)
             {
+                // The screen can keep showing D2R's last rendered frame for a while after the
+                // process itself dies (stale framebuffer on the VM's virtual display), so pixel
+                // classification alone can't tell "still loading" apart from "already crashed."
+                // Catching the live-to-gone transition here turns a silent multi-minute stall
+                // into an immediate, accurate failure instead of nudging a dead window.
+                var d2rNamedProcessRunning = IsD2RNamedProcessRunning();
+                if (d2rNamedProcessRunning)
+                {
+                    sawD2RProcessRunning = true;
+                }
+                else if (sawD2RProcessRunning)
+                {
+                    return new ReadyWaitResult(false, nudges, lastState, skipSeconds, ProcessExitedDuringWait: true);
+                }
+
                 var state = DetectReadyScreenStateStable(input);
                 lastState = state;
                 if (IsReadyScreenState(state))
@@ -1011,12 +1030,26 @@ public sealed class VmOperations
         var lastState = ReadyScreenState.Unknown;
         var nudges = 0;
         var nextDetectionAt = DateTimeOffset.UtcNow;
+        var sawD2RProcessRunning = false;
 
         for (var i = 0; i < plan.IntroClickCount && DateTimeOffset.UtcNow < deadline; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (DateTimeOffset.UtcNow >= nextDetectionAt)
             {
+                // See PumpStartupSkipInputsUntilCharacterScreenAsync: the splash frame can
+                // outlive the process that drew it, so a process-gone transition after we've
+                // already seen it alive is treated as a crash, not "still loading."
+                var d2rNamedProcessRunning = IsD2RNamedProcessRunning();
+                if (d2rNamedProcessRunning)
+                {
+                    sawD2RProcessRunning = true;
+                }
+                else if (sawD2RProcessRunning)
+                {
+                    return new ReadyWaitResult(false, nudges, lastState, timeoutSeconds, ProcessExitedDuringWait: true);
+                }
+
                 lastState = DetectReadyScreenStateStable(input);
                 if (IsReadyScreenState(lastState))
                 {
@@ -1043,6 +1076,16 @@ public sealed class VmOperations
             cancellationToken.ThrowIfCancellationRequested();
             if (DateTimeOffset.UtcNow >= nextDetectionAt)
             {
+                var d2rNamedProcessRunning = IsD2RNamedProcessRunning();
+                if (d2rNamedProcessRunning)
+                {
+                    sawD2RProcessRunning = true;
+                }
+                else if (sawD2RProcessRunning)
+                {
+                    return new ReadyWaitResult(false, nudges, lastState, timeoutSeconds, ProcessExitedDuringWait: true);
+                }
+
                 lastState = DetectReadyScreenStateStable(input);
                 if (IsReadyScreenState(lastState))
                 {
@@ -1969,6 +2012,11 @@ public sealed class VmOperations
 
     private string FormatCharacterScreenReadyFailure(ReadyWaitResult result, WindowsInput input)
     {
+        if (result.ProcessExitedDuringWait)
+        {
+            return $"D2R process was running, then exited before reaching the character screen (crash or forced close), not stuck input delivery. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.{FormatD2RProcessDiscoverySuffix()}";
+        }
+
         return IsD2RRunning()
             ? $"D2R is running, but the character screen was not reached within {result.TimeoutSeconds}s. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.{FormatInputDiagnosticsSuffix()}{FormatCharacterScreenClassifierDiagnostics(input)}"
             : $"D2R stopped before the ready loop finished. Last detected ready state: {result.LastState}; ready input bursts sent: {result.Nudges}.";
@@ -2996,7 +3044,8 @@ public sealed class VmOperations
         bool Ready,
         int Nudges,
         ReadyScreenState LastState,
-        int TimeoutSeconds);
+        int TimeoutSeconds,
+        bool ProcessExitedDuringWait = false);
 
     private sealed record D2RStartWaitResult(
         bool Started,
