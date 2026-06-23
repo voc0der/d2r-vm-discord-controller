@@ -589,14 +589,25 @@ internal sealed class WindowsInput
         }
 
         var windowHandle = target.WindowHandle;
-        if (restoreWindow)
+        if (restoreWindow && IsIconic(windowHandle))
         {
             // Diagnostic/status reads call this with restoreWindow: false specifically so a
             // busy/loading D2R UI thread can't stall a passive status poll; the click-coordinate
             // path (which genuinely needs the window un-minimized to land a click) opts into the
             // restore. ShowWindowAsync (not ShowWindow) posts the restore without waiting for the
-            // target thread to process it, since that thread can be busy for minutes at a time.
+            // target thread to process it, since that thread can be busy for minutes at a time -
+            // but that also means GetClientRect immediately below can run before the restore has
+            // actually taken effect, handing back the window's still-minimized rect and silently
+            // resolving every click coordinate against the wrong geometry. Only the
+            // genuinely-minimized case needs this: poll IsIconic for a bounded stretch (well
+            // under the multi-minute hangs ShowWindowAsync was introduced to avoid) so the rect
+            // read below reflects the restored window instead of racing the restore.
             ShowWindowAsync(windowHandle, SwRestore);
+            var restoreDeadline = Environment.TickCount64 + 300;
+            while (IsIconic(windowHandle) && Environment.TickCount64 < restoreDeadline)
+            {
+                Thread.Sleep(20);
+            }
         }
 
         if (!GetClientRect(windowHandle, out var clientRect))
@@ -984,6 +995,9 @@ internal sealed class WindowsInput
     // replacement for restoring windows that might belong to a hung/busy thread.
     [DllImport("user32.dll")]
     private static extern bool ShowWindowAsync(IntPtr windowHandle, int command);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr windowHandle);
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr windowHandle, out WindowRect rect);
