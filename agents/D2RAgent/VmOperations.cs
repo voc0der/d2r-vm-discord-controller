@@ -11,6 +11,13 @@ public sealed class VmOperations
     private const int MaxD2RStartTimeoutSeconds = 40;
     private const int MaxReadyStartupSkipSeconds = 45;
     private const int MaxCharacterScreenReconnectSeconds = 45;
+    // Per-VM config can be stale on already-provisioned satellites (it predates this
+    // floor and won't pick up a new default just because the code changed). These
+    // are hard floors applied on top of the configured/clamped values rather than
+    // replacements, so a slow VM still gets real time to reach the character screen
+    // instead of the agent giving up while D2R is still mid-load.
+    private const int D2RProcessStartFallbackTimeoutSeconds = 90;
+    private const int MenuReadyFallbackTimeoutSeconds = 210;
     private const int MaxJoinPrepareSeconds = 25;
     private const int ReadyStartupDetectionIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
@@ -367,12 +374,15 @@ public sealed class VmOperations
         var d2rStarted = await WaitForD2RProcessStartedAsync(
             input,
             cancellationToken,
-            GetD2RStartTimeoutSeconds());
+            Math.Max(GetD2RStartTimeoutSeconds(), D2RProcessStartFallbackTimeoutSeconds));
 
         var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken);
         if (!ready.Ready)
         {
-            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken);
+            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(
+                input,
+                cancellationToken,
+                Math.Max(GetReadyLoopTimeoutSeconds(), MenuReadyFallbackTimeoutSeconds));
             ready = detectorReady with
             {
                 Nudges = ready.Nudges + detectorReady.Nudges,
@@ -677,7 +687,10 @@ public sealed class VmOperations
         var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken);
         if (!ready.Ready)
         {
-            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(input, cancellationToken, readyTimeoutSeconds);
+            var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(
+                input,
+                cancellationToken,
+                readyTimeoutSeconds ?? Math.Max(GetReadyLoopTimeoutSeconds(), MenuReadyFallbackTimeoutSeconds));
             ready = detectorReady with
             {
                 Nudges = ready.Nudges + detectorReady.Nudges,

@@ -9,7 +9,11 @@ namespace D2RHost;
 
 public sealed class DiscordBot
 {
-    private static readonly TimeSpan ReadyCommandTimeout = TimeSpan.FromSeconds(150);
+    // 150s left ~0s margin over the agent's own internal retry budget on slower VM
+    // hardware (Battle.net launch + splash-skip retries can legitimately take several
+    // minutes), so the command was timing out moments before D2R would have reached
+    // the character screen on its own. 420s gives real headroom above that budget.
+    private static readonly TimeSpan ReadyCommandTimeout = TimeSpan.FromSeconds(420);
     private static readonly TimeSpan JoinPrepareCommandTimeout = TimeSpan.FromSeconds(35);
 
     private readonly HostConfig _config;
@@ -242,7 +246,7 @@ public sealed class DiscordBot
                 await RunVmCommandAsync(context, singleAccount, "menu_lobby", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfNotMenuReady: true);
                 return;
             case "play":
-                await RunVmCommandAsync(context, singleAccount, "menu_play", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(150), readyFirstIfNotMenuReady: true);
+                await RunVmCommandAsync(context, singleAccount, "menu_play", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(300), readyFirstIfNotMenuReady: true);
                 return;
             case "join-game":
                 await RunVmCommandAsync(context, singleAccount, "menu_join_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
