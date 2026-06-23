@@ -14,10 +14,12 @@ public sealed class VmOperations
     // Per-VM config can be stale on already-provisioned satellites (it predates this
     // floor and won't pick up a new default just because the code changed). These
     // are hard floors applied on top of the configured/clamped values rather than
-    // replacements, so a slow VM still gets real time to reach the character screen
-    // instead of the agent giving up while D2R is still mid-load.
-    private const int D2RProcessStartFallbackTimeoutSeconds = 90;
-    private const int MenuReadyFallbackTimeoutSeconds = 210;
+    // replacements, so a misconfigured (too-low) per-VM value still gets a sane
+    // minimum. They must stay below the Max*Seconds clamps above or they become the
+    // effective ceiling for every run, including ones where detection is simply
+    // wrong rather than slow.
+    private const int D2RProcessStartFallbackTimeoutSeconds = 20;
+    private const int MenuReadyFallbackTimeoutSeconds = 30;
     private const int MaxJoinPrepareSeconds = 25;
     private const int ReadyStartupDetectionIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
@@ -2457,6 +2459,7 @@ public sealed class VmOperations
         var timeout = TimeSpan.FromSeconds(timeoutSeconds ?? GetD2RStartTimeoutSeconds());
         var deadline = DateTimeOffset.UtcNow + timeout;
         var launchRetryDelay = TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds());
+        var playClickRetryDelay = TimeSpan.FromSeconds(1.5);
         var nextLaunchRetryAt = DateTimeOffset.UtcNow;
         var nextPlayClickAt = DateTimeOffset.UtcNow;
         var launchAttempts = 0;
@@ -2489,14 +2492,17 @@ public sealed class VmOperations
                 nextLaunchRetryAt = DateTimeOffset.UtcNow + launchRetryDelay;
             }
 
-            if (DateTimeOffset.UtcNow >= nextPlayClickAt
-                && TryClickBattleNetPlay(input, requireButtonReady: true))
+            if (DateTimeOffset.UtcNow >= nextPlayClickAt)
             {
-                playClicks++;
-                nextPlayClickAt = DateTimeOffset.UtcNow + launchRetryDelay;
+                if (TryClickBattleNetPlay(input))
+                {
+                    playClicks++;
+                }
+
+                nextPlayClickAt = DateTimeOffset.UtcNow + playClickRetryDelay;
             }
 
-            await Task.Delay(500, cancellationToken);
+            await Task.Delay(250, cancellationToken);
         }
     }
 
@@ -2510,7 +2516,7 @@ public sealed class VmOperations
         return LaunchBattleNetD2R();
     }
 
-    private bool TryClickBattleNetPlay(WindowsInput input, bool requireButtonReady = true)
+    private bool TryClickBattleNetPlay(WindowsInput input, bool requireButtonReady = false)
     {
         if (!_config.Ui.ClickBattleNetPlayWhenNeeded
             || !IsBattleNetRunning())
@@ -2518,23 +2524,22 @@ public sealed class VmOperations
             return false;
         }
 
+        var battleNetNames = GetBattleNetProcessNames();
         try
         {
-            if (!input.TryFocusProcess(GetBattleNetProcessNames()))
-            {
-                return false;
-            }
-
+            var focused = input.TryFocusProcess(battleNetNames);
             _ = TryDismissBattleNetWhatsNewPopup(input);
-            Thread.Sleep(100);
 
-            if (requireButtonReady && !IsBattleNetPlayButtonReady(input))
+            if (requireButtonReady && focused && !IsBattleNetPlayButtonReady(input))
             {
                 return false;
             }
 
-            var battleNetNames = GetBattleNetProcessNames();
-            input.LeftClick(_config.Ui.BattleNetPlayButton, battleNetNames);
+            if (focused)
+            {
+                input.LeftClick(_config.Ui.BattleNetPlayButton, battleNetNames);
+            }
+
             _ = input.SendWindowClick(_config.Ui.BattleNetPlayButton, battleNetNames, MouseButton.Left);
             return true;
         }
