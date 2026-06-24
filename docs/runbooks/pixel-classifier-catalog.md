@@ -11,6 +11,22 @@ comparison. Thresholds were tuned against real captures under
 `docs/runbooks/assets/d2r-ui/1366x768/`, not guessed; where a comment in the code cites
 measured numbers, the same numbers are reproduced here.
 
+## Live diagnostics: seeing the actual numbers, not just pass/fail
+
+When `lastObservedFrame` is `Unknown`, `/d2r status` and the `watch` ticker both surface
+`lastClassifierBreakdown` - one line with every sub-check's name and result. A passing check
+is just `name=T`; a failing one expands to its actual sampled values so you can see *how*
+wrong it is, e.g. `tab=F(lum=22,grey=0.14,dark=0.85,orange=0.00)` against the documented
+threshold (`tab.AverageLuminance > 28 && tab.GreyRatio > 0.25 && tab.DarkRatio < 0.80` from
+the Lobby table below) - here `lum=22` is below the `>28` floor, so that's the field to look
+at first. Built in `VmOperations.ComputeVisibleStateClassifierBreakdown`/
+`ComputeReadyScreenClassifierBreakdown`, computed only on an `Unknown` result so working runs
+don't pay the extra sampling cost or see longer watch lines. This is the same lum/grey/dark/
+orange format `FormatCharacterScreenClassifierDiagnostics` already used in the `menu_ready`
+timeout failure message (character-screen checks only, failure-message-only) - now generalized
+to cover lobby and in-game too, and available live instead of only after a full command
+timeout.
+
 Verified test coverage for everything in this doc:
 
 - `tests/D2RAgent.Tests/D2RScreenClassifierTests.cs` - unit tests against synthetic

@@ -1127,21 +1127,29 @@ public sealed class VmOperations
     {
         try
         {
+            var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.290), widthRatio: 0.45, heightRatio: 0.22, windowRelative: false, sampleGrid: sampleGrid);
+            var prompt = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.600), widthRatio: 0.32, heightRatio: 0.055, windowRelative: false, sampleGrid: sampleGrid);
             var splash = IsDiabloSplashScreen(input, sampleGrid);
             var connecting = splash && IsConnectingToBattleNetDialog(input, sampleGrid);
+            var emptyPanel = SampleD2RRegion(input, new AgentCommon.UiPoint(0.895, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: false, sampleGrid: sampleGrid);
             var offline = IsCharacterScreenOffline(input, sampleGrid: sampleGrid);
+            var play = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CharacterPlayButton), widthRatio: 0.13, heightRatio: 0.055, windowRelative: false, sampleGrid: sampleGrid);
+            var charMenuLogo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: false, sampleGrid: sampleGrid);
             var charButtons = IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid);
             var charMenu = IsCharacterMenuReady(input, windowRelative: false, sampleGrid);
             var inGame = IsInGameReady(input);
+            var joinTab = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), widthRatio: 0.10, heightRatio: 0.045, windowRelative: false, sampleGrid: sampleGrid);
             var tabReady = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab))
                 || IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab));
+            var entry = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameButton), widthRatio: 0.16, heightRatio: 0.055, windowRelative: false, sampleGrid: sampleGrid);
             var entryReady = IsLobbyEntryButtonReady(input);
+            var form = SampleD2RRegion(input, new AgentCommon.UiPoint(0.765, 0.365), widthRatio: 0.30, heightRatio: 0.42, windowRelative: false, sampleGrid: sampleGrid);
             var formReady = IsLobbyFormPanelReady(input, windowRelative: false)
                 || IsLobbyFormPanelReady(input, windowRelative: true);
 
-            return $"splash={FormatBool(splash)} connecting={FormatBool(connecting)} offline={FormatBool(offline)} "
-                + $"char(btn={FormatBool(charButtons)},menu={FormatBool(charMenu)}) inGame={FormatBool(inGame)} "
-                + $"lobby(tab={FormatBool(tabReady)},entry={FormatBool(entryReady)},form={FormatBool(formReady)})";
+            return $"{FormatCheck("splash", splash, logo)} {FormatCheck("connecting", connecting, prompt)} {FormatCheck("offline", offline, emptyPanel)} "
+                + $"char(btn={FormatCheck("", charButtons, play)},menu={FormatCheck("", charMenu, charMenuLogo)}) inGame={FormatBool(inGame)} "
+                + $"lobby(tab={FormatCheck("", tabReady, joinTab)},entry={FormatCheck("", entryReady, entry)},form={FormatCheck("", formReady, form)})";
         }
         catch (Exception)
         {
@@ -1156,14 +1164,19 @@ public sealed class VmOperations
     {
         try
         {
+            var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.290), widthRatio: 0.45, heightRatio: 0.22, windowRelative: false, sampleGrid: sampleGrid);
+            var prompt = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.600), widthRatio: 0.32, heightRatio: 0.055, windowRelative: false, sampleGrid: sampleGrid);
             var splash = IsDiabloSplashScreen(input, sampleGrid);
             var connecting = splash && IsConnectingToBattleNetDialog(input, sampleGrid);
+            var emptyPanel = SampleD2RRegion(input, new AgentCommon.UiPoint(0.895, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: false, sampleGrid: sampleGrid);
             var offline = IsCharacterScreenOffline(input, sampleGrid: sampleGrid);
+            var play = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CharacterPlayButton), widthRatio: 0.13, heightRatio: 0.055, windowRelative: false, sampleGrid: sampleGrid);
+            var charMenuLogo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: false, sampleGrid: sampleGrid);
             var charButtons = IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid);
             var charMenu = IsCharacterMenuReady(input, windowRelative: false, sampleGrid);
 
-            return $"splash={FormatBool(splash)} connecting={FormatBool(connecting)} offline={FormatBool(offline)} "
-                + $"char(btn={FormatBool(charButtons)},menu={FormatBool(charMenu)})";
+            return $"{FormatCheck("splash", splash, logo)} {FormatCheck("connecting", connecting, prompt)} {FormatCheck("offline", offline, emptyPanel)} "
+                + $"char(btn={FormatCheck("", charButtons, play)},menu={FormatCheck("", charMenu, charMenuLogo)})";
         }
         catch (Exception)
         {
@@ -1172,6 +1185,18 @@ public sealed class VmOperations
     }
 
     private static string FormatBool(bool value) => value ? "T" : "F";
+
+    // Passing checks stay a bare "name=T" - the value only earns its space in the line when
+    // it's the reason something didn't match. Reuses the same lum/grey/dark/orange summary
+    // FormatCharacterScreenClassifierDiagnostics already prints in the menu_ready timeout
+    // message, so the two are directly comparable.
+    private static string FormatCheck(string name, bool passed, ScreenRegionStats stats)
+    {
+        var prefix = string.IsNullOrEmpty(name) ? "" : $"{name}=";
+        return passed
+            ? $"{prefix}T"
+            : $"{prefix}F(lum={stats.AverageLuminance:F0},grey={stats.GreyRatio:F2},dark={stats.DarkRatio:F2},orange={stats.OrangeRatio:F2})";
+    }
 
     private WindowsInput FocusD2R()
     {
