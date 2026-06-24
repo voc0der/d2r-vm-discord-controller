@@ -23,6 +23,7 @@ public sealed class StartupReadyInputPlanTests
     {
         Assert.Equal(
             [
+                StartupReadyInputAction.FocusD2R,
                 StartupReadyInputAction.PressEscapeKey,
                 StartupReadyInputAction.ClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
@@ -36,6 +37,7 @@ public sealed class StartupReadyInputPlanTests
 
         Assert.Equal(
             [
+                StartupReadyInputAction.FocusD2R,
                 StartupReadyInputAction.PressStartupSkipKey,
                 StartupReadyInputAction.PressStartKey,
                 StartupReadyInputAction.SendWindowReadyBurst,
@@ -45,6 +47,7 @@ public sealed class StartupReadyInputPlanTests
 
         Assert.Equal(
             [
+                StartupReadyInputAction.FocusD2R,
                 StartupReadyInputAction.ClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
                 StartupReadyInputAction.PressStartKey,
@@ -56,6 +59,7 @@ public sealed class StartupReadyInputPlanTests
 
         Assert.Equal(
             [
+                StartupReadyInputAction.FocusD2R,
                 StartupReadyInputAction.ClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
                 StartupReadyInputAction.PressStartKey,

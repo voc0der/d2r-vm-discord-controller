@@ -27,6 +27,7 @@ internal sealed record StartupReadyInputPlan(
 
     public static readonly IReadOnlyList<StartupReadyInputAction> IntroActions =
     [
+        StartupReadyInputAction.FocusD2R,
         StartupReadyInputAction.PressEscapeKey,
         StartupReadyInputAction.ClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
@@ -39,6 +40,7 @@ internal sealed record StartupReadyInputPlan(
 
     public static readonly IReadOnlyList<StartupReadyInputAction> TitleActions =
     [
+        StartupReadyInputAction.FocusD2R,
         StartupReadyInputAction.PressStartupSkipKey,
         StartupReadyInputAction.PressStartKey,
         StartupReadyInputAction.SendWindowReadyBurst,
@@ -47,6 +49,7 @@ internal sealed record StartupReadyInputPlan(
 
     public static readonly IReadOnlyList<StartupReadyInputAction> SplashActions =
     [
+        StartupReadyInputAction.FocusD2R,
         StartupReadyInputAction.ClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
         StartupReadyInputAction.PressStartKey,
@@ -57,6 +60,7 @@ internal sealed record StartupReadyInputPlan(
 
     public static readonly IReadOnlyList<StartupReadyInputAction> BurstActions =
     [
+        StartupReadyInputAction.FocusD2R,
         StartupReadyInputAction.ClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
         StartupReadyInputAction.PressStartKey,

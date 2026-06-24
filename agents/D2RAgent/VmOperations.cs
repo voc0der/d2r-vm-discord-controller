@@ -1136,6 +1136,26 @@ public sealed class VmOperations
         }
     }
 
+    // SetForegroundWindow/AttachThreadInput can stall for tens of seconds on a live VM while
+    // D2R is otherwise responsive on screen - that's why startup bursts stopped calling
+    // TryPrepareD2RForInput outright. But with no focus-steal attempt at all, SendInput-based
+    // clicks land wherever OS focus already is (commonly Battle.net, still foreground) and the
+    // HWND-targeted PostMessage fallback alone often isn't enough to get a fullscreen D2R window
+    // to react before it has ever held real focus. Bound the attempt to one detection cycle so
+    // it can still win the common case without blocking the rest of the burst when it doesn't.
+    private bool TryPrepareD2RForInputBounded(WindowsInput input)
+    {
+        try
+        {
+            var task = Task.Run(() => TryPrepareD2RForInput(input));
+            return task.Wait(ReadyStartupDetectionIntervalMs) && task.Result;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     private async Task DelayCharacterScreenSettleAsync(CancellationToken cancellationToken)
     {
         var settleSeconds = Math.Max(_config.Ui.CharacterScreenSettleSeconds, 0);
@@ -1483,7 +1503,7 @@ public sealed class VmOperations
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
-                    TryReadyInputAction(() => _ = TryPrepareD2RForInput(input));
+                    TryReadyInputAction(() => _ = TryPrepareD2RForInputBounded(input));
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
                     TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
@@ -1542,7 +1562,7 @@ public sealed class VmOperations
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
-                    TryReadyInputAction(() => _ = TryPrepareD2RForInput(input));
+                    TryReadyInputAction(() => _ = TryPrepareD2RForInputBounded(input));
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
                     TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
@@ -1584,7 +1604,7 @@ public sealed class VmOperations
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
-                    TryReadyInputAction(() => _ = TryPrepareD2RForInput(input));
+                    TryReadyInputAction(() => _ = TryPrepareD2RForInputBounded(input));
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
                     TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
@@ -1632,7 +1652,7 @@ public sealed class VmOperations
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
-                    TryReadyInputAction(() => _ = TryPrepareD2RForInput(input));
+                    TryReadyInputAction(() => _ = TryPrepareD2RForInputBounded(input));
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
                     TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
