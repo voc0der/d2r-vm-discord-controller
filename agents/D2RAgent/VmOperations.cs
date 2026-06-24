@@ -1283,6 +1283,27 @@ public sealed class VmOperations
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var now = DateTimeOffset.UtcNow;
+
+            // Detect before choosing/sending this iteration's burst, not after. Detecting
+            // after meant the burst just sent could already be one detection cycle stale -
+            // including the case where the screen reached character select between the last
+            // detection and now, but lastState still said Unknown, so the generic burst (which
+            // includes Escape, then Space/Enter moments later in the same burst) fired anyway.
+            // Escape at character select can open the exit-confirmation dialog, and the
+            // following Enter can confirm it, silently exiting back to the title screen.
+            if (now >= nextDetectionAt)
+            {
+                var state = DetectReadyScreenStateFast(input);
+                lastState = state;
+                if (IsReadyScreenState(state))
+                {
+                    return Result(true, nudges, lastState, skipSeconds);
+                }
+
+                nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
+            }
+
             if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
                 // Do not press Escape here - that can cancel a real login handshake - but keep
@@ -1303,7 +1324,6 @@ public sealed class VmOperations
                 nudges++;
             }
 
-            var now = DateTimeOffset.UtcNow;
             if (keepLaunchAlive)
             {
                 NudgeD2RLaunchDuringReady(input, launchNudges);
@@ -1326,18 +1346,6 @@ public sealed class VmOperations
                 }
 
                 nextProcessCheckAt = now + TimeSpan.FromMilliseconds(ReadyStartupProcessCheckIntervalMs);
-            }
-
-            if (now >= nextDetectionAt)
-            {
-                var state = DetectReadyScreenStateFast(input);
-                lastState = state;
-                if (IsReadyScreenState(state))
-                {
-                    return Result(true, nudges, lastState, skipSeconds);
-                }
-
-                nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
@@ -1384,6 +1392,23 @@ public sealed class VmOperations
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var now = DateTimeOffset.UtcNow;
+
+            // Detect before choosing/sending this iteration's burst - see the comment in
+            // PumpStartupSkipInputsUntilCharacterScreenAsync for why this order matters
+            // (a stale lastState can send Escape+Enter at an already-reached character
+            // screen and accidentally confirm an exit dialog).
+            if (now >= nextDetectionAt)
+            {
+                lastState = DetectReadyScreenStateFast(input);
+                if (IsReadyScreenState(lastState))
+                {
+                    return Result(true, nudges, lastState, timeoutSeconds);
+                }
+
+                nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
+            }
+
             if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
                 // No Escape, but do keep nudging. A false positive here otherwise freezes the
@@ -1402,7 +1427,6 @@ public sealed class VmOperations
                 nudges++;
             }
 
-            var now = DateTimeOffset.UtcNow;
             if (keepLaunchAlive)
             {
                 NudgeD2RLaunchDuringReady(input, launchNudges);
@@ -1423,6 +1447,19 @@ public sealed class VmOperations
                 nextProcessCheckAt = now + TimeSpan.FromMilliseconds(ReadyStartupProcessCheckIntervalMs);
             }
 
+            await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
+        }
+
+        for (var i = 0; i < plan.TitleScreenKeyPressCount && DateTimeOffset.UtcNow < deadline; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var now = DateTimeOffset.UtcNow;
+
+            // Detect before choosing/sending this iteration's burst - see the comment in
+            // PumpStartupSkipInputsUntilCharacterScreenAsync for why this order matters
+            // (a stale lastState can send Escape+Enter at an already-reached character
+            // screen and accidentally confirm an exit dialog).
             if (now >= nextDetectionAt)
             {
                 lastState = DetectReadyScreenStateFast(input);
@@ -1434,12 +1471,6 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
-        }
-
-        for (var i = 0; i < plan.TitleScreenKeyPressCount && DateTimeOffset.UtcNow < deadline; i++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
             if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
                 // Still avoid Escape, but keep sending G/Space/Enter/click in case this is the
@@ -1458,7 +1489,6 @@ public sealed class VmOperations
                 nudges++;
             }
 
-            var now = DateTimeOffset.UtcNow;
             if (keepLaunchAlive)
             {
                 NudgeD2RLaunchDuringReady(input, launchNudges);
@@ -1477,17 +1507,6 @@ public sealed class VmOperations
                 }
 
                 nextProcessCheckAt = now + TimeSpan.FromMilliseconds(ReadyStartupProcessCheckIntervalMs);
-            }
-
-            if (now >= nextDetectionAt)
-            {
-                lastState = DetectReadyScreenStateFast(input);
-                if (IsReadyScreenState(lastState))
-                {
-                    return Result(true, nudges, lastState, timeoutSeconds);
-                }
-
-                nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
             await Task.Delay(plan.TitleScreenKeyPressDelayMs, cancellationToken);
