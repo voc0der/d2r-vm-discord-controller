@@ -695,7 +695,7 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        if (GetActivitySnapshot().State == D2RActivityState.LobbyOrGame)
+        if (CanUseRememberedLobbyOrGameState(input))
         {
             MarkLobbyOrGameInteraction("Preparing Join Game from existing lobby state.");
             await RestoreJoinGameFormAsync(input, args, cancellationToken);
@@ -745,9 +745,8 @@ public sealed class VmOperations
         _ = input.SendWindowEscapeKey(GetD2RProcessNames());
         await DelayStepAsync(cancellationToken);
         ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.SaveAndExitButton));
-        await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)), cancellationToken);
-        MarkCharacterScreenIdle("Save and Exit completed.");
-        return CommandResult.Success("Save and Exit flow completed.", await CollectStatusAsync(cancellationToken));
+        var postExitState = await WaitForPostSaveExitMenuAsync(input, cancellationToken);
+        return CommandResult.Success($"Save and Exit flow completed; {postExitState}.", await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult?> EnsureCharacterScreenReadyForMenuAsync(
@@ -821,6 +820,17 @@ public sealed class VmOperations
         {
             _activityState = D2RActivityState.CharacterScreenIdle;
             _characterScreenIdleSinceUtc = DateTimeOffset.UtcNow;
+            _lastActivityReason = reason;
+        }
+    }
+
+    private void MarkD2RActivityUnknown(string reason)
+    {
+        lock (_activityLock)
+        {
+            _activityState = D2RActivityState.Unknown;
+            _characterScreenIdleSinceUtc = null;
+            _lastLobbyOrGameInteractionUtc = null;
             _lastActivityReason = reason;
         }
     }
@@ -1713,9 +1723,9 @@ public sealed class VmOperations
         MarkCommandCheckpoint("EnsureLobbyOpenedAsync: start");
         _ = TryPrepareD2RForInput(input);
         var activity = GetActivitySnapshot();
-        if (activity.State == D2RActivityState.LobbyOrGame)
+        if (CanUseRememberedLobbyOrGameState(input))
         {
-            MarkLobbyOrGameInteraction("Using remembered lobby/game state for menu automation.");
+            MarkLobbyOrGameInteraction("Using visible or remembered lobby/game state for menu automation.");
             return null;
         }
 
@@ -1732,6 +1742,43 @@ public sealed class VmOperations
         await ClickLobbyDirectAsync(input, cancellationToken);
         MarkLobbyOrGameInteraction("Clicked Lobby without visual verification.");
         return null;
+    }
+
+    private async Task<string> WaitForPostSaveExitMenuAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        var timeoutSeconds = Math.Clamp(
+            Math.Max(Math.Max(_config.Ui.GameLoadSeconds, _config.Ui.LobbyLoadSeconds), 3),
+            3,
+            12);
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(timeoutSeconds);
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = TryPrepareD2RForInput(input);
+
+            if (IsAnyLobbyEntryMenuVisible(input))
+            {
+                MarkLobbyOrGameInteraction("Save and Exit returned to the lobby.");
+                return "returned to the lobby";
+            }
+
+            if (IsCharacterScreenReady(input) || IsCharacterScreenOffline(input))
+            {
+                MarkCharacterScreenIdle("Save and Exit returned to the character screen.");
+                return "returned to the character screen";
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                MarkD2RActivityUnknown("Save and Exit completed, but the post-exit menu state was not detected.");
+                return "post-exit menu state was not visually confirmed";
+            }
+
+            await Task.Delay(EntryPollIntervalMs, cancellationToken);
+        }
     }
 
     private async Task ClickLobbyFromRememberedCharacterScreenAsync(

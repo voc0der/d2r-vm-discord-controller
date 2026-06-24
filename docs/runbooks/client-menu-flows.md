@@ -223,7 +223,7 @@ If a character-screen menu command is sent while D2R is running but still on an 
 
 `/d2r status` includes an input diagnostic summary when D2R is running: the agent version, whether the process has a main window, whether it is foreground, the foreground process name, the target session, and the current D2R window/client rectangle. It also reports the last input action with target screen coordinate and cursor before/after. D2R and Battle.net detection first use configured process names, then fall back to visible window titles such as `Diablo II: Resurrected`; this covers installs where the process name differs from the expected `D2R`. D2R menu clicks use full-screen proportional coordinates first so a slow process/window lookup cannot block an obvious menu click. If `SetCursorPos`/`mouse_event` produces no visible cursor movement or the cursor after-coordinate does not match the target, restart the `D2R VM Agent` scheduled task in the logged-in desktop session and verify the task uses `LogonType Interactive` and `RunLevel Highest`.
 
-After launch/ready or Save and Exit leaves D2R at the character screen, the VM agent starts a character-screen idle timer. If no lobby/game command touches that client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
+After launch/ready, or after Save and Exit only when D2R visibly returns to the character screen, the VM agent starts a character-screen idle timer. If Save and Exit returns to the previous Join/Create lobby tab instead, the agent must keep that VM in `LobbyOrGame` so the next `/d2r join-all` restores the Join Game form instead of clicking around as though it were at character select. If no lobby/game command touches a character-screen-idle client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 
 Confirmed via Task Manager Details on a live VM: the game process is literally named `D2R.exe` (matches the default configured process name), and `D2R.exe`, `D2RAgent.exe`, and `ctfmon.exe` all run under a dedicated Windows account named `D2R`, not the RDP/interactive login account. `/d2r status` has been observed reporting `process search=D2R, matches=0` (and Battle.net/D2R both "stopped") for several minutes at a stretch while both were visibly open and responsive on screen, which then cascades into menu commands (e.g. `menu_create_game`) timing out because the lobby/character-screen readiness checks depend on the same process/window resolution. The process name itself is confirmed correct, so if this recurs, check session/window-station placement next: confirm the `D2R VM Agent` scheduled task runs in the same interactive desktop session as the `D2R` account's D2R/Battle.net windows (see the `LogonType Interactive`/`RunLevel Highest` guidance above) rather than a non-interactive session that can enumerate process names but not their windows.
 
@@ -375,6 +375,8 @@ Automation:
 ```text
 /d2r save-exit hc1
 ```
+
+After clicking Save and Exit, automation polls for either lobby-form evidence or character-screen evidence. Both landings are normal: leaving from a lobby-created game can return to the exact Join/Create tab used for the previous game, while other cases can land back at character select. The remembered activity state must match that visible landing because a following `/d2r join-all` should resume from the existing lobby form when it is already there.
 
 Notes:
 
