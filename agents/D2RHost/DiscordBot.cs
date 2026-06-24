@@ -639,6 +639,10 @@ public sealed class DiscordBot
                         Task = RunCreateGameAllReadyAsync(entry, index, staggerSeconds, argsByAccount[entry.Key])
                     })
                     .ToDictionary(item => item.Key, item => item.Task, StringComparer.OrdinalIgnoreCase);
+                var prepareJoinerTasks = joiners.ToDictionary(
+                    entry => entry.Key,
+                    entry => RunCreateGameAllPrepareJoinerAsync(entry, readyTasks[entry.Key], argsByAccount[entry.Key]),
+                    StringComparer.OrdinalIgnoreCase);
 
                 var creatorReadyResult = await readyTasks[creator.Key];
                 if (!creatorReadyResult.Ok)
@@ -654,10 +658,6 @@ public sealed class DiscordBot
                     return;
                 }
 
-                var prepareJoinerTasks = joiners.ToDictionary(
-                    entry => entry.Key,
-                    entry => RunCreateGameAllPrepareJoinerAsync(entry, readyTasks[entry.Key], argsByAccount[entry.Key]),
-                    StringComparer.OrdinalIgnoreCase);
                 var warmupMessage = FormatCreateGameAllCreatorReadyResult(creatorReadyResult, creator.Key, game.GameName, joiners.Length);
                 await UpdateGameSessionAsync("Creator ready; creating game while joiners prepare.", joined: 0, detail: warmupMessage);
                 await SendFollowupSafeAsync(context, warmupMessage);
