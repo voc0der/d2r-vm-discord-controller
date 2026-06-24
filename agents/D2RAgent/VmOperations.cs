@@ -1604,7 +1604,15 @@ public sealed class VmOperations
                     TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true));
+                    // Escape is deliberately NOT sent here. The dedicated intro burst
+                    // (SendReadyIntroClick) already gets a generous, time-bounded chance to
+                    // Escape-skip the cinematic; by the time the title-skip burst is running,
+                    // that budget is spent. Live runs showed the classifier can stay stuck on
+                    // "Unknown" at an already-reached character screen for a minute or more
+                    // (detection blind spot, not a real cinematic), and Escape there can open
+                    // D2R's exit-confirmation dialog - with the Space/Enter sent moments later
+                    // in this same burst risking confirming it and exiting back to title.
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: false));
                     break;
             }
         }
@@ -1700,7 +1708,11 @@ public sealed class VmOperations
                     TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true));
+                    // No Escape here - see the comment in SendReadyTitleSkipBurst. This is the
+                    // fallback loop with the largest timeout budget of the three, so it's the
+                    // most exposed to spending a long stretch sending Escape+Enter at an
+                    // already-reached, misclassified character screen.
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: false));
                     break;
             }
         }
