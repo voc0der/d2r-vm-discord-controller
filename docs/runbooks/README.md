@@ -32,6 +32,8 @@ Host diagnostic assets live in `docs/runbooks/assets/d2r-host/`:
 
 The host and VM-agent implementation supports launch, status, screenshots, remote links, game detail storage, and the menu movement documented in these runbooks. These screenshots are the source-of-truth reference for tuning the current coordinate-based navigation.
 
+The canonical 1366x768 click/sample coordinate table is [automation-coordinate-catalog.md](automation-coordinate-catalog.md). Runtime automation should use the shared `D2RUiCoordinateCatalog` helper so click targets, screenshot X/Y notes, and fallback defaults stay aligned.
+
 See [client-menu-flows.md](client-menu-flows.md).
 
 Friend-list targeting notes live in [friend-selector-design.md](friend-selector-design.md). Do not commit screenshots that show real Battle.net tags.

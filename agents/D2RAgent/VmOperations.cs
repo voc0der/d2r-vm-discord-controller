@@ -521,7 +521,7 @@ public sealed class VmOperations
         }
 
         await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
-        ClickD2R(input, _config.Ui.CharacterPlayButton);
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CharacterPlayButton));
         var entry = await WaitForGameEntryAsync(input, cancellationToken);
         if (entry != GameEntryWaitResult.EnteredGame)
         {
@@ -550,8 +550,8 @@ public sealed class VmOperations
 
         var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
-            _config.Ui.JoinGameButton,
-            _config.Ui.JoinGameTab,
+            GetUiPoint(D2RUiCoordinateTarget.JoinGameButton),
+            GetUiPoint(D2RUiCoordinateTarget.JoinGameTab),
             () => RestoreJoinGameFormAsync(input, args, cancellationToken),
             cancellationToken);
         if (!joinEntry.Entered)
@@ -599,8 +599,8 @@ public sealed class VmOperations
 
         var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
-            _config.Ui.JoinGameButton,
-            _config.Ui.JoinGameTab,
+            GetUiPoint(D2RUiCoordinateTarget.JoinGameButton),
+            GetUiPoint(D2RUiCoordinateTarget.JoinGameTab),
             () => RestoreJoinGameFormAsync(input, args, cancellationToken),
             cancellationToken);
         if (!joinEntry.Entered)
@@ -631,17 +631,17 @@ public sealed class VmOperations
         }
 
         MarkCommandCheckpoint("CreateGameAsync: ClickLobbyTabDirectAsync(CreateGameTab)");
-        await ClickLobbyTabDirectAsync(input, _config.Ui.CreateGameTab, cancellationToken);
+        await ClickLobbyTabDirectAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab), cancellationToken);
 
         MarkCommandCheckpoint("CreateGameAsync: filling game name/password fields");
-        await FillTextFieldAsync(input, _config.Ui.CreateGameNameField, args.GameName, cancellationToken);
-        await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameNameField), args.GameName, cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreatePasswordField), args.Password ?? "", cancellationToken);
         ClickD2R(input, GetCreateDifficultyPoint(args.Difficulty));
         await DelayStepAsync(cancellationToken);
         var createEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
-            _config.Ui.CreateGameButton,
-            _config.Ui.CreateGameTab,
+            GetUiPoint(D2RUiCoordinateTarget.CreateGameButton),
+            GetUiPoint(D2RUiCoordinateTarget.CreateGameTab),
             () => RestoreCreateGameFormAsync(input, args, cancellationToken),
             cancellationToken,
             "A game-entry error dialog appeared after clicking Create Game. The game name may already exist.");
@@ -709,11 +709,11 @@ public sealed class VmOperations
             return lobby;
         }
 
-        ClickD2R(input, _config.Ui.LobbyPartyIcon);
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
         await DelayLongAsync(cancellationToken);
         ClickD2R(input, GetFriendRowPoint(args.FriendRow), MouseButton.Right);
         await DelayStepAsync(cancellationToken);
-        ClickD2R(input, _config.Ui.FriendContextJoinGame);
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.FriendContextJoinGame));
         var entry = await WaitForGameEntryAsync(input, cancellationToken);
         if (entry != GameEntryWaitResult.EnteredGame)
         {
@@ -732,7 +732,7 @@ public sealed class VmOperations
         input.PressEscape();
         _ = input.SendWindowEscapeKey(GetD2RProcessNames());
         await DelayStepAsync(cancellationToken);
-        ClickD2R(input, _config.Ui.SaveAndExitButton);
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.SaveAndExitButton));
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(_config.Ui.LobbyLoadSeconds, 1)), cancellationToken);
         MarkCharacterScreenIdle("Save and Exit completed.");
         return CommandResult.Success("Save and Exit flow completed.", await CollectStatusAsync(cancellationToken));
@@ -1054,7 +1054,7 @@ public sealed class VmOperations
 
             if (IsCharacterScreenOffline(input))
             {
-                ClickD2R(input, _config.Ui.CharacterOnlineTab);
+                ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CharacterOnlineTab));
             }
 
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
@@ -1234,7 +1234,8 @@ public sealed class VmOperations
 
     private void SendReadyIntroClick(WindowsInput input)
     {
-        var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
+        var introPoint = GetUiPoint(D2RUiCoordinateTarget.IntroSkipPoint);
+        var target = ResolveD2RScreenPoint(introPoint);
         var beforeCursor = input.GetCursorPosition();
         foreach (var action in StartupReadyInputPlan.IntroActions)
         {
@@ -1253,10 +1254,10 @@ public sealed class VmOperations
                     _ = input.SendWindowEscapeKey(GetD2RProcessNames());
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
-                    ClickD2R(input, _config.Ui.IntroSkipPoint);
+                    ClickD2R(input, introPoint);
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
-                    _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
+                    _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left);
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
                     input.PressStartupSkipKey();
@@ -1274,7 +1275,7 @@ public sealed class VmOperations
         RecordD2RInputAction(
             kind: "key",
             button: "Escape/G/Space/Enter",
-            point: _config.Ui.IntroSkipPoint,
+            point: introPoint,
             target,
             beforeCursor,
             afterCursor,
@@ -1289,7 +1290,8 @@ public sealed class VmOperations
 
     private void SendReadyTitleSkipBurst(WindowsInput input)
     {
-        var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
+        var introPoint = GetUiPoint(D2RUiCoordinateTarget.IntroSkipPoint);
+        var target = ResolveD2RScreenPoint(introPoint);
         var beforeCursor = input.GetCursorPosition();
         foreach (var action in StartupReadyInputPlan.TitleActions)
         {
@@ -1311,7 +1313,7 @@ public sealed class VmOperations
                     _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: true);
+                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true);
                     break;
             }
         }
@@ -1320,7 +1322,7 @@ public sealed class VmOperations
         RecordD2RInputAction(
             kind: "key",
             button: "G/Space/Enter",
-            point: _config.Ui.IntroSkipPoint,
+            point: introPoint,
             target,
             beforeCursor,
             afterCursor,
@@ -1330,7 +1332,8 @@ public sealed class VmOperations
 
     private void SendReadySplashContinueBurst(WindowsInput input)
     {
-        var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
+        var introPoint = GetUiPoint(D2RUiCoordinateTarget.IntroSkipPoint);
+        var target = ResolveD2RScreenPoint(introPoint);
         var beforeCursor = input.GetCursorPosition();
         foreach (var action in StartupReadyInputPlan.SplashActions)
         {
@@ -1343,10 +1346,10 @@ public sealed class VmOperations
                     _ = TryClickD2RWindowCenter(input);
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
-                    ClickD2R(input, _config.Ui.IntroSkipPoint);
+                    ClickD2R(input, introPoint);
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
-                    _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
+                    _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left);
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
                     input.PressStartupSkipKey();
@@ -1358,7 +1361,7 @@ public sealed class VmOperations
                     _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: false);
+                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: false);
                     break;
             }
         }
@@ -1367,7 +1370,7 @@ public sealed class VmOperations
         RecordD2RInputAction(
             kind: "key",
             button: "SplashContinue/G/Space/Enter",
-            point: _config.Ui.IntroSkipPoint,
+            point: introPoint,
             target,
             beforeCursor,
             afterCursor,
@@ -1377,7 +1380,8 @@ public sealed class VmOperations
 
     private void SendReadySkipBurst(WindowsInput input)
     {
-        var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
+        var introPoint = GetUiPoint(D2RUiCoordinateTarget.IntroSkipPoint);
+        var target = ResolveD2RScreenPoint(introPoint);
         var beforeCursor = input.GetCursorPosition();
         foreach (var action in StartupReadyInputPlan.BurstActions)
         {
@@ -1390,10 +1394,10 @@ public sealed class VmOperations
                     _ = TryClickD2RWindowCenter(input);
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
-                    ClickD2R(input, _config.Ui.IntroSkipPoint);
+                    ClickD2R(input, introPoint);
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
-                    _ = input.SendWindowClick(_config.Ui.IntroSkipPoint, GetD2RProcessNames(), MouseButton.Left);
+                    _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left);
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
                     input.PressStartupSkipKey();
@@ -1405,7 +1409,7 @@ public sealed class VmOperations
                     _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), _config.Ui.IntroSkipPoint, includeEscape: true);
+                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true);
                     break;
             }
         }
@@ -1414,7 +1418,7 @@ public sealed class VmOperations
         RecordD2RInputAction(
             kind: "key",
             button: "G/Space/Enter",
-            point: _config.Ui.IntroSkipPoint,
+            point: introPoint,
             target,
             beforeCursor,
             afterCursor,
@@ -1627,7 +1631,7 @@ public sealed class VmOperations
     {
         cancellationToken.ThrowIfCancellationRequested();
         _ = TryPrepareD2RForInput(input);
-        ClickD2R(input, _config.Ui.CharacterLobbyButton);
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CharacterLobbyButton));
         await DelayLongAsync(cancellationToken);
     }
 
@@ -1692,7 +1696,7 @@ public sealed class VmOperations
     {
         cancellationToken.ThrowIfCancellationRequested();
         _ = TryPrepareD2RForInput(input);
-        ClickD2R(input, _config.Ui.CharacterLobbyButton);
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CharacterLobbyButton));
         await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)), cancellationToken);
 
         return true;
@@ -1889,7 +1893,7 @@ public sealed class VmOperations
         for (var attempt = 0; attempt < 3; attempt++)
         {
             _ = TryPrepareD2RForInput(input);
-            ClickD2R(input, _config.Ui.GameEntryErrorDialogOkButton);
+            ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.GameEntryErrorDialogOkButton));
             await DelayLongAsync(cancellationToken);
 
             if (!IsGameEntryErrorDialogOpen(input))
@@ -1931,11 +1935,11 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        await ClickLobbyTabDirectAsync(input, _config.Ui.JoinGameTab, cancellationToken);
+        await ClickLobbyTabDirectAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), cancellationToken);
 
         await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
-        await FillTextFieldAsync(input, _config.Ui.JoinGameNameField, args.GameName ?? "", cancellationToken);
-        await FillTextFieldAsync(input, _config.Ui.JoinPasswordField, args.Password ?? "", cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameNameField), args.GameName ?? "", cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinPasswordField), args.Password ?? "", cancellationToken);
         return true;
     }
 
@@ -1944,10 +1948,10 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        await ClickLobbyTabDirectAsync(input, _config.Ui.CreateGameTab, cancellationToken);
+        await ClickLobbyTabDirectAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab), cancellationToken);
 
-        await FillTextFieldAsync(input, _config.Ui.CreateGameNameField, args.GameName ?? "", cancellationToken);
-        await FillTextFieldAsync(input, _config.Ui.CreatePasswordField, args.Password ?? "", cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameNameField), args.GameName ?? "", cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreatePasswordField), args.Password ?? "", cancellationToken);
         ClickD2R(input, GetCreateDifficultyPoint(args.Difficulty));
         await DelayStepAsync(cancellationToken);
         return true;
@@ -2101,8 +2105,8 @@ public sealed class VmOperations
 
     private bool IsCharacterButtonPairReady(WindowsInput input, bool windowRelative, int sampleGrid = MenuSampleGrid)
     {
-        var play = SampleD2RRegion(input, _config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative, sampleGrid: sampleGrid);
-        var lobby = SampleD2RRegion(input, _config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative, sampleGrid: sampleGrid);
+        var play = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CharacterPlayButton), widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative, sampleGrid: sampleGrid);
+        var lobby = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CharacterLobbyButton), widthRatio: 0.13, heightRatio: 0.055, windowRelative: windowRelative, sampleGrid: sampleGrid);
         return D2RScreenClassifier.IsCharacterButtonRegion(play)
             && D2RScreenClassifier.IsCharacterButtonRegion(lobby)
             && IsOnlineCharacterListReady(input, windowRelative, sampleGrid);
@@ -2163,8 +2167,8 @@ public sealed class VmOperations
             var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: false, sampleGrid: MenuSampleGrid);
             var options = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.405), widthRatio: 0.13, heightRatio: 0.05, windowRelative: false, sampleGrid: MenuSampleGrid);
             var cinematics = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.460), widthRatio: 0.13, heightRatio: 0.05, windowRelative: false, sampleGrid: MenuSampleGrid);
-            var play = SampleD2RRegion(input, _config.Ui.CharacterPlayButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: false, sampleGrid: MenuSampleGrid);
-            var lobby = SampleD2RRegion(input, _config.Ui.CharacterLobbyButton, widthRatio: 0.13, heightRatio: 0.055, windowRelative: false, sampleGrid: MenuSampleGrid);
+            var play = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CharacterPlayButton), widthRatio: 0.13, heightRatio: 0.055, windowRelative: false, sampleGrid: MenuSampleGrid);
+            var lobby = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CharacterLobbyButton), widthRatio: 0.13, heightRatio: 0.055, windowRelative: false, sampleGrid: MenuSampleGrid);
             var characterList = SampleD2RRegion(input, new AgentCommon.UiPoint(0.890, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: false, sampleGrid: MenuSampleGrid);
 
             static string Fmt(string name, ScreenRegionStats stats) =>
@@ -2201,7 +2205,7 @@ public sealed class VmOperations
 
     private bool IsGameEntryErrorDialogOpen(WindowsInput input)
     {
-        var okButton = input.SampleRegion(_config.Ui.GameEntryErrorDialogOkButton, widthRatio: 0.14, heightRatio: 0.050);
+        var okButton = input.SampleRegion(GetUiPoint(D2RUiCoordinateTarget.GameEntryErrorDialogOkButton), widthRatio: 0.14, heightRatio: 0.050);
         var topBorder = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.381), widthRatio: 0.32, heightRatio: 0.025);
         var body = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.465), widthRatio: 0.32, heightRatio: 0.20);
         return okButton.AverageLuminance > 45
@@ -2250,7 +2254,7 @@ public sealed class VmOperations
 
     private bool IsLobbyEntryButtonReady(WindowsInput input, bool windowRelative)
     {
-        var stats = SampleD2RRegion(input, _config.Ui.CreateGameButton, widthRatio: 0.16, heightRatio: 0.055, windowRelative: windowRelative);
+        var stats = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameButton), widthRatio: 0.16, heightRatio: 0.055, windowRelative: windowRelative);
         return D2RScreenClassifier.IsLobbyEntryButtonReady(stats);
     }
 
@@ -2270,7 +2274,7 @@ public sealed class VmOperations
 
     private bool IsFriendJoinGameOptionReady(WindowsInput input, bool windowRelative)
     {
-        var stats = SampleD2RRegion(input, _config.Ui.FriendContextJoinGame, widthRatio: 0.12, heightRatio: 0.040, windowRelative: windowRelative);
+        var stats = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.FriendContextJoinGame), widthRatio: 0.12, heightRatio: 0.040, windowRelative: windowRelative);
         return stats.AverageLuminance > 36
             && stats.GreyRatio > 0.56
             && stats.DarkRatio < 0.44;
@@ -2289,11 +2293,11 @@ public sealed class VmOperations
 
     private InGameHudEvidence SampleInGameHudEvidence(WindowsInput input, bool windowRelative)
     {
-        var actionHud = SampleD2RRegion(input, _config.Ui.InGameHudBar, widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
-        var modernHealth = SampleD2RRegion(input, _config.Ui.ModernHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        var modernMana = SampleD2RRegion(input, _config.Ui.ModernManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        var legacyHealth = SampleD2RRegion(input, _config.Ui.LegacyHealthGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        var legacyMana = SampleD2RRegion(input, _config.Ui.LegacyManaGlobe, widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var actionHud = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.InGameHudBar), widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
+        var modernHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var modernMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var legacyHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var legacyMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: windowRelative);
         var centerHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.22, heightRatio: 0.08, windowRelative: windowRelative);
         return new InGameHudEvidence(modernHealth, modernMana, legacyHealth, legacyMana, actionHud, bottomHud, centerHud);
@@ -2362,7 +2366,7 @@ public sealed class VmOperations
             return;
         }
 
-        ClickD2R(input, _config.Ui.JoinDifficultyDropdown);
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.JoinDifficultyDropdown));
         await DelayFastMenuAsync(cancellationToken);
         ClickD2R(input, GetJoinDifficultyPoint(difficulty));
         await DelayFastMenuAsync(cancellationToken);
@@ -2500,8 +2504,8 @@ public sealed class VmOperations
             return false;
         }
 
-        var createTab = IsLobbyTabReady(input, _config.Ui.CreateGameTab);
-        var joinTab = IsLobbyTabReady(input, _config.Ui.JoinGameTab);
+        var createTab = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab));
+        var joinTab = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab));
         var entry = IsLobbyEntryButtonReady(input);
         var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
         var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
@@ -2537,55 +2541,29 @@ public sealed class VmOperations
         await DelayFastMenuAsync(cancellationToken);
     }
 
+    private AgentCommon.UiPoint GetUiPoint(D2RUiCoordinateTarget target)
+    {
+        return D2RUiCoordinateCatalog.GetPoint(_config.Ui, target);
+    }
+
     private AgentCommon.UiPoint GetCharacterSlotPoint(int? characterSlot)
     {
-        var slot = characterSlot ?? _config.Ui.DefaultCharacterSlot;
-        if (slot < 1 || slot > _config.Ui.CharacterSlots.Length)
-        {
-            throw new InvalidOperationException($"Character slot must be between 1 and {_config.Ui.CharacterSlots.Length}.");
-        }
-
-        return _config.Ui.CharacterSlots[slot - 1];
+        return D2RUiCoordinateCatalog.GetCharacterSlotPoint(_config.Ui, characterSlot);
     }
 
     private AgentCommon.UiPoint GetFriendRowPoint(int? friendRow)
     {
-        var row = friendRow ?? _config.Ui.DefaultFriendRow;
-        if (row < 1)
-        {
-            throw new InvalidOperationException("friendRow must be 1 or greater.");
-        }
-
-        return new AgentCommon.UiPoint(
-            _config.Ui.FriendRowStart.X,
-            _config.Ui.FriendRowStart.Y + ((row - 1) * _config.Ui.FriendRowHeight));
+        return D2RUiCoordinateCatalog.GetFriendRowPoint(_config.Ui, friendRow);
     }
 
     private AgentCommon.UiPoint GetCreateDifficultyPoint(string? difficulty)
     {
-        return NormalizeDifficulty(difficulty) switch
-        {
-            "nightmare" => _config.Ui.CreateNightmareButton,
-            "hell" => _config.Ui.CreateHellButton,
-            _ => _config.Ui.CreateNormalButton
-        };
+        return D2RUiCoordinateCatalog.GetCreateDifficultyPoint(_config.Ui, difficulty);
     }
 
     private AgentCommon.UiPoint GetJoinDifficultyPoint(string? difficulty)
     {
-        return NormalizeDifficulty(difficulty) switch
-        {
-            "nightmare" => _config.Ui.JoinDifficultyNightmareOption,
-            "hell" => _config.Ui.JoinDifficultyHellOption,
-            _ => _config.Ui.JoinDifficultyNormalOption
-        };
-    }
-
-    private static string NormalizeDifficulty(string? difficulty)
-    {
-        return string.IsNullOrWhiteSpace(difficulty)
-            ? "normal"
-            : difficulty.Trim().ToLowerInvariant();
+        return D2RUiCoordinateCatalog.GetJoinDifficultyPoint(_config.Ui, difficulty);
     }
 
     private Task DelayStepAsync(CancellationToken cancellationToken)
@@ -2766,10 +2744,10 @@ public sealed class VmOperations
 
             if (focused)
             {
-                input.LeftClick(_config.Ui.BattleNetPlayButton, battleNetNames);
+                input.LeftClick(GetUiPoint(D2RUiCoordinateTarget.BattleNetPlayButton), battleNetNames);
             }
 
-            _ = input.SendWindowClick(_config.Ui.BattleNetPlayButton, battleNetNames, MouseButton.Left);
+            _ = input.SendWindowClick(GetUiPoint(D2RUiCoordinateTarget.BattleNetPlayButton), battleNetNames, MouseButton.Left);
             return true;
         }
         catch (InvalidOperationException)
@@ -2792,15 +2770,15 @@ public sealed class VmOperations
         }
 
         var battleNetNames = GetBattleNetProcessNames();
-        input.LeftClick(_config.Ui.BattleNetWhatsNewCloseButton, battleNetNames);
-        _ = input.SendWindowClick(_config.Ui.BattleNetWhatsNewCloseButton, battleNetNames, MouseButton.Left);
+        input.LeftClick(GetUiPoint(D2RUiCoordinateTarget.BattleNetWhatsNewCloseButton), battleNetNames);
+        _ = input.SendWindowClick(GetUiPoint(D2RUiCoordinateTarget.BattleNetWhatsNewCloseButton), battleNetNames, MouseButton.Left);
         return true;
     }
 
     private bool IsBattleNetWhatsNewPopupOpen(WindowsInput input)
     {
         var title = input.SampleRegion(
-            _config.Ui.BattleNetWhatsNewTitle,
+            GetUiPoint(D2RUiCoordinateTarget.BattleNetWhatsNewTitle),
             widthRatio: 0.16,
             heightRatio: 0.06,
             coordinateProcessNames: GetBattleNetProcessNames());
@@ -2814,7 +2792,7 @@ public sealed class VmOperations
     private bool IsBattleNetPlayButtonReady(WindowsInput input)
     {
         var stats = input.SampleRegion(
-            _config.Ui.BattleNetPlayButton,
+            GetUiPoint(D2RUiCoordinateTarget.BattleNetPlayButton),
             widthRatio: 0.16,
             heightRatio: 0.06,
             coordinateProcessNames: GetBattleNetProcessNames());

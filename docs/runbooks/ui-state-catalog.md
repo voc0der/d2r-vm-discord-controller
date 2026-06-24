@@ -2,6 +2,8 @@
 
 This catalog names the UI states represented by the screenshot assets. Keep filenames stable so docs and future tooling can reference them.
 
+Coordinates for click/sample targets in these states are centralized in [automation-coordinate-catalog.md](automation-coordinate-catalog.md). Use that table when retuning a screenshot state: it lists the 1366x768 X/Y click centers, proportional config values, and snippet crop rectangles separately.
+
 | State | Asset | Purpose |
 | --- | --- | --- |
 | Battle.net ready | `assets/d2r-ui/logged_in_battle_net.jpg` | Battle.net is logged in, D2R selected, Play button visible. |
@@ -33,3 +35,15 @@ Private captures:
 Host diagnostics:
 
 - `assets/d2r-host/gateway_blocked_command.jpg`: Host console warning from a slash command handler blocking the Discord gateway task.
+
+Primary state-to-coordinate links:
+
+| State family | Primary helper targets | 1366x768 X/Y |
+| --- | --- | --- |
+| Battle.net ready | `BattleNetPlayButton`, `BattleNetWhatsNewCloseButton` | `176,540`, `1152,112` |
+| Intro/title/splash | `IntroSkipPoint` | `683,384` |
+| Character select | `CharacterSlot1`, `CharacterPlayButton`, `CharacterLobbyButton`, `CharacterOnlineTab` | `1216,92`, `574,689`, `799,689`, `1161,38` |
+| Join Game lobby | `JoinGameTab`, `JoinGameNameField`, `JoinPasswordField`, `JoinGameButton` | `1046,55`, `952,106`, `1143,106`, `1045,478` |
+| Create Game lobby | `CreateGameTab`, `CreateGameNameField`, `CreatePasswordField`, `CreateGameButton` | `919,55`, `1046,123`, `1046,172`, `1045,475` |
+| Friend follow | `LobbyPartyIcon`, `FriendRowStart`, `FriendContextJoinGame` | `131,543`, `246,138`, `434,247` |
+| In game | `ModernHealthGlobe`, `ModernManaGlobe`, `InGameHudBar` | `355,691`, `1038,691`, `683,733` |

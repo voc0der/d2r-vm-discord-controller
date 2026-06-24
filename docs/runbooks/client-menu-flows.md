@@ -8,6 +8,33 @@ The VM agent automates these flows with coordinate-based input and small visual 
 
 The current baseline resolution is **1366x768**. New captures live under `assets/d2r-ui/1366x768/`; use those first when tuning detector regions or coordinate points. Small anchor crops live under `assets/d2r-ui/1366x768/snippets/`; prefer those over whole-scene reasoning when adding detectors. Older captures remain in `assets/d2r-ui/` as historical references. BattleTag suffix numbers visible in the friend context menu captures have been redacted in the checked-in 1366x768 copies.
 
+The canonical click/sample coordinate table is [automation-coordinate-catalog.md](automation-coordinate-catalog.md). Runtime code should use `D2RUiCoordinateCatalog` rather than reading raw `ui.*` points directly; the helper keeps the default 1366x768 X/Y values and fallback behavior in one place.
+
+## 1366x768 Flow Click Map
+
+| Flow step | Helper target | 1366x768 X,Y | Snippet/capture anchor |
+| --- | --- | --- | --- |
+| Click Battle.net Play | `BattleNetPlayButton` | `176,540` | `logged_in_battle_net.jpg` |
+| Close Battle.net What's New popup | `BattleNetWhatsNewCloseButton` | `1152,112` | `battlenet_whats_new_popup.jpg` |
+| Skip intro/title/splash | `IntroSkipPoint` | `683,384` | `1366x768/post_intro_splash_screen.png` |
+| Select character slot 1 | `CharacterSlot1` | `1216,92` | `1366x768/char_screen_act1.png` |
+| Recover from offline character screen | `CharacterOnlineTab` | `1161,38` | `1366x768/snippets/character_online_tab_text.png` |
+| Click character Play | `CharacterPlayButton` | `574,689` | `1366x768/snippets/character_play_button_text.png` |
+| Click character Lobby | `CharacterLobbyButton` | `799,689` | `1366x768/snippets/character_lobby_button_text.png` |
+| Click Join Game tab | `JoinGameTab` | `1046,55` | `1366x768/snippets/lobby_join_game_tab_text.png` |
+| Type Join Game name | `JoinGameNameField` | `952,106` | `1366x768/lobby_join_game_screen.png` |
+| Type Join Game password | `JoinPasswordField` | `1143,106` | `1366x768/lobby_join_game_screen.png` |
+| Submit Join Game | `JoinGameButton` | `1045,478` | `1366x768/snippets/join_game_button_text.png` |
+| Click Create Game tab | `CreateGameTab` | `919,55` | `1366x768/snippets/lobby_create_game_tab_text.png` |
+| Type Create Game name | `CreateGameNameField` | `1046,123` | `1366x768/lobby_create_game_screen.png` |
+| Type Create Game password | `CreatePasswordField` | `1046,172` | `1366x768/lobby_create_game_screen.png` |
+| Submit Create Game | `CreateGameButton` | `1045,475` | `1366x768/snippets/create_game_button_text.png` |
+| Dismiss game-entry error | `GameEntryErrorDialogOkButton` | `683,414` | `game_and_password_dont_match.jpg` |
+| Open friends drawer | `LobbyPartyIcon` | `131,543` | `1366x768/lobby_click_party_icon.png` |
+| Right-click friend row 1 | `FriendRowStart` | `246,138` | `1366x768/lobby_right_click_friend_join_game_available.png` |
+| Click friend Join Game | `FriendContextJoinGame` | `434,247` | `1366x768/lobby_right_click_friend_join_game_available.png` |
+| Click Save and Exit | `SaveAndExitButton` | `683,337` | `save_and_exit_resurrected.jpg` |
+
 ## Visual Anchors
 
 The automation should not depend on whole-scene matching. Treat each state as a set of small anchors near expected proportional regions, then use fallback regions when the first probe is inconclusive.

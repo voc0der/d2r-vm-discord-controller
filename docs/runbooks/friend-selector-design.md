@@ -42,10 +42,20 @@ The implemented selector is driven by visible row number and config, not by chec
     "defaultFriendRow": 1,
     "friendRowStart": { "x": 0.18, "y": 0.18 },
     "friendRowHeight": 0.049,
-    "friendContextJoinGame": { "x": 0.318, "y": 0.354 }
+    "friendContextJoinGame": { "x": 0.318, "y": 0.322 }
   }
 }
 ```
+
+1366x768 click coordinates:
+
+| Target | Config/helper target | 1366x768 X,Y | Notes |
+| --- | --- | --- | --- |
+| Open friends drawer | `LobbyPartyIcon` | `131,543` | Icon beside chat input. |
+| Right-click friend row 1 | `FriendRowStart` | `246,138` | Row 2 is `246,176`; row 3 is `246,214`. |
+| Click context Join Game | `FriendContextJoinGame` | `434,247` | Bottom context-menu option in the current reference capture. |
+
+The full shared coordinate table is [automation-coordinate-catalog.md](automation-coordinate-catalog.md). Runtime code uses `D2RUiCoordinateCatalog.GetFriendRowPoint`, so invalid or missing row config falls back to the default row start/height instead of drifting into stale docs.
 
 Implemented high-level flow:
 

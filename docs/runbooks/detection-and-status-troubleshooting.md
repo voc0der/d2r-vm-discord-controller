@@ -2,6 +2,8 @@
 
 Verified findings from live VM debugging, not guesses. Check these in order before assuming detection is broken again.
 
+The canonical 1366x768 click/sample map is [automation-coordinate-catalog.md](automation-coordinate-catalog.md). If a detector says the state is correct but clicks do nothing, first compare the last-input X/Y in `/d2r status` against that catalog. If the status X/Y matches the catalog but the game ignores input, investigate focus/session/elevation below. If the X/Y does not match, look for stale per-VM `ui.*` config or bypasses that read config directly instead of using `D2RUiCoordinateCatalog`.
+
 ## 1. Confirm session and elevation match
 
 On the VM, open Task Manager → Details tab → enable the "Session ID" and "Elevated" columns. Compare `D2RAgent.exe` against `D2R.exe`/`Battle.net.exe`.
