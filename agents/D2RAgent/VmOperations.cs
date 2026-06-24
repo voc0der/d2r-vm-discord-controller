@@ -24,7 +24,6 @@ public sealed class VmOperations
     private const int MaxJoinPrepareSeconds = 25;
     private const int ReadyStartupDetectionIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
-    private const int MaxConnectingToBattleNetWaitMs = 15000;
     private const int MenuSampleGrid = 9;
     private const int FastMenuDelayMs = 150;
     private const int EntryPollIntervalMs = 200;
@@ -684,14 +683,7 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        if (IsInGameReady(input))
-        {
-            return CommandResult.Failure(
-                "D2R is already in a game; use /d2r save-exit before character-screen menu automation.",
-                await CollectStatusAsync(cancellationToken));
-        }
-
-        if (CanUseRememberedLobbyOrGameState(input))
+        if (GetActivitySnapshot().State == D2RActivityState.LobbyOrGame)
         {
             MarkLobbyOrGameInteraction("Preparing Join Game from existing lobby state.");
             await RestoreJoinGameFormAsync(input, args, cancellationToken);
@@ -1089,7 +1081,6 @@ public sealed class VmOperations
         var lastState = ReadyScreenState.Unknown;
         var nextDetectionAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
-        DateTimeOffset? connectingToBattleNetSince = null;
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1121,28 +1112,13 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            if (lastState == ReadyScreenState.ConnectingToBattleNet)
-            {
-                connectingToBattleNetSince ??= DateTimeOffset.UtcNow;
-            }
-            else
-            {
-                connectingToBattleNetSince = null;
-            }
-
-            var stillWaitingOnHandshake = lastState == ReadyScreenState.ConnectingToBattleNet
-                && DateTimeOffset.UtcNow - connectingToBattleNetSince!.Value < TimeSpan.FromMilliseconds(MaxConnectingToBattleNetWaitMs);
-
             if (lastState == ReadyScreenState.DiabloSplash)
             {
                 SendReadySplashContinueBurst(input);
                 nudges++;
             }
-            else if (!stillWaitingOnHandshake)
+            else
             {
-                // Stuck on ConnectingToBattleNet far longer than a real handshake takes is a
-                // misread of a quiet/dark stretch of the splash background, not a real dialog -
-                // stop trusting it instead of silently waiting out the rest of the deadline.
                 SendReadySkipBurst(input);
                 nudges++;
             }
@@ -1170,7 +1146,6 @@ public sealed class VmOperations
         var nudges = 0;
         var nextDetectionAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
-        DateTimeOffset? connectingToBattleNetSince = null;
 
         for (var i = 0; i < plan.IntroClickCount && DateTimeOffset.UtcNow < deadline; i++)
         {
@@ -1197,26 +1172,6 @@ public sealed class VmOperations
                 }
 
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
-            }
-
-            if (lastState == ReadyScreenState.ConnectingToBattleNet)
-            {
-                connectingToBattleNetSince ??= DateTimeOffset.UtcNow;
-                if (DateTimeOffset.UtcNow - connectingToBattleNetSince.Value < TimeSpan.FromMilliseconds(MaxConnectingToBattleNetWaitMs))
-                {
-                    i--;
-                    await Task.Delay(ReadyStartupDetectionIntervalMs, cancellationToken);
-                    continue;
-                }
-
-                // Stuck on this classification far longer than a real Battle.net handshake
-                // takes - it's a misread of a quiet/dark stretch of the splash background, not
-                // a real dialog. Stop trusting it so we don't silently burn the rest of the
-                // deadline on a screen that was skippable the whole time.
-            }
-            else
-            {
-                connectingToBattleNetSince = null;
             }
 
             if (lastState == ReadyScreenState.DiabloSplash)
@@ -1256,21 +1211,6 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            if (lastState == ReadyScreenState.ConnectingToBattleNet)
-            {
-                connectingToBattleNetSince ??= DateTimeOffset.UtcNow;
-                if (DateTimeOffset.UtcNow - connectingToBattleNetSince.Value < TimeSpan.FromMilliseconds(MaxConnectingToBattleNetWaitMs))
-                {
-                    i--;
-                    await Task.Delay(ReadyStartupDetectionIntervalMs, cancellationToken);
-                    continue;
-                }
-            }
-            else
-            {
-                connectingToBattleNetSince = null;
-            }
-
             if (lastState == ReadyScreenState.DiabloSplash)
             {
                 SendReadySplashContinueBurst(input);
@@ -1296,7 +1236,6 @@ public sealed class VmOperations
     {
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
-        var beforeDiagnostics = TryGetD2RInputDiagnostics();
         foreach (var action in StartupReadyInputPlan.IntroActions)
         {
             switch (action)
@@ -1332,7 +1271,6 @@ public sealed class VmOperations
         }
 
         var afterCursor = input.GetCursorPosition();
-        var afterDiagnostics = TryGetD2RInputDiagnostics();
         RecordD2RInputAction(
             kind: "key",
             button: "Escape/G/Space/Enter",
@@ -1340,8 +1278,8 @@ public sealed class VmOperations
             target,
             beforeCursor,
             afterCursor,
-            beforeDiagnostics,
-            afterDiagnostics);
+            beforeDiagnostics: null,
+            afterDiagnostics: null);
     }
 
     private bool IsD2RForeground()
@@ -1353,7 +1291,6 @@ public sealed class VmOperations
     {
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
-        var beforeDiagnostics = TryGetD2RInputDiagnostics();
         foreach (var action in StartupReadyInputPlan.TitleActions)
         {
             switch (action)
@@ -1380,7 +1317,6 @@ public sealed class VmOperations
         }
 
         var afterCursor = input.GetCursorPosition();
-        var afterDiagnostics = TryGetD2RInputDiagnostics();
         RecordD2RInputAction(
             kind: "key",
             button: "G/Space/Enter",
@@ -1388,15 +1324,14 @@ public sealed class VmOperations
             target,
             beforeCursor,
             afterCursor,
-            beforeDiagnostics,
-            afterDiagnostics);
+            beforeDiagnostics: null,
+            afterDiagnostics: null);
     }
 
     private void SendReadySplashContinueBurst(WindowsInput input)
     {
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
-        var beforeDiagnostics = TryGetD2RInputDiagnostics();
         foreach (var action in StartupReadyInputPlan.SplashActions)
         {
             switch (action)
@@ -1429,7 +1364,6 @@ public sealed class VmOperations
         }
 
         var afterCursor = input.GetCursorPosition();
-        var afterDiagnostics = TryGetD2RInputDiagnostics();
         RecordD2RInputAction(
             kind: "key",
             button: "SplashContinue/G/Space/Enter",
@@ -1437,15 +1371,14 @@ public sealed class VmOperations
             target,
             beforeCursor,
             afterCursor,
-            beforeDiagnostics,
-            afterDiagnostics);
+            beforeDiagnostics: null,
+            afterDiagnostics: null);
     }
 
     private void SendReadySkipBurst(WindowsInput input)
     {
         var target = ResolveD2RScreenPoint(_config.Ui.IntroSkipPoint);
         var beforeCursor = input.GetCursorPosition();
-        var beforeDiagnostics = TryGetD2RInputDiagnostics();
         foreach (var action in StartupReadyInputPlan.BurstActions)
         {
             switch (action)
@@ -1478,7 +1411,6 @@ public sealed class VmOperations
         }
 
         var afterCursor = input.GetCursorPosition();
-        var afterDiagnostics = TryGetD2RInputDiagnostics();
         RecordD2RInputAction(
             kind: "key",
             button: "G/Space/Enter",
@@ -1486,8 +1418,8 @@ public sealed class VmOperations
             target,
             beforeCursor,
             afterCursor,
-            beforeDiagnostics,
-            afterDiagnostics);
+            beforeDiagnostics: null,
+            afterDiagnostics: null);
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -1517,7 +1449,6 @@ public sealed class VmOperations
         var processNames = GetD2RProcessNames();
         var target = input.ResolveScreenPoint(point, processNames);
         var beforeCursor = input.GetCursorPosition();
-        var beforeDiagnostics = TryGetD2RInputDiagnostics();
         if (button == MouseButton.Left)
         {
             input.LeftClick(point, processNames);
@@ -1537,7 +1468,6 @@ public sealed class VmOperations
         _ = input.SendWindowClick(point, processNames, button);
 
         var afterCursor = input.GetCursorPosition();
-        var afterDiagnostics = TryGetD2RInputDiagnostics();
         RecordD2RInputAction(
             kind: "click",
             button: button.ToString(),
@@ -1545,8 +1475,8 @@ public sealed class VmOperations
             target,
             beforeCursor,
             afterCursor,
-            beforeDiagnostics,
-            afterDiagnostics);
+            beforeDiagnostics: null,
+            afterDiagnostics: null);
     }
 
     // Both the status path (DetectVisibleD2RState) and the ready loop (DetectReadyScreenStateStable)
@@ -1670,75 +1600,25 @@ public sealed class VmOperations
         MarkCommandCheckpoint("EnsureLobbyOpenedAsync: start");
         _ = TryPrepareD2RForInput(input);
         var activity = GetActivitySnapshot();
+        if (activity.State == D2RActivityState.LobbyOrGame)
+        {
+            MarkLobbyOrGameInteraction("Using remembered lobby/game state for menu automation.");
+            return null;
+        }
+
         if (activity.State == D2RActivityState.CharacterScreenIdle)
         {
             MarkCommandCheckpoint("EnsureLobbyOpenedAsync: remembered-character-screen click");
             await ClickLobbyFromRememberedCharacterScreenAsync(input, cancellationToken);
-            MarkCommandCheckpoint("EnsureLobbyOpenedAsync: remembered-character-screen verify");
-            if (IsAnyLobbyEntryMenuVisible(input))
-            {
-                MarkLobbyOrGameInteraction("Clicked Lobby from remembered character screen.");
-                return null;
-            }
-
-            // The remembered "we were just at an idle character screen" assumption didn't hold -
-            // the on-screen state moved on since the ready flow marked it idle (reconnect, a
-            // missed click, a slower transition) and this click landed nowhere useful. Fall
-            // through to the verified detection/retry path below instead of declaring success.
-        }
-
-        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: checking lobby already visible");
-        if (IsAnyLobbyEntryMenuVisible(input))
-        {
-            MarkLobbyOrGameInteraction("Lobby already visible.");
+            MarkLobbyOrGameInteraction("Clicked Lobby from remembered character screen.");
             return null;
         }
 
-        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: checking in-game");
-        if (IsInGameReady(input))
-        {
-            return CommandResult.Failure(
-                "D2R is already in a game; use /d2r save-exit before character-screen menu automation.",
-                await CollectStatusAsync(cancellationToken));
-        }
-
-        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: checking remembered lobby/game state");
-        if (CanUseRememberedLobbyOrGameState(input))
-        {
-            MarkLobbyOrGameInteraction("Using existing lobby state for menu automation.");
-            return null;
-        }
-
-        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: TryOpenLobbyFromCurrentScreenAsync");
-        if (await TryOpenLobbyFromCurrentScreenAsync(input, args, cancellationToken))
-        {
-            MarkLobbyOrGameInteraction("Opened Lobby from current screen.");
-            return null;
-        }
-
-        if (activity.State != D2RActivityState.CharacterScreenIdle)
-        {
-            MarkCommandCheckpoint("EnsureLobbyOpenedAsync: EnsureCharacterScreenReadyForMenuAsync");
-            var menuReady = await EnsureCharacterScreenReadyForMenuAsync(
-                input,
-                cancellationToken,
-                readyTimeoutSeconds: Math.Min(GetReadyLoopTimeoutSeconds(), 8));
-            if (menuReady is not null)
-            {
-                return menuReady;
-            }
-        }
-
-        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: OpenLobbyFromCharacterScreenAsync");
-        if (await OpenLobbyFromCharacterScreenAsync(input, args, cancellationToken))
-        {
-            MarkLobbyOrGameInteraction("Clicked Lobby from character screen.");
-            return null;
-        }
-
-        return CommandResult.Failure(
-            $"D2R is at the character screen, but clicking Lobby did not reveal the lobby menu within {Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)}s.{FormatInputDiagnosticsSuffix()}",
-            await CollectStatusAsync(cancellationToken));
+        MarkCommandCheckpoint("EnsureLobbyOpenedAsync: direct character slot/lobby click");
+        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+        await ClickLobbyDirectAsync(input, cancellationToken);
+        MarkLobbyOrGameInteraction("Clicked Lobby without visual verification.");
+        return null;
     }
 
     private async Task ClickLobbyFromRememberedCharacterScreenAsync(
@@ -1815,12 +1695,7 @@ public sealed class VmOperations
         ClickD2R(input, _config.Ui.CharacterLobbyButton);
         await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)), cancellationToken);
 
-        // This used to return true unconditionally - the click was fired, so it was treated as
-        // having worked. Every caller chains straight into form-filling and the Create/Join Game
-        // button on that assumption, so when the Lobby click didn't actually land (wrong screen,
-        // lost focus, slow transition), the whole flow kept clicking into whatever was really on
-        // screen with no way to detect it, fail fast, or retry. Confirm the lobby is actually up.
-        return IsAnyLobbyEntryMenuVisible(input);
+        return true;
     }
 
     private async Task ClickLobbyTabDirectAsync(
