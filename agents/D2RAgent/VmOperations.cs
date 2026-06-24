@@ -1145,10 +1145,18 @@ public sealed class VmOperations
     // it can still win the common case without blocking the rest of the burst when it doesn't.
     private bool TryPrepareD2RForInputBounded(WindowsInput input)
     {
+        return TryRunBounded(() => TryPrepareD2RForInput(input), ReadyStartupDetectionIntervalMs);
+    }
+
+    // Pulled out of TryPrepareD2RForInputBounded so the bounding behavior itself - not the
+    // Win32 focus call - can be regression-tested without a Windows host. The bug this guards
+    // against: an action that hangs (or throws) must not make the caller wait past timeoutMs.
+    internal static bool TryRunBounded(Func<bool> action, int timeoutMs)
+    {
         try
         {
-            var task = Task.Run(() => TryPrepareD2RForInput(input));
-            return task.Wait(ReadyStartupDetectionIntervalMs) && task.Result;
+            var task = Task.Run(action);
+            return task.Wait(timeoutMs) && task.Result;
         }
         catch (Exception)
         {
