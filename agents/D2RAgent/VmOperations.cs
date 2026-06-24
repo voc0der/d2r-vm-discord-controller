@@ -23,6 +23,7 @@ public sealed class VmOperations
     private const int MenuReadyFallbackTimeoutSeconds = 30;
     private const int MaxJoinPrepareSeconds = 25;
     private const int ReadyStartupDetectionIntervalMs = 250;
+    private const int ReadyStartupProcessCheckIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
     private const int FastMenuDelayMs = 150;
@@ -488,7 +489,7 @@ public sealed class VmOperations
 
     private async Task<CommandResult> ReadyClientAsync(CancellationToken cancellationToken)
     {
-        var launch = await LaunchD2RAsync(cancellationToken, quickForReady: true);
+        var launch = BeginD2RReadyLaunch();
         if (!launch.Ok)
         {
             return launch;
@@ -532,6 +533,27 @@ public sealed class VmOperations
 
         MarkCharacterScreenIdle("Ready flow completed.");
         return CommandResult.Success("D2R ready flow completed.", await CollectStatusAsync(cancellationToken));
+    }
+
+    private CommandResult BeginD2RReadyLaunch()
+    {
+        if (IsD2RNamedProcessRunning())
+        {
+            RefreshD2RProcessActivity(d2rRunning: true);
+            return CommandResult.Success("D2R is already running.");
+        }
+
+        ClearD2RActivity();
+        var launch = TrySendD2RLaunchCommand();
+        if (!launch.Ok)
+        {
+            return launch;
+        }
+
+        return CommandResult.Success(
+            _config.PreferBattleNetExecLaunch || string.IsNullOrWhiteSpace(_config.D2RPath)
+                ? "Initial Battle.net D2R launch command sent; ready loop is already sending startup skip input."
+                : "Initial D2R launch command sent; ready loop is already sending startup skip input.");
     }
 
     private async Task<CommandResult> GoLobbyAsync(MenuCommandArgs args, CancellationToken cancellationToken)
@@ -1212,6 +1234,7 @@ public sealed class VmOperations
         var nudges = 0;
         var lastState = ReadyScreenState.Unknown;
         var nextDetectionAt = DateTimeOffset.UtcNow;
+        var nextProcessCheckAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
         var launchNudges = CreateReadyLaunchNudgeState();
 
@@ -1231,18 +1254,31 @@ public sealed class VmOperations
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (lastState == ReadyScreenState.ConnectingToBattleNet)
+            {
+                // This modal is waiting on the login handshake. Escape can cancel it and
+                // manufacture the exact "stuck at splash" loop this routine is meant to clear.
+            }
+            else if (lastState == ReadyScreenState.DiabloSplash)
+            {
+                SendReadySplashContinueBurst(input);
+                nudges++;
+            }
+            else
+            {
+                SendReadySkipBurst(input);
+                nudges++;
+            }
+
+            var now = DateTimeOffset.UtcNow;
             if (keepLaunchAlive)
             {
                 NudgeD2RLaunchDuringReady(input, launchNudges);
             }
 
-            if (DateTimeOffset.UtcNow >= nextDetectionAt)
+            if (now >= nextProcessCheckAt)
             {
-                // The screen can keep showing D2R's last rendered frame for a while after the
-                // process itself dies (stale framebuffer on the VM's virtual display), so pixel
-                // classification alone can't tell "still loading" apart from "already crashed."
-                // Catching the live-to-gone transition here turns a silent multi-minute stall
-                // into an immediate, accurate failure instead of nudging a dead window.
                 var d2rNamedProcessRunning = IsD2RNamedProcessRunning();
                 if (d2rNamedProcessRunning)
                 {
@@ -1253,7 +1289,12 @@ public sealed class VmOperations
                     return Result(false, nudges, lastState, skipSeconds, processExitedDuringWait: true);
                 }
 
-                var state = DetectReadyScreenStateStable(input);
+                nextProcessCheckAt = now + TimeSpan.FromMilliseconds(ReadyStartupProcessCheckIntervalMs);
+            }
+
+            if (now >= nextDetectionAt)
+            {
+                var state = DetectReadyScreenStateFast(input);
                 lastState = state;
                 if (IsReadyScreenState(state))
                 {
@@ -1261,17 +1302,6 @@ public sealed class VmOperations
                 }
 
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
-            }
-
-            if (lastState == ReadyScreenState.DiabloSplash)
-            {
-                SendReadySplashContinueBurst(input);
-                nudges++;
-            }
-            else
-            {
-                SendReadySkipBurst(input);
-                nudges++;
             }
 
             var remainingMs = Math.Max((deadline - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
@@ -1297,6 +1327,7 @@ public sealed class VmOperations
         var lastState = ReadyScreenState.Unknown;
         var nudges = 0;
         var nextDetectionAt = DateTimeOffset.UtcNow;
+        var nextProcessCheckAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
         var launchNudges = CreateReadyLaunchNudgeState();
 
@@ -1316,16 +1347,31 @@ public sealed class VmOperations
         for (var i = 0; i < plan.IntroClickCount && DateTimeOffset.UtcNow < deadline; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (lastState == ReadyScreenState.ConnectingToBattleNet)
+            {
+                // Let the Battle.net login handshake finish. Startup skip input resumes as
+                // soon as this modal leaves.
+            }
+            else if (lastState == ReadyScreenState.DiabloSplash)
+            {
+                SendReadySplashContinueBurst(input);
+                nudges++;
+            }
+            else
+            {
+                SendReadyIntroClick(input);
+                nudges++;
+            }
+
+            var now = DateTimeOffset.UtcNow;
             if (keepLaunchAlive)
             {
                 NudgeD2RLaunchDuringReady(input, launchNudges);
             }
 
-            if (DateTimeOffset.UtcNow >= nextDetectionAt)
+            if (now >= nextProcessCheckAt)
             {
-                // See PumpStartupSkipInputsUntilCharacterScreenAsync: the splash frame can
-                // outlive the process that drew it, so a process-gone transition after we've
-                // already seen it alive is treated as a crash, not "still loading."
                 var d2rNamedProcessRunning = IsD2RNamedProcessRunning();
                 if (d2rNamedProcessRunning)
                 {
@@ -1336,7 +1382,12 @@ public sealed class VmOperations
                     return Result(false, nudges, lastState, timeoutSeconds, processExitedDuringWait: true);
                 }
 
-                lastState = DetectReadyScreenStateStable(input);
+                nextProcessCheckAt = now + TimeSpan.FromMilliseconds(ReadyStartupProcessCheckIntervalMs);
+            }
+
+            if (now >= nextDetectionAt)
+            {
+                lastState = DetectReadyScreenStateFast(input);
                 if (IsReadyScreenState(lastState))
                 {
                     return Result(true, nudges, lastState, timeoutSeconds);
@@ -1345,28 +1396,34 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            if (lastState == ReadyScreenState.DiabloSplash)
-            {
-                SendReadySplashContinueBurst(input);
-                nudges++;
-                await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
-                continue;
-            }
-
-            SendReadyIntroClick(input);
-            nudges++;
             await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
         }
 
         for (var i = 0; i < plan.TitleScreenKeyPressCount && DateTimeOffset.UtcNow < deadline; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (lastState == ReadyScreenState.ConnectingToBattleNet)
+            {
+                // Still waiting on login; do not press Escape.
+            }
+            else if (lastState == ReadyScreenState.DiabloSplash)
+            {
+                SendReadySplashContinueBurst(input);
+                nudges++;
+            }
+            else
+            {
+                SendReadyTitleSkipBurst(input);
+                nudges++;
+            }
+
+            var now = DateTimeOffset.UtcNow;
             if (keepLaunchAlive)
             {
                 NudgeD2RLaunchDuringReady(input, launchNudges);
             }
 
-            if (DateTimeOffset.UtcNow >= nextDetectionAt)
+            if (now >= nextProcessCheckAt)
             {
                 var d2rNamedProcessRunning = IsD2RNamedProcessRunning();
                 if (d2rNamedProcessRunning)
@@ -1378,7 +1435,12 @@ public sealed class VmOperations
                     return Result(false, nudges, lastState, timeoutSeconds, processExitedDuringWait: true);
                 }
 
-                lastState = DetectReadyScreenStateStable(input);
+                nextProcessCheckAt = now + TimeSpan.FromMilliseconds(ReadyStartupProcessCheckIntervalMs);
+            }
+
+            if (now >= nextDetectionAt)
+            {
+                lastState = DetectReadyScreenStateFast(input);
                 if (IsReadyScreenState(lastState))
                 {
                     return Result(true, nudges, lastState, timeoutSeconds);
@@ -1387,16 +1449,6 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            if (lastState == ReadyScreenState.DiabloSplash)
-            {
-                SendReadySplashContinueBurst(input);
-                nudges++;
-                await Task.Delay(plan.TitleScreenKeyPressDelayMs, cancellationToken);
-                continue;
-            }
-
-            SendReadyTitleSkipBurst(input);
-            nudges++;
             await Task.Delay(plan.TitleScreenKeyPressDelayMs, cancellationToken);
         }
 
@@ -2330,6 +2382,33 @@ public sealed class VmOperations
 
         RecordObservedFrame(state.ToString());
         return state;
+    }
+
+    private ReadyScreenState DetectReadyScreenStateFast(WindowsInput input)
+    {
+        var state = DetectReadyScreenStateScreenOnly(input, ReadyStartupSampleGrid);
+        RecordObservedFrame(state.ToString());
+        return state;
+    }
+
+    private ReadyScreenState DetectReadyScreenStateScreenOnly(WindowsInput input, int sampleGrid)
+    {
+        if (IsDiabloSplashScreen(input, sampleGrid))
+        {
+            return IsConnectingToBattleNetDialog(input, sampleGrid)
+                ? ReadyScreenState.ConnectingToBattleNet
+                : ReadyScreenState.DiabloSplash;
+        }
+
+        if (IsCharacterScreenOffline(input, windowRelative: false, sampleGrid))
+        {
+            return ReadyScreenState.OfflineCharacterScreen;
+        }
+
+        return IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid)
+            || IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
+            ? ReadyScreenState.CharacterScreen
+            : ReadyScreenState.Unknown;
     }
 
     private static bool IsReadyScreenState(ReadyScreenState state)
