@@ -26,7 +26,6 @@ public sealed class VmOperations
     private const int ReadyStartupProcessCheckIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
-    private const int GameEntryHudProbeTimeoutMs = 1000;
     private const int FastMenuDelayMs = 150;
     private const int EntryPollIntervalMs = 200;
     private const int LobbyPollIntervalMs = 250;
@@ -36,7 +35,6 @@ public sealed class VmOperations
     private readonly SemaphoreSlim _commandGate = new(1, 1);
     private readonly SemaphoreSlim _statusGate = new(1, 1);
     private readonly object _activityLock = new();
-    private readonly object _gameEntryHudProbeLock = new();
     private readonly string[] _restartArgs;
     private D2RActivityState _activityState = D2RActivityState.Unknown;
     private DateTimeOffset? _characterScreenIdleSinceUtc;
@@ -51,7 +49,6 @@ public sealed class VmOperations
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
-    private Task<bool>? _gameEntryHudProbeTask;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -658,7 +655,12 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
-        MarkCommandCheckpoint("SubmitPreparedJoinGameAsync: using prepared Join Game form");
+        var prepared = await PrepareJoinGameFormWithTimeoutAsync(input, args, cancellationToken);
+        if (prepared is not null)
+        {
+            return prepared;
+        }
+
         MarkCommandCheckpoint("SubmitPreparedJoinGameAsync: ClickMenuEntryButtonUntilEnteredGameAsync(JoinGameButton)");
         var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
@@ -2478,7 +2480,7 @@ public sealed class VmOperations
         int dialogRetries,
         int connectionRetries)
     {
-        var diagnostics = $"{FormatInGameHudDiagnostics(input)} {FormatGameEntryMenuDiagnostics(input, activeTab)}{FormatInputDiagnosticsSuffix()}";
+        var diagnostics = $"{FormatGameEntryMenuDiagnostics(input, activeTab)}{FormatInputDiagnosticsSuffix()}";
         if (dialogRetries == 0 && connectionRetries == 0)
         {
             return $"No game-entry error state was detected. {diagnostics}";
@@ -2498,27 +2500,14 @@ public sealed class VmOperations
         return $"Recovered from {string.Join(" and ", parts)}, but the menu tab stayed visible. {diagnostics}";
     }
 
-    private string FormatInGameHudDiagnostics(WindowsInput input)
-    {
-        var evidence = SampleInGameHudEvidence(input, windowRelative: true);
-        return "HUD samples: "
-            + $"ready={IsInGameHudEvidenceReady(evidence)}, "
-            + $"health(r={evidence.ModernHealth.RedRatio:N3},b={evidence.ModernHealth.BlueRatio:N3}), "
-            + $"mana(r={evidence.ModernMana.RedRatio:N3},b={evidence.ModernMana.BlueRatio:N3}), "
-            + $"action(avg={evidence.ActionHud.AverageLuminance:N1},std={evidence.ActionHud.LuminanceStdDev:N1},dark={evidence.ActionHud.DarkRatio:N3}), "
-            + $"bottom(std={evidence.BottomHud.LuminanceStdDev:N1},dark={evidence.BottomHud.DarkRatio:N3}), "
-            + $"center(std={evidence.CenterHud.LuminanceStdDev:N1},bright={evidence.CenterHud.BrightRatio:N3},grey={evidence.CenterHud.GreyRatio:N3},dark={evidence.CenterHud.DarkRatio:N3}).";
-    }
-
     private string FormatGameEntryMenuDiagnostics(WindowsInput input, AgentCommon.UiPoint activeTab)
     {
         var tab = IsLobbyTabReady(input, activeTab);
         var entry = IsLobbyEntryButtonReady(input);
         var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
         var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
-        var hudReady = IsInGameReady(input);
-        var visible = !hudReady && D2RScreenClassifier.IsGameEntryMenuVisible(tab, entry, formScreen || formWindow);
-        return $"Menu samples: visible={visible}, hudReady={hudReady}, tab={tab}, entry={entry}, formScreen={formScreen}, formWindow={formWindow}.";
+        var visible = D2RScreenClassifier.IsGameEntryMenuVisible(tab, entry, formScreen || formWindow);
+        return $"Menu samples: visible={visible}, tab={tab}, entry={entry}, formScreen={formScreen}, formWindow={formWindow}.";
     }
 
     private static string FormatGameEntryWaitFailure(GameEntryWaitResult result)
@@ -2825,73 +2814,13 @@ public sealed class VmOperations
     private bool IsInGameReady(WindowsInput input, string checkpointContext)
     {
         MarkCommandCheckpoint($"{checkpointContext}: sampling screen-relative HUD");
-        if (TryRunGameEntryHudProbe(windowRelative: false, out var screenStatus))
+        if (IsInGameReady(input, windowRelative: false))
         {
             return true;
-        }
-
-        if (screenStatus != BoundedProbeStatus.Completed)
-        {
-            MarkCommandCheckpoint($"{checkpointContext}: screen-relative HUD {FormatBoundedProbeStatus(screenStatus)}");
-            return false;
         }
 
         MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
-        if (TryRunGameEntryHudProbe(windowRelative: true, out var processStatus))
-        {
-            return true;
-        }
-
-        if (processStatus != BoundedProbeStatus.Completed)
-        {
-            MarkCommandCheckpoint($"{checkpointContext}: process-relative HUD {FormatBoundedProbeStatus(processStatus)}");
-        }
-
-        return false;
-    }
-
-    private bool TryRunGameEntryHudProbe(bool windowRelative, out BoundedProbeStatus status)
-    {
-        Task<bool> task;
-        lock (_gameEntryHudProbeLock)
-        {
-            if (_gameEntryHudProbeTask is { IsCompleted: false })
-            {
-                status = BoundedProbeStatus.Busy;
-                return false;
-            }
-
-            task = Task.Run(() => IsInGameReady(new WindowsInput(), windowRelative));
-            _gameEntryHudProbeTask = task;
-        }
-
-        try
-        {
-            if (task.Wait(GameEntryHudProbeTimeoutMs))
-            {
-                status = BoundedProbeStatus.Completed;
-                return task.Result;
-            }
-
-            status = BoundedProbeStatus.TimedOut;
-            return false;
-        }
-        catch (Exception)
-        {
-            status = BoundedProbeStatus.Faulted;
-            return false;
-        }
-    }
-
-    private static string FormatBoundedProbeStatus(BoundedProbeStatus status)
-    {
-        return status switch
-        {
-            BoundedProbeStatus.Busy => "still running; skipping this poll",
-            BoundedProbeStatus.TimedOut => $"did not finish within {GameEntryHudProbeTimeoutMs}ms",
-            BoundedProbeStatus.Faulted => "failed",
-            _ => "completed"
-        };
+        return IsInGameReady(input, windowRelative: true);
     }
 
     private bool IsInGameReady(WindowsInput input, bool windowRelative)
@@ -3001,8 +2930,6 @@ public sealed class VmOperations
 
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(delaySeconds);
         var returnDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5));
-        var presumedEntryAfter = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 4, 10));
-        DateTimeOffset? menuAbsentSince = null;
         var sawConnectionInterrupted = false;
         var pollIteration = 0;
         MarkCommandCheckpoint("WaitForGameEntryAsync: polling for HUD/menu/connection state");
@@ -3063,15 +2990,7 @@ public sealed class VmOperations
                             : GameEntryWaitResult.ReturnedToMenu;
                     }
 
-                    menuAbsentSince ??= DateTimeOffset.UtcNow;
-                    if (DateTimeOffset.UtcNow - menuAbsentSince >= presumedEntryAfter)
-                    {
-                        RecordObservedFrame(VisibleD2RState.InGame.ToString());
-                        MarkLobbyOrGameInteraction("Game-entry menu disappeared; treating client as in-game.");
-                        MarkCommandCheckpoint("WaitForGameEntryAsync: menu absent long enough; assuming in-game");
-                        await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken, legacyToggle);
-                        return GameEntryWaitResult.EnteredGame;
-                    }
+                    MarkCommandCheckpoint($"WaitForGameEntryAsync: poll iteration {pollIteration}, lobby menu absent; waiting for HUD confirmation");
                 }
             }
 
@@ -3128,11 +3047,6 @@ public sealed class VmOperations
 
     private bool IsGameEntryMenuStillVisible(WindowsInput input, AgentCommon.UiPoint returnTab)
     {
-        if (IsInGameReady(input))
-        {
-            return false;
-        }
-
         var tab = IsLobbyTabReady(input, returnTab);
         var entry = IsLobbyEntryButtonReady(input);
         var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
@@ -3777,14 +3691,6 @@ public sealed class VmOperations
         ScreenRegionStats ActionHud,
         ScreenRegionStats BottomHud,
         ScreenRegionStats CenterHud);
-
-    private enum BoundedProbeStatus
-    {
-        Completed,
-        Busy,
-        TimedOut,
-        Faulted
-    }
 
     private sealed record LastInputActionSnapshot(
         DateTimeOffset TimeUtc,
