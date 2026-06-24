@@ -560,6 +560,7 @@ public sealed class VmOperations
             return prepared;
         }
 
+        MarkCommandCheckpoint("JoinGameAsync: ClickMenuEntryButtonUntilEnteredGameAsync(JoinGameButton)");
         var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
             GetUiPoint(D2RUiCoordinateTarget.JoinGameButton),
@@ -609,6 +610,7 @@ public sealed class VmOperations
             return prepared;
         }
 
+        MarkCommandCheckpoint("SubmitPreparedJoinGameAsync: ClickMenuEntryButtonUntilEnteredGameAsync(JoinGameButton)");
         var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
             GetUiPoint(D2RUiCoordinateTarget.JoinGameButton),
@@ -650,6 +652,7 @@ public sealed class VmOperations
         await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreatePasswordField), args.Password ?? "", cancellationToken);
         ClickD2R(input, GetCreateDifficultyPoint(args.Difficulty));
         await DelayStepAsync(cancellationToken);
+        MarkCommandCheckpoint("CreateGameAsync: ClickMenuEntryButtonUntilEnteredGameAsync(CreateGameButton)");
         var createEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
             GetUiPoint(D2RUiCoordinateTarget.CreateGameButton),
@@ -1885,6 +1888,7 @@ public sealed class VmOperations
         var dialogRetries = 0;
         var connectionRetries = 0;
         var legacyToggle = new LegacyGraphicsToggleState();
+        MarkCommandCheckpoint("ClickMenuEntryButtonUntilEnteredGameAsync: initial click");
         await ClickMenuEntryButtonAsync(input, button, cancellationToken);
         while (true)
         {
@@ -1914,6 +1918,7 @@ public sealed class VmOperations
             if (IsConnectionInterruptedScreen(input))
             {
                 connectionRetries++;
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: connection interrupted (retry {connectionRetries}), waiting for bounce-back menu");
                 if (!await WaitForMenuAfterConnectionInterruptedAsync(input, activeTab, cancellationToken)
                     || !await restoreFormAsync())
                 {
@@ -1921,6 +1926,7 @@ public sealed class VmOperations
                 }
 
                 deadline = DateTimeOffset.UtcNow + timeout;
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: re-clicking entry button after interruption (retry {connectionRetries})");
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 continue;
             }
@@ -1953,6 +1959,7 @@ public sealed class VmOperations
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, activeTab, dialogRetries, connectionRetries));
             }
 
+            MarkCommandCheckpoint("ClickMenuEntryButtonUntilEnteredGameAsync: WaitForGameEntryAsync");
             var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken, legacyToggle);
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
@@ -1967,6 +1974,7 @@ public sealed class VmOperations
             if (waitResult == GameEntryWaitResult.ConnectionInterrupted)
             {
                 connectionRetries++;
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: connection interrupted (retry {connectionRetries}), waiting for bounce-back menu");
                 if (!await WaitForMenuAfterConnectionInterruptedAsync(input, activeTab, cancellationToken)
                     || !await restoreFormAsync())
                 {
@@ -1974,6 +1982,7 @@ public sealed class VmOperations
                 }
 
                 deadline = DateTimeOffset.UtcNow + timeout;
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: re-clicking entry button after interruption (retry {connectionRetries})");
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 continue;
             }

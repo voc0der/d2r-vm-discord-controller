@@ -1909,11 +1909,18 @@ public sealed class DiscordBot
         var lastInput = TryReadLastInputActionSummary(statusJson, out var lastInputSummary)
             ? $", lastInput {lastInputSummary}"
             : "";
+        // The watch ticker line already gets this (added when a stuck create-game-all run showed
+        // one click landing and then total silence with no way to tell what it was doing). This
+        // is the other place a stuck command's status gets surfaced - a timed-out menu_* command's
+        // failure message - and it had the exact same blind spot until now.
+        var checkpoint = TryReadCheckpointSummary(statusJson, out var checkpointSummary)
+            ? $", at {checkpointSummary}"
+            : "";
         var version = string.IsNullOrWhiteSpace(agent.Version)
             ? ""
             : $", version {agent.Version}";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}, seen {lastSeen}";
+        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}{checkpoint}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)
