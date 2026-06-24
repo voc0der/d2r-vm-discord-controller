@@ -26,6 +26,7 @@ public sealed class VmOperations
     private const int ReadyStartupProcessCheckIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
+    private const int GameEntryHudProbeTimeoutMs = 1000;
     private const int FastMenuDelayMs = 150;
     private const int EntryPollIntervalMs = 200;
     private const int LobbyPollIntervalMs = 250;
@@ -35,6 +36,7 @@ public sealed class VmOperations
     private readonly SemaphoreSlim _commandGate = new(1, 1);
     private readonly SemaphoreSlim _statusGate = new(1, 1);
     private readonly object _activityLock = new();
+    private readonly object _gameEntryHudProbeLock = new();
     private readonly string[] _restartArgs;
     private D2RActivityState _activityState = D2RActivityState.Unknown;
     private DateTimeOffset? _characterScreenIdleSinceUtc;
@@ -49,6 +51,7 @@ public sealed class VmOperations
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
+    private Task<bool>? _gameEntryHudProbeTask;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -655,12 +658,7 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
-        var prepared = await PrepareJoinGameFormWithTimeoutAsync(input, args, cancellationToken);
-        if (prepared is not null)
-        {
-            return prepared;
-        }
-
+        MarkCommandCheckpoint("SubmitPreparedJoinGameAsync: using prepared Join Game form");
         MarkCommandCheckpoint("SubmitPreparedJoinGameAsync: ClickMenuEntryButtonUntilEnteredGameAsync(JoinGameButton)");
         var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
@@ -2202,11 +2200,17 @@ public sealed class VmOperations
             // fine and WaitForGameEntryAsync's own internal poll is where the time really goes.
             MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking entry");
 
-            if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
+            if (await TryConfirmEnteredGameAsync(
+                    input,
+                    cancellationToken,
+                    legacyToggle,
+                    $"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}"))
             {
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed (iteration {iteration})");
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
             }
 
+            MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking game-entry error dialog");
             if (IsGameEntryErrorDialogOpen(input))
             {
                 dialogRetries++;
@@ -2223,6 +2227,7 @@ public sealed class VmOperations
                 }
             }
 
+            MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking connection interruption");
             if (IsConnectionInterruptedScreen(input))
             {
                 connectionRetries++;
@@ -2239,6 +2244,7 @@ public sealed class VmOperations
                 continue;
             }
 
+            MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking offline character screen");
             if (IsCharacterScreenOffline(input))
             {
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: returned to offline character screen (iteration {iteration}), recovering");
@@ -2249,20 +2255,29 @@ public sealed class VmOperations
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the menu form could not be restored after clicking Online.");
                 }
             }
-            else if (IsCharacterScreenReady(input))
+            else
             {
-                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: returned to character select (iteration {iteration}), recovering");
-                if (!await ClickLobbyDirectAsync(input, cancellationToken)
-                    || !await restoreFormAsync())
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking character select");
+                if (IsCharacterScreenReady(input))
                 {
-                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the menu form could not be restored.");
+                    MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: returned to character select (iteration {iteration}), recovering");
+                    if (!await ClickLobbyDirectAsync(input, cancellationToken)
+                        || !await restoreFormAsync())
+                    {
+                        return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the menu form could not be restored.");
+                    }
                 }
             }
 
             if (DateTimeOffset.UtcNow >= deadline)
             {
-                if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
+                if (await TryConfirmEnteredGameAsync(
+                        input,
+                        cancellationToken,
+                        legacyToggle,
+                        $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration {iteration})"))
                 {
+                    MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed at timeout boundary (iteration {iteration})");
                     return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game at timeout boundary.");
                 }
 
@@ -2276,8 +2291,13 @@ public sealed class VmOperations
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
             }
 
-            if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
+            if (await TryConfirmEnteredGameAsync(
+                    input,
+                    cancellationToken,
+                    legacyToggle,
+                    $"ClickMenuEntryButtonUntilEnteredGameAsync: after wait result (iteration {iteration})"))
             {
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed after wait result (iteration {iteration})");
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game after wait result.");
             }
 
@@ -2802,6 +2822,78 @@ public sealed class VmOperations
             || IsInGameReady(input, windowRelative: true);
     }
 
+    private bool IsInGameReady(WindowsInput input, string checkpointContext)
+    {
+        MarkCommandCheckpoint($"{checkpointContext}: sampling screen-relative HUD");
+        if (TryRunGameEntryHudProbe(windowRelative: false, out var screenStatus))
+        {
+            return true;
+        }
+
+        if (screenStatus != BoundedProbeStatus.Completed)
+        {
+            MarkCommandCheckpoint($"{checkpointContext}: screen-relative HUD {FormatBoundedProbeStatus(screenStatus)}");
+            return false;
+        }
+
+        MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
+        if (TryRunGameEntryHudProbe(windowRelative: true, out var processStatus))
+        {
+            return true;
+        }
+
+        if (processStatus != BoundedProbeStatus.Completed)
+        {
+            MarkCommandCheckpoint($"{checkpointContext}: process-relative HUD {FormatBoundedProbeStatus(processStatus)}");
+        }
+
+        return false;
+    }
+
+    private bool TryRunGameEntryHudProbe(bool windowRelative, out BoundedProbeStatus status)
+    {
+        Task<bool> task;
+        lock (_gameEntryHudProbeLock)
+        {
+            if (_gameEntryHudProbeTask is { IsCompleted: false })
+            {
+                status = BoundedProbeStatus.Busy;
+                return false;
+            }
+
+            task = Task.Run(() => IsInGameReady(new WindowsInput(), windowRelative));
+            _gameEntryHudProbeTask = task;
+        }
+
+        try
+        {
+            if (task.Wait(GameEntryHudProbeTimeoutMs))
+            {
+                status = BoundedProbeStatus.Completed;
+                return task.Result;
+            }
+
+            status = BoundedProbeStatus.TimedOut;
+            return false;
+        }
+        catch (Exception)
+        {
+            status = BoundedProbeStatus.Faulted;
+            return false;
+        }
+    }
+
+    private static string FormatBoundedProbeStatus(BoundedProbeStatus status)
+    {
+        return status switch
+        {
+            BoundedProbeStatus.Busy => "still running; skipping this poll",
+            BoundedProbeStatus.TimedOut => $"did not finish within {GameEntryHudProbeTimeoutMs}ms",
+            BoundedProbeStatus.Faulted => "failed",
+            _ => "completed"
+        };
+    }
+
     private bool IsInGameReady(WindowsInput input, bool windowRelative)
     {
         return IsInGameHudEvidenceReady(SampleInGameHudEvidence(input, windowRelative));
@@ -2912,58 +3004,74 @@ public sealed class VmOperations
         var presumedEntryAfter = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 4, 10));
         DateTimeOffset? menuAbsentSince = null;
         var sawConnectionInterrupted = false;
+        var pollIteration = 0;
         MarkCommandCheckpoint("WaitForGameEntryAsync: polling for HUD/menu/connection state");
 
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            pollIteration++;
             var canDetectReturn = returnTab is not null && DateTimeOffset.UtcNow >= returnDetectionAt;
 
-            if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
+            if (await TryConfirmEnteredGameAsync(
+                    input,
+                    cancellationToken,
+                    legacyToggle,
+                    $"WaitForGameEntryAsync: poll iteration {pollIteration}"))
             {
                 MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game HUD");
                 return GameEntryWaitResult.EnteredGame;
             }
 
+            MarkCommandCheckpoint($"WaitForGameEntryAsync: poll iteration {pollIteration}, checking connection interruption");
             if (IsConnectionInterruptedScreen(input))
             {
                 sawConnectionInterrupted = true;
                 MarkCommandCheckpoint("WaitForGameEntryAsync: connection interrupted visible");
             }
-            else if (IsGameEntryErrorDialogOpen(input))
+            else
             {
-                MarkCommandCheckpoint("WaitForGameEntryAsync: game-entry error dialog visible");
-                return GameEntryWaitResult.ErrorDialog;
-            }
-            else if (IsCharacterScreenOffline(input))
-            {
-                MarkCommandCheckpoint("WaitForGameEntryAsync: offline character screen visible");
-                return GameEntryWaitResult.OfflineCharacterScreen;
-            }
-            else if (canDetectReturn)
-            {
-                if (IsCharacterScreenReady(input))
+                MarkCommandCheckpoint($"WaitForGameEntryAsync: poll iteration {pollIteration}, checking game-entry error dialog");
+                if (IsGameEntryErrorDialogOpen(input))
                 {
-                    MarkCommandCheckpoint("WaitForGameEntryAsync: returned to character screen");
-                    return GameEntryWaitResult.ReturnedToCharacterScreen;
+                    MarkCommandCheckpoint("WaitForGameEntryAsync: game-entry error dialog visible");
+                    return GameEntryWaitResult.ErrorDialog;
                 }
 
-                if (IsGameEntryMenuStillVisible(input, returnTab!))
+                MarkCommandCheckpoint($"WaitForGameEntryAsync: poll iteration {pollIteration}, checking offline character screen");
+                if (IsCharacterScreenOffline(input))
                 {
-                    MarkCommandCheckpoint("WaitForGameEntryAsync: lobby menu visible again");
-                    return sawConnectionInterrupted
-                        ? GameEntryWaitResult.ConnectionInterrupted
-                        : GameEntryWaitResult.ReturnedToMenu;
+                    MarkCommandCheckpoint("WaitForGameEntryAsync: offline character screen visible");
+                    return GameEntryWaitResult.OfflineCharacterScreen;
                 }
 
-                menuAbsentSince ??= DateTimeOffset.UtcNow;
-                if (DateTimeOffset.UtcNow - menuAbsentSince >= presumedEntryAfter)
+                if (canDetectReturn)
                 {
-                    RecordObservedFrame(VisibleD2RState.InGame.ToString());
-                    MarkLobbyOrGameInteraction("Game-entry menu disappeared; treating client as in-game.");
-                    MarkCommandCheckpoint("WaitForGameEntryAsync: menu absent long enough; assuming in-game");
-                    await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken, legacyToggle);
-                    return GameEntryWaitResult.EnteredGame;
+                    MarkCommandCheckpoint($"WaitForGameEntryAsync: poll iteration {pollIteration}, checking character screen return");
+                    if (IsCharacterScreenReady(input))
+                    {
+                        MarkCommandCheckpoint("WaitForGameEntryAsync: returned to character screen");
+                        return GameEntryWaitResult.ReturnedToCharacterScreen;
+                    }
+
+                    MarkCommandCheckpoint($"WaitForGameEntryAsync: poll iteration {pollIteration}, checking lobby menu return");
+                    if (IsGameEntryMenuStillVisible(input, returnTab!))
+                    {
+                        MarkCommandCheckpoint("WaitForGameEntryAsync: lobby menu visible again");
+                        return sawConnectionInterrupted
+                            ? GameEntryWaitResult.ConnectionInterrupted
+                            : GameEntryWaitResult.ReturnedToMenu;
+                    }
+
+                    menuAbsentSince ??= DateTimeOffset.UtcNow;
+                    if (DateTimeOffset.UtcNow - menuAbsentSince >= presumedEntryAfter)
+                    {
+                        RecordObservedFrame(VisibleD2RState.InGame.ToString());
+                        MarkLobbyOrGameInteraction("Game-entry menu disappeared; treating client as in-game.");
+                        MarkCommandCheckpoint("WaitForGameEntryAsync: menu absent long enough; assuming in-game");
+                        await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken, legacyToggle);
+                        return GameEntryWaitResult.EnteredGame;
+                    }
                 }
             }
 
@@ -2976,7 +3084,11 @@ public sealed class VmOperations
             await Task.Delay((int)Math.Min(EntryPollIntervalMs, remainingMs), cancellationToken);
         }
 
-        if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
+        if (await TryConfirmEnteredGameAsync(
+                input,
+                cancellationToken,
+                legacyToggle,
+                "WaitForGameEntryAsync: deadline"))
         {
             MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game at deadline");
             return GameEntryWaitResult.EnteredGame;
@@ -2987,21 +3099,25 @@ public sealed class VmOperations
             return GameEntryWaitResult.ConnectionInterrupted;
         }
 
+        MarkCommandCheckpoint("WaitForGameEntryAsync: deadline, checking game-entry error dialog");
         if (IsGameEntryErrorDialogOpen(input))
         {
             return GameEntryWaitResult.ErrorDialog;
         }
 
+        MarkCommandCheckpoint("WaitForGameEntryAsync: deadline, checking lobby menu return");
         if (returnTab is not null && IsGameEntryMenuStillVisible(input, returnTab))
         {
             return GameEntryWaitResult.ReturnedToMenu;
         }
 
+        MarkCommandCheckpoint("WaitForGameEntryAsync: deadline, checking offline character screen");
         if (IsCharacterScreenOffline(input))
         {
             return GameEntryWaitResult.OfflineCharacterScreen;
         }
 
+        MarkCommandCheckpoint("WaitForGameEntryAsync: deadline, checking character screen return");
         if (returnTab is not null && IsCharacterScreenReady(input))
         {
             return GameEntryWaitResult.ReturnedToCharacterScreen;
@@ -3042,15 +3158,18 @@ public sealed class VmOperations
     private async Task<bool> TryConfirmEnteredGameAsync(
         WindowsInput input,
         CancellationToken cancellationToken,
-        LegacyGraphicsToggleState legacyToggle)
+        LegacyGraphicsToggleState legacyToggle,
+        string checkpointContext = "TryConfirmEnteredGameAsync")
     {
-        if (!IsInGameReady(input))
+        if (!IsInGameReady(input, checkpointContext))
         {
+            MarkCommandCheckpoint($"{checkpointContext}: HUD not ready");
             return false;
         }
 
         RecordObservedFrame(VisibleD2RState.InGame.ToString());
         MarkLobbyOrGameInteraction("Detected in-game HUD.");
+        MarkCommandCheckpoint($"{checkpointContext}: confirmed in-game HUD");
         await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken, legacyToggle);
         return true;
     }
@@ -3658,6 +3777,14 @@ public sealed class VmOperations
         ScreenRegionStats ActionHud,
         ScreenRegionStats BottomHud,
         ScreenRegionStats CenterHud);
+
+    private enum BoundedProbeStatus
+    {
+        Completed,
+        Busy,
+        TimedOut,
+        Faulted
+    }
 
     private sealed record LastInputActionSnapshot(
         DateTimeOffset TimeUtc,
