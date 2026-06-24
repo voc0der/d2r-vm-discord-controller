@@ -529,12 +529,10 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
-        await DelayCharacterScreenSettleAsync(cancellationToken);
-        if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
+        var online = await EnsureReadyCharacterScreenOnlineAsync(input, ready, cancellationToken);
+        if (online is not null)
         {
-            return CommandResult.Failure(
-                $"D2R reached the offline character screen, but clicking Online did not reveal the online character list within {GetCharacterScreenReconnectSeconds()}s.{FormatInputDiagnosticsSuffix()}",
-                await CollectStatusAsync(cancellationToken));
+            return online;
         }
 
         MarkCharacterScreenIdle("Ready flow completed.");
@@ -655,12 +653,7 @@ public sealed class VmOperations
         }
 
         var input = FocusD2R();
-        var prepared = await PrepareJoinGameFormWithTimeoutAsync(input, args, cancellationToken);
-        if (prepared is not null)
-        {
-            return prepared;
-        }
-
+        MarkCommandCheckpoint("SubmitPreparedJoinGameAsync: using prepared Join Game form");
         MarkCommandCheckpoint("SubmitPreparedJoinGameAsync: ClickMenuEntryButtonUntilEnteredGameAsync(JoinGameButton)");
         var joinEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
@@ -858,8 +851,7 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
-        await DelayCharacterScreenSettleAsync(cancellationToken);
-        return null;
+        return await EnsureReadyCharacterScreenOnlineAsync(input, ready, cancellationToken);
     }
 
     private CommandResult KillD2R()
@@ -1265,6 +1257,32 @@ public sealed class VmOperations
         }
 
         await Task.Delay(TimeSpan.FromSeconds(settleSeconds), cancellationToken);
+    }
+
+    private async Task<CommandResult?> EnsureReadyCharacterScreenOnlineAsync(
+        WindowsInput input,
+        ReadyWaitResult ready,
+        CancellationToken cancellationToken)
+    {
+        MarkCommandCheckpoint($"EnsureReadyCharacterScreenOnlineAsync: ready loop detected {ready.LastState}");
+        await DelayCharacterScreenSettleAsync(cancellationToken);
+
+        if (ready.LastState != ReadyScreenState.OfflineCharacterScreen)
+        {
+            MarkCommandCheckpoint("EnsureReadyCharacterScreenOnlineAsync: online character screen accepted");
+            return null;
+        }
+
+        MarkCommandCheckpoint("EnsureReadyCharacterScreenOnlineAsync: offline character screen detected, clicking Online");
+        if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
+        {
+            return CommandResult.Failure(
+                $"D2R reached the offline character screen, but clicking Online did not reveal the online character list within {GetCharacterScreenReconnectSeconds()}s.{FormatInputDiagnosticsSuffix()}",
+                await CollectStatusAsync(cancellationToken));
+        }
+
+        MarkCommandCheckpoint("EnsureReadyCharacterScreenOnlineAsync: online character screen restored");
+        return null;
     }
 
     private ReadyLaunchNudgeState CreateReadyLaunchNudgeState()
