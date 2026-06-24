@@ -183,7 +183,7 @@ public sealed class DiscordBot
         if (subcommand == "join-all")
         {
             var game = ResolveGameInput(context);
-            await QueueJoinAllAsync(context, game);
+            await QueueJoinAllAsync(context, game, watch: context.GetBool("watch") ?? false);
             return;
         }
 
@@ -621,7 +621,7 @@ public sealed class DiscordBot
         var watchCts = new CancellationTokenSource();
         if (watch)
         {
-            _ = RunCreateGameAllWatchTickerAsync(context, game.GameName, entries, watchCts.Token);
+            _ = RunGameAllWatchTickerAsync(context, "create-game-all", game.GameName, entries, watchCts.Token);
         }
 
         _ = Task.Run(async () =>
@@ -755,8 +755,9 @@ public sealed class DiscordBot
     // exactly the gap the operator is trying to see when a run looks stuck. This posts a second,
     // separate message and re-polls live status for every account on a short interval so it shows
     // per-account click attempts and detected screen state as they happen, not just at milestones.
-    private async Task RunCreateGameAllWatchTickerAsync(
+    private async Task RunGameAllWatchTickerAsync(
         SlashContext context,
+        string label,
         string gameName,
         KeyValuePair<string, AccountConfig>[] entries,
         CancellationToken cancellationToken)
@@ -766,11 +767,11 @@ public sealed class DiscordBot
         try
         {
             message = await context.Command.Channel.SendMessageAsync(
-                FormatWatchHeader(gameName, startedUtc) + "\nStarting...");
+                FormatWatchHeader(label, gameName, startedUtc) + "\nStarting...");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not start create-game-all-watch message.");
+            _logger.LogWarning(ex, "Could not start {Label}-watch message.", label);
             return;
         }
 
@@ -780,7 +781,7 @@ public sealed class DiscordBot
         {
             var lines = await Task.WhenAll(
                 entries.Select(entry => FormatAccountWatchLineAsync(entry.Key, entry.Value, CancellationToken.None)));
-            var content = string.Join("\n", new[] { FormatWatchHeader(gameName, startedUtc) }.Concat(lines));
+            var content = string.Join("\n", new[] { FormatWatchHeader(label, gameName, startedUtc) }.Concat(lines));
 
             try
             {
@@ -788,7 +789,7 @@ public sealed class DiscordBot
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Could not update create-game-all-watch message.");
+                _logger.LogDebug(ex, "Could not update {Label}-watch message.", label);
             }
 
             AppendWatchLogTick(logPath, lines);
@@ -840,7 +841,7 @@ public sealed class DiscordBot
             // after the log directory is created) left the file missing lines the live message
             // still showed, with nothing in the logs to explain the gap. Warn so a dropped tick
             // is at least visible instead of indistinguishable from "nothing happened."
-            _logger.LogWarning(ex, "Could not append to create-game-all-watch log {LogPath}.", logPath);
+            _logger.LogWarning(ex, "Could not append to watch log {LogPath}.", logPath);
         }
     }
 
@@ -857,13 +858,13 @@ public sealed class DiscordBot
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not upload create-game-all-watch log {LogPath}.", logPath);
+            _logger.LogWarning(ex, "Could not upload watch log {LogPath}.", logPath);
         }
     }
 
-    private static string FormatWatchHeader(string gameName, DateTimeOffset startedUtc)
+    private static string FormatWatchHeader(string label, string gameName, DateTimeOffset startedUtc)
     {
-        return $"Watching create-game-all: {gameName} (elapsed {FormatElapsed(DateTimeOffset.UtcNow - startedUtc)})";
+        return $"Watching {label}: {gameName} (elapsed {FormatElapsed(DateTimeOffset.UtcNow - startedUtc)})";
     }
 
     // Condensed for screenshots: frame + the single most recent input attempt, not the full
@@ -1148,7 +1149,7 @@ public sealed class DiscordBot
         return await RunCreateGameAllPreparedJoinerAsync(entry, joinArgs, gameName);
     }
 
-    private async Task QueueJoinAllAsync(SlashContext context, GameInput game)
+    private async Task QueueJoinAllAsync(SlashContext context, GameInput game, bool watch)
     {
         var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
@@ -1172,6 +1173,12 @@ public sealed class DiscordBot
             game.GameName,
             entries.Length,
             $"Queued join-all for {entries.Length} account(s).");
+
+        var watchCts = new CancellationTokenSource();
+        if (watch)
+        {
+            _ = RunGameAllWatchTickerAsync(context, "join-all", game.GameName, entries, watchCts.Token);
+        }
 
         _ = Task.Run(async () =>
         {
@@ -1215,6 +1222,10 @@ public sealed class DiscordBot
                     status: $"join-all failed for {game.GameName}.",
                     detail: ex.Message);
                 await SendFollowupSafeAsync(context, $"join-all failed for {game.GameName}: {ex.Message}");
+            }
+            finally
+            {
+                watchCts.Cancel();
             }
         });
     }

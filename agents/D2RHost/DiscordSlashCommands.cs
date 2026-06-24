@@ -29,7 +29,7 @@ public static class DiscordSlashCommands
                     Sub("save-exit", "Open the in-game menu and click Save and Exit", Account()),
                     Sub("leave", "Alias for Save and Exit", Account()),
                     Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
-                    Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot()),
+                    Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("follow-all", "Stagger all accounts into a friend's game", CharacterSlot(), FriendRow()),
                     Sub("save-exit-all", "Stagger Save and Exit across all accounts"),
                     Sub("leave-all", "Alias for Save and Exit across all accounts"),
