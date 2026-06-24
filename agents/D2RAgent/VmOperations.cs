@@ -45,6 +45,7 @@ public sealed class VmOperations
     private DateTimeOffset? _lastObservedFrameUtc;
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
+    private DateTimeOffset? _detailedStatusBackoffUntilUtc;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -67,6 +68,21 @@ public sealed class VmOperations
 
     private async Task<object> CollectStatusAsync(CancellationToken cancellationToken)
     {
+        if (_commandGate.CurrentCount == 0)
+        {
+            return CollectProcessOnlyStatus(
+                "UI command is active; using process-only status so diagnostics cannot starve menu input.",
+                cancellationToken);
+        }
+
+        if (_detailedStatusBackoffUntilUtc is { } backoffUntil
+            && DateTimeOffset.UtcNow < backoffUntil)
+        {
+            return CollectProcessOnlyStatus(
+                "Detailed status collection recently exceeded its budget; using process-only fallback.",
+                cancellationToken);
+        }
+
         if (!_statusGate.Wait(0))
         {
             return CollectProcessOnlyStatus(
@@ -86,15 +102,20 @@ public sealed class VmOperations
             }
             finally
             {
+                _detailedStatusBackoffUntilUtc = null;
                 _statusGate.Release();
             }
         }
 
-        _statusGate.Release();
+        _detailedStatusBackoffUntilUtc = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(15);
         _ = statusTask.ContinueWith(
-            task => _ = task.Exception,
+            task =>
+            {
+                _ = task.Exception;
+                _statusGate.Release();
+            },
             CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
         return CollectProcessOnlyStatus(
             $"Detailed status collection did not return within {StatusCollectionTimeoutSeconds}s; using process-only fallback.",
