@@ -1257,8 +1257,12 @@ public sealed class VmOperations
 
             if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
-                // This modal is waiting on the login handshake. Escape can cancel it and
-                // manufacture the exact "stuck at splash" loop this routine is meant to clear.
+                // Do not press Escape here - that can cancel a real login handshake - but keep
+                // sending the same click/G/Space/Enter burst used for the post-intro splash.
+                // The classifier can temporarily mistake the plain splash for this modal, and
+                // going silent in that case strands the VM exactly where a keypress is needed.
+                SendReadySplashContinueBurst(input);
+                nudges++;
             }
             else if (lastState == ReadyScreenState.DiabloSplash)
             {
@@ -1286,7 +1290,11 @@ public sealed class VmOperations
                 }
                 else if (sawD2RProcessRunning)
                 {
-                    return Result(false, nudges, lastState, skipSeconds, processExitedDuringWait: true);
+                    // Do not fail the ready loop on a transient exact-name miss. Live VM runs
+                    // can still be visibly sitting on the D2R splash while this cheap process
+                    // probe briefly says no, especially around Battle.net handoff/startup.
+                    // Keep pumping input and let the launch nudge retry if D2R really exited.
+                    sawD2RProcessRunning = false;
                 }
 
                 nextProcessCheckAt = now + TimeSpan.FromMilliseconds(ReadyStartupProcessCheckIntervalMs);
@@ -1350,8 +1358,10 @@ public sealed class VmOperations
 
             if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
-                // Let the Battle.net login handshake finish. Startup skip input resumes as
-                // soon as this modal leaves.
+                // No Escape, but do keep nudging. A false positive here otherwise freezes the
+                // post-intro splash until the ready command times out.
+                SendReadySplashContinueBurst(input);
+                nudges++;
             }
             else if (lastState == ReadyScreenState.DiabloSplash)
             {
@@ -1379,7 +1389,7 @@ public sealed class VmOperations
                 }
                 else if (sawD2RProcessRunning)
                 {
-                    return Result(false, nudges, lastState, timeoutSeconds, processExitedDuringWait: true);
+                    sawD2RProcessRunning = false;
                 }
 
                 nextProcessCheckAt = now + TimeSpan.FromMilliseconds(ReadyStartupProcessCheckIntervalMs);
@@ -1404,7 +1414,10 @@ public sealed class VmOperations
             cancellationToken.ThrowIfCancellationRequested();
             if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
-                // Still waiting on login; do not press Escape.
+                // Still avoid Escape, but keep sending G/Space/Enter/click in case this is the
+                // plain post-intro splash being misread as the login modal.
+                SendReadySplashContinueBurst(input);
+                nudges++;
             }
             else if (lastState == ReadyScreenState.DiabloSplash)
             {
@@ -1432,7 +1445,7 @@ public sealed class VmOperations
                 }
                 else if (sawD2RProcessRunning)
                 {
-                    return Result(false, nudges, lastState, timeoutSeconds, processExitedDuringWait: true);
+                    sawD2RProcessRunning = false;
                 }
 
                 nextProcessCheckAt = now + TimeSpan.FromMilliseconds(ReadyStartupProcessCheckIntervalMs);
