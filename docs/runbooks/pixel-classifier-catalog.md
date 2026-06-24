@@ -87,6 +87,16 @@ only reached if `InGame`, `CharacterScreen`, and `CharacterScreenOffline` were a
   flow tests omitted this gate and every lobby/in-game capture misclassified as
   `OfflineCharacterScreen` until it was added back - a useful reminder that this detector is
   two checks, not one, if it's ever touched again.
+- **`loading_splash_after_intro_videos.png` (and likely `load_screen_phase_1.png`/
+  `load_screen_phase_2.png`) classify as `Unknown`, and that's correct - confirmed this is
+  a real, unfixable-by-detection delay, not a gap.** This capture is a fully black screen
+  with only a small logo in the bottom-right corner (nowhere near any sampled region - the
+  splash logo check is centered at `0.500,0.290`). It's the moment right after the intro
+  videos are skipped, while D2R loads the game into RAM/VRAM - confirmed by the user as "the
+  laggy part." No pixel threshold can shorten this; it's client-side asset loading, not a
+  network wait and not a detection blind spot. If `/d2r status` shows `Unknown` for a
+  stretch right after intro-skip input starts working, this is the leading suspect before
+  assuming the classifier missed something.
 - **The last two frames of the "Diablo II" title burning in during the intro
   (`intro_three_phase2.png`, `intro_three_phase3.png`) classify as `DiabloSplash`,** not
   `Unknown`. Visually they're flame letters on black, same as the real splash - there's no
