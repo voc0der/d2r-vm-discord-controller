@@ -1337,31 +1337,31 @@ public sealed class VmOperations
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
-                    _ = TryPrepareD2RForInput(input);
+                    TryReadyInputAction(() => _ = TryPrepareD2RForInput(input));
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
-                    _ = TryClickD2RWindowCenter(input);
+                    TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
                     break;
                 case StartupReadyInputAction.PressEscapeKey:
-                    input.PressEscape();
+                    TryReadyInputAction(input.PressEscape);
                     break;
                 case StartupReadyInputAction.SendWindowEscapeKey:
-                    _ = input.SendWindowEscapeKey(GetD2RProcessNames());
+                    TryReadyInputAction(() => _ = input.SendWindowEscapeKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
-                    ClickD2R(input, introPoint);
+                    TryReadyInputAction(() => ClickD2R(input, introPoint));
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
-                    _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left);
+                    TryReadyInputAction(() => _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left));
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
-                    input.PressStartupSkipKey();
+                    TryReadyInputAction(input.PressStartupSkipKey);
                     break;
                 case StartupReadyInputAction.PressStartKey:
-                    input.PressStartKey();
+                    TryReadyInputAction(input.PressStartKey);
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
-                    _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
+                    TryReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
             }
         }
@@ -1393,22 +1393,22 @@ public sealed class VmOperations
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
-                    _ = TryPrepareD2RForInput(input);
+                    TryReadyInputAction(() => _ = TryPrepareD2RForInput(input));
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
-                    _ = TryClickD2RWindowCenter(input);
+                    TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
-                    input.PressStartupSkipKey();
+                    TryReadyInputAction(input.PressStartupSkipKey);
                     break;
                 case StartupReadyInputAction.PressStartKey:
-                    input.PressStartKey();
+                    TryReadyInputAction(input.PressStartKey);
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
-                    _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
+                    TryReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true);
+                    TryReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true));
                     break;
             }
         }
@@ -1435,28 +1435,28 @@ public sealed class VmOperations
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
-                    _ = TryPrepareD2RForInput(input);
+                    TryReadyInputAction(() => _ = TryPrepareD2RForInput(input));
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
-                    _ = TryClickD2RWindowCenter(input);
+                    TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
-                    ClickD2R(input, introPoint);
+                    TryReadyInputAction(() => ClickD2R(input, introPoint));
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
-                    _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left);
+                    TryReadyInputAction(() => _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left));
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
-                    input.PressStartupSkipKey();
+                    TryReadyInputAction(input.PressStartupSkipKey);
                     break;
                 case StartupReadyInputAction.PressStartKey:
-                    input.PressStartKey();
+                    TryReadyInputAction(input.PressStartKey);
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
-                    _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
+                    TryReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: false);
+                    TryReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: false));
                     break;
             }
         }
@@ -1483,28 +1483,28 @@ public sealed class VmOperations
             switch (action)
             {
                 case StartupReadyInputAction.FocusD2R:
-                    _ = TryPrepareD2RForInput(input);
+                    TryReadyInputAction(() => _ = TryPrepareD2RForInput(input));
                     break;
                 case StartupReadyInputAction.ClickWindowCenter:
-                    _ = TryClickD2RWindowCenter(input);
+                    TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
-                    ClickD2R(input, introPoint);
+                    TryReadyInputAction(() => ClickD2R(input, introPoint));
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
-                    _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left);
+                    TryReadyInputAction(() => _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left));
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
-                    input.PressStartupSkipKey();
+                    TryReadyInputAction(input.PressStartupSkipKey);
                     break;
                 case StartupReadyInputAction.PressStartKey:
-                    input.PressStartKey();
+                    TryReadyInputAction(input.PressStartKey);
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
-                    _ = input.SendWindowReadySkipKey(GetD2RProcessNames());
+                    TryReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true);
+                    TryReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true));
                     break;
             }
         }
@@ -1519,6 +1519,20 @@ public sealed class VmOperations
             afterCursor,
             beforeDiagnostics: null,
             afterDiagnostics: null);
+    }
+
+    private static void TryReadyInputAction(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception)
+        {
+            // Startup screens are exactly where process windows appear, disappear, and
+            // briefly reject HWND input. One failing route must not suppress the rest
+            // of the burst, especially the global keypresses that skip cinematics.
+        }
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -1826,13 +1840,14 @@ public sealed class VmOperations
         var deadline = DateTimeOffset.UtcNow + timeout;
         var dialogRetries = 0;
         var connectionRetries = 0;
+        var legacyToggle = new LegacyGraphicsToggleState();
         await ClickMenuEntryButtonAsync(input, button, cancellationToken);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _ = TryPrepareD2RForInput(input);
 
-            if (await TryConfirmEnteredGameAsync(input, cancellationToken))
+            if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
             {
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
             }
@@ -1887,7 +1902,7 @@ public sealed class VmOperations
 
             if (DateTimeOffset.UtcNow >= deadline)
             {
-                if (await TryConfirmEnteredGameAsync(input, cancellationToken))
+                if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
                 {
                     return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game at timeout boundary.");
                 }
@@ -1895,13 +1910,13 @@ public sealed class VmOperations
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, activeTab, dialogRetries, connectionRetries));
             }
 
-            var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken);
+            var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken, legacyToggle);
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
             }
 
-            if (await TryConfirmEnteredGameAsync(input, cancellationToken))
+            if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
             {
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game after wait result.");
             }
@@ -2469,13 +2484,14 @@ public sealed class VmOperations
 
     private async Task<GameEntryWaitResult> WaitForGameEntryAsync(WindowsInput input, CancellationToken cancellationToken)
     {
-        return await WaitForGameEntryAsync(input, returnTab: null, cancellationToken);
+        return await WaitForGameEntryAsync(input, returnTab: null, cancellationToken, new LegacyGraphicsToggleState());
     }
 
     private async Task<GameEntryWaitResult> WaitForGameEntryAsync(
         WindowsInput input,
         AgentCommon.UiPoint? returnTab,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        LegacyGraphicsToggleState legacyToggle)
     {
         var delaySeconds = Math.Max(
             Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1),
@@ -2497,7 +2513,7 @@ public sealed class VmOperations
             _ = TryPrepareD2RForInput(input);
             var canDetectReturn = returnTab is not null && DateTimeOffset.UtcNow >= returnDetectionAt;
 
-            if (await TryConfirmEnteredGameAsync(input, cancellationToken))
+            if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
             {
                 return GameEntryWaitResult.EnteredGame;
             }
@@ -2531,7 +2547,7 @@ public sealed class VmOperations
                 menuAbsentSince ??= DateTimeOffset.UtcNow;
                 if (DateTimeOffset.UtcNow - menuAbsentSince >= presumedEntryAfter)
                 {
-                    await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
+                    await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken, legacyToggle);
                     return GameEntryWaitResult.EnteredGame;
                 }
             }
@@ -2545,7 +2561,7 @@ public sealed class VmOperations
             await Task.Delay((int)Math.Min(EntryPollIntervalMs, remainingMs), cancellationToken);
         }
 
-        if (await TryConfirmEnteredGameAsync(input, cancellationToken))
+        if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
         {
             return GameEntryWaitResult.EnteredGame;
         }
@@ -2609,30 +2625,45 @@ public sealed class VmOperations
 
     private async Task<bool> TryConfirmEnteredGameAsync(
         WindowsInput input,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        LegacyGraphicsToggleState legacyToggle)
     {
         if (!IsInGameReady(input))
         {
             return false;
         }
 
-        await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken);
+        await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken, legacyToggle);
         return true;
     }
 
     private async Task ToggleLegacyGraphicsAfterEntryAsync(
         WindowsInput input,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        LegacyGraphicsToggleState legacyToggle)
     {
         if (!_config.Ui.ToggleLegacyGraphicsAfterEnteringGame)
         {
             return;
         }
 
+        if (legacyToggle.Toggled)
+        {
+            return;
+        }
+
+        legacyToggle.Toggled = true;
         _ = TryPrepareD2RForInput(input);
         await DelayFastMenuAsync(cancellationToken);
-        input.PressStartupSkipKey();
-        _ = input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames());
+        if (IsD2RForeground())
+        {
+            input.PressLegacyGraphicsToggle();
+        }
+        else
+        {
+            _ = input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames());
+        }
+
         await DelayFastMenuAsync(cancellationToken);
     }
 
@@ -3196,6 +3227,11 @@ public sealed class VmOperations
         public int LaunchAttempts { get; set; }
         public int PlayClicks { get; set; }
         public string LastLaunchMessage { get; set; } = "(none)";
+    }
+
+    private sealed class LegacyGraphicsToggleState
+    {
+        public bool Toggled { get; set; }
     }
 
     private sealed record ActivitySnapshot(
