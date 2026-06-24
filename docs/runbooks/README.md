@@ -34,6 +34,8 @@ The host and VM-agent implementation supports launch, status, screenshots, remot
 
 The canonical 1366x768 click/sample coordinate table is [automation-coordinate-catalog.md](automation-coordinate-catalog.md). Runtime automation should use the shared `D2RUiCoordinateCatalog` helper so click targets, screenshot X/Y notes, and fallback defaults stay aligned.
 
+The pixel/color thresholds each detector checks once it's sampled a region - not just where it samples - are in [pixel-classifier-catalog.md](pixel-classifier-catalog.md), including known classifier overlaps found by testing the real decision tree against every reference capture.
+
 See [client-menu-flows.md](client-menu-flows.md).
 
 Friend-list targeting notes live in [friend-selector-design.md](friend-selector-design.md). Do not commit screenshots that show real Battle.net tags.
