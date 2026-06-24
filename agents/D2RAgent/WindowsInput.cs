@@ -178,8 +178,11 @@ internal sealed class WindowsInput
         }
 
         ShowWindowAsync(target.WindowHandle, SwRestore);
-        _ = TrySetForegroundWindowTarget(target.WindowHandle, target.ProcessId);
-        var (x, y) = ToScreen(point, processNames);
+        if (!TryResolveWindowScreenPoint(target.WindowHandle, point, out var x, out var y))
+        {
+            return false;
+        }
+
         SendWindowMouseClick(target.WindowHandle, x, y, button);
         return true;
     }
@@ -221,8 +224,10 @@ internal sealed class WindowsInput
 
         var windowHandle = target.WindowHandle;
         ShowWindowAsync(windowHandle, SwRestore);
-        _ = TrySetForegroundWindowTarget(windowHandle, target.ProcessId);
-        var (x, y) = ToScreen(point, processNames);
+        if (!TryResolveWindowScreenPoint(windowHandle, point, out var x, out var y))
+        {
+            return false;
+        }
 
         SendWindowMouseClick(windowHandle, x, y, MouseButton.Left);
         if (includeEscape)
@@ -610,6 +615,28 @@ internal sealed class WindowsInput
             }
         }
 
+        return TryGetClientBounds(windowHandle, out bounds);
+    }
+
+    private static bool TryResolveWindowScreenPoint(IntPtr windowHandle, UiPoint point, out int x, out int y)
+    {
+        x = 0;
+        y = 0;
+        if (!TryGetClientBounds(windowHandle, out var bounds))
+        {
+            return false;
+        }
+
+        var screenWidth = GetSystemMetrics(SmCxScreen);
+        var screenHeight = GetSystemMetrics(SmCyScreen);
+        x = Math.Clamp((int)Math.Round(bounds.Left + (point.X * bounds.Width)), 0, screenWidth - 1);
+        y = Math.Clamp((int)Math.Round(bounds.Top + (point.Y * bounds.Height)), 0, screenHeight - 1);
+        return true;
+    }
+
+    private static bool TryGetClientBounds(IntPtr windowHandle, out CoordinateBounds bounds)
+    {
+        bounds = default;
         if (!GetClientRect(windowHandle, out var clientRect))
         {
             return false;

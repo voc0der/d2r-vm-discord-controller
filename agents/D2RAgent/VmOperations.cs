@@ -685,7 +685,7 @@ public sealed class VmOperations
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             return CommandResult.Failure(
-                $"Join Game form preparation timed out after {timeoutSeconds}s while activity state was {GetActivitySnapshot().State}.{FormatInputDiagnosticsSuffix()}",
+                $"Join Game form preparation timed out after {timeoutSeconds}s while activity state was {GetActivitySnapshot().State}.{FormatCommandCheckpointSuffix()}{FormatInputDiagnosticsSuffix()}",
                 await CollectStatusAsync(cancellationToken));
         }
     }
@@ -695,7 +695,8 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
-        if (CanUseRememberedLobbyOrGameState(input))
+        MarkCommandCheckpoint("PrepareJoinGameFormAsync: start");
+        if (GetActivitySnapshot().State == D2RActivityState.LobbyOrGame)
         {
             MarkLobbyOrGameInteraction("Preparing Join Game from existing lobby state.");
             await RestoreJoinGameFormAsync(input, args, cancellationToken);
@@ -846,6 +847,35 @@ public sealed class VmOperations
         // checkpoint points at the actual stuck call instead of leaving that to guesswork.
         _lastCommandCheckpoint = checkpoint;
         _lastCommandCheckpointUtc = DateTimeOffset.UtcNow;
+    }
+
+    private string FormatCommandCheckpointSuffix()
+    {
+        var checkpoint = _lastCommandCheckpoint;
+        if (string.IsNullOrWhiteSpace(checkpoint))
+        {
+            return "";
+        }
+
+        var age = _lastCommandCheckpointUtc is { } reachedAt
+            ? $" ({FormatCompactAge(DateTimeOffset.UtcNow - reachedAt)} ago)"
+            : "";
+        return $" Last command checkpoint: {checkpoint}{age}.";
+    }
+
+    private static string FormatCompactAge(TimeSpan age)
+    {
+        if (age.TotalSeconds < 60)
+        {
+            return $"{Math.Max(0, age.TotalSeconds):N0}s";
+        }
+
+        if (age.TotalMinutes < 60)
+        {
+            return $"{age.TotalMinutes:N0}m";
+        }
+
+        return $"{age.TotalHours:N1}h";
     }
 
     private void MarkLobbyOrGameInteraction(string reason)
@@ -1011,20 +1041,10 @@ public sealed class VmOperations
         }
 
         var input = new WindowsInput();
-        if (!TryPrepareD2RForInput(input))
-        {
-            // ClickD2R/PressKey route through SendInput, which delivers to whatever
-            // window currently has focus - not to a specific HWND. If D2R never
-            // became the foreground window, every click and keypress for the rest
-            // of the command lands on whatever does have focus instead (commonly an
-            // operator's own Task Manager/RDP window), and the command silently
-            // grinds for its full timeout instead of failing in milliseconds. Fail
-            // fast and name the window that actually has focus.
-            var foregroundProcessName = input.GetInputDiagnostics(processNames).ForegroundProcessName;
-            throw new InvalidOperationException(
-                $"Could not bring D2R to the foreground; focus is on {foregroundProcessName ?? "an unknown window"} instead. Close or minimize whatever currently has focus on the VM and retry.");
-        }
-
+        // Do not block commands on foreground negotiation here. Live VM runs showed
+        // SetForegroundWindow/AttachThreadInput can stall for tens of seconds while D2R is
+        // responsive on screen. Menu clicks now go full-screen first, which focuses the visible
+        // game as a side effect, plus HWND-direct fallback for cases where focus is unreliable.
         return input;
     }
 
@@ -1105,7 +1125,6 @@ public sealed class VmOperations
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _ = TryPrepareD2RForInput(input);
 
             if (IsCharacterScreenReady(input))
             {
@@ -1562,23 +1581,20 @@ public sealed class VmOperations
         AgentCommon.UiPoint point,
         MouseButton button = MouseButton.Left)
     {
-        // point is a proportional (0..1) coordinate meant to be resolved against D2R's own
-        // client rect. Resolving it with no process names falls back to the full primary
-        // screen bounds instead - same proportional math, wrong rectangle - so every click
-        // lands off-target whenever D2R isn't exactly at (0,0) filling the whole display,
-        // while detection (which still resolves screen samples against the D2R window
-        // elsewhere) keeps reading the right pixels. That split is exactly "detection works,
-        // clicks don't."
+        // Fire the visible desktop click against the full VM screen first. The supported VM
+        // layout is 1366x768 with D2R full-screen, and this path avoids blocking on slow
+        // process/window lookup before the click. The HWND-targeted fallback below still uses
+        // D2R's client rect when a window handle is available.
         var processNames = GetD2RProcessNames();
-        var target = input.ResolveScreenPoint(point, processNames);
+        var target = input.ResolveScreenPoint(point);
         var beforeCursor = input.GetCursorPosition();
         if (button == MouseButton.Left)
         {
-            input.LeftClick(point, processNames);
+            input.LeftClick(point);
         }
         else
         {
-            input.RightClick(point, processNames);
+            input.RightClick(point);
         }
 
         // SendInput above only lands if D2R is genuinely the foreground/topmost window at these
@@ -1702,30 +1718,16 @@ public sealed class VmOperations
             : $"{rect.Left},{rect.Top},{rect.Width}x{rect.Height}";
     }
 
-    private bool CanUseRememberedLobbyOrGameState(WindowsInput input)
-    {
-        if (IsCharacterScreenReady(input)
-            || IsCharacterScreenOffline(input)
-            || IsConnectionInterruptedScreen(input))
-        {
-            return false;
-        }
-
-        return IsAnyLobbyEntryMenuVisible(input)
-            || GetActivitySnapshot().State == D2RActivityState.LobbyOrGame;
-    }
-
     private async Task<CommandResult?> EnsureLobbyOpenedAsync(
         WindowsInput input,
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
         MarkCommandCheckpoint("EnsureLobbyOpenedAsync: start");
-        _ = TryPrepareD2RForInput(input);
         var activity = GetActivitySnapshot();
-        if (CanUseRememberedLobbyOrGameState(input))
+        if (activity.State == D2RActivityState.LobbyOrGame)
         {
-            MarkLobbyOrGameInteraction("Using visible or remembered lobby/game state for menu automation.");
+            MarkLobbyOrGameInteraction("Using remembered lobby/game state for menu automation.");
             return null;
         }
 
@@ -1757,7 +1759,6 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _ = TryPrepareD2RForInput(input);
 
             if (IsAnyLobbyEntryMenuVisible(input))
             {
@@ -1786,7 +1787,6 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        _ = TryPrepareD2RForInput(input);
         ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CharacterLobbyButton));
         await DelayLongAsync(cancellationToken);
     }
@@ -1851,7 +1851,6 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        _ = TryPrepareD2RForInput(input);
         ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CharacterLobbyButton));
         await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)), cancellationToken);
 
@@ -1864,8 +1863,6 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        MarkCommandCheckpoint("ClickLobbyTabDirectAsync: TryPrepareD2RForInput");
-        _ = TryPrepareD2RForInput(input);
         MarkCommandCheckpoint("ClickLobbyTabDirectAsync: first ClickD2R");
         ClickD2R(input, tab);
         await DelayStepAsync(cancellationToken);
@@ -1892,7 +1889,6 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _ = TryPrepareD2RForInput(input);
 
             if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
             {
@@ -2038,7 +2034,6 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        _ = TryPrepareD2RForInput(input);
         ClickD2R(input, button);
         await DelayFastMenuAsync(cancellationToken);
     }
@@ -2049,7 +2044,6 @@ public sealed class VmOperations
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            _ = TryPrepareD2RForInput(input);
             ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.GameEntryErrorDialogOkButton));
             await DelayLongAsync(cancellationToken);
 
@@ -2072,7 +2066,6 @@ public sealed class VmOperations
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _ = TryPrepareD2RForInput(input);
             if (!IsConnectionInterruptedScreen(input))
             {
                 return true;
@@ -2092,10 +2085,14 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
+        MarkCommandCheckpoint("RestoreJoinGameFormAsync: click Join Game tab");
         await ClickLobbyTabDirectAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), cancellationToken);
 
+        MarkCommandCheckpoint("RestoreJoinGameFormAsync: select difficulty");
         await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
+        MarkCommandCheckpoint("RestoreJoinGameFormAsync: fill game name");
         await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameNameField), args.GameName ?? "", cancellationToken);
+        MarkCommandCheckpoint("RestoreJoinGameFormAsync: fill password");
         await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinPasswordField), args.Password ?? "", cancellationToken);
         return true;
     }
@@ -2105,10 +2102,14 @@ public sealed class VmOperations
         MenuCommandArgs args,
         CancellationToken cancellationToken)
     {
+        MarkCommandCheckpoint("RestoreCreateGameFormAsync: click Create Game tab");
         await ClickLobbyTabDirectAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab), cancellationToken);
 
+        MarkCommandCheckpoint("RestoreCreateGameFormAsync: fill game name");
         await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameNameField), args.GameName ?? "", cancellationToken);
+        MarkCommandCheckpoint("RestoreCreateGameFormAsync: fill password");
         await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreatePasswordField), args.Password ?? "", cancellationToken);
+        MarkCommandCheckpoint("RestoreCreateGameFormAsync: select difficulty");
         ClickD2R(input, GetCreateDifficultyPoint(args.Difficulty));
         await DelayStepAsync(cancellationToken);
         return true;
@@ -2557,7 +2558,6 @@ public sealed class VmOperations
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _ = TryPrepareD2RForInput(input);
             var canDetectReturn = returnTab is not null && DateTimeOffset.UtcNow >= returnDetectionAt;
 
             if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
@@ -2700,7 +2700,6 @@ public sealed class VmOperations
         }
 
         legacyToggle.Toggled = true;
-        _ = TryPrepareD2RForInput(input);
         await DelayFastMenuAsync(cancellationToken);
         if (IsD2RForeground())
         {
