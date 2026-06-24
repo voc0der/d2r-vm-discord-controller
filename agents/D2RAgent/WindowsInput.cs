@@ -55,6 +55,7 @@ internal sealed class WindowsInput
     private const int InputGapMilliseconds = 35;
     private const int SwRestore = 9;
     private readonly string[] _coordinateProcessNames;
+    private readonly Dictionary<string, CoordinateBounds> _coordinateBoundsCache = new(StringComparer.OrdinalIgnoreCase);
 
     public WindowsInput(params string[] coordinateProcessNames)
     {
@@ -579,9 +580,26 @@ internal sealed class WindowsInput
             names = _coordinateProcessNames;
         }
 
-        return names.Length > 0 && TryGetProcessClientBounds(names, out var bounds, restoreWindow)
-            ? bounds
-            : new CoordinateBounds(0, 0, GetSystemMetrics(SmCxScreen), GetSystemMetrics(SmCyScreen));
+        if (names.Length > 0)
+        {
+            var cacheKey = string.Join('\0', names.OrderBy(name => name, StringComparer.OrdinalIgnoreCase));
+            if (_coordinateBoundsCache.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+
+            if (TryGetProcessClientBounds(names, out var bounds, restoreWindow))
+            {
+                if (bounds.Width >= 400 && bounds.Height >= 300)
+                {
+                    _coordinateBoundsCache[cacheKey] = bounds;
+                }
+
+                return bounds;
+            }
+        }
+
+        return new CoordinateBounds(0, 0, GetSystemMetrics(SmCxScreen), GetSystemMetrics(SmCyScreen));
     }
 
     private static bool TryGetProcessClientBounds(IEnumerable<string> processNames, out CoordinateBounds bounds, bool restoreWindow)

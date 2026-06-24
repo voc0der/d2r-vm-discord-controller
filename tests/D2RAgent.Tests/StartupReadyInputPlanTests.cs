@@ -24,11 +24,12 @@ public sealed class StartupReadyInputPlanTests
         Assert.Equal(
             [
                 StartupReadyInputAction.PressEscapeKey,
-                StartupReadyInputAction.SendWindowEscapeKey,
                 StartupReadyInputAction.ClickIntroPoint,
-                StartupReadyInputAction.SendWindowClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
                 StartupReadyInputAction.PressStartKey,
+                StartupReadyInputAction.SendWindowEscapeKey,
+                StartupReadyInputAction.SendWindowClickIntroPoint,
+                StartupReadyInputAction.SendWindowReadyBurst,
                 StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.IntroActions);
@@ -37,30 +38,30 @@ public sealed class StartupReadyInputPlanTests
             [
                 StartupReadyInputAction.PressStartupSkipKey,
                 StartupReadyInputAction.PressStartKey,
-                StartupReadyInputAction.SendWindowStartupSkipKey,
-                StartupReadyInputAction.SendWindowReadyBurst
+                StartupReadyInputAction.SendWindowReadyBurst,
+                StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.TitleActions);
 
         Assert.Equal(
             [
                 StartupReadyInputAction.ClickIntroPoint,
-                StartupReadyInputAction.SendWindowClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
                 StartupReadyInputAction.PressStartKey,
-                StartupReadyInputAction.SendWindowStartupSkipKey,
-                StartupReadyInputAction.SendWindowReadyBurst
+                StartupReadyInputAction.SendWindowClickIntroPoint,
+                StartupReadyInputAction.SendWindowReadyBurst,
+                StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.SplashActions);
 
         Assert.Equal(
             [
                 StartupReadyInputAction.ClickIntroPoint,
-                StartupReadyInputAction.SendWindowClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
                 StartupReadyInputAction.PressStartKey,
-                StartupReadyInputAction.SendWindowStartupSkipKey,
-                StartupReadyInputAction.SendWindowReadyBurst
+                StartupReadyInputAction.SendWindowClickIntroPoint,
+                StartupReadyInputAction.SendWindowReadyBurst,
+                StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.BurstActions);
     }

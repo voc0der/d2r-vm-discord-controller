@@ -22,7 +22,7 @@ public sealed class VmOperations
     private const int D2RProcessStartFallbackTimeoutSeconds = 20;
     private const int MenuReadyFallbackTimeoutSeconds = 30;
     private const int MaxJoinPrepareSeconds = 25;
-    private const int ReadyStartupDetectionIntervalMs = 1000;
+    private const int ReadyStartupDetectionIntervalMs = 250;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
     private const int FastMenuDelayMs = 150;
@@ -90,10 +90,11 @@ public sealed class VmOperations
             }
         }
 
+        _statusGate.Release();
         _ = statusTask.ContinueWith(
-            _ => _statusGate.Release(),
+            task => _ = task.Exception,
             CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
         return CollectProcessOnlyStatus(
             $"Detailed status collection did not return within {StatusCollectionTimeoutSeconds}s; using process-only fallback.",
@@ -156,7 +157,8 @@ public sealed class VmOperations
         var d2rRunning = OperatingSystem.IsWindows()
             && WindowsProcessFinder.IsAnyNamedProcessRunning(GetD2RProcessNames());
         RefreshD2RProcessActivity(d2rRunning);
-        var activity = GetActivitySnapshot();
+        var visibleState = GetBestProcessOnlyVisibleState(d2rRunning);
+        var activity = DetectVisibleActivitySnapshot(d2rRunning, visibleState);
 
         return new
         {
@@ -167,7 +169,7 @@ public sealed class VmOperations
             statusError = reason,
             battleNetRunning,
             d2rRunning,
-            d2rVisibleState = VisibleD2RState.Unknown.ToString(),
+            d2rVisibleState = visibleState.ToString(),
             d2rProcessDiscovery = new ProcessDiscoverySnapshot(GetD2RProcessNames(), [], []),
             d2rInput = (InputDiagnostics?)null,
             lastInputAction = _lastInputAction,
@@ -981,6 +983,32 @@ public sealed class VmOperations
         };
     }
 
+    private VisibleD2RState GetBestProcessOnlyVisibleState(bool d2rRunning)
+    {
+        if (!d2rRunning)
+        {
+            return VisibleD2RState.NotRunning;
+        }
+
+        if (_lastObservedFrameUtc is null
+            || DateTimeOffset.UtcNow - _lastObservedFrameUtc.Value > TimeSpan.FromSeconds(15)
+            || string.IsNullOrWhiteSpace(_lastObservedFrame))
+        {
+            return VisibleD2RState.Unknown;
+        }
+
+        return _lastObservedFrame switch
+        {
+            nameof(ReadyScreenState.DiabloSplash) => VisibleD2RState.DiabloSplash,
+            nameof(ReadyScreenState.CharacterScreen) => VisibleD2RState.CharacterScreen,
+            nameof(ReadyScreenState.OfflineCharacterScreen) => VisibleD2RState.OfflineCharacterScreen,
+            nameof(VisibleD2RState.NotRunning) => VisibleD2RState.NotRunning,
+            nameof(VisibleD2RState.LobbyOrGame) => VisibleD2RState.LobbyOrGame,
+            nameof(VisibleD2RState.InGame) => VisibleD2RState.InGame,
+            _ => VisibleD2RState.Unknown
+        };
+    }
+
     private VisibleD2RState DetectVisibleD2RState(bool d2rRunning)
     {
         if (!OperatingSystem.IsWindows())
@@ -1362,7 +1390,7 @@ public sealed class VmOperations
     private void SendReadyIntroClick(WindowsInput input)
     {
         var introPoint = GetUiPoint(D2RUiCoordinateTarget.IntroSkipPoint);
-        var target = ResolveD2RScreenPoint(introPoint);
+        var target = input.ResolveScreenPoint(introPoint);
         var beforeCursor = input.GetCursorPosition();
         foreach (var action in StartupReadyInputPlan.IntroActions)
         {
@@ -1378,13 +1406,16 @@ public sealed class VmOperations
                     TryReadyInputAction(input.PressEscape);
                     break;
                 case StartupReadyInputAction.SendWindowEscapeKey:
-                    TryReadyInputAction(() => _ = input.SendWindowEscapeKey(GetD2RProcessNames()));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowEscapeKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
-                    TryReadyInputAction(() => ClickD2R(input, introPoint));
+                    TryReadyInputAction(() => ClickD2RDesktopOnly(input, introPoint));
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
-                    TryReadyInputAction(() => _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left));
+                    break;
+                case StartupReadyInputAction.SendWindowReadyBurst:
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true));
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
                     TryReadyInputAction(input.PressStartupSkipKey);
@@ -1393,7 +1424,7 @@ public sealed class VmOperations
                     TryReadyInputAction(input.PressStartKey);
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
-                    TryReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
             }
         }
@@ -1418,7 +1449,7 @@ public sealed class VmOperations
     private void SendReadyTitleSkipBurst(WindowsInput input)
     {
         var introPoint = GetUiPoint(D2RUiCoordinateTarget.IntroSkipPoint);
-        var target = ResolveD2RScreenPoint(introPoint);
+        var target = input.ResolveScreenPoint(introPoint);
         var beforeCursor = input.GetCursorPosition();
         foreach (var action in StartupReadyInputPlan.TitleActions)
         {
@@ -1437,10 +1468,10 @@ public sealed class VmOperations
                     TryReadyInputAction(input.PressStartKey);
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
-                    TryReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    TryReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true));
                     break;
             }
         }
@@ -1460,7 +1491,7 @@ public sealed class VmOperations
     private void SendReadySplashContinueBurst(WindowsInput input)
     {
         var introPoint = GetUiPoint(D2RUiCoordinateTarget.IntroSkipPoint);
-        var target = ResolveD2RScreenPoint(introPoint);
+        var target = input.ResolveScreenPoint(introPoint);
         var beforeCursor = input.GetCursorPosition();
         foreach (var action in StartupReadyInputPlan.SplashActions)
         {
@@ -1473,10 +1504,10 @@ public sealed class VmOperations
                     TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
-                    TryReadyInputAction(() => ClickD2R(input, introPoint));
+                    TryReadyInputAction(() => ClickD2RDesktopOnly(input, introPoint));
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
-                    TryReadyInputAction(() => _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left));
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
                     TryReadyInputAction(input.PressStartupSkipKey);
@@ -1485,10 +1516,10 @@ public sealed class VmOperations
                     TryReadyInputAction(input.PressStartKey);
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
-                    TryReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    TryReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: false));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: false));
                     break;
             }
         }
@@ -1508,7 +1539,7 @@ public sealed class VmOperations
     private void SendReadySkipBurst(WindowsInput input)
     {
         var introPoint = GetUiPoint(D2RUiCoordinateTarget.IntroSkipPoint);
-        var target = ResolveD2RScreenPoint(introPoint);
+        var target = input.ResolveScreenPoint(introPoint);
         var beforeCursor = input.GetCursorPosition();
         foreach (var action in StartupReadyInputPlan.BurstActions)
         {
@@ -1521,10 +1552,10 @@ public sealed class VmOperations
                     TryReadyInputAction(() => _ = TryClickD2RWindowCenter(input));
                     break;
                 case StartupReadyInputAction.ClickIntroPoint:
-                    TryReadyInputAction(() => ClickD2R(input, introPoint));
+                    TryReadyInputAction(() => ClickD2RDesktopOnly(input, introPoint));
                     break;
                 case StartupReadyInputAction.SendWindowClickIntroPoint:
-                    TryReadyInputAction(() => _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowClick(introPoint, GetD2RProcessNames(), MouseButton.Left));
                     break;
                 case StartupReadyInputAction.PressStartupSkipKey:
                     TryReadyInputAction(input.PressStartupSkipKey);
@@ -1533,10 +1564,10 @@ public sealed class VmOperations
                     TryReadyInputAction(input.PressStartKey);
                     break;
                 case StartupReadyInputAction.SendWindowStartupSkipKey:
-                    TryReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    TryReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true));
+                    TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: true));
                     break;
             }
         }
@@ -1565,6 +1596,21 @@ public sealed class VmOperations
             // briefly reject HWND input. One failing route must not suppress the rest
             // of the burst, especially the global keypresses that skip cinematics.
         }
+    }
+
+    private void TryD2RWindowReadyInputAction(Action action)
+    {
+        if (!IsD2RNamedProcessRunning())
+        {
+            return;
+        }
+
+        TryReadyInputAction(action);
+    }
+
+    private static void ClickD2RDesktopOnly(WindowsInput input, AgentCommon.UiPoint point)
+    {
+        input.LeftClick(point);
     }
 
     private bool TryClickD2RWindowCenter(WindowsInput input)
@@ -2563,6 +2609,7 @@ public sealed class VmOperations
         var presumedEntryAfter = TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 4, 10));
         DateTimeOffset? menuAbsentSince = null;
         var sawConnectionInterrupted = false;
+        MarkCommandCheckpoint("WaitForGameEntryAsync: polling for HUD/menu/connection state");
 
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -2571,30 +2618,36 @@ public sealed class VmOperations
 
             if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
             {
+                MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game HUD");
                 return GameEntryWaitResult.EnteredGame;
             }
 
             if (IsConnectionInterruptedScreen(input))
             {
                 sawConnectionInterrupted = true;
+                MarkCommandCheckpoint("WaitForGameEntryAsync: connection interrupted visible");
             }
             else if (IsGameEntryErrorDialogOpen(input))
             {
+                MarkCommandCheckpoint("WaitForGameEntryAsync: game-entry error dialog visible");
                 return GameEntryWaitResult.ErrorDialog;
             }
             else if (IsCharacterScreenOffline(input))
             {
+                MarkCommandCheckpoint("WaitForGameEntryAsync: offline character screen visible");
                 return GameEntryWaitResult.OfflineCharacterScreen;
             }
             else if (canDetectReturn)
             {
                 if (IsCharacterScreenReady(input))
                 {
+                    MarkCommandCheckpoint("WaitForGameEntryAsync: returned to character screen");
                     return GameEntryWaitResult.ReturnedToCharacterScreen;
                 }
 
                 if (IsGameEntryMenuStillVisible(input, returnTab!))
                 {
+                    MarkCommandCheckpoint("WaitForGameEntryAsync: lobby menu visible again");
                     return sawConnectionInterrupted
                         ? GameEntryWaitResult.ConnectionInterrupted
                         : GameEntryWaitResult.ReturnedToMenu;
@@ -2603,6 +2656,9 @@ public sealed class VmOperations
                 menuAbsentSince ??= DateTimeOffset.UtcNow;
                 if (DateTimeOffset.UtcNow - menuAbsentSince >= presumedEntryAfter)
                 {
+                    RecordObservedFrame(VisibleD2RState.InGame.ToString());
+                    MarkLobbyOrGameInteraction("Game-entry menu disappeared; treating client as in-game.");
+                    MarkCommandCheckpoint("WaitForGameEntryAsync: menu absent long enough; assuming in-game");
                     await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken, legacyToggle);
                     return GameEntryWaitResult.EnteredGame;
                 }
@@ -2619,6 +2675,7 @@ public sealed class VmOperations
 
         if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
         {
+            MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game at deadline");
             return GameEntryWaitResult.EnteredGame;
         }
 
@@ -2689,6 +2746,8 @@ public sealed class VmOperations
             return false;
         }
 
+        RecordObservedFrame(VisibleD2RState.InGame.ToString());
+        MarkLobbyOrGameInteraction("Detected in-game HUD.");
         await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken, legacyToggle);
         return true;
     }
@@ -2710,15 +2769,8 @@ public sealed class VmOperations
 
         legacyToggle.Toggled = true;
         await DelayFastMenuAsync(cancellationToken);
-        if (IsD2RForeground())
-        {
-            input.PressLegacyGraphicsToggle();
-        }
-        else
-        {
-            _ = input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames());
-        }
-
+        input.PressLegacyGraphicsToggle();
+        _ = input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames());
         await DelayFastMenuAsync(cancellationToken);
     }
 

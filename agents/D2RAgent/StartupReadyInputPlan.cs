@@ -28,11 +28,12 @@ internal sealed record StartupReadyInputPlan(
     public static readonly IReadOnlyList<StartupReadyInputAction> IntroActions =
     [
         StartupReadyInputAction.PressEscapeKey,
-        StartupReadyInputAction.SendWindowEscapeKey,
         StartupReadyInputAction.ClickIntroPoint,
-        StartupReadyInputAction.SendWindowClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
         StartupReadyInputAction.PressStartKey,
+        StartupReadyInputAction.SendWindowEscapeKey,
+        StartupReadyInputAction.SendWindowClickIntroPoint,
+        StartupReadyInputAction.SendWindowReadyBurst,
         StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 
@@ -40,28 +41,28 @@ internal sealed record StartupReadyInputPlan(
     [
         StartupReadyInputAction.PressStartupSkipKey,
         StartupReadyInputAction.PressStartKey,
-        StartupReadyInputAction.SendWindowStartupSkipKey,
-        StartupReadyInputAction.SendWindowReadyBurst
+        StartupReadyInputAction.SendWindowReadyBurst,
+        StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 
     public static readonly IReadOnlyList<StartupReadyInputAction> SplashActions =
     [
         StartupReadyInputAction.ClickIntroPoint,
-        StartupReadyInputAction.SendWindowClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
         StartupReadyInputAction.PressStartKey,
-        StartupReadyInputAction.SendWindowStartupSkipKey,
-        StartupReadyInputAction.SendWindowReadyBurst
+        StartupReadyInputAction.SendWindowClickIntroPoint,
+        StartupReadyInputAction.SendWindowReadyBurst,
+        StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 
     public static readonly IReadOnlyList<StartupReadyInputAction> BurstActions =
     [
         StartupReadyInputAction.ClickIntroPoint,
-        StartupReadyInputAction.SendWindowClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
         StartupReadyInputAction.PressStartKey,
-        StartupReadyInputAction.SendWindowStartupSkipKey,
-        StartupReadyInputAction.SendWindowReadyBurst
+        StartupReadyInputAction.SendWindowClickIntroPoint,
+        StartupReadyInputAction.SendWindowReadyBurst,
+        StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 
     public static StartupReadyInputPlan FromConfig(D2RUiAutomationConfig config)
