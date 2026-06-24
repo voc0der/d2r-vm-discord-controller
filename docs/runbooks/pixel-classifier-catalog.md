@@ -49,7 +49,7 @@ mask a true later state if their region happens to also satisfy an earlier thres
 1. Diablo splash family (`IsDiabloSplashScreen`, then `IsConnectingToBattleNetDialog` as a
    sub-state)
 2. Offline character screen (`IsCharacterScreenOffline`)
-3. Character screen ready (`IsCharacterButtonPairReady` or `IsCharacterMenuReady`)
+3. Character screen ready (`IsCharacterButtonPairReady`) or partial character menu (`IsCharacterMenuReady`)
 4. In game (`IsInGameReady`) - `DetectVisibleD2RState` only
 5. Lobby/game entry menu (`IsAnyLobbyEntryMenuVisible`) - `DetectVisibleD2RState` only
 6. `Unknown`
@@ -69,7 +69,7 @@ mask a true later state if their region happens to also satisfy an earlier thres
 | `IsCharacterMenuReady` | logo `0.105,0.170` `0.13x0.16`; options `0.105,0.405` `0.13x0.05`; cinematics `0.105,0.460` `0.13x0.05` (the left-side Diablo/Options/Cinematics menu chrome - not in the coordinate catalog, inline-only) | logo `OrangeRatio > 0.05`, options and cinematics both pass `IsCharacterMenuButtonRegion` (`AverageLuminance > 40 && GreyRatio > 0.35 && DarkRatio < 0.65`) |
 | `IsCharacterScreenOffline` | **Gated on `IsCharacterMenuReady` passing first**, then samples the empty-panel region `0.895,0.455` `0.17x0.66` | `IsOfflineCharacterPanelRegion`: `AverageLuminance < 32 && DarkRatio > 0.82 && GreyRatio < 0.18` |
 
-`CharacterScreen` (ready) is `IsCharacterButtonPairReady || IsCharacterMenuReady`.
+`CharacterScreen` means the online character list/buttons are ready via `IsCharacterButtonPairReady`. `CharacterMenu` means the left-side character-select menu chrome is visible via `IsCharacterMenuReady`, but the online list/buttons did not both pass yet; ready/menu automation treats this as a usable character-select state, but the distinct frame name makes partial loading visible in watch logs.
 
 ## In game
 

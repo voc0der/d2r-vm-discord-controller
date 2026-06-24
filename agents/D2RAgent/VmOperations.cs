@@ -1042,6 +1042,7 @@ public sealed class VmOperations
         return _lastObservedFrame switch
         {
             nameof(ReadyScreenState.DiabloSplash) => VisibleD2RState.DiabloSplash,
+            nameof(ReadyScreenState.CharacterMenu) => VisibleD2RState.CharacterScreen,
             nameof(ReadyScreenState.CharacterScreen) => VisibleD2RState.CharacterScreen,
             nameof(ReadyScreenState.OfflineCharacterScreen) => VisibleD2RState.OfflineCharacterScreen,
             nameof(VisibleD2RState.NotRunning) => VisibleD2RState.NotRunning,
@@ -1439,7 +1440,7 @@ public sealed class VmOperations
                 SendReadySplashContinueBurst(input);
                 nudges++;
             }
-            else if (lastState == ReadyScreenState.DiabloSplash)
+            else if (lastState is ReadyScreenState.DiabloSplash or ReadyScreenState.CharacterMenu)
             {
                 SendReadySplashContinueBurst(input);
                 nudges++;
@@ -1557,7 +1558,7 @@ public sealed class VmOperations
                 SendReadySplashContinueBurst(input);
                 nudges++;
             }
-            else if (lastState == ReadyScreenState.DiabloSplash)
+            else if (lastState is ReadyScreenState.DiabloSplash or ReadyScreenState.CharacterMenu)
             {
                 SendReadySplashContinueBurst(input);
                 nudges++;
@@ -1633,7 +1634,7 @@ public sealed class VmOperations
                 SendReadySplashContinueBurst(input);
                 nudges++;
             }
-            else if (lastState == ReadyScreenState.DiabloSplash)
+            else if (lastState is ReadyScreenState.DiabloSplash or ReadyScreenState.CharacterMenu)
             {
                 SendReadySplashContinueBurst(input);
                 nudges++;
@@ -2635,11 +2636,15 @@ public sealed class VmOperations
             return ReadyScreenState.OfflineCharacterScreen;
         }
 
-        return IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid)
-            || IsCharacterButtonPairReady(input, windowRelative: true, sampleGrid)
-            || IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
+        if (IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid)
+            || IsCharacterButtonPairReady(input, windowRelative: true, sampleGrid))
+        {
+            return ReadyScreenState.CharacterScreen;
+        }
+
+        return IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
             || IsCharacterMenuReady(input, windowRelative: true, sampleGrid)
-            ? ReadyScreenState.CharacterScreen
+            ? ReadyScreenState.CharacterMenu
             : ReadyScreenState.Unknown;
     }
 
@@ -2712,9 +2717,13 @@ public sealed class VmOperations
             return ReadyScreenState.OfflineCharacterScreen;
         }
 
-        return IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid)
-            || IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
-            ? ReadyScreenState.CharacterScreen
+        if (IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid))
+        {
+            return ReadyScreenState.CharacterScreen;
+        }
+
+        return IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
+            ? ReadyScreenState.CharacterMenu
             : ReadyScreenState.Unknown;
     }
 
@@ -2725,15 +2734,21 @@ public sealed class VmOperations
             return ReadyScreenState.OfflineCharacterScreen;
         }
 
-        return IsCharacterButtonPairReady(input, windowRelative: true, sampleGrid)
-            || IsCharacterMenuReady(input, windowRelative: true, sampleGrid)
-            ? ReadyScreenState.CharacterScreen
+        if (IsCharacterButtonPairReady(input, windowRelative: true, sampleGrid))
+        {
+            return ReadyScreenState.CharacterScreen;
+        }
+
+        return IsCharacterMenuReady(input, windowRelative: true, sampleGrid)
+            ? ReadyScreenState.CharacterMenu
             : ReadyScreenState.Unknown;
     }
 
     private static bool IsReadyScreenState(ReadyScreenState state)
     {
-        return state is ReadyScreenState.CharacterScreen or ReadyScreenState.OfflineCharacterScreen;
+        return state is ReadyScreenState.CharacterScreen
+            or ReadyScreenState.CharacterMenu
+            or ReadyScreenState.OfflineCharacterScreen;
     }
 
     private bool IsCharacterButtonPairReady(WindowsInput input, bool windowRelative, int sampleGrid = MenuSampleGrid)
@@ -3740,6 +3755,7 @@ public sealed class VmOperations
         Unknown,
         DiabloSplash,
         ConnectingToBattleNet,
+        CharacterMenu,
         OfflineCharacterScreen,
         CharacterScreen
     }
