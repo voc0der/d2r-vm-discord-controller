@@ -23,6 +23,7 @@ public sealed class VmOperations
     private const int MenuReadyFallbackTimeoutSeconds = 30;
     private const int MaxJoinPrepareSeconds = 25;
     private const int ReadyStartupDetectionIntervalMs = 250;
+    private const int ReadyStartupWindowRelativeDetectionIntervalMs = 1000;
     private const int ReadyStartupProcessCheckIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
@@ -1372,6 +1373,7 @@ public sealed class VmOperations
         var nudges = 0;
         var lastState = ReadyScreenState.Unknown;
         var nextDetectionAt = DateTimeOffset.UtcNow;
+        var nextWindowRelativeDetectionAt = DateTimeOffset.UtcNow;
         var nextProcessCheckAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
         var launchNudges = CreateReadyLaunchNudgeState();
@@ -1404,10 +1406,24 @@ public sealed class VmOperations
             // following Enter can confirm it, silently exiting back to the title screen.
             if (now >= nextDetectionAt)
             {
-                var state = DetectReadyScreenStateFast(input);
+                var includeWindowRelativeDetection = now >= nextWindowRelativeDetectionAt;
+                var state = DetectReadyScreenStateFast(
+                    input,
+                    includeWindowRelativeDetection,
+                    out var detectedViaWindowRelative);
                 lastState = state;
+                if (includeWindowRelativeDetection)
+                {
+                    nextWindowRelativeDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupWindowRelativeDetectionIntervalMs);
+                }
+
                 if (IsReadyScreenState(state))
                 {
+                    if (detectedViaWindowRelative)
+                    {
+                        MarkCommandCheckpoint($"ready loop detected {state} via bounded window-relative probe");
+                    }
+
                     return Result(true, nudges, lastState, skipSeconds);
                 }
 
@@ -1481,6 +1497,7 @@ public sealed class VmOperations
         var lastState = ReadyScreenState.Unknown;
         var nudges = 0;
         var nextDetectionAt = DateTimeOffset.UtcNow;
+        var nextWindowRelativeDetectionAt = DateTimeOffset.UtcNow;
         var nextProcessCheckAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
         var launchNudges = CreateReadyLaunchNudgeState();
@@ -1510,9 +1527,23 @@ public sealed class VmOperations
             // screen and accidentally confirm an exit dialog).
             if (now >= nextDetectionAt)
             {
-                lastState = DetectReadyScreenStateFast(input);
+                var includeWindowRelativeDetection = now >= nextWindowRelativeDetectionAt;
+                lastState = DetectReadyScreenStateFast(
+                    input,
+                    includeWindowRelativeDetection,
+                    out var detectedViaWindowRelative);
+                if (includeWindowRelativeDetection)
+                {
+                    nextWindowRelativeDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupWindowRelativeDetectionIntervalMs);
+                }
+
                 if (IsReadyScreenState(lastState))
                 {
+                    if (detectedViaWindowRelative)
+                    {
+                        MarkCommandCheckpoint($"startup plan detected {lastState} via bounded window-relative probe");
+                    }
+
                     return Result(true, nudges, lastState, timeoutSeconds);
                 }
 
@@ -1572,9 +1603,23 @@ public sealed class VmOperations
             // screen and accidentally confirm an exit dialog).
             if (now >= nextDetectionAt)
             {
-                lastState = DetectReadyScreenStateFast(input);
+                var includeWindowRelativeDetection = now >= nextWindowRelativeDetectionAt;
+                lastState = DetectReadyScreenStateFast(
+                    input,
+                    includeWindowRelativeDetection,
+                    out var detectedViaWindowRelative);
+                if (includeWindowRelativeDetection)
+                {
+                    nextWindowRelativeDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupWindowRelativeDetectionIntervalMs);
+                }
+
                 if (IsReadyScreenState(lastState))
                 {
+                    if (detectedViaWindowRelative)
+                    {
+                        MarkCommandCheckpoint($"startup plan detected {lastState} via bounded window-relative probe");
+                    }
+
                     return Result(true, nudges, lastState, timeoutSeconds);
                 }
 
@@ -1622,7 +1667,15 @@ public sealed class VmOperations
             await Task.Delay(plan.TitleScreenKeyPressDelayMs, cancellationToken);
         }
 
-        lastState = DetectReadyScreenStateStable(input);
+        lastState = DetectReadyScreenStateFast(
+            input,
+            includeWindowRelativeDetection: true,
+            out var finalDetectedViaWindowRelative);
+        if (IsReadyScreenState(lastState) && finalDetectedViaWindowRelative)
+        {
+            MarkCommandCheckpoint($"startup plan final check detected {lastState} via bounded window-relative probe");
+        }
+
         return Result(
             IsReadyScreenState(lastState),
             nudges,
@@ -2609,9 +2662,19 @@ public sealed class VmOperations
         return state;
     }
 
-    private ReadyScreenState DetectReadyScreenStateFast(WindowsInput input)
+    private ReadyScreenState DetectReadyScreenStateFast(
+        WindowsInput input,
+        bool includeWindowRelativeDetection,
+        out bool detectedViaWindowRelative)
     {
+        detectedViaWindowRelative = false;
         var state = DetectReadyScreenStateScreenOnly(input, ReadyStartupSampleGrid);
+        if (state == ReadyScreenState.Unknown && includeWindowRelativeDetection)
+        {
+            state = DetectReadyScreenStateWindowOnlyBounded(input, ReadyStartupSampleGrid);
+            detectedViaWindowRelative = IsReadyScreenState(state);
+        }
+
         if (state == ReadyScreenState.Unknown)
         {
             RecordClassifierBreakdown(ComputeReadyScreenClassifierBreakdown(input, ReadyStartupSampleGrid));
@@ -2619,6 +2682,20 @@ public sealed class VmOperations
 
         RecordObservedFrame(state.ToString());
         return state;
+    }
+
+    private ReadyScreenState DetectReadyScreenStateWindowOnlyBounded(WindowsInput input, int sampleGrid)
+    {
+        var state = ReadyScreenState.Unknown;
+        var detected = TryRunBounded(
+            () =>
+            {
+                state = DetectReadyScreenStateWindowOnly(input, sampleGrid);
+                return IsReadyScreenState(state);
+            },
+            ReadyStartupDetectionIntervalMs);
+
+        return detected ? state : ReadyScreenState.Unknown;
     }
 
     private ReadyScreenState DetectReadyScreenStateScreenOnly(WindowsInput input, int sampleGrid)
@@ -2637,6 +2714,19 @@ public sealed class VmOperations
 
         return IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid)
             || IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
+            ? ReadyScreenState.CharacterScreen
+            : ReadyScreenState.Unknown;
+    }
+
+    private ReadyScreenState DetectReadyScreenStateWindowOnly(WindowsInput input, int sampleGrid)
+    {
+        if (IsCharacterScreenOffline(input, windowRelative: true, sampleGrid))
+        {
+            return ReadyScreenState.OfflineCharacterScreen;
+        }
+
+        return IsCharacterButtonPairReady(input, windowRelative: true, sampleGrid)
+            || IsCharacterMenuReady(input, windowRelative: true, sampleGrid)
             ? ReadyScreenState.CharacterScreen
             : ReadyScreenState.Unknown;
     }
