@@ -2181,12 +2181,26 @@ public sealed class VmOperations
         var deadline = DateTimeOffset.UtcNow + timeout;
         var dialogRetries = 0;
         var connectionRetries = 0;
+        var iteration = 0;
         var legacyToggle = new LegacyGraphicsToggleState();
         MarkCommandCheckpoint("ClickMenuEntryButtonUntilEnteredGameAsync: initial click");
         await ClickMenuEntryButtonAsync(input, button, cancellationToken);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            iteration++;
+            // Live runs (watch-xyz1-20260624-195749.log, watch-nq1-20260624-203207.log) showed
+            // the checkpoint frozen at "initial click" for 46s-2m+ with the next checkpoint
+            // (WaitForGameEntryAsync) never appearing even once. Every call in between is either
+            // PostMessage/SendMessageTimeout-bounded or a pure GDI pixel read - nothing here
+            // should structurally block that long. This checkpoint exists to find out which:
+            // if iteration stays 1 here for the whole stuck window, the GDI pixel sampling
+            // itself (SampleD2RRegion/GetPixel, unbounded, unlike the focus-steal path) is the
+            // actual blocking call - plausibly because D2R is hammering the VM's GPU/CPU loading
+            // the just-created/joined level, the same RAM/VRAM load lag already confirmed after
+            // intro-skip, just recurring here. If iteration climbs instead, the loop is cycling
+            // fine and WaitForGameEntryAsync's own internal poll is where the time really goes.
+            MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking entry");
 
             if (await TryConfirmEnteredGameAsync(input, cancellationToken, legacyToggle))
             {
@@ -2227,6 +2241,7 @@ public sealed class VmOperations
 
             if (IsCharacterScreenOffline(input))
             {
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: returned to offline character screen (iteration {iteration}), recovering");
                 if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
                     || !await ClickLobbyDirectAsync(input, cancellationToken)
                     || !await restoreFormAsync())
@@ -2236,6 +2251,7 @@ public sealed class VmOperations
             }
             else if (IsCharacterScreenReady(input))
             {
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: returned to character select (iteration {iteration}), recovering");
                 if (!await ClickLobbyDirectAsync(input, cancellationToken)
                     || !await restoreFormAsync())
                 {
@@ -2253,7 +2269,7 @@ public sealed class VmOperations
                 return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, activeTab, dialogRetries, connectionRetries));
             }
 
-            MarkCommandCheckpoint("ClickMenuEntryButtonUntilEnteredGameAsync: WaitForGameEntryAsync");
+            MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: WaitForGameEntryAsync (iteration {iteration})");
             var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken, legacyToggle);
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
