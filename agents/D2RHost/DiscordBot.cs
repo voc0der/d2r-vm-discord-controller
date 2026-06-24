@@ -206,11 +206,18 @@ public sealed class DiscordBot
 
         if (subcommand is "save-exit-all" or "leave-all")
         {
+            // menu_save_exit's own automation (Escape, click, wait up to ~12s) is fast - the
+            // budget here almost entirely covers time spent waiting for the agent's command
+            // gate, which a preceding create-game-all/join-all can still be holding for as long
+            // as those commands' own 210s timeout allows. A shorter budget here doesn't make
+            // save-exit faster; it just means the gate frees up, save-exit actually runs and
+            // succeeds, and the result arrives after the host already gave up and discarded the
+            // pending request - reported as a failure even though it worked.
             await QueueAllCommandsAsync(
                 context,
                 "menu_save_exit",
                 (accountKey, account) => BuildAccountArgs(accountKey, account),
-                TimeSpan.FromSeconds(90));
+                TimeSpan.FromSeconds(210));
             return;
         }
 
@@ -261,7 +268,9 @@ public sealed class DiscordBot
                 return;
             case "save-exit":
             case "leave":
-                await RunVmCommandAsync(context, singleAccount, "menu_save_exit", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(90));
+                // See the save-exit-all timeout comment above: this is gate-wait headroom, not
+                // expected automation time.
+                await RunVmCommandAsync(context, singleAccount, "menu_save_exit", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
                 return;
             case "remote":
                 var remoteUrl = _config.Agents[singleAccount.AgentId].RemoteUrl;

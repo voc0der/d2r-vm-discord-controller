@@ -344,7 +344,20 @@ public sealed class AgentRegistry
         var commandId = root.GetProperty("commandId").GetString() ?? "";
         if (!_pending.TryRemove(commandId, out var pending))
         {
-            _logger.LogWarning("Received unknown command result: {CommandId}", commandId);
+            // Most commonly this is a late result: the agent's command actually ran to
+            // completion (often successfully) after the host already gave up waiting and
+            // reported a timeout to Discord. Logging ok/message here is the only trace that
+            // the operator-visible failure was wrong - without it, a late success and a late
+            // failure are indistinguishable from "Received unknown command result".
+            var lateAgentId = root.TryGetProperty("agentId", out var agentIdProp) ? agentIdProp.GetString() : null;
+            var lateOk = root.TryGetProperty("ok", out var okProp) && okProp.GetBoolean();
+            var lateMessage = root.TryGetProperty("message", out var messageProp) ? messageProp.GetString() : null;
+            _logger.LogWarning(
+                "Received command result for {CommandId} (agent {AgentId}) after the host already stopped waiting on it - ok={Ok}, message={Message}",
+                commandId,
+                lateAgentId,
+                lateOk,
+                lateMessage);
             return;
         }
 
