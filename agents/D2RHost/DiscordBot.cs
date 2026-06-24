@@ -922,7 +922,61 @@ public sealed class DiscordBot
         var checkpoint = TryReadCheckpointSummary(statusJson, out var checkpointSummary)
             ? $" | at {checkpointSummary}"
             : "";
-        return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}";
+        // The per-sub-check breakdown (IsLobbyTabReady, IsCharacterButtonPairReady, ...) is
+        // only worth the line length when nothing else resolved - once frame is a recognized
+        // state, showing it too would just be noise on every line for every VM.
+        var checks = IsObservedFrameUnknown(statusJson) && TryReadClassifierBreakdownSummary(statusJson, out var checksSummary)
+            ? $" | checks {checksSummary}"
+            : "";
+        return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}{checks}";
+    }
+
+    private static bool IsObservedFrameUnknown(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return TryGetString(document.RootElement, "lastObservedFrame", out var frame)
+                && string.Equals(frame, "Unknown", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadClassifierBreakdownSummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!TryGetString(document.RootElement, "lastClassifierBreakdown", out var breakdown)
+                || string.IsNullOrWhiteSpace(breakdown))
+            {
+                return false;
+            }
+
+            var age = TryReadDateTimeOffset(document.RootElement, "lastClassifierBreakdownUtc", out var recordedAt)
+                ? FormatAge(DateTimeOffset.UtcNow - recordedAt)
+                : "?";
+            value = $"{breakdown} ({age} ago)";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static bool TryReadCheckpointSummary(string? json, out string value)

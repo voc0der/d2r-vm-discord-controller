@@ -44,6 +44,8 @@ public sealed class VmOperations
     private LastInputActionSnapshot? _lastInputAction;
     private string? _lastObservedFrame;
     private DateTimeOffset? _lastObservedFrameUtc;
+    private string? _lastClassifierBreakdown;
+    private DateTimeOffset? _lastClassifierBreakdownUtc;
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
@@ -158,6 +160,8 @@ public sealed class VmOperations
             lastInputAction = _lastInputAction,
             lastObservedFrame = _lastObservedFrame,
             lastObservedFrameUtc = _lastObservedFrameUtc,
+            lastClassifierBreakdown = _lastClassifierBreakdown,
+            lastClassifierBreakdownUtc = _lastClassifierBreakdownUtc,
             lastCommandCheckpoint = _lastCommandCheckpoint,
             lastCommandCheckpointUtc = _lastCommandCheckpointUtc,
             d2rActivityState = activity.State.ToString(),
@@ -197,6 +201,8 @@ public sealed class VmOperations
             lastInputAction = _lastInputAction,
             lastObservedFrame = _lastObservedFrame,
             lastObservedFrameUtc = _lastObservedFrameUtc,
+            lastClassifierBreakdown = _lastClassifierBreakdown,
+            lastClassifierBreakdownUtc = _lastClassifierBreakdownUtc,
             lastCommandCheckpoint = _lastCommandCheckpoint,
             lastCommandCheckpointUtc = _lastCommandCheckpointUtc,
             d2rActivityState = activity.State.ToString(),
@@ -1101,10 +1107,71 @@ public sealed class VmOperations
             return VisibleD2RState.InGame;
         }
 
-        return IsAnyLobbyEntryMenuVisible(input)
-            ? VisibleD2RState.LobbyOrGame
-            : VisibleD2RState.Unknown;
+        if (IsAnyLobbyEntryMenuVisible(input))
+        {
+            return VisibleD2RState.LobbyOrGame;
+        }
+
+        RecordClassifierBreakdown(ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid));
+        return VisibleD2RState.Unknown;
     }
+
+    // Every top-level state check (DiabloSplash, offline, character screen, in-game, lobby)
+    // is itself a handful of named pixel-region sub-checks (IsLobbyTabReady,
+    // IsLobbyEntryButtonReady, IsCharacterButtonPairReady, ...) that previously only showed
+    // up in the raw ScreenRegionStats dumped on a menu_ready timeout - never live, and never
+    // for the lobby/in-game checks at all. Recording a compact pass/fail per sub-check
+    // whenever the result is Unknown means a live `watch` can show *why* nothing matched
+    // instead of just "Unknown", without needing a screenshot first.
+    private string ComputeVisibleStateClassifierBreakdown(WindowsInput input, int sampleGrid)
+    {
+        try
+        {
+            var splash = IsDiabloSplashScreen(input, sampleGrid);
+            var connecting = splash && IsConnectingToBattleNetDialog(input, sampleGrid);
+            var offline = IsCharacterScreenOffline(input, sampleGrid: sampleGrid);
+            var charButtons = IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid);
+            var charMenu = IsCharacterMenuReady(input, windowRelative: false, sampleGrid);
+            var inGame = IsInGameReady(input);
+            var tabReady = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab))
+                || IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab));
+            var entryReady = IsLobbyEntryButtonReady(input);
+            var formReady = IsLobbyFormPanelReady(input, windowRelative: false)
+                || IsLobbyFormPanelReady(input, windowRelative: true);
+
+            return $"splash={FormatBool(splash)} connecting={FormatBool(connecting)} offline={FormatBool(offline)} "
+                + $"char(btn={FormatBool(charButtons)},menu={FormatBool(charMenu)}) inGame={FormatBool(inGame)} "
+                + $"lobby(tab={FormatBool(tabReady)},entry={FormatBool(entryReady)},form={FormatBool(formReady)})";
+        }
+        catch (Exception)
+        {
+            return "";
+        }
+    }
+
+    // Narrower than ComputeVisibleStateClassifierBreakdown - DetectReadyScreenState never
+    // evaluates in-game/lobby, so including them here would misleadingly imply they were
+    // checked as part of this decision.
+    private string ComputeReadyScreenClassifierBreakdown(WindowsInput input, int sampleGrid)
+    {
+        try
+        {
+            var splash = IsDiabloSplashScreen(input, sampleGrid);
+            var connecting = splash && IsConnectingToBattleNetDialog(input, sampleGrid);
+            var offline = IsCharacterScreenOffline(input, sampleGrid: sampleGrid);
+            var charButtons = IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid);
+            var charMenu = IsCharacterMenuReady(input, windowRelative: false, sampleGrid);
+
+            return $"splash={FormatBool(splash)} connecting={FormatBool(connecting)} offline={FormatBool(offline)} "
+                + $"char(btn={FormatBool(charButtons)},menu={FormatBool(charMenu)})";
+        }
+        catch (Exception)
+        {
+            return "";
+        }
+    }
+
+    private static string FormatBool(bool value) => value ? "T" : "F";
 
     private WindowsInput FocusD2R()
     {
@@ -1823,6 +1890,17 @@ public sealed class VmOperations
         _lastObservedFrameUtc = DateTimeOffset.UtcNow;
     }
 
+    private void RecordClassifierBreakdown(string breakdown)
+    {
+        if (string.IsNullOrWhiteSpace(breakdown))
+        {
+            return;
+        }
+
+        _lastClassifierBreakdown = breakdown;
+        _lastClassifierBreakdownUtc = DateTimeOffset.UtcNow;
+    }
+
     private void RecordD2RInputAction(
         string kind,
         string button,
@@ -2447,9 +2525,16 @@ public sealed class VmOperations
     private ReadyScreenState DetectReadyScreenStateStable(WindowsInput input)
     {
         var state = DetectReadyScreenState(input);
+        var sampleGrid = MenuSampleGrid;
         if (state == ReadyScreenState.Unknown)
         {
-            state = DetectReadyScreenState(input, ReadyStartupSampleGrid);
+            sampleGrid = ReadyStartupSampleGrid;
+            state = DetectReadyScreenState(input, sampleGrid);
+        }
+
+        if (state == ReadyScreenState.Unknown)
+        {
+            RecordClassifierBreakdown(ComputeReadyScreenClassifierBreakdown(input, sampleGrid));
         }
 
         RecordObservedFrame(state.ToString());
@@ -2459,6 +2544,11 @@ public sealed class VmOperations
     private ReadyScreenState DetectReadyScreenStateFast(WindowsInput input)
     {
         var state = DetectReadyScreenStateScreenOnly(input, ReadyStartupSampleGrid);
+        if (state == ReadyScreenState.Unknown)
+        {
+            RecordClassifierBreakdown(ComputeReadyScreenClassifierBreakdown(input, ReadyStartupSampleGrid));
+        }
+
         RecordObservedFrame(state.ToString());
         return state;
     }
