@@ -909,8 +909,13 @@ public sealed class DiscordBot
 
     private static string FormatWatchLine(string name, string? statusJson)
     {
+        // [degraded] alone doesn't say why - whether it's gate contention from an active
+        // automation command (expected, transient) or CollectDetailedStatus itself missing its
+        // StatusCollectionTimeoutSeconds budget every single poll (a standing condition that
+        // makes "frame" never reflect live ground truth at all). statusError carries that reason
+        // already; it just wasn't surfaced here.
         var degraded = TryReadStatusBool(statusJson, "statusDegraded", out var isDegraded) && isDegraded
-            ? " [degraded]"
+            ? $" [degraded{FormatDegradedReason(statusJson)}]"
             : "";
         var frame = TryReadFrameSummary(statusJson, out var frameSummary) ? frameSummary : "frame unknown";
         var lastInput = TryReadLastInputActionWatchSummary(statusJson, out var inputSummary) ? inputSummary : "no input yet";
@@ -1005,6 +1010,26 @@ public sealed class DiscordBot
         catch (JsonException)
         {
             return false;
+        }
+    }
+
+    private static string FormatDegradedReason(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return "";
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return TryGetString(document.RootElement, "statusError", out var reason)
+                ? $": {reason}"
+                : "";
+        }
+        catch (JsonException)
+        {
+            return "";
         }
     }
 
