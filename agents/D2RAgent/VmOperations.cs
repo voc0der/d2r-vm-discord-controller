@@ -2286,7 +2286,8 @@ public sealed class VmOperations
         MarkCommandCheckpoint("ClickMenuEntryButtonUntilEnteredGameAsync: initial click");
         await ClickMenuEntryButtonAsync(input, button, cancellationToken);
         var broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
-        var visibleMenuResubmitAt = broadHudFrameAcceptAt;
+        var entryReclickAt = broadHudFrameAcceptAt;
+        var blindEntryReclicks = 0;
 
         async Task<GameEntryAttemptResult?> TryConfirmAtElapsedDeadlineAsync(string checkpointContext)
         {
@@ -2327,26 +2328,23 @@ public sealed class VmOperations
             // fine and WaitForGameEntryAsync's own internal poll is where the time really goes.
             MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking entry");
 
-            if (DateTimeOffset.UtcNow < visibleMenuResubmitAt)
+            if (DateTimeOffset.UtcNow < entryReclickAt)
             {
-                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, waiting entry grace before HUD/menu check");
-                var graceRemainingMs = Math.Max((visibleMenuResubmitAt - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, waiting entry grace before HUD check");
+                var graceRemainingMs = Math.Max((entryReclickAt - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
                 await Task.Delay((int)Math.Min(EntryPollIntervalMs, graceRemainingMs), cancellationToken);
                 continue;
             }
 
-            MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking visible entry menu");
-            if (IsGameEntryMenuStillVisible(input, activeTab))
+            if (blindEntryReclicks == 0)
             {
-                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entry menu still visible (iteration {iteration}), restoring and re-clicking");
-                if (!await restoreFormAsync())
-                {
-                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The menu form stayed visible after entry click, but it could not be restored.");
-                }
-
+                // Avoid visible-menu pixel probes here; live runs showed GDI sampling can stall
+                // during D2R's entry-load spike before it can tell us whether the menu remains.
+                blindEntryReclicks++;
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entry grace elapsed (iteration {iteration}), blind re-clicking entry button");
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
-                visibleMenuResubmitAt = broadHudFrameAcceptAt;
+                entryReclickAt = broadHudFrameAcceptAt;
                 continue;
             }
 
@@ -2393,7 +2391,8 @@ public sealed class VmOperations
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: re-clicking entry button after interruption (retry {connectionRetries})");
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
-                visibleMenuResubmitAt = broadHudFrameAcceptAt;
+                entryReclickAt = broadHudFrameAcceptAt;
+                blindEntryReclicks = 0;
                 continue;
             }
 
@@ -2486,7 +2485,8 @@ public sealed class VmOperations
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: re-clicking entry button after interruption (retry {connectionRetries})");
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
-                visibleMenuResubmitAt = broadHudFrameAcceptAt;
+                entryReclickAt = broadHudFrameAcceptAt;
+                blindEntryReclicks = 0;
                 continue;
             }
             else if (waitResult == GameEntryWaitResult.ErrorDialog)
@@ -2531,7 +2531,8 @@ public sealed class VmOperations
                 deadline = DateTimeOffset.UtcNow + timeout;
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
-                visibleMenuResubmitAt = broadHudFrameAcceptAt;
+                entryReclickAt = broadHudFrameAcceptAt;
+                blindEntryReclicks = 0;
                 continue;
             }
 
@@ -2539,7 +2540,8 @@ public sealed class VmOperations
             {
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
-                visibleMenuResubmitAt = broadHudFrameAcceptAt;
+                entryReclickAt = broadHudFrameAcceptAt;
+                blindEntryReclicks = 0;
             }
         }
     }
