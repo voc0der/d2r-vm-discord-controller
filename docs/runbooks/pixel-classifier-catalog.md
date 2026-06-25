@@ -136,19 +136,6 @@ want that conservative behavior.
   `InGameHudSampleThrottleMs` (1000ms) via a cached `_lastInGameHudResult` - bounding alone would
   let the existing ~200ms entry-poll loop dispatch a new bounded sample every tick, piling up
   background `Task.Run` calls faster than they drain.
-- **`v0.2.71`'s throttle then caused a real regression of its own, fixed in `v0.2.72`.** Live
-  `watch-xoewfij-20260625-130838.log`: hc1's checkpoint read `timeout boundary ... HUD not ready`
-  while, in the very same line, an independent fresh classifier breakdown read `inGame=T` - the
-  throttle served a stale cached `false` at the one call that had no next iteration to recover
-  in, so the command timed out instead of confirming success. hc2/hc3 never joined in that run for
-  the same reason. The cache is safe to reuse for `true` (D2R doesn't un-enter a game) and safe to
-  reuse for `false` *while another attempt is still coming* - it's only unsafe at a hard decision
-  point with no fallback. Fixed by adding `forceFreshSample` to `IsInGameReady`/
-  `TryConfirmEnteredGameAsync`, set `true` only at the handful of call sites that are the last
-  word before a pass/fail return (`TryConfirmAtElapsedDeadlineAsync`, the explicit timeout-
-  boundary check in `ClickMenuEntryButtonUntilEnteredGameAsync`, and `WaitForGameEntryAsync`'s
-  post-loop check) - every regular in-loop poll call keeps the throttle, since those have another
-  iteration coming and the anti-spam behavior is still exactly what's wanted there.
 - **`loading_splash_after_intro_videos.png` (and likely `load_screen_phase_1.png`/
   `load_screen_phase_2.png`) classify as `Unknown`, and that's correct - confirmed this is
   a real, unfixable-by-detection delay, not a gap.** This capture is a fully black screen
