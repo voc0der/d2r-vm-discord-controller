@@ -123,6 +123,32 @@ want that conservative behavior.
   HUD sampling, then performs one blind entry-button re-click before starting HUD probes. Live
   `v0.2.69` logs showed that asking pixels whether the join/create menu was still visible could
   itself stall for roughly the same window as HUD sampling during D2R's load spike.
+- **`IsInGameReady`'s own HUD sample is bounded and throttled (`v0.2.77`), and the four sibling
+  checks in the same entry-confirmation loop (`IsCharacterScreenReady`, `IsCharacterScreenOffline`,
+  `IsGameEntryErrorDialogOpen`, `IsConnectionInterruptedScreen`) are bounded too.** Two earlier
+  attempts at bounding just `IsInGameReady` (`v0.2.71`, `v0.2.75`) each got reverted - not because
+  bounding was wrong, but because each time a *different*, never-bounded sibling check in the
+  same loop hung instead and the whole mechanism got blamed. `v0.2.75`'s own target actually
+  resolved fast in its failing run (`watch-xoweij-20260625-141701.log`); it was `IsCharacterScreenReady`,
+  untouched by that fix, that froze for 80s+ right after. Bounded all five this time:
+  `IsInGameReady` keeps its `TryRunBounded`+throttle+`forceFreshSample` (1000ms bound/throttle,
+  `forceFreshSample: true` only at the 3 call sites that are the last word before pass/fail -
+  see below). The other four are bounded at their function *definitions* (`EntryLoopCheckBoundMs`
+  = 1500ms), not at each of their ~20 call sites across the file - one change per function
+  protects every existing caller, and a bounded `false` is safe everywhere they're actually
+  called from this loop, since each is a regular in-loop poll with another attempt coming. If a
+  new unbounded-GDI stall turns up in yet another sibling check, bound it the same way (at the
+  function definition, no cache) rather than patching the call site that happened to expose it -
+  this loop's checks have now demonstrated the same vulnerability often enough that it should be
+  assumed for any of them until proven otherwise.
+- **The `forceFreshSample` lesson (from `v0.2.71`/`v0.2.72`/`v0.2.73`), restated since it's easy
+  to re-break:** a cached/throttled result is safe to reuse when another attempt is coming, or
+  when the cached value is the "can't go back" direction (`true` for `IsInGameReady`, since D2R
+  doesn't un-enter a game). It is never safe at a hard decision point with no fallback - a
+  deadline/timeout boundary, a final retry. `IsInGameReady`/`TryConfirmEnteredGameAsync` take a
+  `forceFreshSample` parameter for exactly that, set `true` only at `TryConfirmAtElapsedDeadlineAsync`,
+  the explicit timeout-boundary check in `ClickMenuEntryButtonUntilEnteredGameAsync`, and
+  `WaitForGameEntryAsync`'s post-loop check - every regular in-loop poll keeps the throttle.
 - **`loading_splash_after_intro_videos.png` (and likely `load_screen_phase_1.png`/
   `load_screen_phase_2.png`) classify as `Unknown`, and that's correct - confirmed this is
   a real, unfixable-by-detection delay, not a gap.** This capture is a fully black screen
