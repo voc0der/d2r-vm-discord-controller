@@ -2327,7 +2327,8 @@ public sealed class VmOperations
                     cancellationToken,
                     legacyToggle,
                     checkpointContext,
-                    broadHudFrameAcceptAt))
+                    broadHudFrameAcceptAt,
+                    forceFreshSample: true))
             {
                 RecordClassifierBreakdown(ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid));
                 return null;
@@ -2470,7 +2471,8 @@ public sealed class VmOperations
                         cancellationToken,
                         legacyToggle,
                         $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration {iteration})",
-                        broadHudFrameAcceptAt))
+                        broadHudFrameAcceptAt,
+                        forceFreshSample: true))
                 {
                     MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed at timeout boundary (iteration {iteration})");
                     return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game at timeout boundary.");
@@ -3065,15 +3067,23 @@ public sealed class VmOperations
             || IsInGameReady(input, windowRelative: true);
     }
 
-    private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null)
+    private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null, bool forceFreshSample = false)
     {
         var now = DateTimeOffset.UtcNow;
-        if (now < _nextInGameHudSampleAt)
+        if (!forceFreshSample && now < _nextInGameHudSampleAt)
         {
             // watch-xpzpwefo2-20260625-125222.log: this is called from a ~200ms entry-poll loop,
             // but each sample below is bounded to InGameHudSampleBoundMs and can still take that
             // long under D2R's load spike. Without this throttle, every poll tick would dispatch
             // another bounded Task.Run on top of any still-draining ones - spam, not a fix.
+            //
+            // watch-xoewfij-20260625-130838.log: that throttle then caused a real regression -
+            // hc1's final timeout-boundary check returned this stale cached false (checkpoint
+            // "HUD not ready") in the exact same instant an independent fresh classifier
+            // breakdown read inGame=T, so the command timed out instead of confirming success.
+            // forceFreshSample exists for exactly the call sites where this is the last check
+            // before a pass/fail decision and there's no next iteration to recover in - those
+            // must never trade correctness for the anti-spam throttle.
             return _lastInGameHudResult;
         }
 
@@ -3328,7 +3338,8 @@ public sealed class VmOperations
                 cancellationToken,
                 legacyToggle,
                 "WaitForGameEntryAsync: deadline",
-                broadHudFrameAcceptAt))
+                broadHudFrameAcceptAt,
+                forceFreshSample: true))
         {
             MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game at deadline");
             return GameEntryWaitResult.EnteredGame;
@@ -3405,9 +3416,10 @@ public sealed class VmOperations
         CancellationToken cancellationToken,
         LegacyGraphicsToggleState legacyToggle,
         string checkpointContext = "TryConfirmEnteredGameAsync",
-        DateTimeOffset? broadHudFrameAcceptAt = null)
+        DateTimeOffset? broadHudFrameAcceptAt = null,
+        bool forceFreshSample = false)
     {
-        if (!IsInGameReady(input, checkpointContext, broadHudFrameAcceptAt))
+        if (!IsInGameReady(input, checkpointContext, broadHudFrameAcceptAt, forceFreshSample))
         {
             MarkCommandCheckpoint($"{checkpointContext}: HUD not ready");
             return false;
