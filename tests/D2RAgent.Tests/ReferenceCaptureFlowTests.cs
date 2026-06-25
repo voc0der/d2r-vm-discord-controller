@@ -3,7 +3,7 @@ using Xunit;
 namespace D2RAgent.Tests;
 
 // Runs the real VmOperations decision-tree priority order (DiabloSplash ->
-// ConnectingToBattleNet -> OfflineCharacterScreen -> CharacterScreen -> InGame ->
+// ConnectingToBattleNet -> OfflineCharacterScreen -> CharacterScreen -> LobbyOrGame -> InGame ->
 // LobbyOrGame -> Unknown, replicated in ReferenceCaptureClassifier) against every full-page
 // reference capture under docs/runbooks/assets/d2r-ui/1366x768/ - not hand-picked synthetic
 // stats, the actual pixels VmOperations would sample from a live D2R window at this

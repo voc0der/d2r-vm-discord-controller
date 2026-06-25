@@ -1096,14 +1096,14 @@ public sealed class VmOperations
             return VisibleD2RState.CharacterScreen;
         }
 
+        if (IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(input))
+        {
+            return VisibleD2RState.LobbyOrGame;
+        }
+
         if (IsInGameReady(input))
         {
             return VisibleD2RState.InGame;
-        }
-
-        if (IsAnyLobbyEntryMenuVisible(input))
-        {
-            return VisibleD2RState.LobbyOrGame;
         }
 
         RecordClassifierBreakdown(ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid));
@@ -2294,7 +2294,8 @@ public sealed class VmOperations
                     input,
                     cancellationToken,
                     legacyToggle,
-                    checkpointContext))
+                    checkpointContext,
+                    activeTab))
             {
                 RecordClassifierBreakdown(ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid));
                 return null;
@@ -2325,7 +2326,8 @@ public sealed class VmOperations
                     input,
                     cancellationToken,
                     legacyToggle,
-                    $"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}"))
+                    $"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}",
+                    activeTab))
             {
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed (iteration {iteration})");
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
@@ -2412,7 +2414,8 @@ public sealed class VmOperations
                         input,
                         cancellationToken,
                         legacyToggle,
-                        $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration {iteration})"))
+                        $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration {iteration})",
+                        activeTab))
                 {
                     MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed at timeout boundary (iteration {iteration})");
                     return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game at timeout boundary.");
@@ -2432,7 +2435,8 @@ public sealed class VmOperations
                     input,
                     cancellationToken,
                     legacyToggle,
-                    $"ClickMenuEntryButtonUntilEnteredGameAsync: after wait result (iteration {iteration})"))
+                    $"ClickMenuEntryButtonUntilEnteredGameAsync: after wait result (iteration {iteration})",
+                    activeTab))
             {
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed after wait result (iteration {iteration})");
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game after wait result.");
@@ -3011,7 +3015,24 @@ public sealed class VmOperations
 
     private bool IsInGameReady(WindowsInput input, bool windowRelative)
     {
-        return IsInGameHudEvidenceReady(SampleInGameHudEvidence(input, windowRelative));
+        var actionHud = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.InGameHudBar), widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
+        var modernHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var modernMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        if (D2RScreenClassifier.IsInGameHudProfile(modernHealth, modernMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        {
+            return true;
+        }
+
+        var legacyHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var legacyMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        if (D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        {
+            return true;
+        }
+
+        var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: windowRelative);
+        var centerHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.22, heightRatio: 0.08, windowRelative: windowRelative);
+        return D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud);
     }
 
     private InGameHudEvidence SampleInGameHudEvidence(WindowsInput input, bool windowRelative)
@@ -3130,7 +3151,8 @@ public sealed class VmOperations
                     input,
                     cancellationToken,
                     legacyToggle,
-                    $"WaitForGameEntryAsync: poll iteration {pollIteration}"))
+                    $"WaitForGameEntryAsync: poll iteration {pollIteration}",
+                    returnTab))
             {
                 MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game HUD");
                 return GameEntryWaitResult.EnteredGame;
@@ -3193,7 +3215,8 @@ public sealed class VmOperations
                 input,
                 cancellationToken,
                 legacyToggle,
-                "WaitForGameEntryAsync: deadline"))
+                "WaitForGameEntryAsync: deadline",
+                returnTab))
         {
             MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game at deadline");
             return GameEntryWaitResult.EnteredGame;
@@ -3247,6 +3270,16 @@ public sealed class VmOperations
             return false;
         }
 
+        return IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(input);
+    }
+
+    private bool IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(WindowsInput input)
+    {
+        if (IsCharacterScreenReady(input) || IsCharacterScreenOffline(input))
+        {
+            return false;
+        }
+
         var createTab = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab));
         var joinTab = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab));
         var entry = IsLobbyEntryButtonReady(input);
@@ -3259,8 +3292,15 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken,
         LegacyGraphicsToggleState legacyToggle,
-        string checkpointContext = "TryConfirmEnteredGameAsync")
+        string checkpointContext = "TryConfirmEnteredGameAsync",
+        AgentCommon.UiPoint? returnTab = null)
     {
+        if (returnTab is not null && IsGameEntryMenuStillVisible(input, returnTab))
+        {
+            MarkCommandCheckpoint($"{checkpointContext}: lobby menu still visible; HUD confirmation skipped");
+            return false;
+        }
+
         if (!IsInGameReady(input, checkpointContext))
         {
             MarkCommandCheckpoint($"{checkpointContext}: HUD not ready");

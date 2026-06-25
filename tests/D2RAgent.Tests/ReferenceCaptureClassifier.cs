@@ -43,13 +43,13 @@ internal static class ReferenceCaptureClassifier
             return ReferenceVisibleState.CharacterScreen;
         }
 
-        if (IsInGameReady(capture))
+        if (IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture))
         {
-            return ReferenceVisibleState.InGame;
+            return ReferenceVisibleState.LobbyOrGame;
         }
 
-        return IsAnyLobbyEntryMenuVisible(capture)
-            ? ReferenceVisibleState.LobbyOrGame
+        return IsInGameReady(capture)
+            ? ReferenceVisibleState.InGame
             : ReferenceVisibleState.Unknown;
     }
 
@@ -130,6 +130,16 @@ internal static class ReferenceCaptureClassifier
     public static bool IsAnyLobbyEntryMenuVisible(string capture)
     {
         if (IsInGameReady(capture) || IsCharacterScreenReady(capture) || IsCharacterScreenOffline(capture))
+        {
+            return false;
+        }
+
+        return IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture);
+    }
+
+    private static bool IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(string capture)
+    {
+        if (IsCharacterScreenReady(capture) || IsCharacterScreenOffline(capture))
         {
             return false;
         }

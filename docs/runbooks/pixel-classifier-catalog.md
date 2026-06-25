@@ -52,8 +52,8 @@ mask a true later state if their region happens to also satisfy an earlier thres
    sub-state)
 2. Offline character screen (`IsCharacterScreenOffline`)
 3. Character screen ready (`IsCharacterButtonPairReady`) or partial character menu (`IsCharacterMenuReady`)
-4. In game (`IsInGameReady`) - `DetectVisibleD2RState` only
-5. Lobby/game entry menu (`IsAnyLobbyEntryMenuVisible`) - `DetectVisibleD2RState` only
+4. Lobby/game entry menu (`IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap`) - `DetectVisibleD2RState` only
+5. In game (`IsInGameReady`) - `DetectVisibleD2RState` only
 6. `Unknown`
 
 ## Splash / title family
@@ -81,6 +81,8 @@ mask a true later state if their region happens to also satisfy an earlier thres
 | `IsInGameHudFrame` (fallback when globe colors don't match - potion/dye variations) | action bar (as above), bottom HUD `0.500,0.940` `0.70x0.13`, center HUD `0.500,0.940` `0.22x0.08` | All three regions need `LuminanceStdDev` above a per-region floor (30/28/32) and `DarkRatio` below a ceiling (0.85/0.85/0.80); action bar and center HUD additionally need `BrightRatio` or `GreyRatio` evidence of UI elements |
 
 `InGame` is `IsInGameHudProfile(modern) || IsInGameHudProfile(legacy) || IsInGameHudFrame`.
+The live detector short-circuits in that order so the normal modern-HUD success path only has to
+sample the action bar and modern globes; diagnostics still sample and print every HUD region.
 
 ## Lobby / game entry menu
 
@@ -91,8 +93,11 @@ mask a true later state if their region happens to also satisfy an earlier thres
 | `IsLobbyFormPanelReady` (inline in `VmOperations.cs`, not in `D2RScreenClassifier`) | `0.765,0.365` `0.30x0.42` | `AverageLuminance < 30 && GreyRatio < 0.25 && DarkRatio > 0.80` |
 | `IsGameEntryMenuVisible` | combines the above | `tabReady ? (entryButtonReady || formPanelReady) : (entryButtonReady && formPanelReady)` |
 
-`LobbyOrGame` is `IsGameEntryMenuVisible(createTab || joinTab, entryButtonReady, formPanelReady)`,
-only reached if `InGame`, `CharacterScreen`, and `CharacterScreenOffline` were all already ruled out.
+`LobbyOrGame` is `IsGameEntryMenuVisible(createTab || joinTab, entryButtonReady, formPanelReady)`.
+Top-level visible-state detection checks it before `InGame`, because live `v0.2.64` logs showed
+a filled join/create form can satisfy the broad `IsInGameHudFrame` fallback. The older guarded
+`IsAnyLobbyEntryMenuVisible` helper still rejects `InGame` first for call sites that explicitly
+want that conservative behavior.
 
 ## Known overlaps and gotchas
 
@@ -105,6 +110,10 @@ only reached if `InGame`, `CharacterScreen`, and `CharacterScreenOffline` were a
   flow tests omitted this gate and every lobby/in-game capture misclassified as
   `OfflineCharacterScreen` until it was added back - a useful reminder that this detector is
   two checks, not one, if it's ever touched again.
+- **The broad `IsInGameHudFrame` fallback can overlap filled join/create forms.** Top-level
+  visible-state detection gives the lobby-entry form priority, and game-entry confirmation skips
+  HUD confirmation while the active return tab/form is still visible. This keeps menu screens
+  from being treated as already in-game just because their lower chrome happens to look HUD-like.
 - **`loading_splash_after_intro_videos.png` (and likely `load_screen_phase_1.png`/
   `load_screen_phase_2.png`) classify as `Unknown`, and that's correct - confirmed this is
   a real, unfixable-by-detection delay, not a gap.** This capture is a fully black screen
