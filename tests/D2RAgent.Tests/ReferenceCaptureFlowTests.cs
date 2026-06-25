@@ -81,4 +81,26 @@ public sealed class ReferenceCaptureFlowTests
     {
         Assert.Equal(expected, ReferenceCaptureClassifier.Classify(capture));
     }
+
+    // Classify() only reports the winning state - it stops at the first priority match, so it
+    // never surfaces whether a capture's pixels also coincidentally satisfy a different state's
+    // check, just got pre-empted by priority order. That's exactly how sitting_in_town.png's
+    // lobby-menu overlap went uncaught: nothing asserted the *raw* lobby check on existing
+    // InGame captures, so a coincidental match would have stayed silent. This runs the same
+    // theory data and explicitly records the lobby-overlap status for every InGame capture, so
+    // a newly-introduced or newly-disappeared overlap on any of them shows up as a result
+    // change here instead of staying invisible until a live run happens to hit it.
+    [Theory]
+    [InlineData("sitting_in_town.png", true)]
+    [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", false)]
+    [InlineData("low_graphics_mode_generic.png", false)]
+    [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", false)]
+    [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", false)]
+    public void InGameCaptureLobbyOverlapMatchesKnownStatus(string capture, bool expectedLobbyOverlap)
+    {
+        Assert.Equal(ReferenceVisibleState.InGame, ReferenceCaptureClassifier.Classify(capture));
+        Assert.Equal(
+            expectedLobbyOverlap,
+            ReferenceCaptureClassifier.IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture));
+    }
 }

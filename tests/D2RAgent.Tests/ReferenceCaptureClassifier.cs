@@ -160,7 +160,7 @@ internal static class ReferenceCaptureClassifier
         return IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture);
     }
 
-    private static bool IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(string capture)
+    public static bool IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(string capture)
     {
         if (IsCharacterScreenReady(capture) || IsCharacterScreenOffline(capture))
         {

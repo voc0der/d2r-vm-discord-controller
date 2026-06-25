@@ -41,6 +41,17 @@ Verified test coverage for everything in this doc:
   capture, via `FullCaptureRegionSampler` (replicates `WindowsInput.SampleRegion`'s center/
   ratio/grid math against a static image instead of a live window). This is what caught a
   missing-gate bug while it was being written - see "Known overlaps and gotchas" below.
+- `ReferenceCaptureFlowTests.InGameCaptureLobbyOverlapMatchesKnownStatus` - `Classify()` alone
+  only reports the *winning* state; it stops at the first priority match and never surfaces
+  whether a capture's pixels also coincidentally satisfy a different state's raw check, just got
+  pre-empted by priority order. That gap is exactly how `sitting_in_town.png`'s lobby-menu
+  overlap went uncaught - nothing asserted the raw lobby check against existing `InGame`
+  captures, so a coincidental match would have stayed silent until a live run hit it. This test
+  explicitly asserts the lobby-overlap status (`IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap`)
+  for every `InGame` reference capture, not just the final classification - a newly-introduced or
+  newly-disappeared overlap on any of them now shows up as a result change here. If a new
+  `InGame` capture is added, add it here too with its actual measured overlap status, not an
+  assumed `false`.
 
 ## Detection priority order
 
