@@ -43,6 +43,15 @@ internal static class ReferenceCaptureClassifier
             return ReferenceVisibleState.CharacterScreen;
         }
 
+        // Mirrors VmOperations.DetectVisibleD2RState: strict in-game evidence (HUD globes)
+        // checked before the lobby check, since sitting_in_town.png proved the lobby-tab/
+        // entry-button thresholds can coincidentally match ordinary outdoor scenery. The
+        // broader Frame-kind fallback stays after the lobby check, unchanged from v0.2.64.
+        if (IsInGameReadyStrict(capture))
+        {
+            return ReferenceVisibleState.InGame;
+        }
+
         if (IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture))
         {
             return ReferenceVisibleState.LobbyOrGame;
@@ -102,6 +111,20 @@ internal static class ReferenceCaptureClassifier
         var options = Sample(capture, new UiPoint(0.105, 0.405), 0.13, 0.05);
         var cinematics = Sample(capture, new UiPoint(0.105, 0.460), 0.13, 0.05);
         return D2RScreenClassifier.IsCharacterMenuReady(logo, options, cinematics);
+    }
+
+    // Only the modern/legacy HUD globe profiles - never the broader Frame-kind fallback.
+    // Mirrors VmOperations.IsInGameReadyStrict.
+    public static bool IsInGameReadyStrict(string capture)
+    {
+        var actionHud = Sample(capture, new UiPoint(0.500, 0.955), 0.42, 0.08);
+        var modernHealth = Sample(capture, new UiPoint(0.260, 0.900), 0.055, 0.080);
+        var modernMana = Sample(capture, new UiPoint(0.760, 0.900), 0.055, 0.080);
+        var legacyHealth = Sample(capture, new UiPoint(0.200, 0.900), 0.055, 0.080);
+        var legacyMana = Sample(capture, new UiPoint(0.800, 0.900), 0.055, 0.080);
+
+        return D2RScreenClassifier.IsInGameHudProfile(modernHealth, modernMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18)
+            || D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18);
     }
 
     public static bool IsInGameReady(string capture)

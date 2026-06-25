@@ -94,10 +94,29 @@ sample the action bar and modern globes; diagnostics still sample and print ever
 | `IsGameEntryMenuVisible` | combines the above | `tabReady ? (entryButtonReady || formPanelReady) : (entryButtonReady && formPanelReady)` |
 
 `LobbyOrGame` is `IsGameEntryMenuVisible(createTab || joinTab, entryButtonReady, formPanelReady)`.
-Top-level visible-state detection checks it before `InGame`, because live `v0.2.64` logs showed
-a filled join/create form can satisfy the broad `IsInGameHudFrame` fallback. The older guarded
-`IsAnyLobbyEntryMenuVisible` helper still rejects `InGame` first for call sites that explicitly
-want that conservative behavior.
+Top-level visible-state detection (`v0.2.85`) checks **strict** in-game evidence
+(`IsInGameReadyStrict` - the modern/legacy HUD globe profiles only, never the broad Frame-kind
+fallback) before this lobby check, then this lobby check, then falls back to the full
+`IsInGameReady` (including the Frame-kind fallback) after it. Two historical fixes, preserved
+deliberately on opposite sides of the lobby check:
+
+- **`v0.2.64`:** a filled join/create form could satisfy the broad `IsInGameHudFrame` fallback,
+  so lobby was moved before the (then-single) in-game check.
+- **`v0.2.85`:** `docs/runbooks/assets/d2r-ui/1366x768/sitting_in_town.png` (a real in-game Act 1
+  town capture) proved the *lobby's own* thresholds can coincidentally match ordinary outdoor
+  scenery - `createTab` read `lum=38.7/grey=0.85/dark=0.15` (passes `tab.AverageLuminance > 28 &&
+  tab.GreyRatio > 0.25 && tab.DarkRatio < 0.80`) and `createButton` read `lum=32.7/grey=0.32/
+  dark=0.68` (passes `IsLobbyEntryButtonReady`) purely by chance, at that exact camera position.
+  Confirmed scene-dependent, not a blanket bug: `just_landed_in_game_checkforhealthandmanaglobes.png`
+  (a different in-game capture, already in the suite) does *not* trigger this overlap - and per
+  the user, town lighting varies with D2R's in-game day/night cycle, so the window where this
+  coincidence happens recurs periodically rather than being tied to one specific screenshot.
+
+Reordering the whole in-game check back above lobby (undoing v0.2.64) would have resurrected
+that bug; the fix instead splits in-game evidence by strength and interleaves it around the
+lobby check, so both historical cases stay protected. The older guarded `IsAnyLobbyEntryMenuVisible`
+helper already rejected `InGame` (full, not just strict) before lobby for its call sites and
+didn't need this change.
 
 ## Safety: blind recovery clicks can become movement clicks if already in-game
 

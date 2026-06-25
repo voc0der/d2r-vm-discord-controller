@@ -1110,6 +1110,21 @@ public sealed class VmOperations
             return VisibleD2RState.CharacterScreen;
         }
 
+        // sitting_in_town.png (a real in-game town capture) proved the lobby-tab/entry-button
+        // thresholds below can coincidentally match ordinary outdoor scenery: createTab read
+        // lum=38.7/grey=0.85/dark=0.15 (passes) and createButton read lum=32.7/grey=0.32/
+        // dark=0.68 (passes) purely by chance, at a real reference capture's exact coordinates.
+        // Checking strict in-game evidence (modern/legacy HUD globes, IsInGameReadyStrict) first
+        // means a real in-game scene with visible globes - the common case - never reaches the
+        // lobby check at all. The broader Frame-kind fallback stays AFTER the lobby check,
+        // unchanged from v0.2.64, which added that ordering because a filled join/create form
+        // could satisfy IsInGameHudFrame's looser thresholds - reordering this block back
+        // wholesale would have resurrected that exact bug.
+        if (IsInGameReadyStrict(input))
+        {
+            return VisibleD2RState.InGame;
+        }
+
         if (IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(input))
         {
             return VisibleD2RState.LobbyOrGame;
@@ -3137,6 +3152,17 @@ public sealed class VmOperations
     {
         return IsInGameReady(input, windowRelative: false)
             || IsInGameReady(input, windowRelative: true);
+    }
+
+    // Only the modern/legacy HUD globe profiles - never the broader Frame-kind fallback. The
+    // globes are a far more distinctive signal than the generic lobby-tab/entry-button
+    // luminance thresholds, which sitting_in_town.png proved can coincidentally match ordinary
+    // outdoor scenery. Used to check strict in-game evidence before the lobby check in
+    // DetectVisibleD2RState, without touching the deliberately-after-lobby Frame fallback.
+    private bool IsInGameReadyStrict(WindowsInput input)
+    {
+        return DetectInGameHudMatch(input, windowRelative: false) is InGameHudMatchKind.ModernProfile or InGameHudMatchKind.LegacyProfile
+            || DetectInGameHudMatch(input, windowRelative: true) is InGameHudMatchKind.ModernProfile or InGameHudMatchKind.LegacyProfile;
     }
 
     private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null, bool forceFreshSample = false)

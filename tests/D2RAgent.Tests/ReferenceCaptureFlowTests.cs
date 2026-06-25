@@ -61,6 +61,7 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("lobby_right_click_friend_join_game_available.png", ReferenceVisibleState.LobbyOrGame)]
     [InlineData("lobby_right_click_friend_nojoin_game_available.png", ReferenceVisibleState.LobbyOrGame)]
     // In game
+    [InlineData("sitting_in_town.png", ReferenceVisibleState.InGame)]
     [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", ReferenceVisibleState.InGame)]
     [InlineData("low_graphics_mode_generic.png", ReferenceVisibleState.InGame)]
     [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", ReferenceVisibleState.InGame)]
