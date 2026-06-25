@@ -619,7 +619,7 @@ public sealed class VmOperations
             input,
             GetUiPoint(D2RUiCoordinateTarget.JoinGameButton),
             GetUiPoint(D2RUiCoordinateTarget.JoinGameTab),
-            () => RestoreJoinGameFormAsync(input, args, cancellationToken),
+            () => RestoreJoinGameFormAsync(input, args, cancellationToken, guardAgainstInGame: true),
             cancellationToken);
         if (!joinEntry.Entered)
         {
@@ -664,7 +664,7 @@ public sealed class VmOperations
             input,
             GetUiPoint(D2RUiCoordinateTarget.JoinGameButton),
             GetUiPoint(D2RUiCoordinateTarget.JoinGameTab),
-            () => RestoreJoinGameFormAsync(input, args, cancellationToken),
+            () => RestoreJoinGameFormAsync(input, args, cancellationToken, guardAgainstInGame: true),
             cancellationToken);
         if (!joinEntry.Entered)
         {
@@ -699,14 +699,13 @@ public sealed class VmOperations
         MarkCommandCheckpoint("CreateGameAsync: filling game name/password fields");
         await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameNameField), args.GameName, cancellationToken);
         await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreatePasswordField), args.Password ?? "", cancellationToken);
-        ClickD2R(input, GetCreateDifficultyPoint(args.Difficulty));
-        await DelayStepAsync(cancellationToken);
+        await SelectCreateDifficultyAsync(input, args.Difficulty, cancellationToken);
         MarkCommandCheckpoint("CreateGameAsync: ClickMenuEntryButtonUntilEnteredGameAsync(CreateGameButton)");
         var createEntry = await ClickMenuEntryButtonUntilEnteredGameAsync(
             input,
             GetUiPoint(D2RUiCoordinateTarget.CreateGameButton),
             GetUiPoint(D2RUiCoordinateTarget.CreateGameTab),
-            () => RestoreCreateGameFormAsync(input, args, cancellationToken),
+            () => RestoreCreateGameFormAsync(input, args, cancellationToken, guardAgainstInGame: true),
             cancellationToken,
             "A game-entry error dialog appeared after clicking Create Game. The game name may already exist.");
         if (!createEntry.Entered)
@@ -1327,6 +1326,11 @@ public sealed class VmOperations
     private bool MightAlreadyBeInGame(WindowsInput input)
     {
         return TryRunBounded(() => IsInGameReady(input), InGameSafetyCheckBoundMs, fallback: true);
+    }
+
+    internal static bool ShouldSkipMenuClickForInGameSafety(bool guardAgainstInGame, Func<bool> mightAlreadyBeInGame)
+    {
+        return guardAgainstInGame && mightAlreadyBeInGame();
     }
 
     private async Task DelayCharacterScreenSettleAsync(CancellationToken cancellationToken)
@@ -2296,10 +2300,11 @@ public sealed class VmOperations
 
     private async Task<bool> ClickLobbyDirectAsync(
         WindowsInput input,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guardAgainstInGame = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (MightAlreadyBeInGame(input))
+        if (ShouldSkipMenuClickForInGameSafety(guardAgainstInGame, () => MightAlreadyBeInGame(input)))
         {
             MarkCommandCheckpoint("ClickLobbyDirectAsync: skipped click, might already be in-game");
             return true;
@@ -2314,10 +2319,11 @@ public sealed class VmOperations
     private async Task ClickLobbyTabDirectAsync(
         WindowsInput input,
         AgentCommon.UiPoint tab,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guardAgainstInGame = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (MightAlreadyBeInGame(input))
+        if (ShouldSkipMenuClickForInGameSafety(guardAgainstInGame, () => MightAlreadyBeInGame(input)))
         {
             MarkCommandCheckpoint("ClickLobbyTabDirectAsync: skipped click, might already be in-game");
             return;
@@ -2408,7 +2414,7 @@ public sealed class VmOperations
                 // during D2R's entry-load spike before it can tell us whether the menu remains.
                 blindEntryReclicks++;
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entry grace elapsed (iteration {iteration}), blind re-clicking entry button");
-                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken, guardAgainstInGame: true);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
                 entryReclickAt = broadHudFrameAcceptAt;
                 continue;
@@ -2455,7 +2461,7 @@ public sealed class VmOperations
 
                 deadline = DateTimeOffset.UtcNow + timeout;
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: re-clicking entry button after interruption (retry {connectionRetries})");
-                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken, guardAgainstInGame: true);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
                 entryReclickAt = broadHudFrameAcceptAt;
                 blindEntryReclicks = 0;
@@ -2475,7 +2481,7 @@ public sealed class VmOperations
             {
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: returned to offline character screen (iteration {iteration}), recovering");
                 if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
-                    || !await ClickLobbyDirectAsync(input, cancellationToken)
+                    || !await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true)
                     || !await restoreFormAsync())
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the menu form could not be restored after clicking Online.");
@@ -2495,7 +2501,7 @@ public sealed class VmOperations
                 if (IsCharacterScreenReady(input))
                 {
                     MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: returned to character select (iteration {iteration}), recovering");
-                    if (!await ClickLobbyDirectAsync(input, cancellationToken)
+                    if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true)
                         || !await restoreFormAsync())
                     {
                         return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the menu form could not be restored.");
@@ -2549,7 +2555,7 @@ public sealed class VmOperations
 
                 deadline = DateTimeOffset.UtcNow + timeout;
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: re-clicking entry button after interruption (retry {connectionRetries})");
-                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken, guardAgainstInGame: true);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
                 entryReclickAt = broadHudFrameAcceptAt;
                 blindEntryReclicks = 0;
@@ -2573,7 +2579,7 @@ public sealed class VmOperations
             else if (waitResult == GameEntryWaitResult.OfflineCharacterScreen)
             {
                 if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
-                    || !await ClickLobbyDirectAsync(input, cancellationToken)
+                    || !await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true)
                     || !await restoreFormAsync())
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the menu form could not be restored after clicking Online.");
@@ -2581,7 +2587,7 @@ public sealed class VmOperations
             }
             else if (waitResult == GameEntryWaitResult.ReturnedToCharacterScreen)
             {
-                if (!await ClickLobbyDirectAsync(input, cancellationToken)
+                if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true)
                     || !await restoreFormAsync())
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the menu form could not be restored.");
@@ -2595,7 +2601,7 @@ public sealed class VmOperations
             else if (waitResult == GameEntryWaitResult.ReturnedToMenu)
             {
                 deadline = DateTimeOffset.UtcNow + timeout;
-                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken, guardAgainstInGame: true);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
                 entryReclickAt = broadHudFrameAcceptAt;
                 blindEntryReclicks = 0;
@@ -2604,7 +2610,7 @@ public sealed class VmOperations
 
             if (DateTimeOffset.UtcNow < deadline)
             {
-                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken, guardAgainstInGame: true);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
                 entryReclickAt = broadHudFrameAcceptAt;
                 blindEntryReclicks = 0;
@@ -2615,10 +2621,11 @@ public sealed class VmOperations
     private async Task ClickMenuEntryButtonAsync(
         WindowsInput input,
         AgentCommon.UiPoint button,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guardAgainstInGame = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (MightAlreadyBeInGame(input))
+        if (ShouldSkipMenuClickForInGameSafety(guardAgainstInGame, () => MightAlreadyBeInGame(input)))
         {
             MarkCommandCheckpoint("ClickMenuEntryButtonAsync: skipped click, might already be in-game");
             return;
@@ -2673,35 +2680,36 @@ public sealed class VmOperations
     private async Task<bool> RestoreJoinGameFormAsync(
         WindowsInput input,
         MenuCommandArgs args,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guardAgainstInGame = false)
     {
         MarkCommandCheckpoint("RestoreJoinGameFormAsync: click Join Game tab");
-        await ClickLobbyTabDirectAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), cancellationToken);
+        await ClickLobbyTabDirectAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), cancellationToken, guardAgainstInGame);
 
         MarkCommandCheckpoint("RestoreJoinGameFormAsync: select difficulty");
-        await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken);
+        await SelectJoinDifficultyAsync(input, args.Difficulty, cancellationToken, guardAgainstInGame);
         MarkCommandCheckpoint("RestoreJoinGameFormAsync: fill game name");
-        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameNameField), args.GameName ?? "", cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameNameField), args.GameName ?? "", cancellationToken, guardAgainstInGame);
         MarkCommandCheckpoint("RestoreJoinGameFormAsync: fill password");
-        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinPasswordField), args.Password ?? "", cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinPasswordField), args.Password ?? "", cancellationToken, guardAgainstInGame);
         return true;
     }
 
     private async Task<bool> RestoreCreateGameFormAsync(
         WindowsInput input,
         MenuCommandArgs args,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guardAgainstInGame = false)
     {
         MarkCommandCheckpoint("RestoreCreateGameFormAsync: click Create Game tab");
-        await ClickLobbyTabDirectAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab), cancellationToken);
+        await ClickLobbyTabDirectAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab), cancellationToken, guardAgainstInGame);
 
         MarkCommandCheckpoint("RestoreCreateGameFormAsync: fill game name");
-        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameNameField), args.GameName ?? "", cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameNameField), args.GameName ?? "", cancellationToken, guardAgainstInGame);
         MarkCommandCheckpoint("RestoreCreateGameFormAsync: fill password");
-        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreatePasswordField), args.Password ?? "", cancellationToken);
+        await FillTextFieldAsync(input, GetUiPoint(D2RUiCoordinateTarget.CreatePasswordField), args.Password ?? "", cancellationToken, guardAgainstInGame);
         MarkCommandCheckpoint("RestoreCreateGameFormAsync: select difficulty");
-        ClickD2R(input, GetCreateDifficultyPoint(args.Difficulty));
-        await DelayStepAsync(cancellationToken);
+        await SelectCreateDifficultyAsync(input, args.Difficulty, cancellationToken, guardAgainstInGame);
         return true;
     }
 
@@ -3231,7 +3239,8 @@ public sealed class VmOperations
         WindowsInput input,
         AgentCommon.UiPoint point,
         string value,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guardAgainstInGame = false)
     {
         // watch-xy4wiew2-20260625-132336.log: hc2/hc3 froze at the caller's "fill password"
         // checkpoint for 2m40s+ with no further progress. Every call in this function looks
@@ -3240,7 +3249,7 @@ public sealed class VmOperations
         // only got root-caused once iteration-level checkpoints existed to disprove the
         // "it's just slow" theories. These checkpoints exist to find out which specific step
         // this is actually stuck in on the next run, instead of guessing again.
-        if (MightAlreadyBeInGame(input))
+        if (ShouldSkipMenuClickForInGameSafety(guardAgainstInGame, () => MightAlreadyBeInGame(input)))
         {
             MarkCommandCheckpoint("FillTextFieldAsync: skipped, might already be in-game");
             return;
@@ -3263,10 +3272,17 @@ public sealed class VmOperations
     private async Task SelectJoinDifficultyAsync(
         WindowsInput input,
         string? difficulty,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guardAgainstInGame = false)
     {
         if (string.IsNullOrWhiteSpace(difficulty))
         {
+            return;
+        }
+
+        if (ShouldSkipMenuClickForInGameSafety(guardAgainstInGame, () => MightAlreadyBeInGame(input)))
+        {
+            MarkCommandCheckpoint("SelectJoinDifficultyAsync: skipped, might already be in-game");
             return;
         }
 
@@ -3274,6 +3290,22 @@ public sealed class VmOperations
         await DelayFastMenuAsync(cancellationToken);
         ClickD2R(input, GetJoinDifficultyPoint(difficulty));
         await DelayFastMenuAsync(cancellationToken);
+    }
+
+    private async Task SelectCreateDifficultyAsync(
+        WindowsInput input,
+        string? difficulty,
+        CancellationToken cancellationToken,
+        bool guardAgainstInGame = false)
+    {
+        if (ShouldSkipMenuClickForInGameSafety(guardAgainstInGame, () => MightAlreadyBeInGame(input)))
+        {
+            MarkCommandCheckpoint("SelectCreateDifficultyAsync: skipped, might already be in-game");
+            return;
+        }
+
+        ClickD2R(input, GetCreateDifficultyPoint(difficulty));
+        await DelayStepAsync(cancellationToken);
     }
 
     private async Task<GameEntryWaitResult> WaitForGameEntryAsync(WindowsInput input, CancellationToken cancellationToken)
