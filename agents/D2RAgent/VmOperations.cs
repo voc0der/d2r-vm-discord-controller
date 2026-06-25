@@ -3010,16 +3010,16 @@ public sealed class VmOperations
 
     private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null)
     {
-        MarkCommandCheckpoint($"{checkpointContext}: sampling screen-relative HUD");
-        var screenMatch = DetectInGameHudMatch(input, windowRelative: false);
-        if (IsAcceptedInGameHudMatch(screenMatch, checkpointContext, broadHudFrameAcceptAt))
+        MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
+        var windowMatch = DetectInGameHudMatch(input, windowRelative: true);
+        if (IsAcceptedInGameHudMatch(windowMatch, checkpointContext, broadHudFrameAcceptAt))
         {
             return true;
         }
 
-        MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
-        var windowMatch = DetectInGameHudMatch(input, windowRelative: true);
-        return IsAcceptedInGameHudMatch(windowMatch, checkpointContext, broadHudFrameAcceptAt);
+        MarkCommandCheckpoint($"{checkpointContext}: sampling screen-relative HUD");
+        var screenMatch = DetectInGameHudMatch(input, windowRelative: false);
+        return IsAcceptedInGameHudMatch(screenMatch, checkpointContext, broadHudFrameAcceptAt);
     }
 
     private bool IsInGameReady(WindowsInput input, bool windowRelative)
