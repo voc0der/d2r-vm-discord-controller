@@ -42,3 +42,4 @@ jobs:
           dotnet-version: 8.0.x
       - run: dotnet restore D2ROps.sln
       - run: dotnet build D2ROps.sln --configuration Release --no-restore
+      - run: dotnet test D2ROps.sln --configuration Release --no-build
