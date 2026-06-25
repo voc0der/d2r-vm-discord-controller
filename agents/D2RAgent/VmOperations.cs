@@ -35,15 +35,6 @@ public sealed class VmOperations
     // shorten or blank a diagnostic string, never change a pass/fail decision.
     private const int ClassifierBreakdownBoundMs = 2000;
     private const int StatusCollectionTimeoutSeconds = 4;
-    // watch-xpzpwefo2-20260625-125222.log: IsInGameReady's process-relative HUD sample (7 GDI
-    // regions) stalled ~20-30s on every VM in one run. v0.2.71 bounded + throttled this and
-    // caused a real regression (v0.2.72/73): the throttle served a stale cached false at a
-    // deadline-boundary check with no next attempt to recover in, timing out commands that had
-    // actually succeeded. This time, forceFreshSample (see IsInGameReady/TryConfirmEnteredGameAsync)
-    // is threaded through from the start so every "last word before pass/fail" call site bypasses
-    // the cache - only the regular in-loop polls (more attempts coming) use it.
-    private const int InGameHudSampleBoundMs = 1000;
-    private const int InGameHudSampleThrottleMs = 1000;
 
     private readonly VmAgentConfig _config;
     private readonly SemaphoreSlim _commandGate = new(1, 1);
@@ -63,8 +54,6 @@ public sealed class VmOperations
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
-    private DateTimeOffset _nextInGameHudSampleAt = DateTimeOffset.MinValue;
-    private bool _lastInGameHudResult;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -2336,8 +2325,7 @@ public sealed class VmOperations
                     cancellationToken,
                     legacyToggle,
                     checkpointContext,
-                    broadHudFrameAcceptAt,
-                    forceFreshSample: true))
+                    broadHudFrameAcceptAt))
             {
                 RecordClassifierBreakdown(TryRunBounded(() => ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid), ClassifierBreakdownBoundMs, ""));
                 return null;
@@ -2480,8 +2468,7 @@ public sealed class VmOperations
                         cancellationToken,
                         legacyToggle,
                         $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration {iteration})",
-                        broadHudFrameAcceptAt,
-                        forceFreshSample: true))
+                        broadHudFrameAcceptAt))
                 {
                     MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed at timeout boundary (iteration {iteration})");
                     return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game at timeout boundary.");
@@ -3076,32 +3063,18 @@ public sealed class VmOperations
             || IsInGameReady(input, windowRelative: true);
     }
 
-    private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null, bool forceFreshSample = false)
+    private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null)
     {
-        var now = DateTimeOffset.UtcNow;
-        if (!forceFreshSample && now < _nextInGameHudSampleAt)
-        {
-            // Throttle new sampling attempts to once per InGameHudSampleThrottleMs so the
-            // ~200ms entry-poll loop can't pile up overlapping bounded Task.Run calls while
-            // D2R's load spike has each sample taking close to its full bound. Only safe for
-            // call sites where another attempt is coming - see forceFreshSample below.
-            return _lastInGameHudResult;
-        }
-
-        _nextInGameHudSampleAt = now + TimeSpan.FromMilliseconds(InGameHudSampleThrottleMs);
-
         MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
-        var windowMatch = TryRunBounded(() => DetectInGameHudMatch(input, windowRelative: true), InGameHudSampleBoundMs, InGameHudMatchKind.None);
+        var windowMatch = DetectInGameHudMatch(input, windowRelative: true);
         if (IsAcceptedInGameHudMatch(windowMatch, checkpointContext, broadHudFrameAcceptAt))
         {
-            _lastInGameHudResult = true;
             return true;
         }
 
         MarkCommandCheckpoint($"{checkpointContext}: sampling screen-relative HUD");
-        var screenMatch = TryRunBounded(() => DetectInGameHudMatch(input, windowRelative: false), InGameHudSampleBoundMs, InGameHudMatchKind.None);
-        _lastInGameHudResult = IsAcceptedInGameHudMatch(screenMatch, checkpointContext, broadHudFrameAcceptAt);
-        return _lastInGameHudResult;
+        var screenMatch = DetectInGameHudMatch(input, windowRelative: false);
+        return IsAcceptedInGameHudMatch(screenMatch, checkpointContext, broadHudFrameAcceptAt);
     }
 
     private bool IsInGameReady(WindowsInput input, bool windowRelative)
@@ -3350,8 +3323,7 @@ public sealed class VmOperations
                 cancellationToken,
                 legacyToggle,
                 "WaitForGameEntryAsync: deadline",
-                broadHudFrameAcceptAt,
-                forceFreshSample: true))
+                broadHudFrameAcceptAt))
         {
             MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game at deadline");
             return GameEntryWaitResult.EnteredGame;
@@ -3428,10 +3400,9 @@ public sealed class VmOperations
         CancellationToken cancellationToken,
         LegacyGraphicsToggleState legacyToggle,
         string checkpointContext = "TryConfirmEnteredGameAsync",
-        DateTimeOffset? broadHudFrameAcceptAt = null,
-        bool forceFreshSample = false)
+        DateTimeOffset? broadHudFrameAcceptAt = null)
     {
-        if (!IsInGameReady(input, checkpointContext, broadHudFrameAcceptAt, forceFreshSample))
+        if (!IsInGameReady(input, checkpointContext, broadHudFrameAcceptAt))
         {
             MarkCommandCheckpoint($"{checkpointContext}: HUD not ready");
             return false;

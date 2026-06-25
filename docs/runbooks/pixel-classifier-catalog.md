@@ -123,21 +123,6 @@ want that conservative behavior.
   HUD sampling, then performs one blind entry-button re-click before starting HUD probes. Live
   `v0.2.69` logs showed that asking pixels whether the join/create menu was still visible could
   itself stall for roughly the same window as HUD sampling during D2R's load spike.
-- **`IsInGameReady`'s own HUD sample is bounded and throttled (`v0.2.75`), after two earlier
-  attempts (`v0.2.71`/`v0.2.72`) got reverted (`v0.2.73`) for getting the caching wrong.** Each
-  `DetectInGameHudMatch` sample is wrapped in `TryRunBounded` (`InGameHudSampleBoundMs` = 1000ms)
-  and new attempts are throttled to once per `InGameHudSampleThrottleMs` (1000ms) via a cached
-  `_lastInGameHudResult`, so the ~200ms entry-poll loop can't pile up overlapping bounded
-  `Task.Run` calls while D2R's load spike makes each sample take close to its full bound. The
-  part that actually caused the v0.2.71 regression wasn't the bounding - it was serving the
-  cached result at a call site with no next attempt to recover in if the cache was stale.
-  `IsInGameReady`/`TryConfirmEnteredGameAsync` take a `forceFreshSample` parameter for exactly
-  that: `true` only at the 3 call sites that are the last word before a pass/fail return
-  (`TryConfirmAtElapsedDeadlineAsync`, the explicit timeout-boundary check in
-  `ClickMenuEntryButtonUntilEnteredGameAsync`, `WaitForGameEntryAsync`'s post-loop check) - every
-  regular in-loop poll keeps the throttle, since those have another iteration coming. If this
-  needs touching again: audit every call site the same way before changing the cache shape -
-  "one of many tries" is safe to throttle, "the only try" must force fresh.
 - **`loading_splash_after_intro_videos.png` (and likely `load_screen_phase_1.png`/
   `load_screen_phase_2.png`) classify as `Unknown`, and that's correct - confirmed this is
   a real, unfixable-by-detection delay, not a gap.** This capture is a fully black screen
