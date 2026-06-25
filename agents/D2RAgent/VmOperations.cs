@@ -35,21 +35,6 @@ public sealed class VmOperations
     // shorten or blank a diagnostic string, never change a pass/fail decision.
     private const int ClassifierBreakdownBoundMs = 2000;
     private const int StatusCollectionTimeoutSeconds = 4;
-    // IsInGameReady's HUD sample (7 GDI regions) stalled ~20-56s under D2R's load spike across
-    // multiple live runs. Bounding each sample stops one slow attempt from blocking the loop for
-    // tens of seconds; throttling new attempts to once per InGameHudSampleThrottleMs stops the
-    // ~200ms entry-poll loop from piling up overlapping bounded Task.Run calls. The cache this
-    // implies is only safe where another attempt is coming - see forceFreshSample on
-    // IsInGameReady/TryConfirmEnteredGameAsync for the call sites that must bypass it.
-    private const int InGameHudSampleBoundMs = 1000;
-    private const int InGameHudSampleThrottleMs = 1000;
-    // IsCharacterScreenReady/IsCharacterScreenOffline/IsGameEntryErrorDialogOpen/
-    // IsConnectionInterruptedScreen share the same unbounded-GDI-under-load vulnerability as
-    // everything above. Bounded at the function definition (not every call site) so all ~20
-    // existing callers get the same protection from one change each. No cache/throttle here:
-    // every call site that matters is a regular in-loop poll with another attempt coming, so a
-    // bounded false this cycle is safe - unlike IsInGameReady's deadline-boundary calls.
-    private const int EntryLoopCheckBoundMs = 1500;
 
     private readonly VmAgentConfig _config;
     private readonly SemaphoreSlim _commandGate = new(1, 1);
@@ -69,8 +54,6 @@ public sealed class VmOperations
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
-    private DateTimeOffset _nextInGameHudSampleAt = DateTimeOffset.MinValue;
-    private bool _lastInGameHudResult;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -2342,8 +2325,7 @@ public sealed class VmOperations
                     cancellationToken,
                     legacyToggle,
                     checkpointContext,
-                    broadHudFrameAcceptAt,
-                    forceFreshSample: true))
+                    broadHudFrameAcceptAt))
             {
                 RecordClassifierBreakdown(TryRunBounded(() => ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid), ClassifierBreakdownBoundMs, ""));
                 return null;
@@ -2486,8 +2468,7 @@ public sealed class VmOperations
                         cancellationToken,
                         legacyToggle,
                         $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration {iteration})",
-                        broadHudFrameAcceptAt,
-                        forceFreshSample: true))
+                        broadHudFrameAcceptAt))
                 {
                     MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed at timeout boundary (iteration {iteration})");
                     return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game at timeout boundary.");
@@ -2746,14 +2727,13 @@ public sealed class VmOperations
 
     private bool IsCharacterScreenReady(WindowsInput input)
     {
-        return TryRunBounded(() => DetectReadyScreenState(input) == ReadyScreenState.CharacterScreen, EntryLoopCheckBoundMs);
+        return DetectReadyScreenState(input) == ReadyScreenState.CharacterScreen;
     }
 
     private bool IsCharacterScreenOffline(WindowsInput input)
     {
-        return TryRunBounded(
-            () => IsCharacterScreenOffline(input, windowRelative: false) || IsCharacterScreenOffline(input, windowRelative: true),
-            EntryLoopCheckBoundMs);
+        return IsCharacterScreenOffline(input, windowRelative: false)
+            || IsCharacterScreenOffline(input, windowRelative: true);
     }
 
     private bool IsCharacterScreenOffline(WindowsInput input, int sampleGrid)
@@ -3002,36 +2982,30 @@ public sealed class VmOperations
 
     private bool IsGameEntryErrorDialogOpen(WindowsInput input)
     {
-        return TryRunBounded(() =>
-        {
-            var okButton = input.SampleRegion(GetUiPoint(D2RUiCoordinateTarget.GameEntryErrorDialogOkButton), widthRatio: 0.14, heightRatio: 0.050);
-            var topBorder = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.381), widthRatio: 0.32, heightRatio: 0.025);
-            var body = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.465), widthRatio: 0.32, heightRatio: 0.20);
-            return okButton.AverageLuminance > 45
-                && okButton.LuminanceStdDev > 25
-                && okButton.GreyRatio > 0.35
-                && okButton.DarkRatio < 0.60
-                && topBorder.AverageLuminance > 28
-                && topBorder.GreyRatio > 0.25
-                && topBorder.DarkRatio < 0.75
-                && body.AverageLuminance < 40
-                && body.DarkRatio > 0.70;
-        }, EntryLoopCheckBoundMs);
+        var okButton = input.SampleRegion(GetUiPoint(D2RUiCoordinateTarget.GameEntryErrorDialogOkButton), widthRatio: 0.14, heightRatio: 0.050);
+        var topBorder = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.381), widthRatio: 0.32, heightRatio: 0.025);
+        var body = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.465), widthRatio: 0.32, heightRatio: 0.20);
+        return okButton.AverageLuminance > 45
+            && okButton.LuminanceStdDev > 25
+            && okButton.GreyRatio > 0.35
+            && okButton.DarkRatio < 0.60
+            && topBorder.AverageLuminance > 28
+            && topBorder.GreyRatio > 0.25
+            && topBorder.DarkRatio < 0.75
+            && body.AverageLuminance < 40
+            && body.DarkRatio > 0.70;
     }
 
     private bool IsConnectionInterruptedScreen(WindowsInput input)
     {
-        return TryRunBounded(() =>
-        {
-            var screen = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.500), widthRatio: 0.80, heightRatio: 0.60);
-            var text = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.502), widthRatio: 0.55, heightRatio: 0.08);
-            return screen.AverageLuminance < 5
-                && screen.DarkRatio > 0.97
-                && text.AverageLuminance > 3
-                && text.LuminanceStdDev > 15
-                && text.GreyRatio > 0.02
-                && text.DarkRatio > 0.85;
-        }, EntryLoopCheckBoundMs);
+        var screen = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.500), widthRatio: 0.80, heightRatio: 0.60);
+        var text = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.502), widthRatio: 0.55, heightRatio: 0.08);
+        return screen.AverageLuminance < 5
+            && screen.DarkRatio > 0.97
+            && text.AverageLuminance > 3
+            && text.LuminanceStdDev > 15
+            && text.GreyRatio > 0.02
+            && text.DarkRatio > 0.85;
     }
 
     private bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab)
@@ -3089,28 +3063,18 @@ public sealed class VmOperations
             || IsInGameReady(input, windowRelative: true);
     }
 
-    private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null, bool forceFreshSample = false)
+    private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null)
     {
-        var now = DateTimeOffset.UtcNow;
-        if (!forceFreshSample && now < _nextInGameHudSampleAt)
-        {
-            return _lastInGameHudResult;
-        }
-
-        _nextInGameHudSampleAt = now + TimeSpan.FromMilliseconds(InGameHudSampleThrottleMs);
-
         MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
-        var windowMatch = TryRunBounded(() => DetectInGameHudMatch(input, windowRelative: true), InGameHudSampleBoundMs, InGameHudMatchKind.None);
+        var windowMatch = DetectInGameHudMatch(input, windowRelative: true);
         if (IsAcceptedInGameHudMatch(windowMatch, checkpointContext, broadHudFrameAcceptAt))
         {
-            _lastInGameHudResult = true;
             return true;
         }
 
         MarkCommandCheckpoint($"{checkpointContext}: sampling screen-relative HUD");
-        var screenMatch = TryRunBounded(() => DetectInGameHudMatch(input, windowRelative: false), InGameHudSampleBoundMs, InGameHudMatchKind.None);
-        _lastInGameHudResult = IsAcceptedInGameHudMatch(screenMatch, checkpointContext, broadHudFrameAcceptAt);
-        return _lastInGameHudResult;
+        var screenMatch = DetectInGameHudMatch(input, windowRelative: false);
+        return IsAcceptedInGameHudMatch(screenMatch, checkpointContext, broadHudFrameAcceptAt);
     }
 
     private bool IsInGameReady(WindowsInput input, bool windowRelative)
@@ -3359,8 +3323,7 @@ public sealed class VmOperations
                 cancellationToken,
                 legacyToggle,
                 "WaitForGameEntryAsync: deadline",
-                broadHudFrameAcceptAt,
-                forceFreshSample: true))
+                broadHudFrameAcceptAt))
         {
             MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game at deadline");
             return GameEntryWaitResult.EnteredGame;
@@ -3437,10 +3400,9 @@ public sealed class VmOperations
         CancellationToken cancellationToken,
         LegacyGraphicsToggleState legacyToggle,
         string checkpointContext = "TryConfirmEnteredGameAsync",
-        DateTimeOffset? broadHudFrameAcceptAt = null,
-        bool forceFreshSample = false)
+        DateTimeOffset? broadHudFrameAcceptAt = null)
     {
-        if (!IsInGameReady(input, checkpointContext, broadHudFrameAcceptAt, forceFreshSample))
+        if (!IsInGameReady(input, checkpointContext, broadHudFrameAcceptAt))
         {
             MarkCommandCheckpoint($"{checkpointContext}: HUD not ready");
             return false;
