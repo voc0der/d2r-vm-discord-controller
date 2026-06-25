@@ -18,19 +18,22 @@ public sealed class StartupReadyInputPlanTests
         Assert.Equal(23, plan.EstimatedTimeoutSeconds);
     }
 
+    // watch-lmrwii244-20260625-205519.log: now that v0.2.93 made detection fast, every send in a
+    // burst reliably reaches the client - Escape-then-Enter (the old plans, "for redundancy")
+    // is exactly D2R's open-then-confirm-exit-dialog sequence, and it quit the game outright on
+    // 2 VMs. User confirmed directly in a live VM that G alone clears intro/title just as fast.
+    // These plans must never include PressEscapeKey/SendWindowEscapeKey/PressStartKey/
+    // SendWindowReadyBurst again - only the two G-pressing actions, plus the click/focus actions
+    // that were never implicated.
     [Fact]
-    public void BurstPlanIncludesMouseKeyboardAndWindowMessageFallbacks()
+    public void StartupPlansOnlySendTheSafeSkipKeyNeverEscapeOrEnter()
     {
         Assert.Equal(
             [
                 StartupReadyInputAction.FocusD2R,
-                StartupReadyInputAction.PressEscapeKey,
                 StartupReadyInputAction.ClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
-                StartupReadyInputAction.PressStartKey,
-                StartupReadyInputAction.SendWindowEscapeKey,
                 StartupReadyInputAction.SendWindowClickIntroPoint,
-                StartupReadyInputAction.SendWindowReadyBurst,
                 StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.IntroActions);
@@ -39,8 +42,6 @@ public sealed class StartupReadyInputPlanTests
             [
                 StartupReadyInputAction.FocusD2R,
                 StartupReadyInputAction.PressStartupSkipKey,
-                StartupReadyInputAction.PressStartKey,
-                StartupReadyInputAction.SendWindowReadyBurst,
                 StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.TitleActions);
@@ -50,9 +51,7 @@ public sealed class StartupReadyInputPlanTests
                 StartupReadyInputAction.FocusD2R,
                 StartupReadyInputAction.ClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
-                StartupReadyInputAction.PressStartKey,
                 StartupReadyInputAction.SendWindowClickIntroPoint,
-                StartupReadyInputAction.SendWindowReadyBurst,
                 StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.SplashActions);
@@ -62,12 +61,24 @@ public sealed class StartupReadyInputPlanTests
                 StartupReadyInputAction.FocusD2R,
                 StartupReadyInputAction.ClickIntroPoint,
                 StartupReadyInputAction.PressStartupSkipKey,
-                StartupReadyInputAction.PressStartKey,
                 StartupReadyInputAction.SendWindowClickIntroPoint,
-                StartupReadyInputAction.SendWindowReadyBurst,
                 StartupReadyInputAction.SendWindowStartupSkipKey
             ],
             StartupReadyInputPlan.BurstActions);
+
+        foreach (var plan in new[]
+                 {
+                     StartupReadyInputPlan.IntroActions,
+                     StartupReadyInputPlan.TitleActions,
+                     StartupReadyInputPlan.SplashActions,
+                     StartupReadyInputPlan.BurstActions
+                 })
+        {
+            Assert.DoesNotContain(StartupReadyInputAction.PressEscapeKey, plan);
+            Assert.DoesNotContain(StartupReadyInputAction.SendWindowEscapeKey, plan);
+            Assert.DoesNotContain(StartupReadyInputAction.PressStartKey, plan);
+            Assert.DoesNotContain(StartupReadyInputAction.SendWindowReadyBurst, plan);
+        }
     }
 
     [Fact]

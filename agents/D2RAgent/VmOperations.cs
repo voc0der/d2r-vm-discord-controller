@@ -1895,7 +1895,7 @@ public sealed class VmOperations
         var afterCursor = input.GetCursorPosition();
         RecordD2RInputAction(
             kind: "key",
-            button: "Escape/G/Space/Enter",
+            button: "G", // IntroActions only ever sends G now - see StartupReadyInputPlan.cs
             point: introPoint,
             target,
             beforeCursor,
@@ -1950,7 +1950,7 @@ public sealed class VmOperations
         var afterCursor = input.GetCursorPosition();
         RecordD2RInputAction(
             kind: "key",
-            button: "G/Space/Enter",
+            button: "G", // TitleActions only ever sends G now - see StartupReadyInputPlan.cs
             point: introPoint,
             target,
             beforeCursor,
@@ -1998,7 +1998,7 @@ public sealed class VmOperations
         var afterCursor = input.GetCursorPosition();
         RecordD2RInputAction(
             kind: "key",
-            button: "SplashContinue/G/Space/Enter",
+            button: "SplashContinue/G", // SplashActions only ever clicks + sends G now
             point: introPoint,
             target,
             beforeCursor,
@@ -2038,10 +2038,9 @@ public sealed class VmOperations
                     TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadySkipKey(GetD2RProcessNames()));
                     break;
                 case StartupReadyInputAction.SendWindowReadyBurst:
-                    // No Escape here - see the comment in SendReadyTitleSkipBurst. This is the
-                    // fallback loop with the largest timeout budget of the three, so it's the
-                    // most exposed to spending a long stretch sending Escape+Enter at an
-                    // already-reached, misclassified character screen.
+                    // Unreachable - BurstActions no longer includes this. Kept so the switch
+                    // still compiles exhaustively if a future plan ever re-adds it; see
+                    // StartupReadyInputPlan.cs for why Escape/Space/Enter were removed.
                     TryD2RWindowReadyInputAction(() => _ = input.SendWindowReadyBurst(GetD2RProcessNames(), introPoint, includeEscape: false));
                     break;
             }
@@ -2050,7 +2049,7 @@ public sealed class VmOperations
         var afterCursor = input.GetCursorPosition();
         RecordD2RInputAction(
             kind: "key",
-            button: "G/Space/Enter",
+            button: "G", // BurstActions only ever clicks + sends G now - see StartupReadyInputPlan.cs
             point: introPoint,
             target,
             beforeCursor,

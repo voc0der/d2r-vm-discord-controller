@@ -25,16 +25,24 @@ internal sealed record StartupReadyInputPlan(
     private const int MaxIntroClickCount = 120;
     private const int MaxTitleScreenKeyPressCount = 30;
 
+    // Escape (PressEscapeKey/SendWindowEscapeKey/SendWindowReadyBurst's includeEscape) and
+    // Space+Enter (PressStartKey/SendWindowReadyBurst) used to be in these plans because, under
+    // the pre-v0.2.93 detection delays, the bursts rarely all landed - by the time GDI sampling
+    // unblocked, the client had usually already moved on. Now that detection is fast, every send
+    // in a burst reliably reaches the client, and Escape-then-Enter is exactly D2R's open-then-
+    // confirm-exit-dialog sequence: watch-lmrwii244-20260625-205519.log showed it quitting D2R
+    // outright on 2 VMs ("frame NotRunning" right after a burst). User confirmed directly in a
+    // live VM that G alone clears the intro/title sequence just as fast as the old combination -
+    // G only ever toggles legacy graphics, so it can't open or confirm anything. These plans now
+    // send only G (both delivery mechanisms, scan-code and window-targeted, for the same
+    // redundancy the old plans had against an unfocused/not-yet-existing window), plus the
+    // pre-existing focus/click actions, which were never implicated in this failure mode.
     public static readonly IReadOnlyList<StartupReadyInputAction> IntroActions =
     [
         StartupReadyInputAction.FocusD2R,
-        StartupReadyInputAction.PressEscapeKey,
         StartupReadyInputAction.ClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
-        StartupReadyInputAction.PressStartKey,
-        StartupReadyInputAction.SendWindowEscapeKey,
         StartupReadyInputAction.SendWindowClickIntroPoint,
-        StartupReadyInputAction.SendWindowReadyBurst,
         StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 
@@ -42,8 +50,6 @@ internal sealed record StartupReadyInputPlan(
     [
         StartupReadyInputAction.FocusD2R,
         StartupReadyInputAction.PressStartupSkipKey,
-        StartupReadyInputAction.PressStartKey,
-        StartupReadyInputAction.SendWindowReadyBurst,
         StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 
@@ -52,9 +58,7 @@ internal sealed record StartupReadyInputPlan(
         StartupReadyInputAction.FocusD2R,
         StartupReadyInputAction.ClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
-        StartupReadyInputAction.PressStartKey,
         StartupReadyInputAction.SendWindowClickIntroPoint,
-        StartupReadyInputAction.SendWindowReadyBurst,
         StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 
@@ -63,9 +67,7 @@ internal sealed record StartupReadyInputPlan(
         StartupReadyInputAction.FocusD2R,
         StartupReadyInputAction.ClickIntroPoint,
         StartupReadyInputAction.PressStartupSkipKey,
-        StartupReadyInputAction.PressStartKey,
         StartupReadyInputAction.SendWindowClickIntroPoint,
-        StartupReadyInputAction.SendWindowReadyBurst,
         StartupReadyInputAction.SendWindowStartupSkipKey
     ];
 
