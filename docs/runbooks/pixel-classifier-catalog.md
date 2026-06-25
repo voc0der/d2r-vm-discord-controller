@@ -104,17 +104,16 @@ want that conservative behavior.
 **`v0.2.79`, confirmed by direct user observation (watched it happen live): `IsGameEntryMenuStillVisible`
 can false-positive "the create/join form is still on screen" while the client is actually
 already in-game.** The recovery path that follows (`ClickLobbyTabDirectAsync`/`FillTextFieldAsync`/
-`ClickMenuEntryButtonAsync`/`ClickLobbyDirectAsync`, plus create/join difficulty selection) blindly
-clicks fixed lobby-UI coordinates to restore the form and retry entry. D2R has no concept of "this
-click missed the UI" - a click anywhere that isn't a real UI element is a click-to-move command, so
-a misdetected recovery became movement clicks in a live game. In Hardcore, a wrong click sequence
-like this can permanently kill the character.
+`ClickMenuEntryButtonAsync`/`ClickLobbyDirectAsync`) blindly clicks fixed lobby-UI coordinates to
+restore the form and retry entry. D2R has no concept of "this click missed the UI" - a click
+anywhere that isn't a real UI element is a click-to-move command, so a misdetected recovery
+became movement clicks in a live game. In Hardcore, a wrong click sequence like this can
+permanently kill the character.
 
 Fixed by adding `MightAlreadyBeInGame` (`VmOperations.cs`), a safety gate in front of all four of
-those click functions and the difficulty-selection clicks: if there's any reasonably-confirmable
-evidence we're already in-game, skip the click entirely and let the loop's own entry-confirmation
-check (already run at the top of every iteration) catch up safely instead of clicking blind. The
-bound on this check
+those click functions: if there's any reasonably-confirmable evidence we're already in-game,
+skip the click entirely and let the loop's own entry-confirmation check (already run at the top
+of every iteration) catch up safely instead of clicking blind. The bound on this check
 (`InGameSafetyCheckBoundMs` = 2500ms) and its fallback are both deliberately unlike every other
 bounded check in this file: the bound is wide because it wraps the same `IsInGameReady` sample
 already measured taking 12-56s under D2R's load spike, and the fallback on timeout is `true`
@@ -151,13 +150,6 @@ first confirming the lobby is what's actually on screen.
   HUD sampling, then performs one blind entry-button re-click before starting HUD probes. Live
   `v0.2.69` logs showed that asking pixels whether the join/create menu was still visible could
   itself stall for roughly the same window as HUD sampling during D2R's load spike.
-- **Entry-loop HUD/menu probes are bounded so slow pixel reads cannot hide a successful join for
-  tens of seconds.** `IsInGameReady`'s checkpointed entry-confirmation path bounds each
-  process/screen-relative HUD sample at 1000ms and throttles ordinary poll samples to once per
-  second; deadline/final checks force a fresh sample so a cached false cannot decide a timeout.
-  The sibling entry-loop checks (`IsCharacterScreenReady`, `IsCharacterScreenOffline`,
-  `IsGameEntryErrorDialogOpen`, `IsConnectionInterruptedScreen`) are bounded at their helper
-  definitions too, with a false fallback because each caller has another poll/retry coming.
 - **`loading_splash_after_intro_videos.png` (and likely `load_screen_phase_1.png`/
   `load_screen_phase_2.png`) classify as `Unknown`, and that's correct - confirmed this is
   a real, unfixable-by-detection delay, not a gap.** This capture is a fully black screen
