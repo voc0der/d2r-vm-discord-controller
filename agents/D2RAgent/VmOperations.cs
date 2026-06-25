@@ -2257,6 +2257,27 @@ public sealed class VmOperations
         var legacyToggle = new LegacyGraphicsToggleState();
         MarkCommandCheckpoint("ClickMenuEntryButtonUntilEnteredGameAsync: initial click");
         await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+
+        async Task<GameEntryAttemptResult?> TryConfirmAtElapsedDeadlineAsync(string checkpointContext)
+        {
+            if (DateTimeOffset.UtcNow < deadline)
+            {
+                return null;
+            }
+
+            if (!await TryConfirmEnteredGameAsync(
+                    input,
+                    cancellationToken,
+                    legacyToggle,
+                    checkpointContext))
+            {
+                return null;
+            }
+
+            MarkCommandCheckpoint($"{checkpointContext}: entered game confirmed");
+            return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game at timeout boundary.");
+        }
+
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2318,8 +2339,16 @@ public sealed class VmOperations
                 continue;
             }
 
+            var elapsedDeadlineResult = await TryConfirmAtElapsedDeadlineAsync(
+                $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary after connection check (iteration {iteration})");
+            if (elapsedDeadlineResult is not null)
+            {
+                return elapsedDeadlineResult;
+            }
+
             MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking offline character screen");
-            if (IsCharacterScreenOffline(input))
+            var returnedToOfflineCharacterScreen = IsCharacterScreenOffline(input);
+            if (returnedToOfflineCharacterScreen)
             {
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: returned to offline character screen (iteration {iteration}), recovering");
                 if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
@@ -2329,7 +2358,15 @@ public sealed class VmOperations
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the menu form could not be restored after clicking Online.");
                 }
             }
-            else
+
+            elapsedDeadlineResult = await TryConfirmAtElapsedDeadlineAsync(
+                $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary after offline-screen check (iteration {iteration})");
+            if (elapsedDeadlineResult is not null)
+            {
+                return elapsedDeadlineResult;
+            }
+
+            if (!returnedToOfflineCharacterScreen)
             {
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking character select");
                 if (IsCharacterScreenReady(input))
