@@ -31,6 +31,14 @@ public sealed class VmOperations
     private const int EntryPollIntervalMs = 200;
     private const int LobbyPollIntervalMs = 250;
     private const int StatusCollectionTimeoutSeconds = 4;
+    // watch-xpzpwefo2-20260625-125222.log showed all 3 VMs stall ~20-30s in IsInGameReady's
+    // process-relative HUD sample (7 regions, each a window-lookup plus GDI GetPixel reads) -
+    // the same class of slow-under-load GDI call already confirmed elsewhere, just unbounded
+    // here. Bounding each attempt stops a single slow sample from blocking the loop for tens of
+    // seconds; throttling how often a new attempt is dispatched stops the (otherwise 200ms-tick)
+    // entry-poll loop from piling up overlapping bounded attempts while D2R is still loading.
+    private const int InGameHudSampleBoundMs = 1000;
+    private const int InGameHudSampleThrottleMs = 1000;
 
     private readonly VmAgentConfig _config;
     private readonly SemaphoreSlim _commandGate = new(1, 1);
@@ -50,6 +58,8 @@ public sealed class VmOperations
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
+    private DateTimeOffset _nextInGameHudSampleAt = DateTimeOffset.MinValue;
+    private bool _lastInGameHudResult;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -1272,6 +1282,22 @@ public sealed class VmOperations
         catch (Exception)
         {
             return false;
+        }
+    }
+
+    // Same bounding shape as TryRunBounded above, generalized to a fallback value instead of a
+    // bool, for callers like IsInGameReady that need a richer result (InGameHudMatchKind) than
+    // plain success/failure.
+    internal static T TryRunBounded<T>(Func<T> action, int timeoutMs, T fallback)
+    {
+        try
+        {
+            var task = Task.Run(action);
+            return task.Wait(timeoutMs) ? task.Result : fallback;
+        }
+        catch (Exception)
+        {
+            return fallback;
         }
     }
 
@@ -3041,16 +3067,30 @@ public sealed class VmOperations
 
     private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null)
     {
+        var now = DateTimeOffset.UtcNow;
+        if (now < _nextInGameHudSampleAt)
+        {
+            // watch-xpzpwefo2-20260625-125222.log: this is called from a ~200ms entry-poll loop,
+            // but each sample below is bounded to InGameHudSampleBoundMs and can still take that
+            // long under D2R's load spike. Without this throttle, every poll tick would dispatch
+            // another bounded Task.Run on top of any still-draining ones - spam, not a fix.
+            return _lastInGameHudResult;
+        }
+
+        _nextInGameHudSampleAt = now + TimeSpan.FromMilliseconds(InGameHudSampleThrottleMs);
+
         MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
-        var windowMatch = DetectInGameHudMatch(input, windowRelative: true);
+        var windowMatch = TryRunBounded(() => DetectInGameHudMatch(input, windowRelative: true), InGameHudSampleBoundMs, InGameHudMatchKind.None);
         if (IsAcceptedInGameHudMatch(windowMatch, checkpointContext, broadHudFrameAcceptAt))
         {
+            _lastInGameHudResult = true;
             return true;
         }
 
         MarkCommandCheckpoint($"{checkpointContext}: sampling screen-relative HUD");
-        var screenMatch = DetectInGameHudMatch(input, windowRelative: false);
-        return IsAcceptedInGameHudMatch(screenMatch, checkpointContext, broadHudFrameAcceptAt);
+        var screenMatch = TryRunBounded(() => DetectInGameHudMatch(input, windowRelative: false), InGameHudSampleBoundMs, InGameHudMatchKind.None);
+        _lastInGameHudResult = IsAcceptedInGameHudMatch(screenMatch, checkpointContext, broadHudFrameAcceptAt);
+        return _lastInGameHudResult;
     }
 
     private bool IsInGameReady(WindowsInput input, bool windowRelative)

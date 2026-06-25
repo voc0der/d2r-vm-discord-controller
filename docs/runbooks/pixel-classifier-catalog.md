@@ -123,6 +123,19 @@ want that conservative behavior.
   HUD sampling, then performs one blind entry-button re-click before starting HUD probes. Live
   `v0.2.69` logs showed that asking pixels whether the join/create menu was still visible could
   itself stall for roughly the same window as HUD sampling during D2R's load spike.
+- **Process-relative HUD sampling itself can stall ~20-30s under D2R's load spike, same as the
+  visible-menu check above.** Live `v0.2.70` logs (`watch-xpzpwefo2-20260625-125222.log`) showed
+  all 3 VMs in one run freeze at `sampling process-relative HUD` for ~21-23s, every time, before
+  falling through to `sampling screen-relative HUD` for another ~8-10s - the same unbounded-GDI
+  class of stall as everything else in this section, just in `IsInGameReady`'s 7-region sample
+  (`DetectInGameHudMatch`) instead of a single check. Don't swap the process-relative/screen-
+  relative order to "fix" this - `v0.2.67` picked that order because screen-relative was the slow
+  one back then; swapping would just move the stall again, the same mistake `v0.2.69` made with
+  the visible-menu check. Fixed in `v0.2.71` by bounding each sample (`TryRunBounded`, generic
+  overload, `InGameHudSampleBoundMs` = 1000ms) and throttling new attempts to once per
+  `InGameHudSampleThrottleMs` (1000ms) via a cached `_lastInGameHudResult` - bounding alone would
+  let the existing ~200ms entry-poll loop dispatch a new bounded sample every tick, piling up
+  background `Task.Run` calls faster than they drain.
 - **`loading_splash_after_intro_videos.png` (and likely `load_screen_phase_1.png`/
   `load_screen_phase_2.png`) classify as `Unknown`, and that's correct - confirmed this is
   a real, unfixable-by-detection delay, not a gap.** This capture is a fully black screen

@@ -56,4 +56,46 @@ public sealed class TryRunBoundedTests
 
         Assert.False(result);
     }
+
+    // Generic overload added for IsInGameReady (watch-xpzpwefo2-20260625-125222.log: unbounded
+    // process-relative HUD sampling stalled ~20-30s on every VM in the run) - same bounding
+    // shape as the bool overload above, just with a caller-supplied fallback instead of false.
+    [Fact]
+    public void GenericOverloadReturnsResultWhenActionCompletesQuickly()
+    {
+        Assert.Equal("done", VmOperations.TryRunBounded(() => "done", TimeoutMs, "fallback"));
+    }
+
+    [Fact]
+    public void GenericOverloadReturnsFallbackWhenTheActionHangs()
+    {
+        var stopwatch = Stopwatch.StartNew();
+
+        var result = VmOperations.TryRunBounded(
+            () =>
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(5));
+                return "done";
+            },
+            TimeoutMs,
+            "fallback");
+
+        stopwatch.Stop();
+
+        Assert.Equal("fallback", result);
+        Assert.True(
+            stopwatch.ElapsedMilliseconds < 2000,
+            $"TryRunBounded should give up around {TimeoutMs}ms, not wait out the hung action; took {stopwatch.ElapsedMilliseconds}ms.");
+    }
+
+    [Fact]
+    public void GenericOverloadReturnsFallbackInsteadOfThrowingWhenTheActionThrows()
+    {
+        var result = VmOperations.TryRunBounded(
+            () => throw new InvalidOperationException("simulated Win32 failure"),
+            TimeoutMs,
+            "fallback");
+
+        Assert.Equal("fallback", result);
+    }
 }
