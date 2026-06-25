@@ -2280,8 +2280,12 @@ public sealed class VmOperations
         var connectionRetries = 0;
         var iteration = 0;
         var legacyToggle = new LegacyGraphicsToggleState();
+        DateTimeOffset GetBroadHudFrameAcceptAt() =>
+            DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 3, 8));
+
         MarkCommandCheckpoint("ClickMenuEntryButtonUntilEnteredGameAsync: initial click");
         await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+        var broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
 
         async Task<GameEntryAttemptResult?> TryConfirmAtElapsedDeadlineAsync(string checkpointContext)
         {
@@ -2295,7 +2299,7 @@ public sealed class VmOperations
                     cancellationToken,
                     legacyToggle,
                     checkpointContext,
-                    activeTab))
+                    broadHudFrameAcceptAt))
             {
                 RecordClassifierBreakdown(ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid));
                 return null;
@@ -2327,7 +2331,7 @@ public sealed class VmOperations
                     cancellationToken,
                     legacyToggle,
                     $"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}",
-                    activeTab))
+                    broadHudFrameAcceptAt))
             {
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed (iteration {iteration})");
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
@@ -2364,6 +2368,7 @@ public sealed class VmOperations
                 deadline = DateTimeOffset.UtcNow + timeout;
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: re-clicking entry button after interruption (retry {connectionRetries})");
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
                 continue;
             }
 
@@ -2415,7 +2420,7 @@ public sealed class VmOperations
                         cancellationToken,
                         legacyToggle,
                         $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration {iteration})",
-                        activeTab))
+                        broadHudFrameAcceptAt))
                 {
                     MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed at timeout boundary (iteration {iteration})");
                     return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game at timeout boundary.");
@@ -2425,7 +2430,7 @@ public sealed class VmOperations
             }
 
             MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: WaitForGameEntryAsync (iteration {iteration})");
-            var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken, legacyToggle);
+            var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken, legacyToggle, broadHudFrameAcceptAt);
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
@@ -2436,7 +2441,7 @@ public sealed class VmOperations
                     cancellationToken,
                     legacyToggle,
                     $"ClickMenuEntryButtonUntilEnteredGameAsync: after wait result (iteration {iteration})",
-                    activeTab))
+                    broadHudFrameAcceptAt))
             {
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entered game confirmed after wait result (iteration {iteration})");
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game after wait result.");
@@ -2498,12 +2503,14 @@ public sealed class VmOperations
             {
                 deadline = DateTimeOffset.UtcNow + timeout;
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
                 continue;
             }
 
             if (DateTimeOffset.UtcNow < deadline)
             {
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
             }
         }
     }
@@ -3001,18 +3008,18 @@ public sealed class VmOperations
             || IsInGameReady(input, windowRelative: true);
     }
 
-    private bool IsInGameReady(WindowsInput input, string checkpointContext, AgentCommon.UiPoint? returnTab = null)
+    private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null)
     {
         MarkCommandCheckpoint($"{checkpointContext}: sampling screen-relative HUD");
         var screenMatch = DetectInGameHudMatch(input, windowRelative: false);
-        if (IsAcceptedInGameHudMatch(input, screenMatch, checkpointContext, returnTab))
+        if (IsAcceptedInGameHudMatch(screenMatch, checkpointContext, broadHudFrameAcceptAt))
         {
             return true;
         }
 
         MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
         var windowMatch = DetectInGameHudMatch(input, windowRelative: true);
-        return IsAcceptedInGameHudMatch(input, windowMatch, checkpointContext, returnTab);
+        return IsAcceptedInGameHudMatch(windowMatch, checkpointContext, broadHudFrameAcceptAt);
     }
 
     private bool IsInGameReady(WindowsInput input, bool windowRelative)
@@ -3045,25 +3052,23 @@ public sealed class VmOperations
     }
 
     private bool IsAcceptedInGameHudMatch(
-        WindowsInput input,
         InGameHudMatchKind match,
         string checkpointContext,
-        AgentCommon.UiPoint? returnTab)
+        DateTimeOffset? broadHudFrameAcceptAt)
     {
         if (match == InGameHudMatchKind.None)
         {
             return false;
         }
 
-        if (match != InGameHudMatchKind.Frame || returnTab is null)
+        if (match != InGameHudMatchKind.Frame || broadHudFrameAcceptAt is null)
         {
             return true;
         }
 
-        MarkCommandCheckpoint($"{checkpointContext}: broad HUD frame matched; checking lobby menu overlap");
-        if (IsGameEntryMenuStillVisible(input, returnTab))
+        if (DateTimeOffset.UtcNow < broadHudFrameAcceptAt.Value)
         {
-            MarkCommandCheckpoint($"{checkpointContext}: lobby menu still visible after broad HUD frame match");
+            MarkCommandCheckpoint($"{checkpointContext}: broad HUD frame matched during entry grace window");
             return false;
         }
 
@@ -3160,7 +3165,8 @@ public sealed class VmOperations
         WindowsInput input,
         AgentCommon.UiPoint? returnTab,
         CancellationToken cancellationToken,
-        LegacyGraphicsToggleState legacyToggle)
+        LegacyGraphicsToggleState legacyToggle,
+        DateTimeOffset? broadHudFrameAcceptAt = null)
     {
         var delaySeconds = Math.Max(
             Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1),
@@ -3187,7 +3193,7 @@ public sealed class VmOperations
                     cancellationToken,
                     legacyToggle,
                     $"WaitForGameEntryAsync: poll iteration {pollIteration}",
-                    returnTab))
+                    broadHudFrameAcceptAt))
             {
                 MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game HUD");
                 return GameEntryWaitResult.EnteredGame;
@@ -3251,7 +3257,7 @@ public sealed class VmOperations
                 cancellationToken,
                 legacyToggle,
                 "WaitForGameEntryAsync: deadline",
-                returnTab))
+                broadHudFrameAcceptAt))
         {
             MarkCommandCheckpoint("WaitForGameEntryAsync: confirmed in-game at deadline");
             return GameEntryWaitResult.EnteredGame;
@@ -3328,9 +3334,9 @@ public sealed class VmOperations
         CancellationToken cancellationToken,
         LegacyGraphicsToggleState legacyToggle,
         string checkpointContext = "TryConfirmEnteredGameAsync",
-        AgentCommon.UiPoint? returnTab = null)
+        DateTimeOffset? broadHudFrameAcceptAt = null)
     {
-        if (!IsInGameReady(input, checkpointContext, returnTab))
+        if (!IsInGameReady(input, checkpointContext, broadHudFrameAcceptAt))
         {
             MarkCommandCheckpoint($"{checkpointContext}: HUD not ready");
             return false;

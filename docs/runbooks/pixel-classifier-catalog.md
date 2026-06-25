@@ -112,10 +112,10 @@ want that conservative behavior.
   two checks, not one, if it's ever touched again.
 - **The broad `IsInGameHudFrame` fallback can overlap filled join/create forms.** Top-level
   visible-state detection gives the lobby-entry form priority. Game-entry confirmation accepts
-  strong modern/legacy globe profiles directly, but if only the broad HUD-frame fallback matches,
-  it checks whether the active return tab/form is still visible before accepting the frame as
-  in-game. This keeps menu screens from being treated as already in-game just because their lower
-  chrome happens to look HUD-like, without making every HUD poll pay for lobby-form sampling.
+  strong modern/legacy globe profiles directly, but broad HUD-frame fallback matches are only
+  accepted after a short post-entry-click grace window. This keeps menu screens from being treated
+  as already in-game just because their lower chrome happens to look HUD-like, without making HUD
+  confirmation pay for extra lobby-form sampling during D2R's load spike.
 - **`loading_splash_after_intro_videos.png` (and likely `load_screen_phase_1.png`/
   `load_screen_phase_2.png`) classify as `Unknown`, and that's correct - confirmed this is
   a real, unfixable-by-detection delay, not a gap.** This capture is a fully black screen
