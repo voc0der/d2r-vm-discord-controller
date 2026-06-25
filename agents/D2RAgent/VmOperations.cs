@@ -60,6 +60,8 @@ public sealed class VmOperations
     private DateTimeOffset? _lastObservedFrameUtc;
     private string? _lastClassifierBreakdown;
     private DateTimeOffset? _lastClassifierBreakdownUtc;
+    private string? _lastHudEvidence;
+    private DateTimeOffset? _lastHudEvidenceUtc;
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
@@ -178,6 +180,8 @@ public sealed class VmOperations
             lastObservedFrameUtc = _lastObservedFrameUtc,
             lastClassifierBreakdown = _lastClassifierBreakdown,
             lastClassifierBreakdownUtc = _lastClassifierBreakdownUtc,
+            lastHudEvidence = _lastHudEvidence,
+            lastHudEvidenceUtc = _lastHudEvidenceUtc,
             lastCommandCheckpoint = _lastCommandCheckpoint,
             lastCommandCheckpointUtc = _lastCommandCheckpointUtc,
             d2rActivityState = activity.State.ToString(),
@@ -219,6 +223,8 @@ public sealed class VmOperations
             lastObservedFrameUtc = _lastObservedFrameUtc,
             lastClassifierBreakdown = _lastClassifierBreakdown,
             lastClassifierBreakdownUtc = _lastClassifierBreakdownUtc,
+            lastHudEvidence = _lastHudEvidence,
+            lastHudEvidenceUtc = _lastHudEvidenceUtc,
             lastCommandCheckpoint = _lastCommandCheckpoint,
             lastCommandCheckpointUtc = _lastCommandCheckpointUtc,
             d2rActivityState = activity.State.ToString(),
@@ -2107,6 +2113,33 @@ public sealed class VmOperations
         _lastClassifierBreakdownUtc = DateTimeOffset.UtcNow;
     }
 
+    private void RecordHudEvidence(string evidence)
+    {
+        if (string.IsNullOrWhiteSpace(evidence))
+        {
+            return;
+        }
+
+        _lastHudEvidence = evidence;
+        _lastHudEvidenceUtc = DateTimeOffset.UtcNow;
+    }
+
+    // The watch ticker could only ever show *where* a stuck command was (checkpoints), never
+    // *what it actually saw* - "expected {x,y,z}, lastgrab {a,b,c}" was the explicit ask after
+    // checkpoints alone proved unconvincing. Called from inside the same throttle window
+    // IsInGameReady already samples on, so this records real ground truth at roughly the same
+    // cadence as the real decision, not a separate/unrelated sampling pass.
+    private string RecordLiveHudEvidence(WindowsInput input)
+    {
+        var screenEvidence = TryRunBounded(() => SampleInGameHudEvidence(input, windowRelative: false), InGameHudSampleBoundMs, EmptyInGameHudEvidence());
+        var windowEvidence = TryRunBounded(() => SampleInGameHudEvidence(input, windowRelative: true), InGameHudSampleBoundMs, EmptyInGameHudEvidence());
+        var screenReady = IsInGameHudEvidenceReady(screenEvidence);
+        var windowReady = IsInGameHudEvidenceReady(windowEvidence);
+        var summary = FormatInGameEvidence(screenReady, windowReady, screenEvidence, windowEvidence);
+        RecordHudEvidence(summary);
+        return summary;
+    }
+
     private void RecordD2RInputAction(
         string kind,
         string button,
@@ -2808,7 +2841,27 @@ public sealed class VmOperations
         var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
         MarkCommandCheckpoint("FormatGameEntryMenuDiagnostics: samples collected");
         var visible = D2RScreenClassifier.IsGameEntryMenuVisible(tab, entry, formScreen || formWindow);
-        return $"Menu samples: visible={visible}, tab={tab}, entry={entry}, formScreen={formScreen}, formWindow={formWindow}.";
+
+        // The checkpoints around this function only prove the command didn't hang - they say
+        // nothing about *why* HUD detection failed, which was the actual open question
+        // ("debug what it sees vs what it expects to see," not just where it is). Every other
+        // diagnosis this session that actually went somewhere used real numbers (sitting_in_town's
+        // red=0.54/blue=0.63 etc., measured from a screenshot via a throwaway test) - this puts
+        // those same numbers directly into the live failure message instead of requiring a
+        // separate screenshot and a manual test run after the fact.
+        MarkCommandCheckpoint("FormatGameEntryMenuDiagnostics: sampling HUD evidence");
+        var hudEvidenceSummary = RecordLiveHudEvidence(input);
+
+        return $"Menu samples: visible={visible}, tab={tab}, entry={entry}, formScreen={formScreen}, formWindow={formWindow}. "
+            + $"HUD pixels: ready={hudEvidenceSummary} "
+            + "(hpR/mpB=modern health-red/mana-blue ratio, lhpR/lmpB=legacy equivalents, "
+            + "thresholds health>0.20 mana>0.18; bar/bot/ctr=action-bar/bottom/center HUD luminance stats).";
+    }
+
+    private static InGameHudEvidence EmptyInGameHudEvidence()
+    {
+        var empty = new ScreenRegionStats(0, 0, 0, 0, 0, 0, 0, 0, 0);
+        return new InGameHudEvidence(empty, empty, empty, empty, empty, empty, empty);
     }
 
     private static string FormatGameEntryWaitFailure(GameEntryWaitResult result)
@@ -3202,6 +3255,7 @@ public sealed class VmOperations
         }
 
         _nextInGameHudSampleAt = now + TimeSpan.FromMilliseconds(InGameHudSampleThrottleMs);
+        RecordLiveHudEvidence(input);
 
         MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
         var windowMatch = TryRunBounded(() => DetectInGameHudMatch(input, windowRelative: true), InGameHudSampleBoundMs, InGameHudMatchKind.None);

@@ -933,7 +933,12 @@ public sealed class DiscordBot
         var checks = ShouldShowClassifierBreakdown(statusJson) && TryReadClassifierBreakdownSummary(statusJson, out var checksSummary)
             ? $" | checks {checksSummary}"
             : "";
-        return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}{checks}";
+        // The actual pixel ratios IsInGameReady just measured, against the same thresholds it
+        // decides with - "expected vs lastgrab," not just where the command is stuck.
+        var hud = ShouldShowHudEvidence(statusJson) && TryReadHudEvidenceSummary(statusJson, out var hudSummary)
+            ? $" | hud {hudSummary}"
+            : "";
+        return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}{checks}{hud}";
     }
 
     private static bool ShouldShowClassifierBreakdown(string? json)
@@ -1007,6 +1012,60 @@ public sealed class DiscordBot
                 ? FormatAge(DateTimeOffset.UtcNow - recordedAt)
                 : "?";
             value = $"{breakdown} ({age} ago)";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    // Checkpoints only ever proved *where* a stuck command was, never *what it actually saw* -
+    // every real root-cause this session came from comparing actual pixel ratios against their
+    // thresholds (sitting_in_town's red=0.54 vs the 0.20 cutoff, etc.), and that comparison only
+    // existed in throwaway tests run against a screenshot after the fact. This surfaces the same
+    // numbers live, gated on recency rather than on checkpoint text, so it shows up exactly when
+    // IsInGameReady is actively sampling and goes quiet again once it isn't.
+    private static bool ShouldShowHudEvidence(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return TryReadDateTimeOffset(document.RootElement, "lastHudEvidenceUtc", out var recordedAt)
+                && DateTimeOffset.UtcNow - recordedAt <= TimeSpan.FromSeconds(15);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadHudEvidenceSummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!TryGetString(document.RootElement, "lastHudEvidence", out var evidence)
+                || string.IsNullOrWhiteSpace(evidence))
+            {
+                return false;
+            }
+
+            var age = TryReadDateTimeOffset(document.RootElement, "lastHudEvidenceUtc", out var recordedAt)
+                ? FormatAge(DateTimeOffset.UtcNow - recordedAt)
+                : "?";
+            value = $"{evidence} ({age} ago)";
             return true;
         }
         catch (JsonException)
