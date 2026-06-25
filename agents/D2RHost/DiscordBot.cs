@@ -927,13 +927,44 @@ public sealed class DiscordBot
         var checkpoint = TryReadCheckpointSummary(statusJson, out var checkpointSummary)
             ? $" | at {checkpointSummary}"
             : "";
-        // The per-sub-check breakdown (IsLobbyTabReady, IsCharacterButtonPairReady, ...) is
-        // only worth the line length when nothing else resolved - once frame is a recognized
-        // state, showing it too would just be noise on every line for every VM.
-        var checks = IsObservedFrameUnknown(statusJson) && TryReadClassifierBreakdownSummary(statusJson, out var checksSummary)
+        // The per-sub-check breakdown is usually only worth the line length when nothing else
+        // resolved. During game-entry waits, though, a recognized LobbyOrGame frame can be the
+        // symptom we need to debug, so show a recent checkpoint-triggered breakdown there too.
+        var checks = ShouldShowClassifierBreakdown(statusJson) && TryReadClassifierBreakdownSummary(statusJson, out var checksSummary)
             ? $" | checks {checksSummary}"
             : "";
         return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}{checks}";
+    }
+
+    private static bool ShouldShowClassifierBreakdown(string? json)
+    {
+        if (IsObservedFrameUnknown(json))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!TryGetString(document.RootElement, "lastCommandCheckpoint", out var checkpoint)
+                || (!checkpoint.Contains("ClickMenuEntryButtonUntilEnteredGameAsync", StringComparison.Ordinal)
+                    && !checkpoint.Contains("WaitForGameEntryAsync", StringComparison.Ordinal)))
+            {
+                return false;
+            }
+
+            return TryReadDateTimeOffset(document.RootElement, "lastClassifierBreakdownUtc", out var recordedAt)
+                && DateTimeOffset.UtcNow - recordedAt <= TimeSpan.FromSeconds(30);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static bool IsObservedFrameUnknown(string? json)

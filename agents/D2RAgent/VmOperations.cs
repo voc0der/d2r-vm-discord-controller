@@ -1131,7 +1131,10 @@ public sealed class VmOperations
             var charMenuLogo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: false, sampleGrid: sampleGrid);
             var charButtons = IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid);
             var charMenu = IsCharacterMenuReady(input, windowRelative: false, sampleGrid);
-            var inGame = IsInGameReady(input);
+            var inGameScreenEvidence = SampleInGameHudEvidence(input, windowRelative: false);
+            var inGameWindowEvidence = SampleInGameHudEvidence(input, windowRelative: true);
+            var inGameScreen = IsInGameHudEvidenceReady(inGameScreenEvidence);
+            var inGameWindow = IsInGameHudEvidenceReady(inGameWindowEvidence);
             var joinTab = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), widthRatio: 0.10, heightRatio: 0.045, windowRelative: false, sampleGrid: sampleGrid);
             var tabReady = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab))
                 || IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab));
@@ -1142,7 +1145,8 @@ public sealed class VmOperations
                 || IsLobbyFormPanelReady(input, windowRelative: true);
 
             return $"{FormatCheck("splash", splash, logo)} {FormatCheck("connecting", connecting, prompt)} {FormatCheck("offline", offline, emptyPanel)} "
-                + $"char(btn={FormatCheck("", charButtons, play)},menu={FormatCheck("", charMenu, charMenuLogo)}) inGame={FormatBool(inGame)} "
+                + $"char(btn={FormatCheck("", charButtons, play)},menu={FormatCheck("", charMenu, charMenuLogo)}) "
+                + $"inGame={FormatInGameEvidence(inGameScreen, inGameWindow, inGameScreenEvidence, inGameWindowEvidence)} "
                 + $"lobby(tab={FormatCheck("", tabReady, joinTab)},entry={FormatCheck("", entryReady, entry)},form={FormatCheck("", formReady, form)})";
         }
         catch (Exception)
@@ -1178,7 +1182,28 @@ public sealed class VmOperations
         }
     }
 
-    private static string FormatBool(bool value) => value ? "T" : "F";
+    private static string FormatInGameEvidence(
+        bool screenReady,
+        bool windowReady,
+        InGameHudEvidence screenEvidence,
+        InGameHudEvidence windowEvidence)
+    {
+        if (screenReady || windowReady)
+        {
+            return "T";
+        }
+
+        return $"F(scr:{FormatHudEvidence(screenEvidence)},win:{FormatHudEvidence(windowEvidence)})";
+    }
+
+    private static string FormatHudEvidence(InGameHudEvidence evidence)
+    {
+        return $"hpR={evidence.ModernHealth.RedRatio:F2},mpB={evidence.ModernMana.BlueRatio:F2},"
+            + $"lhpR={evidence.LegacyHealth.RedRatio:F2},lmpB={evidence.LegacyMana.BlueRatio:F2},"
+            + $"bar(l={evidence.ActionHud.AverageLuminance:F0},sd={evidence.ActionHud.LuminanceStdDev:F0},d={evidence.ActionHud.DarkRatio:F2},br={evidence.ActionHud.BrightRatio:F2},g={evidence.ActionHud.GreyRatio:F2}),"
+            + $"bot(sd={evidence.BottomHud.LuminanceStdDev:F0},d={evidence.BottomHud.DarkRatio:F2}),"
+            + $"ctr(sd={evidence.CenterHud.LuminanceStdDev:F0},d={evidence.CenterHud.DarkRatio:F2},br={evidence.CenterHud.BrightRatio:F2},g={evidence.CenterHud.GreyRatio:F2})";
+    }
 
     // Passing checks stay a bare "name=T" - the value only earns its space in the line when
     // it's the reason something didn't match. Reuses the same lum/grey/dark/orange summary
@@ -2271,6 +2296,7 @@ public sealed class VmOperations
                     legacyToggle,
                     checkpointContext))
             {
+                RecordClassifierBreakdown(ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid));
                 return null;
             }
 
