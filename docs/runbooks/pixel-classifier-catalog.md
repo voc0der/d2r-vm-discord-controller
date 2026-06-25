@@ -140,6 +140,22 @@ want that conservative behavior.
   screen waiting for input" at a single point in time. This is accepted, not fixed: both
   branches send the same safe, non-Escape splash-continue burst (see
   `SendReadySplashContinueBurst`), so treating one as the other doesn't risk anything.
+- **`ComputeVisibleStateClassifierBreakdown`/`ComputeReadyScreenClassifierBreakdown` are ~25-35
+  unbounded GDI region samples each, and one call site invoked them on every failure, not just
+  on `Unknown` like everywhere else.** `watch-xy4wiew2-20260625-132336.log`: hc1's checkpoint
+  froze at `timeout boundary ... HUD not ready` for **1m19s straight**, then jumped directly to
+  the next loop step with no intermediate checkpoint - the gap wasn't inside `IsInGameReady`
+  (which had already finished and set that terminal checkpoint), it was `TryConfirmAtElapsedDeadlineAsync`
+  unconditionally calling `RecordClassifierBreakdown(ComputeVisibleStateClassifierBreakdown(...))`
+  on every failed deadline-boundary HUD check, regardless of frame state - unlike its other 3
+  call sites (`DetectVisibleD2RState`, `DetectReadyScreenStateStable`, `DetectReadyScreenStateFast`),
+  which all correctly gate it behind `state == Unknown`. Since `RecordClassifierBreakdown` only
+  feeds a diagnostic string with no effect on any pass/fail decision, bounding it (`TryRunBounded`,
+  `ClassifierBreakdownBoundMs` = 2000ms) carries none of the staleness risk a cache would - fixed
+  in `v0.2.74` at all 4 call sites for consistency, not just the broken one. **This was a real,
+  independent bug from the v0.2.71/72/73 `IsInGameReady` throttle saga** - it reproduced
+  identically on v0.2.73 (plain, unbounded, un-throttled `IsInGameReady`, after that throttle was
+  fully reverted), proving the throttle was never the actual cause of this particular freeze.
 - **Modern-graphics Save and Exit dims the action bar enough that `IsInGameHudFrame` misses
   it, while legacy graphics doesn't.** `legacy_gfx_ingame_save_and_exit_*.png` classifies as
   `InGame` (the corner globes and action bar are still bright enough); the matching

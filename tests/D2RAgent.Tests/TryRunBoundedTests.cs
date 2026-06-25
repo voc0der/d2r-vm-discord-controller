@@ -56,4 +56,47 @@ public sealed class TryRunBoundedTests
 
         Assert.False(result);
     }
+
+    // Generic overload added for the classifier-breakdown diagnostics (watch-xy4wiew2-
+    // 20260625-132336.log: ComputeVisibleStateClassifierBreakdown's ~25-35 unbounded GDI
+    // region samples froze a deadline-boundary checkpoint for 1m19s) - same bounding shape as
+    // the bool overload above, with a caller-supplied fallback instead of false.
+    [Fact]
+    public void GenericOverloadReturnsResultWhenActionCompletesQuickly()
+    {
+        Assert.Equal("done", VmOperations.TryRunBounded(() => "done", TimeoutMs, "fallback"));
+    }
+
+    [Fact]
+    public void GenericOverloadReturnsFallbackWhenTheActionHangs()
+    {
+        var stopwatch = Stopwatch.StartNew();
+
+        var result = VmOperations.TryRunBounded(
+            () =>
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(5));
+                return "done";
+            },
+            TimeoutMs,
+            "fallback");
+
+        stopwatch.Stop();
+
+        Assert.Equal("fallback", result);
+        Assert.True(
+            stopwatch.ElapsedMilliseconds < 2000,
+            $"TryRunBounded should give up around {TimeoutMs}ms, not wait out the hung action; took {stopwatch.ElapsedMilliseconds}ms.");
+    }
+
+    [Fact]
+    public void GenericOverloadReturnsFallbackInsteadOfThrowingWhenTheActionThrows()
+    {
+        var result = VmOperations.TryRunBounded(
+            () => throw new InvalidOperationException("simulated Win32 failure"),
+            TimeoutMs,
+            "fallback");
+
+        Assert.Equal("fallback", result);
+    }
 }

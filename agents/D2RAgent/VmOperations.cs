@@ -30,6 +30,10 @@ public sealed class VmOperations
     private const int FastMenuDelayMs = 150;
     private const int EntryPollIntervalMs = 200;
     private const int LobbyPollIntervalMs = 250;
+    // ComputeVisibleStateClassifierBreakdown/ComputeReadyScreenClassifierBreakdown are ~25-35
+    // unbounded GDI region samples, purely for diagnostic display - bounding them can only
+    // shorten or blank a diagnostic string, never change a pass/fail decision.
+    private const int ClassifierBreakdownBoundMs = 2000;
     private const int StatusCollectionTimeoutSeconds = 4;
 
     private readonly VmAgentConfig _config;
@@ -1106,7 +1110,7 @@ public sealed class VmOperations
             return VisibleD2RState.InGame;
         }
 
-        RecordClassifierBreakdown(ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid));
+        RecordClassifierBreakdown(TryRunBounded(() => ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid), ClassifierBreakdownBoundMs, ""));
         return VisibleD2RState.Unknown;
     }
 
@@ -1272,6 +1276,26 @@ public sealed class VmOperations
         catch (Exception)
         {
             return false;
+        }
+    }
+
+    // Same bounding shape as TryRunBounded above, generalized to a fallback value instead of a
+    // bool. watch-xy4wiew2-20260625-132336.log: ComputeVisibleStateClassifierBreakdown (~25-35
+    // unbounded GDI region samples) froze a deadline-boundary checkpoint for 1m19s when called
+    // from TryConfirmAtElapsedDeadlineAsync on every failed HUD confirmation, not just on
+    // Unknown like its other call sites - this is purely diagnostic output (RecordClassifierBreakdown
+    // doesn't feed any pass/fail decision), so bounding it carries none of the staleness risk
+    // that caching IsInGameReady's result did in v0.2.71/72.
+    internal static T TryRunBounded<T>(Func<T> action, int timeoutMs, T fallback)
+    {
+        try
+        {
+            var task = Task.Run(action);
+            return task.Wait(timeoutMs) ? task.Result : fallback;
+        }
+        catch (Exception)
+        {
+            return fallback;
         }
     }
 
@@ -2303,7 +2327,7 @@ public sealed class VmOperations
                     checkpointContext,
                     broadHudFrameAcceptAt))
             {
-                RecordClassifierBreakdown(ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid));
+                RecordClassifierBreakdown(TryRunBounded(() => ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid), ClassifierBreakdownBoundMs, ""));
                 return null;
             }
 
@@ -2765,7 +2789,7 @@ public sealed class VmOperations
 
         if (state == ReadyScreenState.Unknown)
         {
-            RecordClassifierBreakdown(ComputeReadyScreenClassifierBreakdown(input, sampleGrid));
+            RecordClassifierBreakdown(TryRunBounded(() => ComputeReadyScreenClassifierBreakdown(input, sampleGrid), ClassifierBreakdownBoundMs, ""));
         }
 
         RecordObservedFrame(state.ToString());
@@ -2787,7 +2811,7 @@ public sealed class VmOperations
 
         if (state == ReadyScreenState.Unknown)
         {
-            RecordClassifierBreakdown(ComputeReadyScreenClassifierBreakdown(input, ReadyStartupSampleGrid));
+            RecordClassifierBreakdown(TryRunBounded(() => ComputeReadyScreenClassifierBreakdown(input, ReadyStartupSampleGrid), ClassifierBreakdownBoundMs, ""));
         }
 
         RecordObservedFrame(state.ToString());
@@ -3161,12 +3185,23 @@ public sealed class VmOperations
         string value,
         CancellationToken cancellationToken)
     {
+        // watch-xy4wiew2-20260625-132336.log: hc2/hc3 froze at the caller's "fill password"
+        // checkpoint for 2m40s+ with no further progress. Every call in this function looks
+        // bounded on paper (ClickD2R is PostMessage-based, SetClipboardText caps its
+        // OpenClipboard retry at 10 x 50ms) - same paradox as the HUD-confirmation freeze, which
+        // only got root-caused once iteration-level checkpoints existed to disprove the
+        // "it's just slow" theories. These checkpoints exist to find out which specific step
+        // this is actually stuck in on the next run, instead of guessing again.
+        MarkCommandCheckpoint("FillTextFieldAsync: first click");
         ClickD2R(input, point);
         await DelayFastMenuAsync(cancellationToken);
+        MarkCommandCheckpoint("FillTextFieldAsync: second click");
         ClickD2R(input, point);
         await DelayFastMenuAsync(cancellationToken);
+        MarkCommandCheckpoint("FillTextFieldAsync: select all");
         input.SelectAll();
         await DelayFastMenuAsync(cancellationToken);
+        MarkCommandCheckpoint("FillTextFieldAsync: type text");
         input.TypeText(value);
         await DelayFastMenuAsync(cancellationToken);
     }
