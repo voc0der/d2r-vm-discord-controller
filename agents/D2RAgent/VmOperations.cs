@@ -3001,38 +3001,73 @@ public sealed class VmOperations
             || IsInGameReady(input, windowRelative: true);
     }
 
-    private bool IsInGameReady(WindowsInput input, string checkpointContext)
+    private bool IsInGameReady(WindowsInput input, string checkpointContext, AgentCommon.UiPoint? returnTab = null)
     {
         MarkCommandCheckpoint($"{checkpointContext}: sampling screen-relative HUD");
-        if (IsInGameReady(input, windowRelative: false))
+        var screenMatch = DetectInGameHudMatch(input, windowRelative: false);
+        if (IsAcceptedInGameHudMatch(input, screenMatch, checkpointContext, returnTab))
         {
             return true;
         }
 
         MarkCommandCheckpoint($"{checkpointContext}: sampling process-relative HUD");
-        return IsInGameReady(input, windowRelative: true);
+        var windowMatch = DetectInGameHudMatch(input, windowRelative: true);
+        return IsAcceptedInGameHudMatch(input, windowMatch, checkpointContext, returnTab);
     }
 
     private bool IsInGameReady(WindowsInput input, bool windowRelative)
+    {
+        return DetectInGameHudMatch(input, windowRelative) != InGameHudMatchKind.None;
+    }
+
+    private InGameHudMatchKind DetectInGameHudMatch(WindowsInput input, bool windowRelative)
     {
         var actionHud = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.InGameHudBar), widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
         var modernHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var modernMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         if (D2RScreenClassifier.IsInGameHudProfile(modernHealth, modernMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
         {
-            return true;
+            return InGameHudMatchKind.ModernProfile;
         }
 
         var legacyHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var legacyMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         if (D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
         {
-            return true;
+            return InGameHudMatchKind.LegacyProfile;
         }
 
         var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: windowRelative);
         var centerHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.22, heightRatio: 0.08, windowRelative: windowRelative);
-        return D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud);
+        return D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud)
+            ? InGameHudMatchKind.Frame
+            : InGameHudMatchKind.None;
+    }
+
+    private bool IsAcceptedInGameHudMatch(
+        WindowsInput input,
+        InGameHudMatchKind match,
+        string checkpointContext,
+        AgentCommon.UiPoint? returnTab)
+    {
+        if (match == InGameHudMatchKind.None)
+        {
+            return false;
+        }
+
+        if (match != InGameHudMatchKind.Frame || returnTab is null)
+        {
+            return true;
+        }
+
+        MarkCommandCheckpoint($"{checkpointContext}: broad HUD frame matched; checking lobby menu overlap");
+        if (IsGameEntryMenuStillVisible(input, returnTab))
+        {
+            MarkCommandCheckpoint($"{checkpointContext}: lobby menu still visible after broad HUD frame match");
+            return false;
+        }
+
+        return true;
     }
 
     private InGameHudEvidence SampleInGameHudEvidence(WindowsInput input, bool windowRelative)
@@ -3295,13 +3330,7 @@ public sealed class VmOperations
         string checkpointContext = "TryConfirmEnteredGameAsync",
         AgentCommon.UiPoint? returnTab = null)
     {
-        if (returnTab is not null && IsGameEntryMenuStillVisible(input, returnTab))
-        {
-            MarkCommandCheckpoint($"{checkpointContext}: lobby menu still visible; HUD confirmation skipped");
-            return false;
-        }
-
-        if (!IsInGameReady(input, checkpointContext))
+        if (!IsInGameReady(input, checkpointContext, returnTab))
         {
             MarkCommandCheckpoint($"{checkpointContext}: HUD not ready");
             return false;
@@ -3872,6 +3901,14 @@ public sealed class VmOperations
         ReturnedToCharacterScreen,
         OfflineCharacterScreen,
         TimedOut
+    }
+
+    private enum InGameHudMatchKind
+    {
+        None,
+        ModernProfile,
+        LegacyProfile,
+        Frame
     }
 
     private sealed record GameEntryAttemptResult(
