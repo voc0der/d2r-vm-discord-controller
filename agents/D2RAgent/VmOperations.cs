@@ -2286,6 +2286,7 @@ public sealed class VmOperations
         MarkCommandCheckpoint("ClickMenuEntryButtonUntilEnteredGameAsync: initial click");
         await ClickMenuEntryButtonAsync(input, button, cancellationToken);
         var broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
+        var visibleMenuResubmitAt = broadHudFrameAcceptAt;
 
         async Task<GameEntryAttemptResult?> TryConfirmAtElapsedDeadlineAsync(string checkpointContext)
         {
@@ -2325,6 +2326,29 @@ public sealed class VmOperations
             // intro-skip, just recurring here. If iteration climbs instead, the loop is cycling
             // fine and WaitForGameEntryAsync's own internal poll is where the time really goes.
             MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking entry");
+
+            if (DateTimeOffset.UtcNow < visibleMenuResubmitAt)
+            {
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, waiting entry grace before HUD/menu check");
+                var graceRemainingMs = Math.Max((visibleMenuResubmitAt - DateTimeOffset.UtcNow).TotalMilliseconds, 0);
+                await Task.Delay((int)Math.Min(EntryPollIntervalMs, graceRemainingMs), cancellationToken);
+                continue;
+            }
+
+            MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking visible entry menu");
+            if (IsGameEntryMenuStillVisible(input, activeTab))
+            {
+                MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: entry menu still visible (iteration {iteration}), restoring and re-clicking");
+                if (!await restoreFormAsync())
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The menu form stayed visible after entry click, but it could not be restored.");
+                }
+
+                await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
+                visibleMenuResubmitAt = broadHudFrameAcceptAt;
+                continue;
+            }
 
             if (await TryConfirmEnteredGameAsync(
                     input,
@@ -2369,6 +2393,7 @@ public sealed class VmOperations
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: re-clicking entry button after interruption (retry {connectionRetries})");
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
+                visibleMenuResubmitAt = broadHudFrameAcceptAt;
                 continue;
             }
 
@@ -2460,6 +2485,8 @@ public sealed class VmOperations
                 deadline = DateTimeOffset.UtcNow + timeout;
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: re-clicking entry button after interruption (retry {connectionRetries})");
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
+                broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
+                visibleMenuResubmitAt = broadHudFrameAcceptAt;
                 continue;
             }
             else if (waitResult == GameEntryWaitResult.ErrorDialog)
@@ -2504,6 +2531,7 @@ public sealed class VmOperations
                 deadline = DateTimeOffset.UtcNow + timeout;
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
+                visibleMenuResubmitAt = broadHudFrameAcceptAt;
                 continue;
             }
 
@@ -2511,6 +2539,7 @@ public sealed class VmOperations
             {
                 await ClickMenuEntryButtonAsync(input, button, cancellationToken);
                 broadHudFrameAcceptAt = GetBroadHudFrameAcceptAt();
+                visibleMenuResubmitAt = broadHudFrameAcceptAt;
             }
         }
     }

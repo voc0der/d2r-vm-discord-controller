@@ -118,7 +118,10 @@ want that conservative behavior.
   confirmation pay for extra lobby-form sampling during D2R's load spike. During game-entry
   confirmation, the agent samples process-relative HUD coordinates before screen-relative
   coordinates because live `v0.2.67` logs showed process-relative HUD checks were the path that
-  confirmed real entry after screen-relative sampling spent most of the wait budget.
+  confirmed real entry after screen-relative sampling spent most of the wait budget. After a fresh
+  entry-button click, the command path now waits through the same short grace window before heavy
+  HUD sampling; if the join/create menu is still visibly present after that, it restores the form
+  and re-clicks instead of spending the whole entry timeout on HUD probes while still in the lobby.
 - **`loading_splash_after_intro_videos.png` (and likely `load_screen_phase_1.png`/
   `load_screen_phase_2.png`) classify as `Unknown`, and that's correct - confirmed this is
   a real, unfixable-by-detection delay, not a gap.** This capture is a fully black screen
