@@ -938,7 +938,15 @@ public sealed class DiscordBot
         var hud = ShouldShowHudEvidence(statusJson) && TryReadHudEvidenceSummary(statusJson, out var hudSummary)
             ? $" | hud {hudSummary}"
             : "";
-        return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}{checks}{hud}";
+        // Free to read, no sampling cost - shown unconditionally so a thread leak from
+        // TryRunBounded's Task.Run-and-abandon-on-timeout pattern (every bounded call spawns a
+        // background thread that's never actually killed if the underlying GDI call hangs
+        // forever instead of just being slow) climbs visibly in real time instead of only being
+        // inferred after the fact from anomalous timing.
+        var threadPool = TryReadThreadPoolSummary(statusJson, out var threadPoolSummary)
+            ? $" | pool {threadPoolSummary}"
+            : "";
+        return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}{checks}{hud}{threadPool}";
     }
 
     private static bool ShouldShowClassifierBreakdown(string? json)
@@ -1066,6 +1074,32 @@ public sealed class DiscordBot
                 ? FormatAge(DateTimeOffset.UtcNow - recordedAt)
                 : "?";
             value = $"{evidence} ({age} ago)";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadThreadPoolSummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!TryGetInt(document.RootElement, "threadPoolThreads", out var threads))
+            {
+                return false;
+            }
+
+            var pending = TryGetInt(document.RootElement, "threadPoolPending", out var pendingValue) ? pendingValue : 0;
+            value = $"threads={threads},pending={pending}";
             return true;
         }
         catch (JsonException)
