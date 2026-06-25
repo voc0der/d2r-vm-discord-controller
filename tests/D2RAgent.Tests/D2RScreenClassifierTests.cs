@@ -32,6 +32,20 @@ public sealed class D2RScreenClassifierTests
         Assert.True(D2RScreenClassifier.IsCharacterMenuReady(logo, options, cinematics));
     }
 
+    [Fact]
+    public void CharacterMenuReadyAcceptsLowOrangeLogoWhenMenuButtonsAreReady()
+    {
+        var logo = Stats(
+            averageLuminance: 48,
+            luminanceStdDev: 30,
+            darkRatio: 0.40,
+            orangeRatio: 0.04);
+        var options = Stats(averageLuminance: 55, greyRatio: 0.48, darkRatio: 0.42);
+        var cinematics = Stats(averageLuminance: 52, greyRatio: 0.50, darkRatio: 0.45);
+
+        Assert.True(D2RScreenClassifier.IsCharacterMenuReady(logo, options, cinematics));
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]

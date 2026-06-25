@@ -14,7 +14,12 @@ internal static class D2RScreenClassifier
         ScreenRegionStats options,
         ScreenRegionStats cinematics)
     {
-        return logo.OrangeRatio > 0.05
+        var logoReady = logo.OrangeRatio > 0.05
+            || (logo.OrangeRatio >= 0.04
+                && logo.AverageLuminance > 35
+                && logo.DarkRatio < 0.65);
+
+        return logoReady
             && IsCharacterMenuButtonRegion(options)
             && IsCharacterMenuButtonRegion(cinematics);
     }
