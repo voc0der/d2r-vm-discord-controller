@@ -99,6 +99,33 @@ a filled join/create form can satisfy the broad `IsInGameHudFrame` fallback. The
 `IsAnyLobbyEntryMenuVisible` helper still rejects `InGame` first for call sites that explicitly
 want that conservative behavior.
 
+## Safety: blind recovery clicks can become movement clicks if already in-game
+
+**`v0.2.79`, confirmed by direct user observation (watched it happen live): `IsGameEntryMenuStillVisible`
+can false-positive "the create/join form is still on screen" while the client is actually
+already in-game.** The recovery path that follows (`ClickLobbyTabDirectAsync`/`FillTextFieldAsync`/
+`ClickMenuEntryButtonAsync`/`ClickLobbyDirectAsync`) blindly clicks fixed lobby-UI coordinates to
+restore the form and retry entry. D2R has no concept of "this click missed the UI" - a click
+anywhere that isn't a real UI element is a click-to-move command, so a misdetected recovery
+became movement clicks in a live game. In Hardcore, a wrong click sequence like this can
+permanently kill the character.
+
+Fixed by adding `MightAlreadyBeInGame` (`VmOperations.cs`), a safety gate in front of all four of
+those click functions: if there's any reasonably-confirmable evidence we're already in-game,
+skip the click entirely and let the loop's own entry-confirmation check (already run at the top
+of every iteration) catch up safely instead of clicking blind. The bound on this check
+(`InGameSafetyCheckBoundMs` = 2500ms) and its fallback are both deliberately unlike every other
+bounded check in this file: the bound is wide because it wraps the same `IsInGameReady` sample
+already measured taking 12-56s under D2R's load spike, and the fallback on timeout is `true`
+(assume might be in-game, don't click) rather than `false` - everywhere else in this codebase, an
+inconclusive bounded check defaults to "not yet, try again next iteration" because the cost of
+being wrong is just one more retry; here the cost of being wrong is a movement click into a live
+game, so an inconclusive result must default to the safe (non-clicking) side, not the
+fail-fast-and-retry side. If a new blind click is ever added anywhere in the entry-confirmation
+or character-select recovery flow, it needs this same gate - the danger isn't specific to the one
+call site that happened to get caught, it's inherent to clicking fixed lobby coordinates without
+first confirming the lobby is what's actually on screen.
+
 ## Known overlaps and gotchas
 
 - **`IsCharacterScreenOffline`'s empty-panel region alone is not exclusive to the offline

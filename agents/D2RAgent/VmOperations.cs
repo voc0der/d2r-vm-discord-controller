@@ -1299,6 +1299,36 @@ public sealed class VmOperations
         }
     }
 
+    // watch-xitui34-20260625-144937.log: WaitForGameEntryAsync's IsGameEntryMenuStillVisible
+    // false-positived "the create/join form is still on screen" while the user was actually
+    // already in-game (confirmed by direct observation, watching the whole time). The recovery
+    // path that follows blindly clicks fixed lobby-UI coordinates (tab, form fields, entry
+    // button) to restore the form and retry - in D2R, a click anywhere that isn't UI is a
+    // click-to-move command, so those "safe" recovery clicks became movement clicks in a live
+    // game, which can permanently kill a hardcore character. This gate goes in front of every
+    // blind recovery/entry click in this loop: if there's any reasonably-cheap evidence we might
+    // already be in-game, skip the click entirely and let the loop's own entry-confirmation
+    // check (already run at the top of every iteration) catch up safely instead.
+    //
+    // The fallback on timeout is deliberately the opposite of every other bounded check in this
+    // file: everywhere else, "couldn't confirm in time" defaults to false/not-yet because the
+    // cost of a wrong "not ready" is just one more retry. Here, the cost of a wrong "safe to
+    // click" is a movement click into a live game, so an inconclusive check must default to
+    // "might be in-game, don't click" - true, not false.
+    //
+    // The bound itself has to be generous, not tight: this wraps the same IsInGameReady sample
+    // that's been measured taking 12-56s under D2R's load spike - which is exactly the window
+    // this gate exists to protect. A short bound would time out (and correctly default to skip)
+    // during nearly every ordinary slow moment too, not just real danger, stalling the whole
+    // recovery flow far more often than necessary. 2.5s gives the real check a fair chance to
+    // resolve before falling back to the safe default.
+    private const int InGameSafetyCheckBoundMs = 2500;
+
+    private bool MightAlreadyBeInGame(WindowsInput input)
+    {
+        return TryRunBounded(() => IsInGameReady(input), InGameSafetyCheckBoundMs, fallback: true);
+    }
+
     private async Task DelayCharacterScreenSettleAsync(CancellationToken cancellationToken)
     {
         var settleSeconds = Math.Max(_config.Ui.CharacterScreenSettleSeconds, 0);
@@ -2269,6 +2299,12 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (MightAlreadyBeInGame(input))
+        {
+            MarkCommandCheckpoint("ClickLobbyDirectAsync: skipped click, might already be in-game");
+            return true;
+        }
+
         ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CharacterLobbyButton));
         await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(_config.Ui.LobbyLoadSeconds, 1, 4)), cancellationToken);
 
@@ -2281,6 +2317,12 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (MightAlreadyBeInGame(input))
+        {
+            MarkCommandCheckpoint("ClickLobbyTabDirectAsync: skipped click, might already be in-game");
+            return;
+        }
+
         MarkCommandCheckpoint("ClickLobbyTabDirectAsync: first ClickD2R");
         ClickD2R(input, tab);
         await DelayStepAsync(cancellationToken);
@@ -2576,6 +2618,12 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (MightAlreadyBeInGame(input))
+        {
+            MarkCommandCheckpoint("ClickMenuEntryButtonAsync: skipped click, might already be in-game");
+            return;
+        }
+
         ClickD2R(input, button);
         await DelayFastMenuAsync(cancellationToken);
     }
@@ -3192,6 +3240,12 @@ public sealed class VmOperations
         // only got root-caused once iteration-level checkpoints existed to disprove the
         // "it's just slow" theories. These checkpoints exist to find out which specific step
         // this is actually stuck in on the next run, instead of guessing again.
+        if (MightAlreadyBeInGame(input))
+        {
+            MarkCommandCheckpoint("FillTextFieldAsync: skipped, might already be in-game");
+            return;
+        }
+
         MarkCommandCheckpoint("FillTextFieldAsync: first click");
         ClickD2R(input, point);
         await DelayFastMenuAsync(cancellationToken);
