@@ -506,12 +506,11 @@ internal sealed class WindowsInput
         // reading every grid point from that local copy, cuts the DWM-dependent calls per region
         // from up to 81 down to exactly 1 - the actual fix, not another timeout/cap around the
         // same slow primitive.
-        var left = Math.Clamp((int)Math.Floor(centerX - (regionWidth / 2)), 0, screenWidth - 1);
-        var top = Math.Clamp((int)Math.Floor(centerY - (regionHeight / 2)), 0, screenHeight - 1);
-        var right = Math.Clamp((int)Math.Ceiling(centerX + (regionWidth / 2)), left + 1, screenWidth);
-        var bottom = Math.Clamp((int)Math.Ceiling(centerY + (regionHeight / 2)), top + 1, screenHeight);
-        var captureWidth = right - left;
-        var captureHeight = bottom - top;
+        var captureRect = ComputeCaptureRect(centerX, centerY, regionWidth, regionHeight, screenWidth, screenHeight);
+        var left = captureRect.Left;
+        var top = captureRect.Top;
+        var captureWidth = captureRect.Width;
+        var captureHeight = captureRect.Height;
 
         var screenDc = GetDC(IntPtr.Zero);
         if (screenDc == IntPtr.Zero)
@@ -562,6 +561,24 @@ internal sealed class WindowsInput
             ReleaseDC(IntPtr.Zero, screenDc);
         }
     }
+
+    // Pulled out of SampleRegion so the rect math - the part most likely to have an off-by-one
+    // that silently captures the wrong area - can be regression-tested without a Windows host,
+    // same reasoning as ScreenRegionStatsCalculator/TryRunBounded being split out elsewhere in
+    // this codebase. Guarantees Width/Height >= 1 (Clamp's min bound is left+1/top+1) and
+    // Left/Top/Right/Bottom always within [0, screenWidth]/[0, screenHeight], even when the
+    // requested region is bigger than the screen or centered off its edge.
+    internal static CaptureRect ComputeCaptureRect(
+        double centerX, double centerY, double regionWidth, double regionHeight, int screenWidth, int screenHeight)
+    {
+        var left = Math.Clamp((int)Math.Floor(centerX - (regionWidth / 2)), 0, screenWidth - 1);
+        var top = Math.Clamp((int)Math.Floor(centerY - (regionHeight / 2)), 0, screenHeight - 1);
+        var right = Math.Clamp((int)Math.Ceiling(centerX + (regionWidth / 2)), left + 1, screenWidth);
+        var bottom = Math.Clamp((int)Math.Ceiling(centerY + (regionHeight / 2)), top + 1, screenHeight);
+        return new CaptureRect(left, top, right - left, bottom - top);
+    }
+
+    internal readonly record struct CaptureRect(int Left, int Top, int Width, int Height);
 
     private static List<(byte Red, byte Green, byte Blue)> EnumerateGridPixels(
         IntPtr hdc,
