@@ -212,6 +212,59 @@ call) instead of another guess at the fix - the next freeze will show precisely 
 stops advancing, the same way per-iteration checkpoints were what actually root-caused the
 `ClickMenuEntryButtonUntilEnteredGameAsync` freezes earlier in this saga instead of more guessing.
 
+## Root cause found: GDI screen capture blocking on dwm.exe, not a detection bug
+
+**`v0.2.93`: the actual root cause of the entire "doesn't detect in-game HUD" saga, found via
+Windows' built-in wait-chain analysis, not inference.** Every fix from `v0.2.83` through `v0.2.92`
+treated the symptom (GDI calls occasionally/eventually not returning) without knowing why. The
+chain that finally nailed it, each step independently verified before moving to the next:
+
+1. `v0.2.90` put the actual measured pixel ratios into the watch ticker (`lastHudEvidence`). The
+   next failure showed every single field - `RedRatio`, `BlueRatio`, every luminance stat, both
+   screen- and window-relative - at literal `0.00`/`0`. `ScreenRegionStatsCalculator` can only
+   produce that from zero sampled pixels, which real sampling never yields (always reads at least
+   9 grid points) - the only path to that exact output is `TryRunBounded`'s timeout fallback. Not
+   a classifier miss; every sample was timing out.
+2. `v0.2.91` put `ThreadPool.ThreadCount`/`PendingWorkItemCount` in the watch ticker. The next
+   failure (`watch-kfwuq5-20260625-191907.log`) showed it flat at 6-7 for 78s, then climbing
+   monotonically - 9, 13, 15, 30, 60, 98 - the instant the game-entry loop started, never
+   leveling off. Proved `TryRunBounded`'s `Task.Run` was abandoning a thread forever on every
+   timeout, not just waiting it out.
+3. `v0.2.92` added a `SemaphoreSlim` cap (32) so abandoned calls can't grow the thread count
+   without bound. Confirmed working on the next failure (`watch-kfwuj5232-...log`): thread count
+   climbed then **plateaued at 35** instead of running away past 98. This stopped one hung GDI
+   call from being able to take the whole agent process down with it, but didn't explain *why*
+   the GDI call hung in the first place.
+4. User directly observed hc1's VM live and playable while detection was still failing - ruled
+   out any display/session/RDP theory outright. Task Manager showed `D2RAgent.exe` GDI Objects at
+   5 (healthy, ruling out a leaked-handle theory too) but Threads at 17-38 with **CPU pinned near
+   0%** - real OS-level blocking, not a spin-loop bug in our own code.
+5. **Windows' "Analyze wait chain" (right-click process in Task Manager → Analyze wait chain,
+   built in, no install needed) showed the actual, exact answer: multiple `D2RAgent.exe` threads
+   waiting directly on `dwm.exe`.** Not theorized - read off the dialog.
+
+**Why this happens:** every region sample called `GetDC(NULL)` once, then up to 81 individual
+`GetPixel` calls (one per grid point, `MenuSampleGrid = 9` → 9x9). `GetPixel` against the desktop
+DC can require a round-trip through the DWM compositor per call - Microsoft's own documentation
+flags `GetPixel` as slow for exactly this reason. DWM was otherwise completely healthy (the
+user's own desktop and the game itself rendered fine throughout) - it just wasn't servicing
+D2RAgent's specific per-pixel requests promptly, and with up to 81 of them per region, the odds
+of hitting a slow one approached certainty.
+
+**The fix (`WindowsInput.SampleRegion`):** capture each region with one `BitBlt` into an
+in-memory bitmap (`CreateCompatibleDC`/`CreateCompatibleBitmap`), then read all grid points with
+`GetPixel` against that *local* bitmap - no further DWM interaction once the single `BitBlt`
+completes. Cuts DWM-dependent calls per region from up to 81 to exactly 1, roughly two orders of
+magnitude fewer chances to hit a slow compositor response. This is also the standard, Microsoft-
+recommended approach for bulk pixel reads, not a novel workaround.
+
+**This cannot be verified in this dev environment** - `BitBlt`/`CreateCompatibleDC`/etc. are
+Windows-only Win32 calls; the 228 tests in this repo all run on Linux against the Windows-free
+`ReferenceCaptureClassifier`/`FullCaptureRegionSampler` replica (reads PNGs directly), which never
+touches this code path. A green test suite here confirms the classification/threshold logic is
+untouched and the P/Invoke signatures compile correctly - it does not confirm the capture
+mechanism works on a live VM. That needs a real run.
+
 ## Known overlaps and gotchas
 
 - **`IsCharacterScreenOffline`'s empty-panel region alone is not exclusive to the offline

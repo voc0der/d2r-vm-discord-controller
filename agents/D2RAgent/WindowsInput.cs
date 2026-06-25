@@ -497,31 +497,94 @@ internal sealed class WindowsInput
         var regionWidth = Math.Max(bounds.Width * widthRatio, sampleGrid);
         var regionHeight = Math.Max(bounds.Height * heightRatio, sampleGrid);
         var grid = Math.Clamp(sampleGrid, 3, 51);
-        var hdc = GetDC(IntPtr.Zero);
-        if (hdc == IntPtr.Zero)
+
+        // "Analyze wait chain" on a live, fully-rendering VM (the desktop and the game itself
+        // were both visibly fine) showed D2RAgent.exe's sampling threads blocked waiting on
+        // dwm.exe, not on anything in our own code - GetPixel against the screen DC can require
+        // a round-trip through the compositor per call, and a 9x9 grid was up to 81 of those
+        // round-trips for one region. BitBlt-ing the region into an in-memory bitmap once, then
+        // reading every grid point from that local copy, cuts the DWM-dependent calls per region
+        // from up to 81 down to exactly 1 - the actual fix, not another timeout/cap around the
+        // same slow primitive.
+        var left = Math.Clamp((int)Math.Floor(centerX - (regionWidth / 2)), 0, screenWidth - 1);
+        var top = Math.Clamp((int)Math.Floor(centerY - (regionHeight / 2)), 0, screenHeight - 1);
+        var right = Math.Clamp((int)Math.Ceiling(centerX + (regionWidth / 2)), left + 1, screenWidth);
+        var bottom = Math.Clamp((int)Math.Ceiling(centerY + (regionHeight / 2)), top + 1, screenHeight);
+        var captureWidth = right - left;
+        var captureHeight = bottom - top;
+
+        var screenDc = GetDC(IntPtr.Zero);
+        if (screenDc == IntPtr.Zero)
         {
             throw new InvalidOperationException($"GetDC failed. LastError={Marshal.GetLastWin32Error()}");
         }
 
         try
         {
-            return ScreenRegionStatsCalculator.FromPixels(EnumerateGridPixels(hdc, centerX, centerY, regionWidth, regionHeight, grid, screenWidth, screenHeight));
+            var memoryDc = CreateCompatibleDC(screenDc);
+            if (memoryDc == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"CreateCompatibleDC failed. LastError={Marshal.GetLastWin32Error()}");
+            }
+
+            try
+            {
+                var bitmap = CreateCompatibleBitmap(screenDc, captureWidth, captureHeight);
+                if (bitmap == IntPtr.Zero)
+                {
+                    throw new InvalidOperationException($"CreateCompatibleBitmap failed. LastError={Marshal.GetLastWin32Error()}");
+                }
+
+                var previousBitmap = SelectObject(memoryDc, bitmap);
+                try
+                {
+                    if (!BitBlt(memoryDc, 0, 0, captureWidth, captureHeight, screenDc, left, top, SrcCopy))
+                    {
+                        throw new InvalidOperationException($"BitBlt failed. LastError={Marshal.GetLastWin32Error()}");
+                    }
+
+                    return ScreenRegionStatsCalculator.FromPixels(EnumerateGridPixels(
+                        memoryDc, centerX, centerY, regionWidth, regionHeight, grid, screenWidth, screenHeight, left, top, captureWidth, captureHeight));
+                }
+                finally
+                {
+                    SelectObject(memoryDc, previousBitmap);
+                    DeleteObject(bitmap);
+                }
+            }
+            finally
+            {
+                DeleteDC(memoryDc);
+            }
         }
         finally
         {
-            ReleaseDC(IntPtr.Zero, hdc);
+            ReleaseDC(IntPtr.Zero, screenDc);
         }
     }
 
-    private static IEnumerable<(byte Red, byte Green, byte Blue)> EnumerateGridPixels(
-        IntPtr hdc, double centerX, double centerY, double regionWidth, double regionHeight, int grid, int screenWidth, int screenHeight)
+    private static List<(byte Red, byte Green, byte Blue)> EnumerateGridPixels(
+        IntPtr hdc,
+        double centerX,
+        double centerY,
+        double regionWidth,
+        double regionHeight,
+        int grid,
+        int screenWidth,
+        int screenHeight,
+        int captureLeft,
+        int captureTop,
+        int captureWidth,
+        int captureHeight)
     {
+        var pixels = new List<(byte Red, byte Green, byte Blue)>(grid * grid);
         for (var yIndex = 0; yIndex < grid; yIndex++)
         {
             var y = Math.Clamp(
                 (int)Math.Round(centerY - (regionHeight / 2) + ((yIndex + 0.5) * regionHeight / grid)),
                 0,
                 screenHeight - 1);
+            var localY = Math.Clamp(y - captureTop, 0, captureHeight - 1);
 
             for (var xIndex = 0; xIndex < grid; xIndex++)
             {
@@ -529,13 +592,16 @@ internal sealed class WindowsInput
                     (int)Math.Round(centerX - (regionWidth / 2) + ((xIndex + 0.5) * regionWidth / grid)),
                     0,
                     screenWidth - 1);
-                var color = GetPixel(hdc, x, y);
-                yield return (
+                var localX = Math.Clamp(x - captureLeft, 0, captureWidth - 1);
+                var color = GetPixel(hdc, localX, localY);
+                pixels.Add((
                     (byte)(color & 0x000000FF),
                     (byte)((color & 0x0000FF00) >> 8),
-                    (byte)((color & 0x00FF0000) >> 16));
+                    (byte)((color & 0x00FF0000) >> 16)));
             }
         }
+
+        return pixels;
     }
 
     private void PasteText(string text)
@@ -1072,6 +1138,28 @@ internal sealed class WindowsInput
 
     [DllImport("gdi32.dll")]
     private static extern uint GetPixel(IntPtr deviceContext, int x, int y);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern IntPtr CreateCompatibleDC(IntPtr deviceContext);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern IntPtr CreateCompatibleBitmap(IntPtr deviceContext, int width, int height);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr SelectObject(IntPtr deviceContext, IntPtr gdiObject);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern bool BitBlt(
+        IntPtr destDeviceContext, int destX, int destY, int width, int height,
+        IntPtr srcDeviceContext, int srcX, int srcY, uint rasterOperation);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteDC(IntPtr deviceContext);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(IntPtr gdiObject);
+
+    private const uint SrcCopy = 0x00CC0020;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool OpenClipboard(IntPtr newOwner);
