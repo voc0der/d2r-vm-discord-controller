@@ -126,6 +126,19 @@ or character-select recovery flow, it needs this same gate - the danger isn't sp
 call site that happened to get caught, it's inherent to clicking fixed lobby coordinates without
 first confirming the lobby is what's actually on screen.
 
+**`IsGameEntryMenuStillVisible` was the one entry-loop check left unbounded after the bounding
+pass above - bounded in `v0.2.84`.** `watch-xiy6-20260625-165553.log`: froze
+`WaitForGameEntryAsync`'s `checking lobby menu return` checkpoint for 130s+ (65 consecutive
+watch-ticks) - same unbounded-GDI-under-load vulnerability as `IsCharacterScreenReady`/
+`IsCharacterScreenOffline`/`IsGameEntryErrorDialogOpen`/`IsConnectionInterruptedScreen`, just a
+function that hadn't been touched yet. This is also the exact function whose false positive
+caused the `v0.2.79` safety incident, so bounding it serves both: a bounded `false` on timeout is
+safe because `MightAlreadyBeInGame` already gates the click that a `true` result would trigger.
+**This makes five entry-loop checks bounded now (`IsInGameReady` plus these five); if a sixth
+turns up frozen in a future log, assume the same fix applies before investigating further** -
+every function in this decision tree that samples pixels shares this vulnerability until proven
+bounded.
+
 ## Known overlaps and gotchas
 
 - **`IsCharacterScreenOffline`'s empty-panel region alone is not exclusive to the offline

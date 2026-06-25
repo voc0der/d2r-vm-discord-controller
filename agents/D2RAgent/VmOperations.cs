@@ -3480,11 +3480,22 @@ public sealed class VmOperations
 
     private bool IsGameEntryMenuStillVisible(WindowsInput input, AgentCommon.UiPoint returnTab)
     {
-        var tab = IsLobbyTabReady(input, returnTab);
-        var entry = IsLobbyEntryButtonReady(input);
-        var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
-        var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
-        return D2RScreenClassifier.IsGameEntryMenuVisible(tab, entry, formScreen || formWindow);
+        // watch-xiy6-20260625-165553.log: this was the one entry-loop check left unbounded after
+        // v0.2.83 - froze WaitForGameEntryAsync's "checking lobby menu return" checkpoint for
+        // 130s+ (65 consecutive watch-ticks) under D2R's load spike, same vulnerability as the
+        // four sibling checks bounded there. Also the exact function implicated in the v0.2.79
+        // safety incident (false-positived "menu still visible" while already in-game) - bounding
+        // it here is safe the same way: MightAlreadyBeInGame already gates the click that would
+        // follow a true result, so a bounded false on timeout just means one more poll iteration,
+        // not a missed safety check.
+        return TryRunBounded(() =>
+        {
+            var tab = IsLobbyTabReady(input, returnTab);
+            var entry = IsLobbyEntryButtonReady(input);
+            var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
+            var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
+            return D2RScreenClassifier.IsGameEntryMenuVisible(tab, entry, formScreen || formWindow);
+        }, EntryLoopCheckBoundMs);
     }
 
     private bool IsAnyLobbyEntryMenuVisible(WindowsInput input)
