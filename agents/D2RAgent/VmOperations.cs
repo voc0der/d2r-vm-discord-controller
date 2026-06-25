@@ -1298,14 +1298,46 @@ public sealed class VmOperations
         return TryRunBounded(() => TryPrepareD2RForInput(input), ReadyStartupDetectionIntervalMs);
     }
 
+    // watch-kfwuq5-20260625-191907.log proved this, not theorized it: ThreadPool.ThreadCount on
+    // hc1 was flat at 6-7 for the run's first 78s, then climbed monotonically the instant
+    // ClickMenuEntryButtonUntilEnteredGameAsync's loop started - 9, 13, 15, 30, 60, 98 threads,
+    // never leveling off. TryRunBounded's Task.Run only stops *waiting* on timeout; it never
+    // kills the underlying thread. That was fine when the guarded GDI call was merely slow (it
+    // would eventually finish and the thread would return to the pool) - but if it now hangs
+    // forever instead, every bounded call permanently abandons one more thread, and since the
+    // abandoned thread never reaches its own SampleD2RRegion's `finally { ReleaseDC(...) }`
+    // either, it leaks a GDI device-context handle on top of the thread - a resource with a
+    // hard per-process ceiling on Windows, which would make GDI calls likelier to hang as the
+    // leak grows, accelerating itself over time. This caps the blast radius without needing to
+    // know why the underlying call hangs: once MaxConcurrentBoundedCalls slots are held by calls
+    // that haven't returned yet, further calls fail fast with the fallback instead of spawning
+    // another thread that will never come back either.
+    private const int MaxConcurrentBoundedCalls = 32;
+    private static readonly SemaphoreSlim BoundedCallSlots = new(MaxConcurrentBoundedCalls, MaxConcurrentBoundedCalls);
+
     // Pulled out of TryPrepareD2RForInputBounded so the bounding behavior itself - not the
     // Win32 focus call - can be regression-tested without a Windows host. The bug this guards
     // against: an action that hangs (or throws) must not make the caller wait past timeoutMs.
     internal static bool TryRunBounded(Func<bool> action, int timeoutMs)
     {
+        if (!BoundedCallSlots.Wait(0))
+        {
+            return false;
+        }
+
         try
         {
-            var task = Task.Run(action);
+            var task = Task.Run(() =>
+            {
+                try
+                {
+                    return action();
+                }
+                finally
+                {
+                    BoundedCallSlots.Release();
+                }
+            });
             return task.Wait(timeoutMs) && task.Result;
         }
         catch (Exception)
@@ -1323,9 +1355,24 @@ public sealed class VmOperations
     // that caching IsInGameReady's result did in v0.2.71/72.
     internal static T TryRunBounded<T>(Func<T> action, int timeoutMs, T fallback)
     {
+        if (!BoundedCallSlots.Wait(0))
+        {
+            return fallback;
+        }
+
         try
         {
-            var task = Task.Run(action);
+            var task = Task.Run(() =>
+            {
+                try
+                {
+                    return action();
+                }
+                finally
+                {
+                    BoundedCallSlots.Release();
+                }
+            });
             return task.Wait(timeoutMs) ? task.Result : fallback;
         }
         catch (Exception)
