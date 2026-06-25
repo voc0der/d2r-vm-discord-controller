@@ -3101,8 +3101,17 @@ public sealed class VmOperations
 
     private bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab)
     {
-        return IsLobbyTabReady(input, tab, windowRelative: false)
-            || IsLobbyTabReady(input, tab, windowRelative: true);
+        // watch-xigue5-20260625-174035.log: ClickMenuEntryButtonUntilEnteredGameAsync froze
+        // forever at its final "timeout boundary: HUD not ready" checkpoint with the command
+        // gate still held - the checkpoint right after that point builds the failure message
+        // via FormatGameEntryMenuDiagnostics, which called this (and IsLobbyEntryButtonReady/
+        // IsLobbyFormPanelReady) raw. Every sibling entry-loop check got bounded in v0.2.83/84
+        // for the exact same "GDI sampling can stall under D2R's load spike" reason - this trio
+        // was the one left unwrapped, and unlike the others, its only callers ran right when a
+        // command was already in trouble (the failure-message formatter and the main lobby
+        // detector), the worst possible time for an unbounded GDI call to hang.
+        return TryRunBounded(() => IsLobbyTabReady(input, tab, windowRelative: false), EntryLoopCheckBoundMs)
+            || TryRunBounded(() => IsLobbyTabReady(input, tab, windowRelative: true), EntryLoopCheckBoundMs);
     }
 
     private bool IsLobbyTabReady(WindowsInput input, AgentCommon.UiPoint tab, bool windowRelative)
@@ -3116,8 +3125,8 @@ public sealed class VmOperations
 
     private bool IsLobbyEntryButtonReady(WindowsInput input)
     {
-        return IsLobbyEntryButtonReady(input, windowRelative: false)
-            || IsLobbyEntryButtonReady(input, windowRelative: true);
+        return TryRunBounded(() => IsLobbyEntryButtonReady(input, windowRelative: false), EntryLoopCheckBoundMs)
+            || TryRunBounded(() => IsLobbyEntryButtonReady(input, windowRelative: true), EntryLoopCheckBoundMs);
     }
 
     private bool IsLobbyEntryButtonReady(WindowsInput input, bool windowRelative)
@@ -3128,10 +3137,13 @@ public sealed class VmOperations
 
     private bool IsLobbyFormPanelReady(WindowsInput input, bool windowRelative)
     {
-        var stats = SampleD2RRegion(input, new AgentCommon.UiPoint(0.765, 0.365), widthRatio: 0.30, heightRatio: 0.42, windowRelative: windowRelative);
-        return stats.AverageLuminance < 30
-            && stats.GreyRatio < 0.25
-            && stats.DarkRatio > 0.80;
+        return TryRunBounded(() =>
+        {
+            var stats = SampleD2RRegion(input, new AgentCommon.UiPoint(0.765, 0.365), widthRatio: 0.30, heightRatio: 0.42, windowRelative: windowRelative);
+            return stats.AverageLuminance < 30
+                && stats.GreyRatio < 0.25
+                && stats.DarkRatio > 0.80;
+        }, EntryLoopCheckBoundMs);
     }
 
     private bool IsFriendJoinGameOptionReady(WindowsInput input)

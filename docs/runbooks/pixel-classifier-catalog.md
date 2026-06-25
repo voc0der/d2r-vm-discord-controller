@@ -169,6 +169,31 @@ turns up frozen in a future log, assume the same fix applies before investigatin
 every function in this decision tree that samples pixels shares this vulnerability until proven
 bounded.
 
+**`v0.2.87`: the predicted sixth case, one layer deeper.** `watch-xigue5-20260625-174035.log`:
+hc1 froze at `ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration 63): HUD not
+ready` for 2+ minutes straight, command gate still held, blocking both joiners (they wait for the
+creator's in-game confirmation before clicking Join). The user supplied `sitting_in_town2.png`
+(a real in-game capture from the stuck VM) and it classifies as `InGame` cleanly - modern HUD
+profile, health red=0.54 and mana blue=0.63, both comfortably past threshold - so this wasn't a
+classifier miss. The actual gap: `IsLobbyTabReady`/`IsLobbyEntryButtonReady`/
+`IsLobbyFormPanelReady` were never wrapped in `TryRunBounded` themselves, only the five functions
+*that call them* were. `IsGameEntryMenuStillVisible` (bounded in `v0.2.84`) wraps its whole body
+in one outer bound, so calls through that path were already covered. But two other call sites
+invoke these three raw: `FormatGameEntryMenuDiagnostics` (builds the failure-message diagnostics
+string at the very end of `ClickMenuEntryButtonUntilEnteredGameAsync`, right after the "HUD not
+ready" checkpoint - exactly where this freeze sits) and `IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap`
+(the main lobby branch of `DetectVisibleD2RState`). Fixed by bounding all three at their
+definitions (`EntryLoopCheckBoundMs`, same constant the other five use) instead of patching either
+call site - the established pattern all session: bound the primitive once, every caller benefits,
+including ones not even known to be a problem yet. `sitting_in_town2.png` also reproduces the
+`sitting_in_town.png` lobby-tab/entry-button overlap (`IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap`
+returns `true` on it too) and still classifies correctly as `InGame` - confirms the `v0.2.85`
+strict-in-game-before-lobby ordering generalizes beyond the one screenshot it was built from, not
+just curve-fit to it. A third capture, `sitting_in_town3_lowestgfx.png` (same scene, graphics
+setting lowered), classifies as `InGame` just as cleanly (red=0.51, blue=0.68) and has no
+lobby-menu overlap at all - confirms the graphics-quality setting doesn't introduce a new risk
+here, only in-game rendering changes per the user, and the HUD globe profile holds up across it.
+
 ## Known overlaps and gotchas
 
 - **`IsCharacterScreenOffline`'s empty-panel region alone is not exclusive to the offline
