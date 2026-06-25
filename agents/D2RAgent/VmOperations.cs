@@ -2159,7 +2159,9 @@ public sealed class VmOperations
 
     private string FormatInputDiagnosticsSuffix()
     {
+        MarkCommandCheckpoint("FormatInputDiagnosticsSuffix: collecting input diagnostics");
         var diagnostics = TryGetD2RInputDiagnostics();
+        MarkCommandCheckpoint("FormatInputDiagnosticsSuffix: input diagnostics collected");
         if (diagnostics is null)
         {
             return "";
@@ -2765,7 +2767,16 @@ public sealed class VmOperations
         int dialogRetries,
         int connectionRetries)
     {
-        var diagnostics = $"{FormatGameEntryMenuDiagnostics(input, activeTab)}{FormatInputDiagnosticsSuffix()}";
+        // watch-xkewfuj5-20260625-180228.log: stuck 5+ minutes at the "HUD not ready" checkpoint
+        // immediately before this call, on v0.2.87 which already bounds every IsLobby* call this
+        // function (via FormatGameEntryMenuDiagnostics) reaches - so by the numbers that path
+        // can't take more than ~9s. These checkpoints exist to find out which specific step is
+        // actually stuck on the next failure instead of inferring it again.
+        MarkCommandCheckpoint("FormatEntryTimeoutMessage: formatting menu diagnostics");
+        var menuDiagnostics = FormatGameEntryMenuDiagnostics(input, activeTab);
+        MarkCommandCheckpoint("FormatEntryTimeoutMessage: formatting input diagnostics");
+        var diagnostics = $"{menuDiagnostics}{FormatInputDiagnosticsSuffix()}";
+        MarkCommandCheckpoint("FormatEntryTimeoutMessage: diagnostics formatted");
         if (dialogRetries == 0 && connectionRetries == 0)
         {
             return $"No game-entry error state was detected. {diagnostics}";
@@ -2787,10 +2798,15 @@ public sealed class VmOperations
 
     private string FormatGameEntryMenuDiagnostics(WindowsInput input, AgentCommon.UiPoint activeTab)
     {
+        MarkCommandCheckpoint("FormatGameEntryMenuDiagnostics: checking lobby tab");
         var tab = IsLobbyTabReady(input, activeTab);
+        MarkCommandCheckpoint("FormatGameEntryMenuDiagnostics: checking entry button");
         var entry = IsLobbyEntryButtonReady(input);
+        MarkCommandCheckpoint("FormatGameEntryMenuDiagnostics: checking form panel (screen-relative)");
         var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
+        MarkCommandCheckpoint("FormatGameEntryMenuDiagnostics: checking form panel (window-relative)");
         var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);
+        MarkCommandCheckpoint("FormatGameEntryMenuDiagnostics: samples collected");
         var visible = D2RScreenClassifier.IsGameEntryMenuVisible(tab, entry, formScreen || formWindow);
         return $"Menu samples: visible={visible}, tab={tab}, entry={entry}, formScreen={formScreen}, formWindow={formWindow}.";
     }

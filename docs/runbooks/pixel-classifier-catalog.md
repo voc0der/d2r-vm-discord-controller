@@ -194,6 +194,24 @@ setting lowered), classifies as `InGame` just as cleanly (red=0.51, blue=0.68) a
 lobby-menu overlap at all - confirms the graphics-quality setting doesn't introduce a new risk
 here, only in-game rendering changes per the user, and the HUD globe profile holds up across it.
 
+**`v0.2.87` bounded a real gap, but did not fix the freeze it was diagnosed from - confirmed by
+the user re-testing on the exact `v0.2.87` build (`watch-xkewfuj5-20260625-180228.log`, same
+`ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration 62): HUD not ready` freeze,
+5+ minutes and counting, version-stamped in `/d2r status` as `0.2.87+4aa29ae...`).** The bounding
+itself was real (those three functions genuinely were unbounded, and now aren't), but by the
+numbers it caps `FormatGameEntryMenuDiagnostics` at ~9s worst case - nowhere near 5+ minutes - so
+it cannot be the cause of *this* freeze. Re-reading every call between the "HUD not ready"
+checkpoint and the function's return (`FormatEntryTimeoutMessage` → `FormatGameEntryMenuDiagnostics`'s
+now-bounded calls, and `FormatInputDiagnosticsSuffix` → `GetInputDiagnostics`, which turns out to
+be composed entirely of direct kernel calls plus the already-`SendMessageTimeout`-protected
+`GetWindowTitle`) found nothing that could structurally explain a multi-minute hang. Rather than
+ship a third unverified theory, `v0.2.88` adds a `MarkCommandCheckpoint` around every remaining
+step in that exact call chain (`FormatEntryTimeoutMessage`, each of the four samples inside
+`FormatGameEntryMenuDiagnostics`, and `FormatInputDiagnosticsSuffix`'s `TryGetD2RInputDiagnostics`
+call) instead of another guess at the fix - the next freeze will show precisely which checkpoint
+stops advancing, the same way per-iteration checkpoints were what actually root-caused the
+`ClickMenuEntryButtonUntilEnteredGameAsync` freezes earlier in this saga instead of more guessing.
+
 ## Known overlaps and gotchas
 
 - **`IsCharacterScreenOffline`'s empty-panel region alone is not exclusive to the offline
