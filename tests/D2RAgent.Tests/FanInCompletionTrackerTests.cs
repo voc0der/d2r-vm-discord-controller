@@ -3,7 +3,7 @@ using Xunit;
 
 namespace D2RAgent.Tests;
 
-// leave-all/save-exit-all/start-all/quit-all/close-all (DiscordBot.QueueAllCommandsAsync) fire one
+// save-exit-all/start-all/quit-all (DiscordBot.QueueAllCommandsAsync) fire one
 // task per VM and historically had no "everyone's done" signal, only ad-hoc per-VM failure
 // follow-ups - a fully successful run looked identical to one nobody had checked on yet.
 // FanInCompletionTracker is the fix: exactly one of the N completing callers must be told "you're

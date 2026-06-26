@@ -246,7 +246,7 @@ public sealed class DiscordBot
             return;
         }
 
-        if (subcommand is "save-exit-all" or "leave-all")
+        if (subcommand == "save-exit-all")
         {
             // menu_save_exit's own automation (Escape, click, wait up to ~12s) is fast - the
             // budget here almost entirely covers time spent waiting for the agent's command
@@ -263,7 +263,7 @@ public sealed class DiscordBot
             return;
         }
 
-        if (subcommand is "quit-all" or "close-all")
+        if (subcommand == "quit-all")
         {
             await QueueAllCommandsAsync(
                 context,
@@ -284,7 +284,6 @@ public sealed class DiscordBot
                 await RunVmCommandAsync(context, singleAccount, "kill_d2r", BuildAccountArgs(singleAccountKey, singleAccount));
                 return;
             case "quit":
-            case "close":
                 await RunVmCommandAsync(context, singleAccount, "quit_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(30));
                 return;
             case "restart-client":
@@ -309,7 +308,6 @@ public sealed class DiscordBot
                 await RunVmCommandAsync(context, singleAccount, "menu_join_friend", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
                 return;
             case "save-exit":
-            case "leave":
                 // See the save-exit-all timeout comment above: this is gate-wait headroom, not
                 // expected automation time.
                 await RunVmCommandAsync(context, singleAccount, "menu_save_exit", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
@@ -1957,8 +1955,8 @@ public sealed class DiscordBot
     }
 
     // join-all/create-game-all already signal completion with a checkmark/X reaction on their
-    // public session message (see CompleteGameSessionAsync) - leave-all/save-exit-all/start-all/
-    // quit-all/close-all (all routed through QueueAllCommandsAsync) had no equivalent "everyone's
+    // public session message (see CompleteGameSessionAsync) - save-exit-all/start-all/quit-all
+    // (all routed through QueueAllCommandsAsync) had no equivalent "everyone's
     // done" signal, only ad-hoc per-VM failure follow-ups, so a fully successful run looked
     // identical to one nobody had checked on yet. The reaction has to land on a fresh
     // non-ephemeral follow-up rather than the initial ack: that ack is sent ephemeral (visible

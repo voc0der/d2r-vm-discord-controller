@@ -8,6 +8,11 @@ public static class DiscordSlashCommands
     {
         return
         [
+            // Discord hard-caps a command at 25 options, and each Sub(...) below counts as one.
+            // Past 25, BulkOverwrite silently fails closed: Discord keeps the previously-registered
+            // set and the new/changed subcommands just never appear, with no error visible here -
+            // this bit us once already (issue #20 follow-up, template/join-auto). Stay under 25 or
+            // split overflow into a subcommand group / second top-level command.
             new SlashCommandBuilder()
                 .WithName("d2r")
                 .WithDescription("Operate Diablo II: Resurrected clients")
@@ -16,7 +21,6 @@ public static class DiscordSlashCommands
                     Sub("start", "Launch Battle.net/D2R for an account", Account()),
                     Sub("stop", "Kill the D2R process for an account", Account()),
                     Sub("quit", "Focus D2R and close it with Alt+F4", Account()),
-                    Sub("close", "Alias for quit", Account()),
                     Sub("restart-client", "Restart the D2R process for an account", Account()),
                     Sub("screenshot", "Capture the VM's current primary-screen screenshot", Account()),
                     Sub("remote", "Show the configured remote-control URL for an account VM", Account()),
@@ -27,16 +31,13 @@ public static class DiscordSlashCommands
                     Sub("create-game", "Open Lobby and create a game", Account(), GameName(), Password(), Difficulty(), CharacterSlot()),
                     Sub("follow", "Join off a friend from the Lobby friends drawer", Account(), CharacterSlot(), FriendRow()),
                     Sub("save-exit", "Open the in-game menu and click Save and Exit", Account()),
-                    Sub("leave", "Alias for Save and Exit", Account()),
                     Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("template", "Set the auto-naming template create-game-all/join-all use when no name is given (netrunner1, netrunner2, ...)", RequiredGameName(), Password()),
                     Sub("join-auto", "Auto-join the template's current numbered game, wait for someone to leave, leave, advance, repeat - until stopped", CharacterSlot(), Delay(), StopFlag()),
                     Sub("follow-all", "Stagger all accounts into a friend's game", CharacterSlot(), FriendRow()),
                     Sub("save-exit-all", "Stagger Save and Exit across all accounts"),
-                    Sub("leave-all", "Alias for Save and Exit across all accounts"),
                     Sub("quit-all", "Stagger Alt+F4 quit across all online accounts"),
-                    Sub("close-all", "Alias for quit-all"),
                     Sub("start-all", "Queue staggered ready flows for all configured accounts"),
                     Sub("health", "Show controller and agent connection health"))
                 .Build(),

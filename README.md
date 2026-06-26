@@ -48,7 +48,6 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r start account`
 - `/d2r stop account`
 - `/d2r quit account`
-- `/d2r close account`
 - `/d2r restart-client account`
 - `/d2r screenshot account`
 - `/d2r remote account`
@@ -59,14 +58,13 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r create-game account [name] [password] [difficulty] [character-slot]`
 - `/d2r follow account [character-slot] [friend-row]`
 - `/d2r save-exit account`
-- `/d2r leave account`
-- `/d2r create-game-all [name] [password] [difficulty] [character-slot]`
-- `/d2r join-all [name] [password] [difficulty] [character-slot]`
+- `/d2r create-game-all [name] [password] [difficulty] [character-slot] [watch]`
+- `/d2r join-all [name] [password] [difficulty] [character-slot] [watch]`
+- `/d2r template name [password]`
+- `/d2r join-auto [character-slot] [delay] [stop]`
 - `/d2r follow-all [character-slot] [friend-row]`
 - `/d2r save-exit-all`
-- `/d2r leave-all`
 - `/d2r quit-all`
-- `/d2r close-all`
 - `/d2r start-all`
 - `/d2r health`
 - `/restart`
