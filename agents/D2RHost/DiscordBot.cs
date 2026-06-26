@@ -978,7 +978,12 @@ public sealed class DiscordBot
         var threadPool = TryReadThreadPoolSummary(statusJson, out var threadPoolSummary)
             ? $" | pool {threadPoolSummary}"
             : "";
-        return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}{checks}{hud}{threadPool}";
+        // Gated on recency like hud above: a count from minutes ago (the client left the game,
+        // or the monitor's disabled) would read as a live number otherwise.
+        var party = ShouldShowPartyMemberCount(statusJson) && TryReadPartyMemberCountSummary(statusJson, out var partySummary)
+            ? $" | party {partySummary}"
+            : "";
+        return $"{name}: {frame}{degraded} | last {lastInput}{checkpoint}{checks}{hud}{threadPool}{party}";
     }
 
     private static bool ShouldShowClassifierBreakdown(string? json)
@@ -1106,6 +1111,58 @@ public sealed class DiscordBot
                 ? FormatAge(DateTimeOffset.UtcNow - recordedAt)
                 : "?";
             value = $"{evidence} ({age} ago)";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    // issue #20, item 6. Gated on recency rather than just "is the field present" for the same
+    // reason as ShouldShowHudEvidence: the agent only samples this while actually in a game, on
+    // its own PartyMemberCountIntervalSeconds tick (default 30s), so a present-but-old value means
+    // the client left the game (or the monitor is disabled) since the last sample, not that the
+    // count shown is still true right now.
+    private static bool ShouldShowPartyMemberCount(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return TryReadDateTimeOffset(document.RootElement, "lastPartyMemberCountUtc", out var recordedAt)
+                && DateTimeOffset.UtcNow - recordedAt <= TimeSpan.FromSeconds(75);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadPartyMemberCountSummary(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!TryGetInt(document.RootElement, "lastPartyMemberCount", out var otherMembers))
+            {
+                return false;
+            }
+
+            var age = TryReadDateTimeOffset(document.RootElement, "lastPartyMemberCountUtc", out var recordedAt)
+                ? FormatAge(DateTimeOffset.UtcNow - recordedAt)
+                : "?";
+            value = $"{otherMembers + 1} player(s) ({age} ago)";
             return true;
         }
         catch (JsonException)

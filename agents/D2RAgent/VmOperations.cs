@@ -44,6 +44,10 @@ public sealed class VmOperations
     // These sibling entry-loop checks all use the same pixel-sampling path, so bound them at
     // their definitions instead of trying to guard every current and future call site.
     private const int EntryLoopCheckBoundMs = 1500;
+    // Each slot is one small region capture - cheap relative to the in-game HUD checks above,
+    // but there are up to 8 of them per tick, so still bound each individually rather than
+    // relying on the tick interval alone to cap worst-case cost.
+    private const int PartyFrameSampleBoundMs = 800;
 
     private readonly VmAgentConfig _config;
     private readonly SemaphoreSlim _commandGate = new(1, 1);
@@ -62,6 +66,8 @@ public sealed class VmOperations
     private DateTimeOffset? _lastClassifierBreakdownUtc;
     private string? _lastHudEvidence;
     private DateTimeOffset? _lastHudEvidenceUtc;
+    private int? _lastPartyMemberCount;
+    private DateTimeOffset? _lastPartyMemberCountUtc;
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
@@ -182,6 +188,8 @@ public sealed class VmOperations
             lastClassifierBreakdownUtc = _lastClassifierBreakdownUtc,
             lastHudEvidence = _lastHudEvidence,
             lastHudEvidenceUtc = _lastHudEvidenceUtc,
+            lastPartyMemberCount = _lastPartyMemberCount,
+            lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
             threadPoolThreads = System.Threading.ThreadPool.ThreadCount,
             threadPoolPending = System.Threading.ThreadPool.PendingWorkItemCount,
             lastCommandCheckpoint = _lastCommandCheckpoint,
@@ -227,6 +235,8 @@ public sealed class VmOperations
             lastClassifierBreakdownUtc = _lastClassifierBreakdownUtc,
             lastHudEvidence = _lastHudEvidence,
             lastHudEvidenceUtc = _lastHudEvidenceUtc,
+            lastPartyMemberCount = _lastPartyMemberCount,
+            lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
             threadPoolThreads = System.Threading.ThreadPool.ThreadCount,
             threadPoolPending = System.Threading.ThreadPool.PendingWorkItemCount,
             lastCommandCheckpoint = _lastCommandCheckpoint,
@@ -524,6 +534,79 @@ public sealed class VmOperations
             _lastLobbyOrGameInteractionUtc = liveActivity.LastLobbyOrGameInteractionUtc;
             _lastActivityReason = liveActivity.Reason;
         }
+    }
+
+    // issue #20, item 6. Runs alongside RunIdleMonitorAsync on its own configurable interval
+    // (default 30s, distinct from the 60s idle-quit check and the agent-to-host HeartbeatSeconds)
+    // rather than piggybacking on either - this is sampling the game screen for a feature
+    // (join-auto's "did someone leave" signal), not a liveness/safety check, so it should stay
+    // independently tunable and disable-able without touching either of those.
+    public async Task RunPartyMemberMonitorAsync(Action<string>? log, CancellationToken cancellationToken)
+    {
+        var interval = TimeSpan.FromSeconds(Math.Max(_config.PartyMemberCountIntervalSeconds, 5));
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(interval, cancellationToken);
+            try
+            {
+                await _commandGate.WaitAsync(cancellationToken);
+                try
+                {
+                    SamplePartyMemberCount();
+                }
+                finally
+                {
+                    _commandGate.Release();
+                }
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                log?.Invoke($"Party member monitor failed: {ex.Message}");
+            }
+        }
+    }
+
+    private void SamplePartyMemberCount()
+    {
+        if (!_config.PartyMemberCountEnabled || !OperatingSystem.IsWindows() || !IsD2RRunning())
+        {
+            return;
+        }
+
+        // The party portrait row is only meaningful in an actual game - sampling it from the
+        // lobby/join-create form would just read whatever happens to be in that screen corner.
+        var input = new WindowsInput();
+        if (DetectVisibleD2RState(input) != VisibleD2RState.InGame)
+        {
+            return;
+        }
+
+        _lastPartyMemberCount = CountOtherPartyMembers(input);
+        _lastPartyMemberCountUtc = DateTimeOffset.UtcNow;
+    }
+
+    // Scans slots in order and stops at the first miss rather than checking all 8 unconditionally
+    // - D2R fills slots left-to-right with no gaps (PartyMemberSlots), so the common case (a
+    // handful of accounts, not a full 8-player lobby) samples only as many regions as there are
+    // actual members instead of always paying for 8.
+    private int CountOtherPartyMembers(WindowsInput input)
+    {
+        for (var slot = 1; slot <= PartyMemberSlots.MaxSlots; slot++)
+        {
+            var ratio = TryRunBounded(
+                () => input.SamplePartyFrameRatio(
+                    PartyMemberSlots.GetSlotTopEdgeCenter(slot),
+                    PartyMemberSlots.EdgeWidthRatio,
+                    PartyMemberSlots.EdgeHeightRatio),
+                PartyFrameSampleBoundMs,
+                0.0);
+            if (ratio < PartyMemberSlots.FrameRatioThreshold)
+            {
+                return slot - 1;
+            }
+        }
+
+        return PartyMemberSlots.MaxSlots;
     }
 
     private async Task<CommandResult> QuitD2RAsync(CancellationToken cancellationToken)

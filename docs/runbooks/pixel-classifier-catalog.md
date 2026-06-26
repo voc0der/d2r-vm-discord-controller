@@ -140,6 +140,10 @@ Total players in a game = party member count + 1 (yourself), which only holds wh
 present is in one party - true for this project's own multi-boxed-accounts use case, not
 necessarily true in a mixed/public game.
 
+Live consumer: `VmOperations.RunPartyMemberMonitorAsync` (see client-menu-flows.md's idle-timer
+section for the background-loop/config/Discord-surfacing details) - the classifier and geometry
+above are what it's built on, not a standalone diagnostic.
+
 ## Lobby / game entry menu
 
 | Function | Regions | Threshold |

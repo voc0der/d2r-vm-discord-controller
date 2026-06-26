@@ -51,6 +51,7 @@ internal static class Program
             };
 
             var idleMonitorTask = operations.RunIdleMonitorAsync(Console.WriteLine, cts.Token);
+            var partyMemberMonitorTask = operations.RunPartyMemberMonitorAsync(Console.WriteLine, cts.Token);
             try
             {
                 await client.RunForeverAsync(operations.GetStatusAsync, operations.HandleCommandAsync, cts.Token);
@@ -61,6 +62,7 @@ internal static class Program
                 try
                 {
                     await idleMonitorTask;
+                    await partyMemberMonitorTask;
                 }
                 catch (OperationCanceledException)
                 {

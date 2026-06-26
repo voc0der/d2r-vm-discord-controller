@@ -26,6 +26,8 @@ public sealed class VmAgentConfig : AgentConfig
     public bool IdleQuitEnabled { get; set; } = true;
     public int IdleQuitMinutes { get; set; } = 30;
     public int IdleQuitCheckSeconds { get; set; } = 60;
+    public bool PartyMemberCountEnabled { get; set; } = true;
+    public int PartyMemberCountIntervalSeconds { get; set; } = 30;
     public string PowerShellPath { get; set; } = "powershell.exe";
     public int ScreenshotTimeoutSeconds { get; set; } = 30;
     public D2RUiAutomationConfig Ui { get; set; } = new();
