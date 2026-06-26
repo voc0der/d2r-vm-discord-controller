@@ -32,6 +32,8 @@ public sealed class DiscordBot
     private string? _activeSessionRepresentativeAgentId;
     private bool _commandsRegistered;
     private GameNameTemplate? _gameTemplate;
+    private readonly SemaphoreSlim _joinAutoLock = new(1, 1);
+    private CancellationTokenSource? _joinAutoCts;
 
     // join-all's "join the last known game if it's recent" (issue #20, item 5) needs to mean
     // a game create-game-all/join-all actually acted on, not just whatever /game set last had -
@@ -218,6 +220,18 @@ public sealed class DiscordBot
                 $"Template set: {_gameTemplate.Name}1{passwordSuffix} is next. "
                     + "create-game-all/join-all with no name will use this until /d2r template is set again or the host restarts.",
                 ephemeral: true);
+            return;
+        }
+
+        if (subcommand == "join-auto")
+        {
+            if (context.GetBool("stop") == true)
+            {
+                await StopJoinAutoAsync(context);
+                return;
+            }
+
+            await StartJoinAutoAsync(context, Math.Max(context.GetInt("delay") ?? 0, 0));
             return;
         }
 
@@ -2192,6 +2206,281 @@ public sealed class DiscordBot
         }
 
         return null;
+    }
+
+    // issue #20, item 7. Assumes a human (not one of this bot's own VMs) creates each numbered
+    // game externally using the same template naming, so this only ever joins/waits/leaves/
+    // advances - it never calls create-game-all itself. Runs until /d2r join-auto stop:true or a
+    // hard failure (the expected game still isn't joinable after 3 retries). The interaction's
+    // own follow-up token expires long before a multi-cycle farming run would finish, so every
+    // message after the initial ack goes straight to the invoking channel instead.
+    private async Task StartJoinAutoAsync(SlashContext context, int delaySeconds)
+    {
+        if (_gameTemplate is null)
+        {
+            await context.Command.RespondAsync(
+                "join-auto needs a template first - set one with /d2r template name:<x> password:<y>.",
+                ephemeral: true);
+            return;
+        }
+
+        await _joinAutoLock.WaitAsync();
+        CancellationTokenSource cts;
+        try
+        {
+            if (_joinAutoCts is not null)
+            {
+                await context.Command.RespondAsync(
+                    "join-auto is already running. Use /d2r join-auto stop:true first.",
+                    ephemeral: true);
+                return;
+            }
+
+            cts = new CancellationTokenSource();
+            _joinAutoCts = cts;
+        }
+        finally
+        {
+            _joinAutoLock.Release();
+        }
+
+        await context.Command.RespondAsync(
+            $"join-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay before each join attempt" : "")}. Updates will post in this channel until it's stopped.",
+            ephemeral: true);
+
+        _ = Task.Run(() => RunJoinAutoLoopAsync(context, delaySeconds, cts.Token));
+    }
+
+    private async Task StopJoinAutoAsync(SlashContext context)
+    {
+        await _joinAutoLock.WaitAsync();
+        try
+        {
+            if (_joinAutoCts is null)
+            {
+                await context.Command.RespondAsync("join-auto is not running.", ephemeral: true);
+                return;
+            }
+
+            _joinAutoCts.Cancel();
+            _joinAutoCts = null;
+        }
+        finally
+        {
+            _joinAutoLock.Release();
+        }
+
+        await context.Command.RespondAsync("join-auto is stopping.", ephemeral: true);
+    }
+
+    private async Task RunJoinAutoLoopAsync(SlashContext context, int delaySeconds, CancellationToken cancellationToken)
+    {
+        var channel = context.Command.Channel;
+        try
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (_gameTemplate is not { } template)
+                {
+                    await channel.SendMessageAsync("join-auto stopped: the template was cleared.");
+                    break;
+                }
+
+                var (gameName, password) = template.MintNext();
+                var game = new GameInput(gameName, password, Difficulty: null);
+
+                var joined = await TryJoinAutoCycleAsync(channel, context, game, delaySeconds, cancellationToken);
+                if (!joined)
+                {
+                    await channel.SendMessageAsync($"join-auto hard failed: could not get everyone into {gameName} after 4 attempts. Stopping - fix whatever's blocking it and run /d2r join-auto again.");
+                    break;
+                }
+
+                await channel.SendMessageAsync($"join-auto: everyone is in {gameName}. Watching for someone to leave...");
+
+                await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
+                var baseline = await TryFetchFirstOnlineAccountPlayerCountAsync();
+                await WaitForPlayerCountDropAsync(baseline, cancellationToken);
+
+                await channel.SendMessageAsync($"join-auto: player count dropped - leaving {gameName}.");
+                await LeaveAllJoinAutoAsync(channel);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            await channel.SendMessageAsync("join-auto stopped.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "join-auto loop failed.");
+            await channel.SendMessageAsync($"join-auto stopped unexpectedly: {ex.Message}");
+        }
+        finally
+        {
+            await _joinAutoLock.WaitAsync();
+            try
+            {
+                if (_joinAutoCts?.Token == cancellationToken)
+                {
+                    _joinAutoCts = null;
+                }
+            }
+            finally
+            {
+                _joinAutoLock.Release();
+            }
+        }
+    }
+
+    private async Task<bool> TryJoinAutoCycleAsync(
+        IMessageChannel channel, SlashContext context, GameInput game, int delaySeconds, CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 4;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (delaySeconds > 0)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
+            }
+
+            var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
+            if (entries.Length == 0)
+            {
+                await channel.SendMessageAsync($"join-auto: no online accounts available (attempt {attempt}/{maxAttempts})." + FormatOfflineSkipSuffix(offlineEntries));
+                continue;
+            }
+
+            var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
+            var argsByAccount = entries.ToDictionary(
+                entry => entry.Key,
+                entry => BuildMenuArgs(entry.Key, entry.Value, game, context),
+                StringComparer.OrdinalIgnoreCase);
+            var prepareTasks = entries
+                .Select((entry, index) => new
+                {
+                    entry.Key,
+                    Task = RunJoinAllPrepareEntryAsync(entry, index, staggerSeconds, argsByAccount[entry.Key])
+                })
+                .ToDictionary(item => item.Key, item => item.Task, StringComparer.OrdinalIgnoreCase);
+            var joinResults = await Task.WhenAll(entries.Select(entry =>
+                SubmitJoinAutoEntryAsync(entry, prepareTasks[entry.Key], argsByAccount[entry.Key])));
+
+            if (joinResults.All(result => result.Ok))
+            {
+                return true;
+            }
+
+            var failed = joinResults.Where(result => !result.Ok);
+            await channel.SendMessageAsync(
+                $"join-auto: attempt {attempt}/{maxAttempts} to join {game.GameName} failed - "
+                    + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+        }
+
+        return false;
+    }
+
+    // Mirrors RunJoinAllPreparedEntryAsync minus the IncrementGameSessionJoinedAsync call -
+    // join-auto reports its own progress via channel messages per attempt instead of a single
+    // live-edited session message, and must not touch _activeSessionMessage/_sessionLock state
+    // that an unrelated, concurrently-running manual create-game-all/join-all might own.
+    private async Task<JoinResult> SubmitJoinAutoEntryAsync(
+        KeyValuePair<string, AccountConfig> entry, Task<JoinResult> prepareTask, object args)
+    {
+        var prepareResult = await prepareTask;
+        if (!prepareResult.Ok)
+        {
+            return prepareResult;
+        }
+
+        try
+        {
+            var joinResult = await _registry.SendCommandAsync(entry.Value.AgentId, "menu_submit_join_game", args, TimeSpan.FromSeconds(210));
+            return new JoinResult(entry.Key, joinResult.Ok, joinResult.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "join-auto submit failed for {AccountKey}.", entry.Key);
+            return new JoinResult(entry.Key, false, FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value));
+        }
+    }
+
+    private async Task LeaveAllJoinAutoAsync(IMessageChannel channel)
+    {
+        var (entries, _) = GetAccountEntriesByConnectivity();
+        if (entries.Length == 0)
+        {
+            await channel.SendMessageAsync("join-auto: no online accounts to leave with.");
+            return;
+        }
+
+        var leaveResults = await Task.WhenAll(entries.Select(async entry =>
+        {
+            try
+            {
+                var result = await _registry.SendCommandAsync(entry.Value.AgentId, "menu_save_exit", BuildAccountArgs(entry.Key, entry.Value), TimeSpan.FromSeconds(210));
+                return new JoinResult(entry.Key, result.Ok, result.Message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "join-auto leave failed for {AccountKey}.", entry.Key);
+                return new JoinResult(entry.Key, false, FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value));
+            }
+        }));
+
+        var failed = leaveResults.Where(result => !result.Ok).ToArray();
+        await channel.SendMessageAsync(failed.Length == 0
+            ? "join-auto: all accounts left."
+            : "join-auto: leave failed for " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+    }
+
+    // Polls independently of RunPartyMemberMonitorAsync's own 30s tick - this needs to notice a
+    // drop promptly while actively farming, not just whenever the next heartbeat happens to land.
+    // Only returns once a drop is actually detected; the only other way out is cancellation,
+    // which throws OperationCanceledException through Task.Delay and is handled by the caller.
+    private async Task WaitForPlayerCountDropAsync(int? baseline, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
+            var current = await TryFetchFirstOnlineAccountPlayerCountAsync();
+            if (current is { } count && baseline is { } known && count < known)
+            {
+                return;
+            }
+
+            if (baseline is null)
+            {
+                baseline = current;
+            }
+        }
+    }
+
+    private async Task<int?> TryFetchFirstOnlineAccountPlayerCountAsync()
+    {
+        var (entries, _) = GetAccountEntriesByConnectivity();
+        if (entries.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var result = await _registry.SendCommandAsync(entries[0].Value.AgentId, "status", args: null, TimeSpan.FromSeconds(6));
+            if (!result.Ok || result.Data is not { } data)
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(data.GetRawText());
+            return TryGetInt(document.RootElement, "lastPartyMemberCount", out var otherMembers) ? otherMembers + 1 : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private (string AccountKey, AccountConfig Account) RequireAccount(string accountKey)

@@ -31,6 +31,7 @@ public static class DiscordSlashCommands
                     Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("template", "Set the auto-naming template create-game-all/join-all use when no name is given (netrunner1, netrunner2, ...)", RequiredGameName(), Password()),
+                    Sub("join-auto", "Auto-join the template's current numbered game, wait for someone to leave, leave, advance, repeat - until stopped", CharacterSlot(), Delay(), StopFlag()),
                     Sub("follow-all", "Stagger all accounts into a friend's game", CharacterSlot(), FriendRow()),
                     Sub("save-exit-all", "Stagger Save and Exit across all accounts"),
                     Sub("leave-all", "Alias for Save and Exit across all accounts"),
@@ -171,6 +172,26 @@ public static class DiscordSlashCommands
             .WithRequired(true)
             .WithMinValue(0)
             .WithMaxValue(300);
+    }
+
+    private static SlashCommandOptionBuilder Delay()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("delay")
+            .WithDescription("Seconds to wait before each join attempt; default 0. Also used as the wait between retry attempts.")
+            .WithType(ApplicationCommandOptionType.Integer)
+            .WithRequired(false)
+            .WithMinValue(0)
+            .WithMaxValue(600);
+    }
+
+    private static SlashCommandOptionBuilder StopFlag()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("stop")
+            .WithDescription("Stop a running join-auto loop instead of starting one")
+            .WithType(ApplicationCommandOptionType.Boolean)
+            .WithRequired(false);
     }
 
     private static SlashCommandOptionBuilder Watch()
