@@ -1,6 +1,19 @@
 using AgentCommon;
 using D2RHost;
 
+var configPath = args.FirstOrDefault()
+    ?? Environment.GetEnvironmentVariable("CONFIG_PATH")
+    ?? @"C:\D2ROps\d2r-host.config.json";
+
+var logsDir = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configPath)) ?? ".", "logs");
+var logFilePath = LogFileRotator.RotateAndPrepare(logsDir);
+
+void LogStartup(string message)
+{
+    Console.WriteLine(message);
+    File.AppendAllText(logFilePath, $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}Z [Startup] {message}{Environment.NewLine}");
+}
+
 try
 {
     var hostUpdate = await SelfUpdater.CheckAndStartUpdateAsync(
@@ -8,11 +21,11 @@ try
         requirePrompt: false);
     if (!hostUpdate.Ok)
     {
-        Console.WriteLine($"Host update check failed; satellite auto-update disabled: {hostUpdate.Message}");
+        LogStartup($"Host update check failed; satellite auto-update disabled: {hostUpdate.Message}");
     }
     else if (!hostUpdate.CheckedLatest)
     {
-        Console.WriteLine($"Host update check skipped; satellite auto-update disabled: {hostUpdate.Message}");
+        LogStartup($"Host update check skipped; satellite auto-update disabled: {hostUpdate.Message}");
     }
 
     if (hostUpdate.UpdateStarted)
@@ -24,15 +37,12 @@ try
         Enabled: hostUpdate.Ok && hostUpdate.CheckedLatest,
         Reason: hostUpdate.Message);
 
-    var configPath = args.FirstOrDefault()
-        ?? Environment.GetEnvironmentVariable("CONFIG_PATH")
-        ?? @"C:\D2ROps\d2r-host.config.json";
-
     var config = HostConfigLoader.LoadOrCreate(configPath);
-    _ = WindowsFirewallSelfHeal.EnsureHostInboundTcp(config.HttpPort, Console.WriteLine);
+    _ = WindowsFirewallSelfHeal.EnsureHostInboundTcp(config.HttpPort, LogStartup);
 
     var builder = WebApplication.CreateBuilder(args);
     builder.WebHost.UseUrls($"http://0.0.0.0:{config.HttpPort}");
+    builder.Logging.AddProvider(new FileLoggerProvider(logFilePath));
 
     builder.Services.AddSingleton(config);
     builder.Services.AddSingleton(new HostRuntimeOptions(configPath, args));
@@ -102,5 +112,6 @@ catch (Exception ex)
     // so blocking on Console.ReadLine() here would hang forever with nobody at the
     // console to answer it.
     Console.Error.WriteLine(ex);
+    LogStartup($"Fatal startup exception: {ex}");
     return 1;
 }
