@@ -64,7 +64,14 @@ jobs:
           $repo = "${{ github.repository }}"
           $isTag = $env:GITHUB_REF_TYPE -eq "tag"
           $tag = if ($isTag) { $env:GITHUB_REF_NAME } else { "manual-$env:GITHUB_RUN_NUMBER" }
-          $allTags = @(git tag --sort=-v:refname)
+          # --merged HEAD restricts this to tags that are actual ancestors of the commit being
+          # built, not just whatever's numerically highest in the full repo-wide tag list. Without
+          # it, a release whose own build is still running when a *later* tag gets pushed (two
+          # tags pushed close together race their Release workflows) picks that later tag as its
+          # "previous" release and computes a backwards compare/changelog showing no commits
+          # (v0.2.106 hit this exact case from v0.2.107 landing while v0.2.106's build was still in
+          # progress).
+          $allTags = @(git tag --merged HEAD --sort=-v:refname)
           $previousTag = if ($isTag) { $allTags | Where-Object { $_ -ne $tag } | Select-Object -First 1 } else { $null }
           $range = if ($isTag -and $previousTag) { "$previousTag..$tag" } elseif ($isTag) { $tag } else { "HEAD" }
           $compareUrl = if ($isTag -and $previousTag) {
