@@ -35,6 +35,13 @@ public sealed class DiscordBot
     private GameNameTemplate? _gameTemplate;
     private readonly SemaphoreSlim _joinAutoLock = new(1, 1);
     private CancellationTokenSource? _joinAutoCts;
+    private string? _joinAutoStopReason;
+    private IUserMessage? _joinAutoMonitorMessage;
+    private string? _joinAutoMonitorGameName;
+    private int _joinAutoMonitorJoined;
+    private int _joinAutoMonitorTotal;
+    private int _joinAutoCyclesCompleted;
+    private DateTimeOffset? _joinAutoStartedUtc;
 
     // join-all's "join the last known game if it's recent" (issue #20, item 5) needs to mean
     // a game create-game-all/join-all actually acted on, not just whatever /game set last had -
@@ -270,11 +277,18 @@ public sealed class DiscordBot
 
         if (subcommand == "quit-all")
         {
+            // Same gate-wait headroom reasoning as save-exit-all above, not yet applied here
+            // until issue #24: quit_d2r's own work (focus, Alt+F4, 2s settle) is fast, but it
+            // shares _commandGate with whatever a join-auto retry loop (or any other 210s-class
+            // command) is mid-attempt on. A real run showed quit_d2r failing for 2/3 accounts
+            // with "exceeded agent-side timeout of 25s" while join-auto was actively retrying a
+            // join in the background - the gate was always going to free up, just not within 30s.
+            await CancelJoinAutoIfRunningAsync("quit-all was called");
             await QueueAllCommandsAsync(
                 context,
                 "quit_d2r",
                 (accountKey, account) => BuildAccountArgs(accountKey, account),
-                TimeSpan.FromSeconds(30));
+                TimeSpan.FromSeconds(210));
             return;
         }
 
@@ -283,16 +297,21 @@ public sealed class DiscordBot
         switch (subcommand)
         {
             case "start":
-                await RunVmCommandAsync(context, singleAccount, "launch_d2r", BuildAccountArgs(singleAccountKey, singleAccount));
+                // Only "status"/"screenshot" bypass the agent's _commandGate (VmOperations.cs) -
+                // every other command, including this one, queues behind whatever's already
+                // running. Same gate-wait headroom reasoning as quit/quit-all below.
+                await RunVmCommandAsync(context, singleAccount, "launch_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
                 return;
             case "stop":
-                await RunVmCommandAsync(context, singleAccount, "kill_d2r", BuildAccountArgs(singleAccountKey, singleAccount));
+                await RunVmCommandAsync(context, singleAccount, "kill_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
                 return;
             case "quit":
-                await RunVmCommandAsync(context, singleAccount, "quit_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(30));
+                // See the quit-all gate-wait comment above - same risk for a single account.
+                await CancelJoinAutoIfRunningAsync($"quit was called for {singleAccountKey}");
+                await RunVmCommandAsync(context, singleAccount, "quit_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
                 return;
             case "restart-client":
-                await RunVmCommandAsync(context, singleAccount, "restart_d2r", BuildAccountArgs(singleAccountKey, singleAccount));
+                await RunVmCommandAsync(context, singleAccount, "restart_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
                 return;
             case "ready":
                 await RunVmCommandAsync(context, singleAccount, "menu_ready", BuildAccountArgs(singleAccountKey, singleAccount), ReadyCommandTimeout);
@@ -2251,29 +2270,43 @@ public sealed class DiscordBot
             $"join-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay before each join attempt" : "")}. Updates will post in this channel until it's stopped.",
             ephemeral: true);
 
+        await StartJoinAutoMonitorAsync(context.Command.Channel);
+
         _ = Task.Run(() => RunJoinAutoLoopAsync(context, delaySeconds, watch, idleTimeout, cts.Token));
     }
 
     private async Task StopJoinAutoAsync(SlashContext context)
+    {
+        var wasRunning = await CancelJoinAutoIfRunningAsync(reason: null);
+        await context.Command.RespondAsync(
+            wasRunning ? "join-auto is stopping." : "join-auto is not running.",
+            ephemeral: true);
+    }
+
+    // issue #24: a manual quit on an account join-auto is managing used to just be retried past
+    // on the next attempt as though nothing had happened - the user's own words, "if you quit, it
+    // should stop auto if its running." Cancelling here also means join-auto stops trying to
+    // re-acquire the gate for a new attempt, which is most of what was making the quit itself
+    // slow/unreliable in the first place (see the quit/quit-all timeout comments above).
+    private async Task<bool> CancelJoinAutoIfRunningAsync(string? reason)
     {
         await _joinAutoLock.WaitAsync();
         try
         {
             if (_joinAutoCts is null)
             {
-                await context.Command.RespondAsync("join-auto is not running.", ephemeral: true);
-                return;
+                return false;
             }
 
+            _joinAutoStopReason = reason;
             _joinAutoCts.Cancel();
             _joinAutoCts = null;
+            return true;
         }
         finally
         {
             _joinAutoLock.Release();
         }
-
-        await context.Command.RespondAsync("join-auto is stopping.", ephemeral: true);
     }
 
     private async Task RunJoinAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, CancellationToken cancellationToken)
@@ -2288,6 +2321,7 @@ public sealed class DiscordBot
                 if (_gameTemplate is not { } template)
                 {
                     await SendJoinAutoMessageAsync(channel, "join-auto stopped: the template was cleared.");
+                    await CompleteJoinAutoMonitorAsync(ok: true, "Stopped: the template was cleared.");
                     break;
                 }
 
@@ -2298,27 +2332,35 @@ public sealed class DiscordBot
                 if (outcome == JoinAutoCycleOutcome.IdleTimedOut)
                 {
                     await SendJoinAutoMessageAsync(channel, "join-auto: idle timeout detected, disabled.");
+                    await CompleteJoinAutoMonitorAsync(ok: false, $"Idle timeout - gave up joining {gameName} and disabled.");
                     break;
                 }
 
                 await SendJoinAutoMessageAsync(channel, $"join-auto: everyone is in {gameName}. Watching for someone to leave...");
+                await UpdateJoinAutoMonitorAsync("Everyone is in - watching for someone to leave.");
 
                 await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
                 var baseline = await TryFetchFirstOnlineAccountPlayerCountAsync();
                 await WaitForPlayerCountDropAsync(baseline, cancellationToken);
 
                 await SendJoinAutoMessageAsync(channel, $"join-auto: player count dropped - leaving {gameName}.");
+                await UpdateJoinAutoMonitorAsync($"Player count dropped - leaving {gameName}...");
                 await LeaveAllJoinAutoAsync(channel);
+                _joinAutoCyclesCompleted++;
+                await UpdateJoinAutoMonitorAsync($"Left {gameName}. Advancing to the next game...", joined: 0);
             }
         }
         catch (OperationCanceledException)
         {
-            await SendJoinAutoMessageAsync(channel, "join-auto stopped.");
+            var reasonText = _joinAutoStopReason is { } reason ? $"join-auto stopped: {reason}." : "join-auto stopped.";
+            await SendJoinAutoMessageAsync(channel, reasonText);
+            await CompleteJoinAutoMonitorAsync(ok: true, reasonText);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "join-auto loop failed.");
             await SendJoinAutoMessageAsync(channel, $"join-auto stopped unexpectedly: {ex.Message}");
+            await CompleteJoinAutoMonitorAsync(ok: false, $"Stopped unexpectedly: {ex.Message}");
         }
         finally
         {
@@ -2329,6 +2371,8 @@ public sealed class DiscordBot
                 {
                     _joinAutoCts = null;
                 }
+
+                _joinAutoStopReason = null;
             }
             finally
             {
@@ -2368,6 +2412,7 @@ public sealed class DiscordBot
             var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
             if (entries.Length == 0)
             {
+                await UpdateJoinAutoMonitorAsync($"No online accounts available (attempt {attempt}).", gameName: game.GameName, joined: 0, total: 0);
                 if (watch)
                 {
                     await SendJoinAutoMessageAsync(channel, $"join-auto: no online accounts available (attempt {attempt})." + FormatOfflineSkipSuffix(offlineEntries));
@@ -2375,6 +2420,12 @@ public sealed class DiscordBot
             }
             else
             {
+                await UpdateJoinAutoMonitorAsync(
+                    attempt == 1 ? $"Joining {game.GameName}..." : $"Joining {game.GameName} (attempt {attempt})...",
+                    gameName: game.GameName,
+                    joined: 0,
+                    total: entries.Length);
+
                 var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
                 var argsByAccount = entries.ToDictionary(
                     entry => entry.Key,
@@ -2392,6 +2443,7 @@ public sealed class DiscordBot
 
                 if (joinResults.All(result => result.Ok))
                 {
+                    await UpdateJoinAutoMonitorAsync($"Everyone joined {game.GameName}.", joined: entries.Length, total: entries.Length);
                     return JoinAutoCycleOutcome.Joined;
                 }
 
@@ -2415,6 +2467,140 @@ public sealed class DiscordBot
     private static Task SendJoinAutoMessageAsync(IMessageChannel channel, string content)
     {
         return channel.SendMessageAsync(DiscordMessageTruncator.Truncate(content));
+    }
+
+    // issue #24: "the join-auto feature should still make a game monitor like the other one
+    // with the bot / player count / game name etc." Deliberately a separate message/state from
+    // _activeSessionMessage (create-game-all/join-all's own monitor) rather than sharing it - one
+    // persistent message edited for the entire join-auto run (confirmed with the user), not a
+    // fresh one per game the way the other one is per-invocation, since a farming session can
+    // advance through many numbered games over hours.
+    private async Task StartJoinAutoMonitorAsync(IMessageChannel channel)
+    {
+        _joinAutoMonitorGameName = null;
+        _joinAutoMonitorJoined = 0;
+        _joinAutoMonitorTotal = 0;
+        _joinAutoCyclesCompleted = 0;
+        _joinAutoStartedUtc = DateTimeOffset.UtcNow;
+        try
+        {
+            _joinAutoMonitorMessage = await channel.SendMessageAsync(await FormatJoinAutoMonitorMessageAsync("Starting..."));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not start join-auto monitor message.");
+            _joinAutoMonitorMessage = null;
+        }
+    }
+
+    private async Task UpdateJoinAutoMonitorAsync(string status, string? gameName = null, int? joined = null, int? total = null)
+    {
+        if (_joinAutoMonitorMessage is null)
+        {
+            return;
+        }
+
+        if (gameName is not null)
+        {
+            _joinAutoMonitorGameName = gameName;
+        }
+
+        if (joined is not null)
+        {
+            _joinAutoMonitorJoined = joined.Value;
+        }
+
+        if (total is not null)
+        {
+            _joinAutoMonitorTotal = total.Value;
+        }
+
+        try
+        {
+            var content = await FormatJoinAutoMonitorMessageAsync(status);
+            await _joinAutoMonitorMessage.ModifyAsync(properties => properties.Content = content);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not update join-auto monitor message.");
+        }
+    }
+
+    private async Task CompleteJoinAutoMonitorAsync(bool ok, string status)
+    {
+        if (_joinAutoMonitorMessage is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var content = await FormatJoinAutoMonitorMessageAsync(status);
+            await _joinAutoMonitorMessage.ModifyAsync(properties => properties.Content = content);
+            await _joinAutoMonitorMessage.AddReactionAsync(new Emoji(ok ? "✅" : "⛔"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not complete join-auto monitor message.");
+        }
+        finally
+        {
+            _joinAutoMonitorMessage = null;
+        }
+    }
+
+    private async Task<string> FormatJoinAutoMonitorMessageAsync(string status)
+    {
+        var elapsed = _joinAutoStartedUtc is { } started ? DateTimeOffset.UtcNow - started : TimeSpan.Zero;
+        var lines = new List<string>
+        {
+            "join-auto monitor",
+            $"Game: {_joinAutoMonitorGameName ?? "(none yet)"}",
+            $"Status: {status}",
+            $"Bots in game: {_joinAutoMonitorJoined}/{_joinAutoMonitorTotal}"
+        };
+
+        var playerCount = await TryFetchJoinAutoPlayerCountLineAsync();
+        if (playerCount is not null)
+        {
+            lines.Add(playerCount);
+        }
+
+        lines.Add($"Cycles completed: {_joinAutoCyclesCompleted}");
+        lines.Add($"Session elapsed: {FormatElapsed(elapsed)}");
+
+        return string.Join("\n", lines);
+    }
+
+    // Mirrors TryFetchPlayerCountLineAsync, but reads from join-auto's own account selection
+    // instead of _activeSessionRepresentativeAgentId - a different mechanism's state that this
+    // must not touch (see the comment on SubmitJoinAutoEntryAsync).
+    private async Task<string?> TryFetchJoinAutoPlayerCountLineAsync()
+    {
+        var (entries, _) = GetAccountEntriesByConnectivity();
+        if (entries.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var result = await _registry.SendCommandAsync(entries[0].Value.AgentId, "status", args: null, TimeSpan.FromSeconds(6));
+            if (!result.Ok || result.Data is not { } data)
+            {
+                return null;
+            }
+
+            var json = data.GetRawText();
+            return ShouldShowPartyMemberCount(json) && TryReadPartyMemberCountSummary(json, out var summary)
+                ? $"Players in game: {summary}"
+                : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not fetch live player count for join-auto monitor.");
+            return null;
+        }
     }
 
     // Mirrors RunJoinAllPreparedEntryAsync minus the IncrementGameSessionJoinedAsync call -
