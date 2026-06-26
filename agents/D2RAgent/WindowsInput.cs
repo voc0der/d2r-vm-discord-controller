@@ -482,6 +482,29 @@ internal sealed class WindowsInput
         int sampleGrid,
         IEnumerable<string>? coordinateProcessNames)
     {
+        return ScreenRegionStatsCalculator.FromPixels(
+            CaptureGridPixels(center, widthRatio, heightRatio, sampleGrid, coordinateProcessNames));
+    }
+
+    // Party-member portrait frames (PartyMemberSlots/PartyFrameClassifier, issue #20, item 6)
+    // need a different classifier than ScreenRegionStats's fixed Red/Blue/Orange/etc. ratios, but
+    // the exact same capture-then-grid-sample mechanics as SampleRegion - same DWM-avoidance
+    // reasoning, same coordinate handling. Shares CaptureGridPixels rather than duplicating the
+    // BitBlt scaffolding, and never touches ScreenRegionStats's shape or SampleRegion's own
+    // callers.
+    internal double SamplePartyFrameRatio(UiPoint center, double widthRatio, double heightRatio, int sampleGrid = 9)
+    {
+        return PartyFrameClassifier.FrameRatio(
+            CaptureGridPixels(center, widthRatio, heightRatio, sampleGrid, coordinateProcessNames: null));
+    }
+
+    private List<(byte Red, byte Green, byte Blue)> CaptureGridPixels(
+        UiPoint center,
+        double widthRatio,
+        double heightRatio,
+        int sampleGrid,
+        IEnumerable<string>? coordinateProcessNames)
+    {
         EnsureWindows();
         var screenWidth = GetSystemMetrics(SmCxScreen);
         var screenHeight = GetSystemMetrics(SmCyScreen);
@@ -542,8 +565,8 @@ internal sealed class WindowsInput
                         throw new InvalidOperationException($"BitBlt failed. LastError={Marshal.GetLastWin32Error()}");
                     }
 
-                    return ScreenRegionStatsCalculator.FromPixels(EnumerateGridPixels(
-                        memoryDc, centerX, centerY, regionWidth, regionHeight, grid, screenWidth, screenHeight, left, top, captureWidth, captureHeight));
+                    return EnumerateGridPixels(
+                        memoryDc, centerX, centerY, regionWidth, regionHeight, grid, screenWidth, screenHeight, left, top, captureWidth, captureHeight);
                 }
                 finally
                 {

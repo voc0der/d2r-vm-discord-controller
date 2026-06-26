@@ -36,6 +36,30 @@ internal static class FullCaptureRegionSampler
             EnumerateGridPixels(image, centerX, centerY, regionWidth, regionHeight, grid, width, height));
     }
 
+    // Same capture math as Sample above, but through PartyFrameClassifier instead of
+    // ScreenRegionStatsCalculator - mirrors WindowsInput.SamplePartyFrameRatio the same way
+    // Sample mirrors WindowsInput.SampleRegion (issue #20, item 6).
+    public static double SamplePartyFrameRatio(
+        string fileName,
+        UiPoint center,
+        double widthRatio,
+        double heightRatio,
+        int sampleGrid = 9)
+    {
+        var image = LoadCached(fileName);
+        var width = image.Width;
+        var height = image.Height;
+
+        var centerX = center.X * width;
+        var centerY = center.Y * height;
+        var regionWidth = Math.Max(width * widthRatio, sampleGrid);
+        var regionHeight = Math.Max(height * heightRatio, sampleGrid);
+        var grid = Math.Clamp(sampleGrid, 3, 51);
+
+        return PartyFrameClassifier.FrameRatio(
+            EnumerateGridPixels(image, centerX, centerY, regionWidth, regionHeight, grid, width, height));
+    }
+
     private static IEnumerable<(byte Red, byte Green, byte Blue)> EnumerateGridPixels(
         Image<Rgba32> image,
         double centerX,

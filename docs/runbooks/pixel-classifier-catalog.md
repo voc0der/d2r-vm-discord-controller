@@ -95,6 +95,51 @@ mask a true later state if their region happens to also satisfy an earlier thres
 The live detector short-circuits in that order so the normal modern-HUD success path only has to
 sample the action bar and modern globes; diagnostics still sample and print every HUD region.
 
+## Party member count
+
+issue #20, item 6. D2R draws one gold-framed portrait icon per OTHER party member (not counting
+yourself) in a row at the top-left of the screen, filling left-to-right with no gaps and no
+reordering. Reference screenshots: `docs/runbooks/assets/d2r-ui/1366x768/party_members_0.png`
+through `party_members_3.png` - solo through 3 other members, captured live and classified by
+direct pixel measurement (`PartyMemberSlotsTests.cs`/`PartyFrameClassifierTests.cs` pin the exact
+numbers below; `PartyMemberCountReferenceTests.cs` re-derives the count from the real screenshots
+end to end).
+
+| Slot | Box (1366x768 px) | Top-edge sample strip |
+| --- | --- | --- |
+| 1 | `(190,26)`-`(248,77)`, 58x51 | center `(219, 29)`, 58x6 |
+| 2 | `(262,26)`-`(320,77)` | center `(291, 29)`, 58x6 |
+| 3 | `(334,26)`-`(390,77)` | center `(363, 29)`, 58x6 |
+| N (1-8) | left = 190 + (N-1)*72 | left = box left, same width/height |
+
+Slots 4-8 are extrapolated from the confirmed 72px pitch between slots 1-3, not directly observed
+- a full D2R party is 8, but only 0-3 references exist so far. If counts above 3 look wrong,
+capture `party_members_4.png` etc. and recheck `PartyMemberSlots` before assuming the detection
+logic is broken.
+
+**Classifies the frame border, not the health bar fill above it.** The bar's color and length
+track that member's current HP (green when healthy, shrinking and recoloring as they take
+damage, gone if they're dead), so a damaged or dead party member's bar is not reliably green -
+keying detection on it would undercount anyone who's taken damage, which in real play is most of
+the party most of the time. The gold/tan frame itself is constant regardless of HP or which
+character occupies the slot, measured at R∈(110,200), G∈(80,170), B∈(15,100), R>G>B, R-B>40
+(`PartyFrameClassifier.IsFrameColor`). This is deliberately separate from the existing
+`OrangeRatio` classifier above (`blue < 45`): this frame's blue channel measured 50-90 across
+every sampled pixel, well over that cutoff, so reusing `OrangeRatio` would have under-detected.
+
+A slot counts as occupied when `PartyFrameClassifier.FrameRatio` over its top-edge strip is
+`>= 0.3`. Measured ratios: every occupied slot across all three non-empty references landed in
+0.44-0.59; every unoccupied slot (including the entire top-left HUD region in the solo reference)
+measured exactly 0.0 - large margin either side of 0.3 for a real VM's capture/scaling jitter.
+Sampling is restricted to a thin strip across just the top edge of the frame rather than the
+whole ~58x51 box because the box interior is the character's portrait art, which differs per
+character and isn't a reliable signal; the strip stays clear of it while still measuring well
+clear of the threshold.
+
+Total players in a game = party member count + 1 (yourself), which only holds while everyone
+present is in one party - true for this project's own multi-boxed-accounts use case, not
+necessarily true in a mixed/public game.
+
 ## Lobby / game entry menu
 
 | Function | Regions | Threshold |
