@@ -1,6 +1,6 @@
 using Discord;
 
-namespace D2RHost;
+namespace AgentCommon;
 
 public static class DiscordSlashCommands
 {
