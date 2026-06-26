@@ -36,7 +36,7 @@ public static class DiscordSlashCommands
                     Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("template", "Set the create-game-all/join-all auto-naming template (netrunner1, netrunner2, ...)", RequiredGameName(), Password()),
-                    Sub("join-auto", "Auto-join the template game, wait for someone to leave, leave, advance, repeat until stopped", CharacterSlot(), Delay(), StopFlag()),
+                    Sub("join-auto", "Auto-join the template game, wait for someone to leave, leave, advance, repeat until stopped", CharacterSlot(), Delay(), StopFlag(), JoinAutoWatch(), IdleMinutes()),
                     Sub("follow-all", "Stagger all accounts into a friend's game", CharacterSlot(), FriendRow()),
                     Sub("save-exit-all", "Stagger Save and Exit across all accounts"),
                     Sub("quit-all", "Stagger Alt+F4 quit across all online accounts"),
@@ -199,6 +199,26 @@ public static class DiscordSlashCommands
         return new SlashCommandOptionBuilder()
             .WithName("stop")
             .WithDescription("Stop a running join-auto loop instead of starting one")
+            .WithType(ApplicationCommandOptionType.Boolean)
+            .WithRequired(false);
+    }
+
+    private static SlashCommandOptionBuilder IdleMinutes()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("idle-minutes")
+            .WithDescription("Minutes to retry joining the next game before giving up and disabling; default 60")
+            .WithType(ApplicationCommandOptionType.Integer)
+            .WithRequired(false)
+            .WithMinValue(1)
+            .WithMaxValue(600);
+    }
+
+    private static SlashCommandOptionBuilder JoinAutoWatch()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("watch")
+            .WithDescription("Also post each failed join/leave attempt, not just successes and the final outcome")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }

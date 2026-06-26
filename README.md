@@ -61,7 +61,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r create-game-all [name] [password] [difficulty] [character-slot] [watch]`
 - `/d2r join-all [name] [password] [difficulty] [character-slot] [watch]`
 - `/d2r template name [password]`
-- `/d2r join-auto [character-slot] [delay] [stop]`
+- `/d2r join-auto [character-slot] [delay] [stop] [watch] [idle-minutes]`
 - `/d2r follow-all [character-slot] [friend-row]`
 - `/d2r save-exit-all`
 - `/d2r quit-all`

@@ -15,6 +15,7 @@ public sealed class DiscordBot
     // the character screen on its own. 420s gives real headroom above that budget.
     private static readonly TimeSpan ReadyCommandTimeout = TimeSpan.FromSeconds(420);
     private static readonly TimeSpan JoinPrepareCommandTimeout = TimeSpan.FromSeconds(35);
+    private const int JoinAutoDefaultIdleMinutes = 60;
 
     private readonly HostConfig _config;
     private readonly HostRuntimeOptions _runtime;
@@ -231,7 +232,11 @@ public sealed class DiscordBot
                 return;
             }
 
-            await StartJoinAutoAsync(context, Math.Max(context.GetInt("delay") ?? 0, 0));
+            await StartJoinAutoAsync(
+                context,
+                Math.Max(context.GetInt("delay") ?? 0, 0),
+                context.GetBool("watch") == true,
+                TimeSpan.FromMinutes(Math.Max(context.GetInt("idle-minutes") ?? JoinAutoDefaultIdleMinutes, 1)));
             return;
         }
 
@@ -2208,11 +2213,11 @@ public sealed class DiscordBot
 
     // issue #20, item 7. Assumes a human (not one of this bot's own VMs) creates each numbered
     // game externally using the same template naming, so this only ever joins/waits/leaves/
-    // advances - it never calls create-game-all itself. Runs until /d2r join-auto stop:true or a
-    // hard failure (the expected game still isn't joinable after 3 retries). The interaction's
-    // own follow-up token expires long before a multi-cycle farming run would finish, so every
-    // message after the initial ack goes straight to the invoking channel instead.
-    private async Task StartJoinAutoAsync(SlashContext context, int delaySeconds)
+    // advances - it never calls create-game-all itself. Runs until /d2r join-auto stop:true or
+    // an idle timeout (see TryJoinAutoCycleAsync). The interaction's own follow-up token expires
+    // long before a multi-cycle farming run would finish, so every message after the initial ack
+    // goes straight to the invoking channel instead.
+    private async Task StartJoinAutoAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout)
     {
         if (_gameTemplate is null)
         {
@@ -2246,7 +2251,7 @@ public sealed class DiscordBot
             $"join-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay before each join attempt" : "")}. Updates will post in this channel until it's stopped.",
             ephemeral: true);
 
-        _ = Task.Run(() => RunJoinAutoLoopAsync(context, delaySeconds, cts.Token));
+        _ = Task.Run(() => RunJoinAutoLoopAsync(context, delaySeconds, watch, idleTimeout, cts.Token));
     }
 
     private async Task StopJoinAutoAsync(SlashContext context)
@@ -2271,7 +2276,7 @@ public sealed class DiscordBot
         await context.Command.RespondAsync("join-auto is stopping.", ephemeral: true);
     }
 
-    private async Task RunJoinAutoLoopAsync(SlashContext context, int delaySeconds, CancellationToken cancellationToken)
+    private async Task RunJoinAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, CancellationToken cancellationToken)
     {
         var channel = context.Command.Channel;
         try
@@ -2282,38 +2287,38 @@ public sealed class DiscordBot
 
                 if (_gameTemplate is not { } template)
                 {
-                    await channel.SendMessageAsync("join-auto stopped: the template was cleared.");
+                    await SendJoinAutoMessageAsync(channel, "join-auto stopped: the template was cleared.");
                     break;
                 }
 
                 var (gameName, password) = template.MintNext();
                 var game = new GameInput(gameName, password, Difficulty: null);
 
-                var joined = await TryJoinAutoCycleAsync(channel, context, game, delaySeconds, cancellationToken);
-                if (!joined)
+                var outcome = await TryJoinAutoCycleAsync(channel, context, game, delaySeconds, watch, idleTimeout, cancellationToken);
+                if (outcome == JoinAutoCycleOutcome.IdleTimedOut)
                 {
-                    await channel.SendMessageAsync($"join-auto hard failed: could not get everyone into {gameName} after 4 attempts. Stopping - fix whatever's blocking it and run /d2r join-auto again.");
+                    await SendJoinAutoMessageAsync(channel, "join-auto: idle timeout detected, disabled.");
                     break;
                 }
 
-                await channel.SendMessageAsync($"join-auto: everyone is in {gameName}. Watching for someone to leave...");
+                await SendJoinAutoMessageAsync(channel, $"join-auto: everyone is in {gameName}. Watching for someone to leave...");
 
                 await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
                 var baseline = await TryFetchFirstOnlineAccountPlayerCountAsync();
                 await WaitForPlayerCountDropAsync(baseline, cancellationToken);
 
-                await channel.SendMessageAsync($"join-auto: player count dropped - leaving {gameName}.");
+                await SendJoinAutoMessageAsync(channel, $"join-auto: player count dropped - leaving {gameName}.");
                 await LeaveAllJoinAutoAsync(channel);
             }
         }
         catch (OperationCanceledException)
         {
-            await channel.SendMessageAsync("join-auto stopped.");
+            await SendJoinAutoMessageAsync(channel, "join-auto stopped.");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "join-auto loop failed.");
-            await channel.SendMessageAsync($"join-auto stopped unexpectedly: {ex.Message}");
+            await SendJoinAutoMessageAsync(channel, $"join-auto stopped unexpectedly: {ex.Message}");
         }
         finally
         {
@@ -2332,11 +2337,27 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task<bool> TryJoinAutoCycleAsync(
-        IMessageChannel channel, SlashContext context, GameInput game, int delaySeconds, CancellationToken cancellationToken)
+    private enum JoinAutoCycleOutcome
     {
-        const int maxAttempts = 4;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        Joined,
+        IdleTimedOut,
+    }
+
+    // Failing to join the next numbered game on the first few attempts is the normal, expected
+    // shape of this flow, not a problem - the human running the farming session has to notice the
+    // previous game ended and set the next one up, which takes a real amount of wall-clock time.
+    // So this retries patiently rather than giving up after a small fixed attempt count (the
+    // user's own words: "that failure isn't the end of the world, it just should be part of the
+    // flow"). idleTimeout is the actual safety net: if it's genuinely stuck (nobody ever sets up
+    // the next game, or something is actually broken), give up after idleTimeout of unbroken
+    // failure instead of retrying forever and silently never telling anyone. Per-attempt failure
+    // detail is watch-gated - it's only useful for debugging a real problem, not for the routine
+    // wait, and the user explicitly only wants to see it when intentionally watching for that.
+    private async Task<JoinAutoCycleOutcome> TryJoinAutoCycleAsync(
+        IMessageChannel channel, SlashContext context, GameInput game, int delaySeconds, bool watch, TimeSpan idleTimeout, CancellationToken cancellationToken)
+    {
+        var deadlineUtc = DateTime.UtcNow + idleTimeout;
+        for (var attempt = 1; ; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (delaySeconds > 0)
@@ -2347,37 +2368,53 @@ public sealed class DiscordBot
             var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
             if (entries.Length == 0)
             {
-                await channel.SendMessageAsync($"join-auto: no online accounts available (attempt {attempt}/{maxAttempts})." + FormatOfflineSkipSuffix(offlineEntries));
-                continue;
-            }
-
-            var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
-            var argsByAccount = entries.ToDictionary(
-                entry => entry.Key,
-                entry => BuildMenuArgs(entry.Key, entry.Value, game, context),
-                StringComparer.OrdinalIgnoreCase);
-            var prepareTasks = entries
-                .Select((entry, index) => new
+                if (watch)
                 {
-                    entry.Key,
-                    Task = RunJoinAllPrepareEntryAsync(entry, index, staggerSeconds, argsByAccount[entry.Key])
-                })
-                .ToDictionary(item => item.Key, item => item.Task, StringComparer.OrdinalIgnoreCase);
-            var joinResults = await Task.WhenAll(entries.Select(entry =>
-                SubmitJoinAutoEntryAsync(entry, prepareTasks[entry.Key], argsByAccount[entry.Key])));
-
-            if (joinResults.All(result => result.Ok))
+                    await SendJoinAutoMessageAsync(channel, $"join-auto: no online accounts available (attempt {attempt})." + FormatOfflineSkipSuffix(offlineEntries));
+                }
+            }
+            else
             {
-                return true;
+                var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
+                var argsByAccount = entries.ToDictionary(
+                    entry => entry.Key,
+                    entry => BuildMenuArgs(entry.Key, entry.Value, game, context),
+                    StringComparer.OrdinalIgnoreCase);
+                var prepareTasks = entries
+                    .Select((entry, index) => new
+                    {
+                        entry.Key,
+                        Task = RunJoinAllPrepareEntryAsync(entry, index, staggerSeconds, argsByAccount[entry.Key])
+                    })
+                    .ToDictionary(item => item.Key, item => item.Task, StringComparer.OrdinalIgnoreCase);
+                var joinResults = await Task.WhenAll(entries.Select(entry =>
+                    SubmitJoinAutoEntryAsync(entry, prepareTasks[entry.Key], argsByAccount[entry.Key])));
+
+                if (joinResults.All(result => result.Ok))
+                {
+                    return JoinAutoCycleOutcome.Joined;
+                }
+
+                if (watch)
+                {
+                    var failed = joinResults.Where(result => !result.Ok);
+                    await SendJoinAutoMessageAsync(
+                        channel,
+                        $"join-auto: attempt {attempt} to join {game.GameName} failed - "
+                            + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+                }
             }
 
-            var failed = joinResults.Where(result => !result.Ok);
-            await channel.SendMessageAsync(
-                $"join-auto: attempt {attempt}/{maxAttempts} to join {game.GameName} failed - "
-                    + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+            if (DateTime.UtcNow >= deadlineUtc)
+            {
+                return JoinAutoCycleOutcome.IdleTimedOut;
+            }
         }
+    }
 
-        return false;
+    private static Task SendJoinAutoMessageAsync(IMessageChannel channel, string content)
+    {
+        return channel.SendMessageAsync(DiscordMessageTruncator.Truncate(content));
     }
 
     // Mirrors RunJoinAllPreparedEntryAsync minus the IncrementGameSessionJoinedAsync call -
@@ -2410,7 +2447,7 @@ public sealed class DiscordBot
         var (entries, _) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            await channel.SendMessageAsync("join-auto: no online accounts to leave with.");
+            await SendJoinAutoMessageAsync(channel, "join-auto: no online accounts to leave with.");
             return;
         }
 
@@ -2429,7 +2466,7 @@ public sealed class DiscordBot
         }));
 
         var failed = leaveResults.Where(result => !result.Ok).ToArray();
-        await channel.SendMessageAsync(failed.Length == 0
+        await SendJoinAutoMessageAsync(channel, failed.Length == 0
             ? "join-auto: all accounts left."
             : "join-auto: leave failed for " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
     }
