@@ -1744,19 +1744,23 @@ public sealed class DiscordBot
                 + FormatOfflineSkipSuffix(offlineEntries),
             ephemeral: true);
 
+        var tracker = new FanInCompletionTracker(entries.Length);
+
         foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
         {
             _ = Task.Run(async () =>
             {
-                await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
+                var ok = true;
                 try
                 {
+                    await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
                     var args = argsFactory(entry.Key, entry.Value);
                     if (readyFirstIfNotMenuReady)
                     {
                         var readyResult = await SendReadyIfNotMenuReadyAsync(entry.Value, args);
                         if (readyResult?.Ok == false)
                         {
+                            ok = false;
                             _logger.LogWarning(
                                 "Queued command {Command} skipped for {AccountKey} because ready failed: {Message}",
                                 commandName,
@@ -1776,6 +1780,7 @@ public sealed class DiscordBot
                         timeout ?? TimeSpan.FromSeconds(60));
                     if (!result.Ok)
                     {
+                        ok = false;
                         await SendFollowupSafeAsync(
                             context,
                             $"{label} failed for {entry.Key}: {result.Message}");
@@ -1783,12 +1788,43 @@ public sealed class DiscordBot
                 }
                 catch (Exception ex)
                 {
+                    ok = false;
                     _logger.LogError(ex, "Queued command {Command} failed for {AccountKey}.", commandName, entry.Key);
                     await SendFollowupSafeAsync(
                         context,
                         $"{label} failed for {entry.Key}: {FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value)}");
                 }
+                finally
+                {
+                    if (tracker.Complete(ok))
+                    {
+                        await SendQueueCompletionFollowupAsync(context, label, entries.Length, tracker.FailedCount);
+                    }
+                }
             });
+        }
+    }
+
+    // join-all/create-game-all already signal completion with a checkmark/X reaction on their
+    // public session message (see CompleteGameSessionAsync) - leave-all/save-exit-all/start-all/
+    // quit-all/close-all (all routed through QueueAllCommandsAsync) had no equivalent "everyone's
+    // done" signal, only ad-hoc per-VM failure follow-ups, so a fully successful run looked
+    // identical to one nobody had checked on yet. The reaction has to land on a fresh
+    // non-ephemeral follow-up rather than the initial ack: that ack is sent ephemeral (visible
+    // only to the invoker), and Discord does not support reacting to ephemeral messages.
+    private async Task SendQueueCompletionFollowupAsync(SlashContext context, string label, int total, int failed)
+    {
+        try
+        {
+            var message = failed == 0
+                ? $"{label} complete: {total}/{total} succeeded."
+                : $"{label} complete: {total - failed}/{total} succeeded, {failed} failed (see above).";
+            var sent = await context.Command.FollowupAsync(message, ephemeral: false);
+            await sent.AddReactionAsync(new Emoji(failed == 0 ? "✅" : "⛔"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not send queue-completion follow-up for {Label}.", label);
         }
     }
 
