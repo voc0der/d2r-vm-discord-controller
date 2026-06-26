@@ -490,11 +490,39 @@ public sealed class VmOperations
             return;
         }
 
+        // The cached state above only changes when an automated command explicitly transitions
+        // it (MarkLobbyOrGameInteraction etc.) - a join-all attempt that fails its own entry
+        // check and returns without marking, then the client recovers or gets joined some other
+        // way, leaves this stuck on CharacterScreenIdle with the original timestamp forever, even
+        // though the client is actually in a game. /d2r status already re-derives a live snapshot
+        // (DetectVisibleActivitySnapshot) rather than trusting this cache for display; the actual
+        // quit decision needs that same live look before doing something irreversible (issue #20,
+        // item 1).
+        var visibleState = DetectVisibleD2RState(d2rRunning: true);
+        var liveActivity = DetectVisibleActivitySnapshot(d2rRunning: true, visibleState);
+        if (liveActivity.State != D2RActivityState.CharacterScreenIdle)
+        {
+            ReconcileActivityFromLiveSnapshot(liveActivity);
+            log($"Skipped idle quit: cached state said character-screen-idle for {idleFor.TotalMinutes:N0}m, but a live check now shows {liveActivity.State}.");
+            return;
+        }
+
         log($"D2R has been idle at the character screen for {idleFor.TotalMinutes:N0} minute(s); sending Alt+F4.");
         var result = await QuitD2RAsync(cancellationToken);
         if (!result.Ok)
         {
             log($"Idle quit failed: {result.Message}");
+        }
+    }
+
+    internal void ReconcileActivityFromLiveSnapshot(ActivitySnapshot liveActivity)
+    {
+        lock (_activityLock)
+        {
+            _activityState = liveActivity.State;
+            _characterScreenIdleSinceUtc = liveActivity.CharacterScreenIdleSinceUtc;
+            _lastLobbyOrGameInteractionUtc = liveActivity.LastLobbyOrGameInteractionUtc;
+            _lastActivityReason = liveActivity.Reason;
         }
     }
 
@@ -1001,7 +1029,7 @@ public sealed class VmOperations
         }
     }
 
-    private ActivitySnapshot GetActivitySnapshot()
+    internal ActivitySnapshot GetActivitySnapshot()
     {
         lock (_activityLock)
         {
@@ -4223,7 +4251,9 @@ public sealed class VmOperations
         }
     }
 
-    private enum D2RActivityState
+    // internal so tests can pin ReconcileActivityFromLiveSnapshot/GetActivitySnapshot's contract
+    // (issue #20, item 1) without needing the real Win32 screen classifier behind it.
+    internal enum D2RActivityState
     {
         Unknown,
         CharacterScreenIdle,
@@ -4300,7 +4330,7 @@ public sealed class VmOperations
         public bool Toggled { get; set; }
     }
 
-    private sealed record ActivitySnapshot(
+    internal sealed record ActivitySnapshot(
         D2RActivityState State,
         DateTimeOffset? CharacterScreenIdleSinceUtc,
         DateTimeOffset? LastLobbyOrGameInteractionUtc,
