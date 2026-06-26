@@ -66,6 +66,7 @@ Use these commands while driving clients:
 /d2r join-game hc1
 /d2r join-all
 /d2r create-game hc1
+/d2r template name:netrunner password:q
 /d2r follow hc1 friend-row:1
 /d2r follow-all friend-row:1
 /d2r save-exit hc1
@@ -91,7 +92,9 @@ Use these commands while driving clients:
 
 If `lobby`, `play`, `join-game`, `create-game`, or `follow` is requested while the latest VM status says D2R is stopped or D2R is running with an `Unknown` activity state, `D2RHost` runs `/d2r ready` first and reports that extra step in Discord.
 
-For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued. `/d2r create-game-all` now starts the creator as soon as the creator is ready; side clients warm up and prepare their Join Game forms in parallel, then submit Join Game after the creator succeeds.
+For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued. `/d2r create-game-all` now starts the creator as soon as the creator is ready; side clients warm up and prepare their Join Game forms in parallel, then submit Join Game after the creator succeeds. `leave-all`/`save-exit-all`/`start-all`/`quit-all`/`close-all` now post a single follow-up with a checkmark/no-entry reaction once every queued account finishes, in addition to the existing per-account failure follow-ups (issue #20, item 2).
+
+`/d2r create-game-all` and `/d2r join-all` with no `name` (issue #20, items 3-5): if a recent (<1h) `/game set`/prior create-game-all/join-all game exists, `join-all` reuses it; `create-game-all` only reuses it when no template is set (it never reuses `/game show` while a template is active - otherwise the number could never advance). If `/d2r template name:<x> password:<y>` has been set this run, `create-game-all` mints the next number (`netrunner1`, `netrunner2`, ...) and `join-all` joins whichever number was most recently minted (or `netrunner1` if none yet). With no template and nothing recent, `create-game-all` falls back to a random name/password and `join-all` does nothing. The template and its counter are in-memory only and reset when `D2RHost` restarts. Every successful create-game-all/join-all (however the name was resolved) updates the `/game show` record, so the next plain call sees what's actually running.
 
 Use `/config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/config notifications enabled:true channel-id:<channel>` to post create-game-all and join-all session updates into a Discord channel. Use `/restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
 

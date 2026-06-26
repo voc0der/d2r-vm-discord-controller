@@ -30,6 +30,12 @@ public sealed class DiscordBot
     private int _activeSessionExpected;
     private int _activeSessionJoined;
     private bool _commandsRegistered;
+    private GameNameTemplate? _gameTemplate;
+
+    // join-all's "join the last known game if it's recent" (issue #20, item 5) needs to mean
+    // a game create-game-all/join-all actually acted on, not just whatever /game set last had -
+    // a 3-day-old manual /game set shouldn't be silently (re)joined.
+    private static readonly TimeSpan ActiveGameFreshness = TimeSpan.FromHours(1);
 
     public DiscordBot(
         HostConfig config,
@@ -182,14 +188,35 @@ public sealed class DiscordBot
 
         if (subcommand == "join-all")
         {
-            var game = ResolveGameInput(context);
+            var game = ResolveJoinAllInput(context);
+            if (game is null)
+            {
+                await context.Command.RespondAsync(
+                    "Nothing to join: no recent game and no template set. Pass name, or set one with /game set or /d2r template.",
+                    ephemeral: true);
+                return;
+            }
+
             await QueueJoinAllAsync(context, game, watch: context.GetBool("watch") ?? false);
             return;
         }
 
         if (subcommand == "create-game-all")
         {
-            await QueueCreateGameAllAsync(context, ResolveGameInput(context), watch: context.GetBool("watch") ?? false);
+            await QueueCreateGameAllAsync(context, ResolveCreateGameAllInput(context), watch: context.GetBool("watch") ?? false);
+            return;
+        }
+
+        if (subcommand == "template")
+        {
+            _gameTemplate = new GameNameTemplate(
+                context.GetRequiredString("name"),
+                BlankToNull(context.GetString("password")));
+            var passwordSuffix = _gameTemplate.Password is null ? string.Empty : $"/{_gameTemplate.Password}";
+            await context.Command.RespondAsync(
+                $"Template set: {_gameTemplate.Name}1{passwordSuffix} is next. "
+                    + "create-game-all/join-all with no name will use this until /d2r template is set again or the host restarts.",
+                ephemeral: true);
             return;
         }
 
@@ -712,6 +739,11 @@ public sealed class DiscordBot
                         $"create-game-all stopped: {creator.Key} failed to create {game.GameName}: {createResult.Message}");
                     return;
                 }
+
+                // So a later plain join-all/create-game-all (no flags) sees what actually just
+                // got created, the same way a manual /game set would - not just whatever was
+                // true before this run started.
+                _db.SetActiveGame(game.GameName, game.Password, game.Difficulty, notes: "create-game-all", context.Command.User.Id.ToString());
 
                 await UpdateGameSessionAsync(
                     $"Game created by {creator.Key}; joiners entering as they finish preparing.",
@@ -1372,6 +1404,11 @@ public sealed class DiscordBot
             return;
         }
 
+        // So a later plain join-all/create-game-all (no flags) sees what this run actually
+        // joined - the game already exists by definition, so this is true regardless of whether
+        // every account's join below succeeds.
+        _db.SetActiveGame(game.GameName, game.Password, game.Difficulty, notes: "join-all", context.Command.User.Id.ToString());
+
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
         var readyFirstCount = entries.Count(entry => ShouldRunReadyFirst(entry.Value));
         await context.Command.RespondAsync(
@@ -1997,6 +2034,64 @@ public sealed class DiscordBot
             gameName,
             BlankToNull(context.GetString("password")) ?? stored?.Password,
             context.GetString("difficulty") ?? stored?.Difficulty);
+    }
+
+    // create-game-all with no name (issue #20, items 3 and 5), in priority order: explicit flags
+    // always win; otherwise a template mints a fresh numbered name every call (it never reuses
+    // /game show's stored value - that's what would stop netrunner1 -> netrunner2 from advancing);
+    // otherwise fall back to today's stored-active-game behavior; otherwise random credentials so
+    // the command always works rather than erroring.
+    private GameInput ResolveCreateGameAllInput(SlashContext context)
+    {
+        var explicitName = BlankToNull(context.GetString("name"));
+        var difficulty = context.GetString("difficulty");
+        var stored = _db.GetActiveGame();
+        if (explicitName is not null)
+        {
+            return new GameInput(explicitName, BlankToNull(context.GetString("password")), difficulty ?? stored?.Difficulty);
+        }
+
+        if (_gameTemplate is { } template)
+        {
+            var (name, password) = template.MintNext();
+            return new GameInput(name, password, difficulty);
+        }
+
+        if (!string.IsNullOrWhiteSpace(stored?.Name))
+        {
+            return new GameInput(stored.Name, stored.Password, difficulty ?? stored.Difficulty);
+        }
+
+        return new GameInput(RandomGameCredentials.NewGameName(), RandomGameCredentials.NewPassword(), difficulty);
+    }
+
+    // join-all with no name (issue #20, items 4 and 5), in priority order: explicit flags always
+    // win; otherwise the active game if it's recent enough to plausibly still be running;
+    // otherwise the template's current game (so join-all can find what the last create-game-all
+    // minted even after the active-game freshness window lapses); otherwise null, meaning do
+    // nothing rather than guess.
+    private GameInput? ResolveJoinAllInput(SlashContext context)
+    {
+        var explicitName = BlankToNull(context.GetString("name"));
+        var difficulty = context.GetString("difficulty");
+        var stored = _db.GetActiveGame();
+        if (explicitName is not null)
+        {
+            return new GameInput(explicitName, BlankToNull(context.GetString("password")), difficulty ?? stored?.Difficulty);
+        }
+
+        if (!string.IsNullOrWhiteSpace(stored?.Name) && DateTimeOffset.UtcNow - stored.UpdatedUtc <= ActiveGameFreshness)
+        {
+            return new GameInput(stored.Name, stored.Password, difficulty ?? stored.Difficulty);
+        }
+
+        if (_gameTemplate is { } template)
+        {
+            var (name, password) = template.Current();
+            return new GameInput(name, password, difficulty);
+        }
+
+        return null;
     }
 
     private (string AccountKey, AccountConfig Account) RequireAccount(string accountKey)

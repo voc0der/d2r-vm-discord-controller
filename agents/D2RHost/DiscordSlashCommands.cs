@@ -30,6 +30,7 @@ public static class DiscordSlashCommands
                     Sub("leave", "Alias for Save and Exit", Account()),
                     Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
+                    Sub("template", "Set the auto-naming template create-game-all/join-all use when no name is given (netrunner1, netrunner2, ...)", RequiredGameName(), Password()),
                     Sub("follow-all", "Stagger all accounts into a friend's game", CharacterSlot(), FriendRow()),
                     Sub("save-exit-all", "Stagger Save and Exit across all accounts"),
                     Sub("leave-all", "Alias for Save and Exit across all accounts"),
