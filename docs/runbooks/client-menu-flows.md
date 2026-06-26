@@ -98,6 +98,8 @@ For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run clie
 
 Use `/config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/config notifications enabled:true channel-id:<channel>` to post create-game-all and join-all session updates into a Discord channel. Use `/restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
 
+The session message also includes a `Players in game: N player(s) (Ns ago)` line once it's available (issue #20, item 6) - fetched live from the creator's (create-game-all) or first online account's (join-all) own `RunPartyMemberMonitorAsync` reading on every message edit, the same `/d2r status` field the watch ticker's `| party` segment reads. Because that monitor only ticks every `partyMemberCountIntervalSeconds` (default 30) and only once actually `InGame`, the line can be missing entirely on a very fast join's first message and fill in on a later edit (each joiner completing, or completion itself) once the monitor has had a chance to sample - it is deliberately not forced fresh on every message edit, to stay off the hot path of every Discord interaction.
+
 Long-running host commands defer the Discord interaction and continue in background before editing the original ephemeral response. This keeps slow ready/create/join/screenshot operations from blocking Discord gateway heartbeats.
 
 ## Launch To Battle.net

@@ -29,6 +29,7 @@ public sealed class DiscordBot
     private DateTimeOffset? _activeSessionStartedUtc;
     private int _activeSessionExpected;
     private int _activeSessionJoined;
+    private string? _activeSessionRepresentativeAgentId;
     private bool _commandsRegistered;
     private GameNameTemplate? _gameTemplate;
 
@@ -652,7 +653,8 @@ public sealed class DiscordBot
         await StartGameSessionAsync(
             game.GameName,
             entries.Length,
-            $"Queued create-game-all. {creator.Key} will create; {joiners.Length} account(s) will join.");
+            $"Queued create-game-all. {creator.Key} will create; {joiners.Length} account(s) will join.",
+            creator.Value.AgentId);
 
         var watchCts = new CancellationTokenSource();
         if (watch)
@@ -1478,7 +1480,8 @@ public sealed class DiscordBot
         await StartGameSessionAsync(
             game.GameName,
             entries.Length,
-            $"Queued join-all for {entries.Length} account(s).");
+            $"Queued join-all for {entries.Length} account(s).",
+            entries[0].Value.AgentId);
 
         var watchCts = new CancellationTokenSource();
         if (watch)
@@ -1650,7 +1653,7 @@ public sealed class DiscordBot
         return string.Join("\n", lines);
     }
 
-    private async Task StartGameSessionAsync(string gameName, int expected, string status)
+    private async Task StartGameSessionAsync(string gameName, int expected, string status, string representativeAgentId)
     {
         var channel = GetGameSessionChannel();
         if (channel is null)
@@ -1665,7 +1668,8 @@ public sealed class DiscordBot
             _activeSessionStartedUtc = DateTimeOffset.UtcNow;
             _activeSessionExpected = expected;
             _activeSessionJoined = 0;
-            _activeSessionMessage = await channel.SendMessageAsync(FormatGameSessionMessage(status, detail: null));
+            _activeSessionRepresentativeAgentId = representativeAgentId;
+            _activeSessionMessage = await channel.SendMessageAsync(await FormatGameSessionMessageAsync(status, detail: null));
         }
         catch (Exception ex)
         {
@@ -1692,8 +1696,8 @@ public sealed class DiscordBot
                 _activeSessionJoined = joined.Value;
             }
 
-            await _activeSessionMessage.ModifyAsync(properties =>
-                properties.Content = FormatGameSessionMessage(status, detail));
+            var content = await FormatGameSessionMessageAsync(status, detail);
+            await _activeSessionMessage.ModifyAsync(properties => properties.Content = content);
         }
         catch (Exception ex)
         {
@@ -1716,8 +1720,8 @@ public sealed class DiscordBot
             }
 
             _activeSessionJoined++;
-            await _activeSessionMessage.ModifyAsync(properties =>
-                properties.Content = FormatGameSessionMessage(status, detail: null));
+            var content = await FormatGameSessionMessageAsync(status, detail: null);
+            await _activeSessionMessage.ModifyAsync(properties => properties.Content = content);
         }
         catch (Exception ex)
         {
@@ -1740,8 +1744,8 @@ public sealed class DiscordBot
             }
 
             _activeSessionJoined = joined;
-            await _activeSessionMessage.ModifyAsync(properties =>
-                properties.Content = FormatGameSessionMessage(status, detail));
+            var content = await FormatGameSessionMessageAsync(status, detail);
+            await _activeSessionMessage.ModifyAsync(properties => properties.Content = content);
             await _activeSessionMessage.AddReactionAsync(new Emoji(ok ? "✅" : "⛔"));
         }
         catch (Exception ex)
@@ -1770,7 +1774,7 @@ public sealed class DiscordBot
         return channel;
     }
 
-    private string FormatGameSessionMessage(string status, string? detail)
+    private async Task<string> FormatGameSessionMessageAsync(string status, string? detail)
     {
         var elapsed = _activeSessionStartedUtc is { } started
             ? DateTimeOffset.UtcNow - started
@@ -1783,12 +1787,51 @@ public sealed class DiscordBot
             $"Elapsed: {FormatElapsed(elapsed)}"
         };
 
+        var playerCount = await TryFetchPlayerCountLineAsync();
+        if (playerCount is not null)
+        {
+            lines.Add(playerCount);
+        }
+
         if (!string.IsNullOrWhiteSpace(detail))
         {
             lines.Add(detail);
         }
 
         return string.Join("\n", lines);
+    }
+
+    // issue #20, item 6 (consumer). The representative account's own RunPartyMemberMonitorAsync
+    // ticks on its own 30s interval independent of this message's update schedule, so this reads
+    // whatever it last sampled rather than forcing a fresh capture here - keeps this on the same
+    // "efficient, not on the hot path of every Discord interaction" footing as that monitor.
+    // That means a session message can render before the first in-game tick (no line at all) on
+    // a very fast join, and catches up on whichever later update happens to land after that tick.
+    private async Task<string?> TryFetchPlayerCountLineAsync()
+    {
+        if (_activeSessionRepresentativeAgentId is not { } agentId)
+        {
+            return null;
+        }
+
+        try
+        {
+            var result = await _registry.SendCommandAsync(agentId, "status", args: null, TimeSpan.FromSeconds(6));
+            if (!result.Ok || result.Data is not { } data)
+            {
+                return null;
+            }
+
+            var json = data.GetRawText();
+            return ShouldShowPartyMemberCount(json) && TryReadPartyMemberCountSummary(json, out var summary)
+                ? $"Players in game: {summary}"
+                : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not fetch live player count for game session message.");
+            return null;
+        }
     }
 
     private static string FormatElapsed(TimeSpan elapsed)
