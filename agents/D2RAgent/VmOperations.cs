@@ -3590,6 +3590,11 @@ public sealed class VmOperations
         MarkCommandCheckpoint("FillTextFieldAsync: select all");
         input.SelectAll();
         await DelayFastMenuAsync(cancellationToken);
+        // TypeText no-ops for an empty value, so without this, clearing a field to "no password"
+        // left the prior value selected but never actually deleted (issue #24).
+        MarkCommandCheckpoint("FillTextFieldAsync: clear selection");
+        input.DeleteSelection();
+        await DelayFastMenuAsync(cancellationToken);
         MarkCommandCheckpoint("FillTextFieldAsync: type text");
         input.TypeText(value);
         await DelayFastMenuAsync(cancellationToken);

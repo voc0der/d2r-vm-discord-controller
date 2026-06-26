@@ -34,6 +34,7 @@ internal sealed class WindowsInput
     private const byte VkV = 0x56;
     private const byte VkEscape = 0x1B;
     private const byte VkG = 0x47;
+    private const byte VkDelete = 0x2E;
     private const uint CfUnicodeText = 13;
     private const uint GmemMoveable = 0x0002;
     private const uint KeyEventKeyUp = 0x0002;
@@ -428,6 +429,15 @@ internal sealed class WindowsInput
         KeyDown(VkControl);
         Key(VkA);
         KeyUp(VkControl);
+    }
+
+    // TypeText is a no-op for an empty/null value, so SelectAll + TypeText("") leaves whatever
+    // was already in the field selected but otherwise untouched - clearing a field to "no
+    // password" never actually emptied it. Call this between SelectAll and TypeText so the
+    // selection is actually deleted regardless of what (if anything) gets typed next.
+    public void DeleteSelection()
+    {
+        Key(VkDelete);
     }
 
     public void TypeText(string text)
