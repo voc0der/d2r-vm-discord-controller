@@ -905,6 +905,33 @@ public sealed class VmOperations
             return lobby;
         }
 
+        // EnsureLobbyOpenedAsync's LobbyOrGame branch trusts the cached activity state and
+        // returns without clicking or checking anything - fine for create-game/join-game, whose
+        // very next action is a tab click that's harmless even if we're not quite where expected.
+        // It is not fine here: the very next action is a precise click on the party icon, and if
+        // that cache is stale (eg. a prior command actually left the client in-game), the click
+        // lands on whatever's really on screen instead of opening the friends drawer, and every
+        // click after it free-wheels with nothing real to land on - "seemed confused" with 3 VMs
+        // stuck at the lobby with the drawer never open (issue #20, item 8). Confirm live before
+        // spending the click, and try the same direct navigation EnsureLobbyOpenedAsync's other
+        // branches already use if it's not where the cache claimed.
+        if (!IsAnyLobbyEntryMenuVisible(input))
+        {
+            MarkCommandCheckpoint("JoinFriendAsync: lobby not visually confirmed - navigating directly");
+            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+            await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
+            await DelayStepAsync(cancellationToken);
+
+            if (!IsAnyLobbyEntryMenuVisible(input))
+            {
+                return CommandResult.Failure(
+                    "Could not visually confirm the Lobby before attempting to follow a friend.",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
+            MarkLobbyOrGameInteraction("Confirmed Lobby for follow after the cached state did not match what was actually on screen.");
+        }
+
         ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
         await DelayLongAsync(cancellationToken);
         ClickD2R(input, GetFriendRowPoint(args.FriendRow), MouseButton.Right);

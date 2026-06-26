@@ -352,6 +352,8 @@ Automation:
 /d2r follow hc1 character-slot:1 friend-row:1
 ```
 
+Root cause of "3 VMs sat at the lobby and never opened the drawer, seemed confused" (issue #20, item 8): `EnsureLobbyOpenedAsync`'s `LobbyOrGame`-cache branch returns without clicking or checking anything, which is fine for create-game/join-game (their next click is a tab, harmless even if we're not quite where expected) but not for follow, whose very next action is a precise click on the party icon - a stale cache (eg. a prior command actually left the client in-game) means that click lands on whatever's really on screen instead of the friends drawer, and every click after it free-wheels with nothing real to land on. `JoinFriendAsync` now confirms live with `IsAnyLobbyEntryMenuVisible` before spending that click, and retries the same direct character-slot+Lobby navigation `EnsureLobbyOpenedAsync`'s other branches already use (guarded against in-game per the safety section above) if the cache didn't match reality - failing clearly if the Lobby still isn't visible after that, rather than clicking blind into the unknown.
+
 `friend-row` is the visible row number in the opened friends drawer. If omitted, the VM agent uses `ui.defaultFriendRow` from `vm-agent.config.json`.
 After opening the friend context menu, the VM agent clicks the configured `Join Game` row. After choosing Join Game and waiting for load, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
 
