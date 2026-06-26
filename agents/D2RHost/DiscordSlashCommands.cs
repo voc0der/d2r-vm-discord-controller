@@ -9,10 +9,12 @@ public static class DiscordSlashCommands
         return
         [
             // Discord hard-caps a command at 25 options, and each Sub(...) below counts as one.
-            // Past 25, BulkOverwrite silently fails closed: Discord keeps the previously-registered
-            // set and the new/changed subcommands just never appear, with no error visible here -
-            // this bit us once already (issue #20 follow-up, template/join-auto). Stay under 25 or
-            // split overflow into a subcommand group / second top-level command.
+            // Past 25, the registration call in DiscordBot.OnReadyAsync fails closed: Discord
+            // keeps the previously-registered set and the new/changed subcommands just never
+            // appear. Stay under 25, or split overflow into a subcommand group / second
+            // top-level command. (Not what caused the template/join-auto outage below - see
+            // the comment on Sub() for that one - but a real second way to hit the same
+            // "command silently never registers" symptom, so keeping the guard.)
             new SlashCommandBuilder()
                 .WithName("d2r")
                 .WithDescription("Operate Diablo II: Resurrected clients")
@@ -33,8 +35,8 @@ public static class DiscordSlashCommands
                     Sub("save-exit", "Open the in-game menu and click Save and Exit", Account()),
                     Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
-                    Sub("template", "Set the auto-naming template create-game-all/join-all use when no name is given (netrunner1, netrunner2, ...)", RequiredGameName(), Password()),
-                    Sub("join-auto", "Auto-join the template's current numbered game, wait for someone to leave, leave, advance, repeat - until stopped", CharacterSlot(), Delay(), StopFlag()),
+                    Sub("template", "Set the create-game-all/join-all auto-naming template (netrunner1, netrunner2, ...)", RequiredGameName(), Password()),
+                    Sub("join-auto", "Auto-join the template game, wait for someone to leave, leave, advance, repeat until stopped", CharacterSlot(), Delay(), StopFlag()),
                     Sub("follow-all", "Stagger all accounts into a friend's game", CharacterSlot(), FriendRow()),
                     Sub("save-exit-all", "Stagger Save and Exit across all accounts"),
                     Sub("quit-all", "Stagger Alt+F4 quit across all online accounts"),
@@ -81,6 +83,12 @@ public static class DiscordSlashCommands
         ];
     }
 
+    // description is capped at 100 chars by Discord (Discord.Net throws ArgumentException
+    // synchronously from WithDescription, before any network call). Build() runs inside
+    // DiscordBot.OnReadyAsync, a Discord.NET gateway event handler - an exception there is
+    // swallowed into "A Ready handler has thrown an unhandled exception" with no other visible
+    // error, so the whole command set silently never registers. Bit us once already
+    // (issue #20 follow-up, template/join-auto both ran past 100 chars).
     private static SlashCommandOptionBuilder Sub(
         string name,
         string description,
