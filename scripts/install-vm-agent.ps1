@@ -1,18 +1,19 @@
 param(
     [string]$InstallDir = "C:\D2ROps",
     [string]$ConfigPath = "C:\D2ROps\vm-agent.config.json",
-    [string]$ExePath = ".\D2RAgent.exe",
+    [string]$ExePath = ".\OpsAgent.exe",
     [string]$TaskName = "D2R VM Agent"
 )
 
 $ErrorActionPreference = "Stop"
 
 if (!(Test-Path -LiteralPath $ExePath -PathType Leaf)) {
-    throw "D2RAgent.exe was not found at $ExePath"
+    throw "$ExePath was not found"
 }
 
 $ResolvedExePath = (Resolve-Path -LiteralPath $ExePath).Path
 $SourceDir = Split-Path -Parent $ResolvedExePath
+$ExeName = Split-Path -Leaf $ResolvedExePath
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $ResolvedInstallDir = (Resolve-Path -LiteralPath $InstallDir).Path
@@ -40,7 +41,7 @@ if ((Normalize-Path $SourceDir) -ieq (Normalize-Path $ResolvedInstallDir)) {
             -Force
     }
 
-    Write-Host "Copied D2RAgent app files from $SourceDir to $ResolvedInstallDir."
+    Write-Host "Copied app files from $SourceDir to $ResolvedInstallDir."
 }
 
 if (!(Test-Path -LiteralPath $ConfigPath)) {
@@ -49,7 +50,7 @@ if (!(Test-Path -LiteralPath $ConfigPath)) {
 }
 
 $action = New-ScheduledTaskAction `
-    -Execute (Join-Path $InstallDir "D2RAgent.exe") `
+    -Execute (Join-Path $InstallDir $ExeName) `
     -Argument "`"$ConfigPath`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $principal = New-ScheduledTaskPrincipal `
