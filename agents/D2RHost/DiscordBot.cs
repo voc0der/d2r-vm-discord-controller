@@ -42,6 +42,11 @@ public sealed class DiscordBot
     private int _joinAutoMonitorTotal;
     private int _joinAutoCyclesCompleted;
     private DateTimeOffset? _joinAutoStartedUtc;
+    private const int FollowAutoDefaultIdleMinutes = 60;
+    private readonly SemaphoreSlim _followAutoLock = new(1, 1);
+    private CancellationTokenSource? _followAutoCts;
+    private string? _followAutoStopReason;
+    private string? _followBoundAccountKey;
 
     // join-all's "join the last known game if it's recent" (issue #20, item 5) needs to mean
     // a game create-game-all/join-all actually acted on, not just whatever /game set last had -
@@ -284,11 +289,33 @@ public sealed class DiscordBot
             // with "exceeded agent-side timeout of 25s" while join-auto was actively retrying a
             // join in the background - the gate was always going to free up, just not within 30s.
             await CancelJoinAutoIfRunningAsync("quit-all was called");
+            await CancelFollowAutoIfRunningAsync("quit-all was called");
             await QueueAllCommandsAsync(
                 context,
                 "quit_d2r",
                 (accountKey, account) => BuildAccountArgs(accountKey, account),
                 TimeSpan.FromSeconds(210));
+            return;
+        }
+
+        if (subcommand == "follow" && (context.GetBool("bind") is not null || context.GetBool("auto") is not null))
+        {
+            if (context.GetBool("auto") is { } autoFlag)
+            {
+                if (!autoFlag)
+                {
+                    await StopFollowAutoAsync(context);
+                    return;
+                }
+
+                await StartFollowAutoAsync(
+                    context,
+                    Math.Max(context.GetInt("delay") ?? 0, 0),
+                    TimeSpan.FromMinutes(Math.Max(context.GetInt("idle-minutes") ?? FollowAutoDefaultIdleMinutes, 1)));
+                return;
+            }
+
+            await HandleFollowBindAsync(context, context.GetBool("bind")!.Value);
             return;
         }
 
@@ -308,6 +335,7 @@ public sealed class DiscordBot
             case "quit":
                 // See the quit-all gate-wait comment above - same risk for a single account.
                 await CancelJoinAutoIfRunningAsync($"quit was called for {singleAccountKey}");
+                await CancelFollowAutoIfRunningAsync($"quit was called for {singleAccountKey}");
                 await RunVmCommandAsync(context, singleAccount, "quit_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
                 return;
             case "restart-client":
@@ -2467,6 +2495,255 @@ public sealed class DiscordBot
     private static Task SendJoinAutoMessageAsync(IMessageChannel channel, string content)
     {
         return channel.SendMessageAsync(DiscordMessageTruncator.Truncate(content));
+    }
+
+    // Issue #25: capture a follow-bind fingerprint from one account's friend row 1, then push it
+    // (or clear it) to every online account so follow-auto can recognize the same name anywhere.
+    // Deliberately simpler messaging than join-auto's persistent monitor message - plain
+    // progress/outcome posts only, not a live-edited status message. Worth revisiting if this
+    // sees as much use as join-auto did.
+    private async Task HandleFollowBindAsync(SlashContext context, bool bindFlag)
+    {
+        var (online, _) = GetAccountEntriesByConnectivity();
+
+        if (!bindFlag)
+        {
+            await CancelFollowAutoIfRunningAsync("the follow-bind target was cleared");
+            await context.Command.DeferAsync(ephemeral: true);
+            var cleared = 0;
+            foreach (var (accountKey, account) in online)
+            {
+                try
+                {
+                    await _registry.SendCommandAsync(account.AgentId, "follow_clear_template", new { }, TimeSpan.FromSeconds(15));
+                    cleared++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "follow_clear_template failed for {AccountKey}.", accountKey);
+                }
+            }
+
+            _followBoundAccountKey = null;
+            await context.Command.ModifyOriginalResponseAsync(
+                properties => properties.Content = $"Follow-bind cleared on {cleared}/{online.Length} online accounts.");
+            return;
+        }
+
+        var bindAccountKey = context.GetString("account");
+        if (bindAccountKey is null)
+        {
+            await context.Command.RespondAsync(
+                "follow bind:true requires account (whose friend row 1 to capture from).",
+                ephemeral: true);
+            return;
+        }
+
+        var (resolvedAccountKey, bindAccount) = RequireAccount(bindAccountKey);
+        await context.Command.DeferAsync(ephemeral: true);
+
+        CommandResultInfo captureResult;
+        try
+        {
+            captureResult = await _registry.SendCommandAsync(
+                bindAccount.AgentId, "menu_follow_bind", BuildAccountArgs(resolvedAccountKey, bindAccount), TimeSpan.FromSeconds(210));
+        }
+        catch (Exception ex)
+        {
+            await context.Command.ModifyOriginalResponseAsync(
+                properties => properties.Content = $"follow bind:true failed to capture from {resolvedAccountKey}: {ex.Message}");
+            return;
+        }
+
+        if (!captureResult.Ok
+            || captureResult.Data is not { } data
+            || !data.TryGetProperty("fingerprint", out var fingerprintProperty)
+            || fingerprintProperty.GetString() is not { } fingerprint)
+        {
+            await context.Command.ModifyOriginalResponseAsync(
+                properties => properties.Content = $"follow bind:true failed to capture from {resolvedAccountKey}: {captureResult.Message}");
+            return;
+        }
+
+        var distributed = 0;
+        foreach (var (accountKey, account) in online)
+        {
+            try
+            {
+                await _registry.SendCommandAsync(account.AgentId, "follow_set_template", new { fingerprint }, TimeSpan.FromSeconds(15));
+                distributed++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "follow_set_template failed for {AccountKey}.", accountKey);
+            }
+        }
+
+        _followBoundAccountKey = resolvedAccountKey;
+        await context.Command.ModifyOriginalResponseAsync(
+            properties => properties.Content =
+                $"Captured the friend at {resolvedAccountKey}'s friend row 1 and distributed it to {distributed}/{online.Length} online accounts. "
+                    + "Use /d2r follow auto:true to start following.");
+    }
+
+    private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, TimeSpan idleTimeout)
+    {
+        await _followAutoLock.WaitAsync();
+        CancellationTokenSource cts;
+        try
+        {
+            if (_followAutoCts is not null)
+            {
+                await context.Command.RespondAsync(
+                    "follow auto:true is already running. Use /d2r follow auto:false first.",
+                    ephemeral: true);
+                return;
+            }
+
+            cts = new CancellationTokenSource();
+            _followAutoCts = cts;
+        }
+        finally
+        {
+            _followAutoLock.Release();
+        }
+
+        await context.Command.RespondAsync(
+            $"follow-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay between checks" : "")}. Updates will post in this channel until it's stopped.",
+            ephemeral: true);
+
+        _ = Task.Run(() => RunFollowAutoLoopAsync(context, delaySeconds, idleTimeout, cts.Token));
+    }
+
+    private async Task StopFollowAutoAsync(SlashContext context)
+    {
+        var wasRunning = await CancelFollowAutoIfRunningAsync(reason: null);
+        await context.Command.RespondAsync(
+            wasRunning ? "follow-auto is stopping." : "follow-auto is not running.",
+            ephemeral: true);
+    }
+
+    // Same "if you quit, it should stop auto if its running" precedent as join-auto (issue #24) -
+    // wired into the same quit/quit-all call sites as CancelJoinAutoIfRunningAsync.
+    private async Task<bool> CancelFollowAutoIfRunningAsync(string? reason)
+    {
+        await _followAutoLock.WaitAsync();
+        try
+        {
+            if (_followAutoCts is null)
+            {
+                return false;
+            }
+
+            _followAutoStopReason = reason;
+            _followAutoCts.Cancel();
+            _followAutoCts = null;
+            return true;
+        }
+        finally
+        {
+            _followAutoLock.Release();
+        }
+    }
+
+    private async Task RunFollowAutoLoopAsync(SlashContext context, int delaySeconds, TimeSpan idleTimeout, CancellationToken cancellationToken)
+    {
+        var channel = context.Command.Channel;
+        var joined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+        try
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var (online, _) = GetAccountEntriesByConnectivity();
+                var pending = online.Where(entry => !joined.Contains(entry.Key)).ToArray();
+                if (pending.Length == 0 && online.Length > 0)
+                {
+                    await SendJoinAutoMessageAsync(channel, "follow-auto: all online accounts have joined the bound friend's game.");
+                    break;
+                }
+
+                var anyBound = false;
+                foreach (var (accountKey, account) in pending)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    CommandResultInfo result;
+                    try
+                    {
+                        result = await _registry.SendCommandAsync(
+                            account.AgentId, "menu_follow_auto_check", BuildAccountArgs(accountKey, account), TimeSpan.FromSeconds(210), cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "menu_follow_auto_check failed for {AccountKey}.", accountKey);
+                        continue;
+                    }
+
+                    if (!result.Ok || result.Data is not { } data || !data.TryGetProperty("bound", out var boundProperty) || boundProperty.GetBoolean() != true)
+                    {
+                        continue;
+                    }
+
+                    anyBound = true;
+                    if (data.TryGetProperty("joined", out var joinedProperty) && joinedProperty.GetBoolean())
+                    {
+                        joined.Add(accountKey);
+                        await SendJoinAutoMessageAsync(channel, $"follow-auto: {accountKey} joined the bound friend's game.");
+                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                    }
+                }
+
+                if (!anyBound)
+                {
+                    await SendJoinAutoMessageAsync(channel, "follow-auto stopped: no follow-bind fingerprint is set.");
+                    break;
+                }
+
+                if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
+                {
+                    await SendJoinAutoMessageAsync(channel, "follow-auto: idle timeout detected, disabled.");
+                    break;
+                }
+
+                if (delaySeconds > 0)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
+                }
+                else
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            var reasonText = _followAutoStopReason is { } reason ? $"follow-auto stopped: {reason}." : "follow-auto stopped.";
+            await SendJoinAutoMessageAsync(channel, reasonText);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "follow-auto loop crashed.");
+            await SendJoinAutoMessageAsync(channel, $"follow-auto stopped on an unexpected error: {ex.Message}");
+        }
+        finally
+        {
+            await _followAutoLock.WaitAsync();
+            try
+            {
+                if (_followAutoCts?.Token == cancellationToken)
+                {
+                    _followAutoCts = null;
+                }
+
+                _followAutoStopReason = null;
+            }
+            finally
+            {
+                _followAutoLock.Release();
+            }
+        }
     }
 
     // issue #24: "the join-auto feature should still make a game monitor like the other one

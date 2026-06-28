@@ -56,7 +56,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r play account [character-slot]`
 - `/d2r join-game account [name] [password] [difficulty] [character-slot]`
 - `/d2r create-game account [name] [password] [difficulty] [character-slot]`
-- `/d2r follow account [character-slot] [friend-row]`
+- `/d2r follow [account] [character-slot] [friend-row] [bind] [auto] [delay] [idle-minutes]`
 - `/d2r save-exit account`
 - `/d2r create-game-all [name] [password] [difficulty] [character-slot] [watch]`
 - `/d2r join-all [name] [password] [difficulty] [character-slot] [watch]`
@@ -88,6 +88,8 @@ All-client commands skip accounts whose VM agent is offline when the command is 
 `/restart` respawns `D2RHost`. On startup, the host runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed host update once the command exists in Discord.
 
 Menu commands that need D2R running, such as `lobby`, `play`, `join-game`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
+
+`/d2r follow bind:true account:<x>` captures whoever is sitting in `account`'s friend row 1 right now (no need to type a name - useful from a phone with no keyboard) and distributes that snippet to every online account. `bind:false` clears it everywhere. `/d2r follow auto:true [delay] [idle-minutes]` then has every online account repeatedly scan its own visible friend rows for that same snippet and join once found, until everyone's joined, the snippet is cleared, or `idle-minutes` passes with nobody bound - `auto:false` stops it early. This is separate from the plain `/d2r follow account friend-row` and `/d2r follow-all friend-row` commands, which still right-click a manually-specified row once.
 
 ## Host Setup
 

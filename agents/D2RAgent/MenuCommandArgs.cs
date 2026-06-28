@@ -9,6 +9,7 @@ internal sealed class MenuCommandArgs
     public string? GameName { get; set; }
     public string? Password { get; set; }
     public string? Difficulty { get; set; }
+    public string? Fingerprint { get; set; }
 
     public static MenuCommandArgs From(JsonElement element)
     {
@@ -23,6 +24,7 @@ internal sealed class MenuCommandArgs
         args.GameName = TryGetString(element, "gameName");
         args.Password = TryGetString(element, "password");
         args.Difficulty = TryGetString(element, "difficulty");
+        args.Fingerprint = TryGetString(element, "fingerprint");
         return args;
     }
 

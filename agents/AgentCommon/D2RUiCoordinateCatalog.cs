@@ -67,6 +67,13 @@ public sealed record D2RUiCoordinate(
     string ReferenceAsset,
     string Notes);
 
+public sealed record FriendRowFingerprintRegion(
+    UiPoint Center,
+    double WidthRatio,
+    double HeightRatio,
+    int GridColumns,
+    int GridRows);
+
 public static class D2RUiCoordinateCatalog
 {
     public const int BaselineWidth = 1366;
@@ -178,6 +185,27 @@ public static class D2RUiCoordinateCatalog
             : Defaults.FriendRowHeight;
         return new UiPoint(start.X, Clamp01(start.Y + ((row - 1) * rowHeight)));
     }
+
+    // The capture region for a follow-bind fingerprint: the same row math GetFriendRowPoint uses,
+    // shifted to the name-text sub-area of that row instead of the row's right-click center.
+    public static FriendRowFingerprintRegion GetFriendRowFingerprintRegion(D2RUiAutomationConfig? ui, int row)
+    {
+        ui ??= Defaults;
+        var rowPoint = GetFriendRowPoint(ui, row);
+        var offsetX = IsFiniteRatio(ui.FriendRowFingerprintOffsetX) ? ui.FriendRowFingerprintOffsetX : Defaults.FriendRowFingerprintOffsetX;
+        var offsetY = IsFiniteRatio(ui.FriendRowFingerprintOffsetY) ? ui.FriendRowFingerprintOffsetY : Defaults.FriendRowFingerprintOffsetY;
+        var widthRatio = IsFinitePositiveRatio(ui.FriendRowFingerprintWidthRatio) ? ui.FriendRowFingerprintWidthRatio : Defaults.FriendRowFingerprintWidthRatio;
+        var heightRatio = IsFinitePositiveRatio(ui.FriendRowFingerprintHeightRatio) ? ui.FriendRowFingerprintHeightRatio : Defaults.FriendRowFingerprintHeightRatio;
+        var columns = ui.FriendRowFingerprintGridColumns > 0 ? ui.FriendRowFingerprintGridColumns : Defaults.FriendRowFingerprintGridColumns;
+        var gridRows = ui.FriendRowFingerprintGridRows > 0 ? ui.FriendRowFingerprintGridRows : Defaults.FriendRowFingerprintGridRows;
+
+        var center = new UiPoint(Clamp01(rowPoint.X + offsetX), Clamp01(rowPoint.Y + offsetY));
+        return new FriendRowFingerprintRegion(center, widthRatio, heightRatio, columns, gridRows);
+    }
+
+    private static bool IsFiniteRatio(double value) => double.IsFinite(value);
+
+    private static bool IsFinitePositiveRatio(double value) => double.IsFinite(value) && value > 0;
 
     public static UiPoint GetCreateDifficultyPoint(D2RUiAutomationConfig? ui, string? difficulty)
     {

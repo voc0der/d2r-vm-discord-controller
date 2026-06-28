@@ -54,6 +54,19 @@ public sealed class D2RUiAutomationConfig
     public int DefaultCharacterSlot { get; set; } = 1;
     public int DefaultFriendRow { get; set; } = 1;
     public double FriendRowHeight { get; set; } = 0.049;
+    // Sub-region within a friend row used for the follow-bind fingerprint - offset right of the
+    // row's click-center to skip the class icon, sized to cover just the name line and not the
+    // status line below it (which changes constantly: "In Menus" vs "Act I, Hell" vs "Offline").
+    // Estimated from docs/runbooks/assets/d2r-ui/1366x768/lobby_friends_tab_party.png, not yet
+    // calibrated against a live VM capture - see the comment on FriendFingerprint for the same
+    // caveat on the match tolerance.
+    public double FriendRowFingerprintOffsetX { get; set; } = 0.030;
+    public double FriendRowFingerprintOffsetY { get; set; } = -0.010;
+    public double FriendRowFingerprintWidthRatio { get; set; } = 0.090;
+    public double FriendRowFingerprintHeightRatio { get; set; } = 0.022;
+    public int FriendRowFingerprintGridColumns { get; set; } = 12;
+    public int FriendRowFingerprintGridRows { get; set; } = 4;
+    public int FriendRowFingerprintMaxScanRows { get; set; } = 10;
     public bool ClickBattleNetPlayWhenNeeded { get; set; } = true;
     public bool DismissBattleNetWhatsNewWhenNeeded { get; set; } = true;
     public UiPoint BattleNetPlayButton { get; set; } = new(0.129, 0.703);

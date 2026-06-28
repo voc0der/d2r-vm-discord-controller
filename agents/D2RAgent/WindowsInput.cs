@@ -595,6 +595,121 @@ internal sealed class WindowsInput
         }
     }
 
+    // Follow-bind/follow-auto fingerprints need a wide-short grid (a name-text strip), not the
+    // square grid SampleRegion's classifiers use - shares the exact same BitBlt-into-a-local-
+    // bitmap scaffolding as CaptureGridPixels (same DWM-avoidance reasoning) but with independent
+    // column/row counts and a flat byte[] output that maps directly onto FriendFingerprint.Samples.
+    public byte[] CaptureFingerprintGrid(UiPoint center, double widthRatio, double heightRatio, int gridColumns, int gridRows)
+    {
+        EnsureWindows();
+        var screenWidth = GetSystemMetrics(SmCxScreen);
+        var screenHeight = GetSystemMetrics(SmCyScreen);
+        var bounds = GetCoordinateBounds(coordinateProcessNames: null, restoreWindow: false);
+        var centerX = bounds.Left + (center.X * bounds.Width);
+        var centerY = bounds.Top + (center.Y * bounds.Height);
+        var columns = Math.Clamp(gridColumns, 1, 64);
+        var rows = Math.Clamp(gridRows, 1, 64);
+        var regionWidth = Math.Max(bounds.Width * widthRatio, columns);
+        var regionHeight = Math.Max(bounds.Height * heightRatio, rows);
+
+        var captureRect = ComputeCaptureRect(centerX, centerY, regionWidth, regionHeight, screenWidth, screenHeight);
+        var left = captureRect.Left;
+        var top = captureRect.Top;
+        var captureWidth = captureRect.Width;
+        var captureHeight = captureRect.Height;
+
+        var screenDc = GetDC(IntPtr.Zero);
+        if (screenDc == IntPtr.Zero)
+        {
+            throw new InvalidOperationException($"GetDC failed. LastError={Marshal.GetLastWin32Error()}");
+        }
+
+        try
+        {
+            var memoryDc = CreateCompatibleDC(screenDc);
+            if (memoryDc == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"CreateCompatibleDC failed. LastError={Marshal.GetLastWin32Error()}");
+            }
+
+            try
+            {
+                var bitmap = CreateCompatibleBitmap(screenDc, captureWidth, captureHeight);
+                if (bitmap == IntPtr.Zero)
+                {
+                    throw new InvalidOperationException($"CreateCompatibleBitmap failed. LastError={Marshal.GetLastWin32Error()}");
+                }
+
+                var previousBitmap = SelectObject(memoryDc, bitmap);
+                try
+                {
+                    if (!BitBlt(memoryDc, 0, 0, captureWidth, captureHeight, screenDc, left, top, SrcCopy))
+                    {
+                        throw new InvalidOperationException($"BitBlt failed. LastError={Marshal.GetLastWin32Error()}");
+                    }
+
+                    return EnumerateFingerprintPixels(
+                        memoryDc, centerX, centerY, regionWidth, regionHeight, columns, rows, screenWidth, screenHeight, left, top, captureWidth, captureHeight);
+                }
+                finally
+                {
+                    SelectObject(memoryDc, previousBitmap);
+                    DeleteObject(bitmap);
+                }
+            }
+            finally
+            {
+                DeleteDC(memoryDc);
+            }
+        }
+        finally
+        {
+            ReleaseDC(IntPtr.Zero, screenDc);
+        }
+    }
+
+    private static byte[] EnumerateFingerprintPixels(
+        IntPtr hdc,
+        double centerX,
+        double centerY,
+        double regionWidth,
+        double regionHeight,
+        int columns,
+        int rows,
+        int screenWidth,
+        int screenHeight,
+        int captureLeft,
+        int captureTop,
+        int captureWidth,
+        int captureHeight)
+    {
+        var samples = new byte[columns * rows * 3];
+        var index = 0;
+        for (var yIndex = 0; yIndex < rows; yIndex++)
+        {
+            var y = Math.Clamp(
+                (int)Math.Round(centerY - (regionHeight / 2) + ((yIndex + 0.5) * regionHeight / rows)),
+                0,
+                screenHeight - 1);
+            var localY = Math.Clamp(y - captureTop, 0, captureHeight - 1);
+
+            for (var xIndex = 0; xIndex < columns; xIndex++)
+            {
+                var x = Math.Clamp(
+                    (int)Math.Round(centerX - (regionWidth / 2) + ((xIndex + 0.5) * regionWidth / columns)),
+                    0,
+                    screenWidth - 1);
+                var localX = Math.Clamp(x - captureLeft, 0, captureWidth - 1);
+                var color = GetPixel(hdc, localX, localY);
+                samples[index++] = (byte)(color & 0x000000FF);
+                samples[index++] = (byte)((color & 0x0000FF00) >> 8);
+                samples[index++] = (byte)((color & 0x00FF0000) >> 16);
+            }
+        }
+
+        return samples;
+    }
+
     // Pulled out of SampleRegion so the rect math - the part most likely to have an off-by-one
     // that silently captures the wrong area - can be regression-tested without a Windows host,
     // same reasoning as ScreenRegionStatsCalculator/TryRunBounded being split out elsewhere in

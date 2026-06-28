@@ -31,7 +31,7 @@ public static class DiscordSlashCommands
                     Sub("play", "Select character and click Play", Account(), CharacterSlot()),
                     Sub("join-game", "Open Lobby and join a named game", Account(), GameName(), Password(), Difficulty(), CharacterSlot()),
                     Sub("create-game", "Open Lobby and create a game", Account(), GameName(), Password(), Difficulty(), CharacterSlot()),
-                    Sub("follow", "Join off a friend from the Lobby friends drawer", Account(), CharacterSlot(), FriendRow()),
+                    Sub("follow", "Join off a friend, or bind/auto-follow one by name snippet", OptionalAccount(), CharacterSlot(), FriendRow(), FollowBind(), FollowAutoFlag(), Delay(), IdleMinutes()),
                     Sub("save-exit", "Open the in-game menu and click Save and Exit", Account()),
                     Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
@@ -212,6 +212,24 @@ public static class DiscordSlashCommands
             .WithRequired(false)
             .WithMinValue(1)
             .WithMaxValue(600);
+    }
+
+    private static SlashCommandOptionBuilder FollowBind()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("bind")
+            .WithDescription("Capture (true) or clear (false) the friend to auto-follow, from account's friend row 1")
+            .WithType(ApplicationCommandOptionType.Boolean)
+            .WithRequired(false);
+    }
+
+    private static SlashCommandOptionBuilder FollowAutoFlag()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("auto")
+            .WithDescription("Start (true) or stop (false) auto-following the bound friend across all accounts")
+            .WithType(ApplicationCommandOptionType.Boolean)
+            .WithRequired(false);
     }
 
     private static SlashCommandOptionBuilder JoinAutoWatch()

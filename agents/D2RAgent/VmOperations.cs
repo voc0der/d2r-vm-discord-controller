@@ -284,6 +284,20 @@ public sealed class VmOperations
             return CommandResult.Success("Status collected.", await CollectStatusAsync(cancellationToken));
         }
 
+        // follow_set_template/follow_clear_template are pure local file writes, no D2R
+        // interaction - same reasoning as screenshot/status above, so binding/unbinding from the
+        // Host doesn't queue behind whatever long-running menu command this agent is mid-way
+        // through.
+        if (string.Equals(request.Command, "follow_set_template", StringComparison.OrdinalIgnoreCase))
+        {
+            return FollowSetTemplate(MenuCommandArgs.From(request.Args));
+        }
+
+        if (string.Equals(request.Command, "follow_clear_template", StringComparison.OrdinalIgnoreCase))
+        {
+            return FollowClearTemplate();
+        }
+
         await _commandGate.WaitAsync(cancellationToken);
         try
         {
@@ -313,6 +327,8 @@ public sealed class VmOperations
             "menu_join_game" => await JoinGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_create_game" => await CreateGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_join_friend" => await JoinFriendAsync(MenuCommandArgs.From(request.Args), cancellationToken),
+            "menu_follow_bind" => await FollowBindCaptureAsync(MenuCommandArgs.From(request.Args), cancellationToken),
+            "menu_follow_auto_check" => await FollowAutoCheckAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_save_exit" => await SaveAndExitAsync(cancellationToken),
             _ => CommandResult.Failure($"Unsupported VM command: {request.Command}")
         };
@@ -947,6 +963,166 @@ public sealed class VmOperations
 
         MarkLobbyOrGameInteraction("Joined friend game.");
         return CommandResult.Success("Join friend/follow flow completed.", await CollectStatusAsync(cancellationToken));
+    }
+
+    // Issue #25: capture a small grid-sample "fingerprint" of whoever is sitting in friend row 1
+    // right now, so the Host can distribute it to every agent and follow-auto can later recognize
+    // that same name wherever it appears, instead of every agent needing a manually-supplied
+    // friendRow that breaks the moment the friends list re-sorts. The operator is responsible for
+    // making sure the intended friend is actually at the top of their own list before binding -
+    // this command has no way to know who it's capturing, only where to look.
+    private async Task<CommandResult> FollowBindCaptureAsync(MenuCommandArgs args, CancellationToken cancellationToken)
+    {
+        var input = FocusD2R();
+        var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
+        if (lobby is not null)
+        {
+            return lobby;
+        }
+
+        if (!IsAnyLobbyEntryMenuVisible(input))
+        {
+            MarkCommandCheckpoint("FollowBindCaptureAsync: lobby not visually confirmed - navigating directly");
+            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+            await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
+            await DelayStepAsync(cancellationToken);
+
+            if (!IsAnyLobbyEntryMenuVisible(input))
+            {
+                return CommandResult.Failure(
+                    "Could not visually confirm the Lobby before capturing a follow-bind fingerprint.",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
+            MarkLobbyOrGameInteraction("Confirmed Lobby for follow-bind after the cached state did not match what was actually on screen.");
+        }
+
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
+        await DelayLongAsync(cancellationToken);
+
+        var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row: 1);
+        var samples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows);
+        var fingerprint = new FriendFingerprint(region.GridColumns, region.GridRows, samples);
+
+        return CommandResult.Success(
+            "Captured a follow-bind fingerprint from the top friend row.",
+            new { fingerprint = fingerprint.ToBase64() });
+    }
+
+    // Pure local file I/O, no D2R interaction - bypasses _commandGate the same way screenshot and
+    // status do (see HandleCommandAsync), so binding/unbinding on the Host isn't stuck waiting
+    // behind whatever long-running menu command an agent happens to be mid-way through.
+    private const string FollowTemplateFileName = "follow-template.txt";
+
+    private static string FollowTemplatePath => Path.Combine(AppContext.BaseDirectory, FollowTemplateFileName);
+
+    private static FriendFingerprint? LoadFollowTemplate()
+    {
+        try
+        {
+            return File.Exists(FollowTemplatePath)
+                ? FriendFingerprint.FromBase64(File.ReadAllText(FollowTemplatePath))
+                : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    private static CommandResult FollowSetTemplate(MenuCommandArgs args)
+    {
+        if (string.IsNullOrWhiteSpace(args.Fingerprint) || FriendFingerprint.FromBase64(args.Fingerprint) is null)
+        {
+            return CommandResult.Failure("follow_set_template requires a valid fingerprint.");
+        }
+
+        File.WriteAllText(FollowTemplatePath, args.Fingerprint);
+        return CommandResult.Success("Follow-bind fingerprint saved.");
+    }
+
+    private static CommandResult FollowClearTemplate()
+    {
+        if (File.Exists(FollowTemplatePath))
+        {
+            File.Delete(FollowTemplatePath);
+        }
+
+        return CommandResult.Success("Follow-bind fingerprint cleared.");
+    }
+
+    // One cycle of follow-auto: if nobody's bound, say so (not a failure - this is the normal
+    // state for any account that isn't part of a follow-auto run). If bound, scan every visible
+    // friend row for a fingerprint match - not just row 1 - since other tracked friends coming
+    // online can outrank the bound friend in Battle.net's own online-sort at any point.
+    private async Task<CommandResult> FollowAutoCheckAsync(MenuCommandArgs args, CancellationToken cancellationToken)
+    {
+        var template = LoadFollowTemplate();
+        if (template is null)
+        {
+            return CommandResult.Success("No follow-bind fingerprint is set.", new { bound = false, joined = false });
+        }
+
+        var input = FocusD2R();
+        var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
+        if (lobby is not null)
+        {
+            return lobby;
+        }
+
+        if (!IsAnyLobbyEntryMenuVisible(input))
+        {
+            MarkCommandCheckpoint("FollowAutoCheckAsync: lobby not visually confirmed - navigating directly");
+            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+            await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
+            await DelayStepAsync(cancellationToken);
+
+            if (!IsAnyLobbyEntryMenuVisible(input))
+            {
+                return CommandResult.Failure(
+                    "Could not visually confirm the Lobby during a follow-auto check.",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
+            MarkLobbyOrGameInteraction("Confirmed Lobby for follow-auto after the cached state did not match what was actually on screen.");
+        }
+
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
+        await DelayLongAsync(cancellationToken);
+
+        var maxRows = _config.Ui.FriendRowFingerprintMaxScanRows > 0 ? _config.Ui.FriendRowFingerprintMaxScanRows : 10;
+        var matchedRow = 0;
+        for (var row = 1; row <= maxRows; row++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
+            var samples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows);
+            if (FriendFingerprint.IsMatch(template, new FriendFingerprint(region.GridColumns, region.GridRows, samples)))
+            {
+                matchedRow = row;
+                break;
+            }
+        }
+
+        if (matchedRow == 0)
+        {
+            return CommandResult.Success("Bound friend not found in the visible friends list this cycle.", new { bound = true, joined = false });
+        }
+
+        MarkCommandCheckpoint($"FollowAutoCheckAsync: matched bound friend at row {matchedRow}");
+        ClickD2R(input, GetFriendRowPoint(matchedRow), MouseButton.Right);
+        await DelayStepAsync(cancellationToken);
+        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.FriendContextJoinGame));
+        var entry = await WaitForGameEntryAsync(input, cancellationToken);
+        if (entry != GameEntryWaitResult.EnteredGame)
+        {
+            return CommandResult.Failure(
+                $"Found the bound friend at row {matchedRow} and clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {FormatGameEntryWaitFailure(entry)}",
+                await CollectStatusAsync(cancellationToken));
+        }
+
+        MarkLobbyOrGameInteraction("Joined bound friend's game via follow-auto.");
+        return CommandResult.Success("Joined the bound friend's game.", new { bound = true, joined = true });
     }
 
     private async Task<CommandResult> SaveAndExitAsync(CancellationToken cancellationToken)

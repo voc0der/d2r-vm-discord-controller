@@ -443,6 +443,14 @@ Use the new image set to make the flow less guessy:
 - Game entry: use `just_landed_in_game_checkforhealthandmanaglobes.png` and `low_graphics_mode_generic.png` as positive success states. The detector has separate modern and legacy globe anchors because legacy mode is pillarboxed at 1366x768.
 - Save and exit: use both modern and legacy save/exit captures so the clean-leave flow works before and after the legacy graphics toggle.
 
+## Follow Bind/Auto (Issue #25)
+
+`/d2r follow bind:true` captures a small grid-sample "fingerprint" of friend row 1's name-text area (`FriendFingerprint` in `AgentCommon`, captured via `WindowsInput.CaptureFingerprintGrid` - the same BitBlt-into-a-local-bitmap approach as every other classifier in this file, just a wide-short grid over the name line instead of a square grid over a threshold region) instead of a literal screenshot crop - smaller to transport over the existing JSON command protocol, no new image-codec dependency, and tolerant of normal rendering noise the same way every other pixel classifier here is. The operator is responsible for the target friend actually being at the top of the binding account's friends list at bind time; the command has no way to identify who it captured, only where it looked.
+
+`/d2r follow auto:true` has every online account scan **all** its visible friend rows (`FriendRowFingerprintMaxScanRows`, default 10) against the saved fingerprint each cycle, not just row 1 - if a second tracked friend comes online, Battle.net's own online-sort can put them above the bound friend, and a top-row-only check would silently follow the wrong person. Match tolerance and the name-text capture region (`FriendRowFingerprint*` in `AgentConfig`) are estimated from `lobby_friends_tab_party.png`, not yet calibrated against a live VM - if matching is too loose (follows the wrong row) or too tight (never matches), tune those values the same way `pixel-classifier-catalog.md` documents the other classifiers' thresholds.
+
+Deliberately simpler than join-auto's messaging: plain progress/outcome posts in the invoking channel, not a persistent live-edited monitor message. Revisit if this command sees as much real use as join-auto did.
+
 ## Notes For Future Tuning
 
 Keep navigation data tied to screenshots and resolution. The current baseline captures are 1366x768 and are stored in `assets/d2r-ui/1366x768/`. Older captures are still useful for comparison, but new coordinate and detector work should start from the 1366x768 set.

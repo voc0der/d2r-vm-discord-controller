@@ -113,6 +113,42 @@ public sealed class D2RUiCoordinateTests
     }
 
     [Fact]
+    public void FingerprintRegionTracksRowPositionAndUsesConfiguredGrid()
+    {
+        var ui = new D2RUiAutomationConfig();
+
+        var row1 = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(ui, 1);
+        var row2 = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(ui, 2);
+
+        Assert.Equal(ui.FriendRowFingerprintWidthRatio, row1.WidthRatio);
+        Assert.Equal(ui.FriendRowFingerprintHeightRatio, row1.HeightRatio);
+        Assert.Equal(ui.FriendRowFingerprintGridColumns, row1.GridColumns);
+        Assert.Equal(ui.FriendRowFingerprintGridRows, row1.GridRows);
+        Assert.True(row2.Center.Y > row1.Center.Y, "Row 2's fingerprint region should sit below row 1's.");
+        Assert.Equal(row1.Center.X, row2.Center.X);
+    }
+
+    [Fact]
+    public void FingerprintRegionFallsBackWhenConfiguredRatiosAreInvalid()
+    {
+        var ui = new D2RUiAutomationConfig
+        {
+            FriendRowFingerprintWidthRatio = double.NaN,
+            FriendRowFingerprintHeightRatio = -1,
+            FriendRowFingerprintGridColumns = 0,
+            FriendRowFingerprintGridRows = -5
+        };
+        var defaults = new D2RUiAutomationConfig();
+
+        var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(ui, 1);
+
+        Assert.Equal(defaults.FriendRowFingerprintWidthRatio, region.WidthRatio);
+        Assert.Equal(defaults.FriendRowFingerprintHeightRatio, region.HeightRatio);
+        Assert.Equal(defaults.FriendRowFingerprintGridColumns, region.GridColumns);
+        Assert.Equal(defaults.FriendRowFingerprintGridRows, region.GridRows);
+    }
+
+    [Fact]
     public void ExplicitInvalidCharacterSlotStillFailsClearly()
     {
         var error = Assert.Throws<InvalidOperationException>(() =>
