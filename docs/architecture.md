@@ -2,7 +2,7 @@
 
 ```text
 Discord slash commands
-  -> D2RHost.exe on the Windows Hyper-V host
+  -> OpsHost.exe on the Windows Hyper-V host (default published name, see README "Build Locally")
     -> HTTP health API
     -> WebSocket server at /agent
       <- outbound VM agents
