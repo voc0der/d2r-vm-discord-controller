@@ -24,13 +24,8 @@ jobs:
 
       - name: Publish D2RHost
         shell: pwsh
-        env:
-          HOST_EXE_NAME: ${{ vars.HOST_EXE_NAME }}
         run: |
           $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME.TrimStart("v") } else { "0.0.0" }
-          # Repo variable HOST_EXE_NAME (Settings > Secrets and variables > Actions > Variables)
-          # controls the published exe's name. Falls back to OpsHost if unset.
-          $hostExeName = if ([string]::IsNullOrWhiteSpace($env:HOST_EXE_NAME)) { "OpsHost" } else { $env:HOST_EXE_NAME }
           dotnet publish agents/D2RHost/D2RHost.csproj `
             --configuration Release `
             --runtime win-x64 `
@@ -39,7 +34,6 @@ jobs:
             -p:EnableCompressionInSingleFile=true `
             -p:Version=$version `
             -p:InformationalVersion=$version `
-            -p:HostExeName=$hostExeName `
             -o artifacts/D2RHost
           Copy-Item samples/d2r-host.config.example.json artifacts/D2RHost/
           Copy-Item scripts/install-d2r-host.ps1 artifacts/D2RHost/
@@ -47,13 +41,8 @@ jobs:
 
       - name: Publish D2RAgent
         shell: pwsh
-        env:
-          AGENT_EXE_NAME: ${{ vars.AGENT_EXE_NAME }}
         run: |
           $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME.TrimStart("v") } else { "0.0.0" }
-          # Repo variable AGENT_EXE_NAME (Settings > Secrets and variables > Actions > Variables)
-          # controls the published exe's name. Falls back to OpsAgent if unset.
-          $agentExeName = if ([string]::IsNullOrWhiteSpace($env:AGENT_EXE_NAME)) { "OpsAgent" } else { $env:AGENT_EXE_NAME }
           dotnet publish agents/D2RAgent/D2RAgent.csproj `
             --configuration Release `
             --runtime win-x64 `
@@ -62,7 +51,6 @@ jobs:
             -p:EnableCompressionInSingleFile=true `
             -p:Version=$version `
             -p:InformationalVersion=$version `
-            -p:AgentExeName=$agentExeName `
             -o artifacts/D2RAgent
           Copy-Item samples/vm-agent.config.example.json artifacts/D2RAgent/
           Copy-Item scripts/install-vm-agent.ps1 artifacts/D2RAgent/

@@ -14,23 +14,21 @@ This intentionally stays in the ops lane: launch, kill, restart, VM lifecycle, s
 
 ```text
 Discord
-  -> OpsHost.exe on the Windows Hyper-V host
+  -> D2RHost.exe on the Windows Hyper-V host
       -> HTTP health API on :8080
       -> WebSocket /agent listener
       -> SQLite state
       -> local Hyper-V PowerShell commands
-          <- OpsAgent.exe inside each logged-in VM
+          <- D2RAgent.exe inside each logged-in VM
 ```
 
 The host PC does not need Docker or Node. The VM agents connect outbound to the host over WebSocket, so the VMs only need to reach `ws://HOST_LAN_IP:8080/agent`.
 
-`D2RHost`/`D2RAgent` are the source project names; the published exe names (`OpsHost.exe`/`OpsAgent.exe` by default) are controlled separately - see [Build Locally](#build-locally) to rename them.
-
 ## Updates
 
-`OpsHost.exe` checks the latest GitHub release on startup. If a newer version exists, the host starts an in-place updater, exits, and restarts before it accepts VM-agent connections. After the updated host is running and VM agents authenticate, the host sends each authenticated VM agent a self-update command.
+`D2RHost.exe` checks the latest GitHub release on startup. If a newer version exists, the host starts an in-place updater, exits, and restarts before it accepts VM-agent connections. After the updated host is running and VM agents authenticate, the host sends each authenticated VM agent a self-update command.
 
-`OpsAgent.exe` can still check for an update when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
+`D2RAgent.exe` can still check for an update when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
 
 When an update is started, the app starts a PowerShell updater, exits, downloads the matching release zip, replaces the files in the exe directory, and restarts the same exe.
 
@@ -103,10 +101,10 @@ New-Item -ItemType Directory -Force -Path C:\D2ROps | Out-Null
 Copy-Item .\D2RHost-win-x64\* C:\D2ROps\ -Recurse -Force
 ```
 
-4. Double-click `OpsHost.exe`, or run it from PowerShell:
+4. Double-click `D2RHost.exe`, or run it from PowerShell:
 
 ```powershell
-C:\D2ROps\OpsHost.exe
+C:\D2ROps\D2RHost.exe
 ```
 
 If `C:\D2ROps\d2r-host.config.json` does not exist, the host opens a terminal setup flow and writes it. If the JSON already exists, setup is skipped and the host starts normally.
@@ -127,7 +125,7 @@ You can still copy `samples/d2r-host.config.example.json` and edit it by hand if
 5. Install the host scheduled task from an elevated PowerShell prompt after the config exists:
 
 ```powershell
-.\install-d2r-host.ps1 -ExePath .\OpsHost.exe
+.\install-d2r-host.ps1 -ExePath .\D2RHost.exe
 Start-ScheduledTask -TaskName "D2R Host Controller"
 ```
 
@@ -153,10 +151,10 @@ New-Item -ItemType Directory -Force -Path C:\D2ROps | Out-Null
 Copy-Item .\D2RAgent-win-x64\* C:\D2ROps\ -Recurse -Force
 ```
 
-3. Double-click `OpsAgent.exe`, or run it from PowerShell:
+3. Double-click `D2RAgent.exe`, or run it from PowerShell:
 
 ```powershell
-C:\D2ROps\OpsAgent.exe
+C:\D2ROps\D2RAgent.exe
 ```
 
 If `C:\D2ROps\vm-agent.config.json` does not exist, the VM agent asks for `agentId`, `controllerUrl`, `sharedSecret`, and Battle.net path, then writes the JSON. Use the agent values printed by the host setup.
@@ -179,7 +177,7 @@ By default, a VM agent quits D2R with Alt+F4 after 30 minutes at the character s
 4. Install the scheduled task from an elevated PowerShell prompt inside the VM after the config exists:
 
 ```powershell
-.\install-vm-agent.ps1 -ExePath .\OpsAgent.exe
+.\install-vm-agent.ps1 -ExePath .\D2RAgent.exe
 Start-ScheduledTask -TaskName "D2R VM Agent"
 ```
 
@@ -212,13 +210,11 @@ dotnet publish agents/D2RHost/D2RHost.csproj --configuration Release --runtime w
 dotnet publish agents/D2RAgent/D2RAgent.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o artifacts/D2RAgent
 ```
 
-The published exe names default to `OpsHost.exe`/`OpsAgent.exe`. Override them with an MSBuild property (`-p:HostExeName=Whatever` / `-p:AgentExeName=Whatever`) or an environment variable of the same name. The `release.yml` workflow reads its names from the repo-level Actions variables `HOST_EXE_NAME` and `AGENT_EXE_NAME` (Settings > Secrets and variables > Actions > Variables), falling back to `OpsHost`/`OpsAgent` if unset.
-
 Run the host without Discord while testing VM-agent WebSocket connections:
 
 ```powershell
 $env:DISABLE_DISCORD = "true"
-.\OpsHost.exe C:\D2ROps\d2r-host.config.json
+.\D2RHost.exe C:\D2ROps\d2r-host.config.json
 ```
 
 Client-side D2R menu flow references live in [docs/runbooks](docs/runbooks/README.md).

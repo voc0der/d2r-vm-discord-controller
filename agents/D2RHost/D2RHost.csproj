@@ -11,9 +11,6 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- Override the published exe name with -p:HostExeName=Whatever, or a HostExeName env var. -->
-    <HostExeName Condition="'$(HostExeName)' == ''">OpsHost</HostExeName>
-    <AssemblyName>$(HostExeName)</AssemblyName>
   </PropertyGroup>
 
 </Project>
