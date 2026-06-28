@@ -9,9 +9,6 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- Override the published exe name with -p:AgentExeName=Whatever, or an AgentExeName env var. -->
-    <AgentExeName Condition="'$(AgentExeName)' == ''">OpsAgent</AgentExeName>
-    <AssemblyName>$(AgentExeName)</AssemblyName>
   </PropertyGroup>
 
 </Project>
