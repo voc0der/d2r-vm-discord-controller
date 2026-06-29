@@ -11,7 +11,10 @@ public sealed record SelfUpdateOptions(
 
     public static SelfUpdateOptions D2RHost(string[] restartArgs)
     {
-        return new SelfUpdateOptions("D2RHost", "D2RHost-win-x64.zip", restartArgs);
+        return new SelfUpdateOptions("D2RHost", "D2RHost-win-x64.zip", restartArgs)
+        {
+            RestartScheduledTaskName = "D2R Host Controller"
+        };
     }
 
     public static SelfUpdateOptions D2RAgent(string[] restartArgs)

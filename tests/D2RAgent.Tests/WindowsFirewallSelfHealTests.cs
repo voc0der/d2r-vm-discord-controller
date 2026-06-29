@@ -11,7 +11,7 @@ public sealed class WindowsFirewallSelfHealTests
         var spec = WindowsFirewallSelfHeal.BuildHostInboundTcpRule(8080, @"C:\D2ROps\D2RHost.exe");
         var args = WindowsFirewallSelfHeal.BuildNetshAddRuleArguments(spec);
 
-        Assert.Equal("D2ROps Host inbound TCP 8080", spec.Name);
+        Assert.Equal("D2ROps Host inbound TCP D2RHost 8080", spec.Name);
         Assert.Contains("dir=in", args);
         Assert.Contains("action=allow", args);
         Assert.Contains("protocol=TCP", args);
@@ -31,7 +31,7 @@ public sealed class WindowsFirewallSelfHealTests
 
         Assert.True(ok);
         var args = WindowsFirewallSelfHeal.BuildNetshAddRuleArguments(spec);
-        Assert.Equal("D2ROps Agent outbound TCP 192.168.10.1 8080", spec.Name);
+        Assert.Equal("D2ROps Agent outbound TCP D2RAgent 192.168.10.1 8080", spec.Name);
         Assert.Contains("dir=out", args);
         Assert.Contains("remoteport=8080", args);
         Assert.Contains("remoteip=192.168.10.1", args);
@@ -50,9 +50,40 @@ public sealed class WindowsFirewallSelfHealTests
 
         Assert.True(ok);
         var args = WindowsFirewallSelfHeal.BuildNetshAddRuleArguments(spec);
+        Assert.Equal("D2ROps Agent outbound TCP controller.example 443", spec.Name);
         Assert.Contains("remoteport=443", args);
         Assert.DoesNotContain(args, arg => arg.StartsWith("remoteip=", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(args, arg => arg.StartsWith("program=", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void HostInboundRuleNameChangesWithPublishedExeName()
+    {
+        var original = WindowsFirewallSelfHeal.BuildHostInboundTcpRule(8080, @"C:\D2ROps\D2RHost.exe");
+        var renamed = WindowsFirewallSelfHeal.BuildHostInboundTcpRule(8080, @"C:\D2ROps\OpsHost.exe");
+
+        Assert.NotEqual(original.Name, renamed.Name);
+        Assert.Equal("D2ROps Host inbound TCP OpsHost 8080", renamed.Name);
+    }
+
+    [Fact]
+    public void AgentOutboundRuleNameChangesWithPublishedExeName()
+    {
+        var originalOk = WindowsFirewallSelfHeal.TryBuildAgentControllerOutboundTcpRule(
+            "http://192.168.10.1:8080/agent",
+            @"C:\D2ROps\D2RAgent.exe",
+            out var original,
+            out _);
+        var renamedOk = WindowsFirewallSelfHeal.TryBuildAgentControllerOutboundTcpRule(
+            "http://192.168.10.1:8080/agent",
+            @"C:\D2ROps\OpsAgent.exe",
+            out var renamed,
+            out _);
+
+        Assert.True(originalOk);
+        Assert.True(renamedOk);
+        Assert.NotEqual(original.Name, renamed.Name);
+        Assert.Equal("D2ROps Agent outbound TCP OpsAgent 192.168.10.1 8080", renamed.Name);
     }
 
     [Fact]

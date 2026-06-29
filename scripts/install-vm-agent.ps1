@@ -1,18 +1,38 @@
 param(
     [string]$InstallDir = "C:\D2ROps",
     [string]$ConfigPath = "C:\D2ROps\vm-agent.config.json",
-    [string]$ExePath = ".\D2RAgent.exe",
+    [string]$ExePath = "",
     [string]$TaskName = "D2R VM Agent"
 )
 
 $ErrorActionPreference = "Stop"
 
-if (!(Test-Path -LiteralPath $ExePath -PathType Leaf)) {
-    throw "D2RAgent.exe was not found at $ExePath"
+function Resolve-AppExePath([string]$CandidatePath) {
+    if (![string]::IsNullOrWhiteSpace($CandidatePath)) {
+        if (!(Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
+            throw "$CandidatePath was not found"
+        }
+
+        return (Resolve-Path -LiteralPath $CandidatePath).Path
+    }
+
+    $SearchDir = if (![string]::IsNullOrWhiteSpace($PSScriptRoot)) { $PSScriptRoot } else { (Get-Location).Path }
+    $ExeCandidates = @(Get-ChildItem -LiteralPath $SearchDir -Filter "*.exe" -File | Sort-Object Name)
+    if ($ExeCandidates.Count -eq 1) {
+        return $ExeCandidates[0].FullName
+    }
+
+    if ($ExeCandidates.Count -eq 0) {
+        throw "No VM agent exe was found in $SearchDir. Pass -ExePath .\YourAgent.exe."
+    }
+
+    $Names = ($ExeCandidates | ForEach-Object { $_.Name }) -join ", "
+    throw "Multiple exe files were found in $SearchDir ($Names). Pass -ExePath .\YourAgent.exe."
 }
 
-$ResolvedExePath = (Resolve-Path -LiteralPath $ExePath).Path
+$ResolvedExePath = Resolve-AppExePath $ExePath
 $SourceDir = Split-Path -Parent $ResolvedExePath
+$ExeName = Split-Path -Leaf $ResolvedExePath
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $ResolvedInstallDir = (Resolve-Path -LiteralPath $InstallDir).Path
@@ -40,7 +60,7 @@ if ((Normalize-Path $SourceDir) -ieq (Normalize-Path $ResolvedInstallDir)) {
             -Force
     }
 
-    Write-Host "Copied D2RAgent app files from $SourceDir to $ResolvedInstallDir."
+    Write-Host "Copied app files from $SourceDir to $ResolvedInstallDir."
 }
 
 if (!(Test-Path -LiteralPath $ConfigPath)) {
@@ -49,7 +69,7 @@ if (!(Test-Path -LiteralPath $ConfigPath)) {
 }
 
 $action = New-ScheduledTaskAction `
-    -Execute (Join-Path $InstallDir "D2RAgent.exe") `
+    -Execute (Join-Path $InstallDir $ExeName) `
     -Argument "`"$ConfigPath`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $principal = New-ScheduledTaskPrincipal `

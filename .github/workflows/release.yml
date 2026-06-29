@@ -24,34 +24,50 @@ jobs:
 
       - name: Publish D2RHost
         shell: pwsh
+        env:
+          HOST_EXE_NAME: ${{ vars.HOST_EXE_NAME }}
         run: |
           $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME.TrimStart("v") } else { "0.0.0" }
-          dotnet publish agents/D2RHost/D2RHost.csproj `
-            --configuration Release `
-            --runtime win-x64 `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -p:EnableCompressionInSingleFile=true `
-            -p:Version=$version `
-            -p:InformationalVersion=$version `
-            -o artifacts/D2RHost
+          $publishArgs = @(
+            "agents/D2RHost/D2RHost.csproj",
+            "--configuration", "Release",
+            "--runtime", "win-x64",
+            "--self-contained", "true",
+            "-p:PublishSingleFile=true",
+            "-p:EnableCompressionInSingleFile=true",
+            "-p:Version=$version",
+            "-p:InformationalVersion=$version",
+            "-o", "artifacts/D2RHost"
+          )
+          if (![string]::IsNullOrWhiteSpace($env:HOST_EXE_NAME)) {
+            $publishArgs += "-p:HostExeName=$($env:HOST_EXE_NAME.Trim())"
+          }
+          dotnet publish @publishArgs
           Copy-Item samples/d2r-host.config.example.json artifacts/D2RHost/
           Copy-Item scripts/install-d2r-host.ps1 artifacts/D2RHost/
           Compress-Archive -Path artifacts/D2RHost/* -DestinationPath artifacts/D2RHost-win-x64.zip -Force
 
       - name: Publish D2RAgent
         shell: pwsh
+        env:
+          AGENT_EXE_NAME: ${{ vars.AGENT_EXE_NAME }}
         run: |
           $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME.TrimStart("v") } else { "0.0.0" }
-          dotnet publish agents/D2RAgent/D2RAgent.csproj `
-            --configuration Release `
-            --runtime win-x64 `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -p:EnableCompressionInSingleFile=true `
-            -p:Version=$version `
-            -p:InformationalVersion=$version `
-            -o artifacts/D2RAgent
+          $publishArgs = @(
+            "agents/D2RAgent/D2RAgent.csproj",
+            "--configuration", "Release",
+            "--runtime", "win-x64",
+            "--self-contained", "true",
+            "-p:PublishSingleFile=true",
+            "-p:EnableCompressionInSingleFile=true",
+            "-p:Version=$version",
+            "-p:InformationalVersion=$version",
+            "-o", "artifacts/D2RAgent"
+          )
+          if (![string]::IsNullOrWhiteSpace($env:AGENT_EXE_NAME)) {
+            $publishArgs += "-p:AgentExeName=$($env:AGENT_EXE_NAME.Trim())"
+          }
+          dotnet publish @publishArgs
           Copy-Item samples/vm-agent.config.example.json artifacts/D2RAgent/
           Copy-Item scripts/install-vm-agent.ps1 artifacts/D2RAgent/
           Compress-Archive -Path artifacts/D2RAgent/* -DestinationPath artifacts/D2RAgent-win-x64.zip -Force

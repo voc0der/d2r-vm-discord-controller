@@ -54,14 +54,15 @@ public static class WindowsFirewallSelfHeal
     public static WindowsFirewallRuleSpec BuildHostInboundTcpRule(int localPort, string? programPath)
     {
         ValidateTcpPort(localPort, nameof(localPort));
+        var normalizedProgramPath = NormalizeProgramPath(programPath);
         return new WindowsFirewallRuleSpec(
-            Name: $"{HostRulePrefix} {localPort}",
+            Name: BuildRuleName(HostRulePrefix, normalizedProgramPath, localPort.ToString()),
             Direction: "in",
             Protocol: "TCP",
             LocalPort: localPort,
             RemotePort: null,
             RemoteIp: null,
-            ProgramPath: NormalizeProgramPath(programPath));
+            ProgramPath: normalizedProgramPath);
     }
 
     public static bool TryBuildAgentControllerOutboundTcpRule(
@@ -91,14 +92,15 @@ public static class WindowsFirewallSelfHeal
 
         var remoteIp = TryGetFirewallRemoteIp(uri.Host);
         var hostSuffix = SanitizeRuleNamePart(uri.Host);
+        var normalizedProgramPath = NormalizeProgramPath(programPath);
         spec = new WindowsFirewallRuleSpec(
-            Name: $"{AgentRulePrefix} {hostSuffix} {port}",
+            Name: BuildRuleName(AgentRulePrefix, normalizedProgramPath, hostSuffix, port.ToString()),
             Direction: "out",
             Protocol: "TCP",
             LocalPort: null,
             RemotePort: port,
             RemoteIp: remoteIp,
-            ProgramPath: NormalizeProgramPath(programPath));
+            ProgramPath: normalizedProgramPath);
         message = remoteIp is null
             ? $"Controller host {uri.Host} is not a literal IP; outbound rule will allow TCP {port} to any remote IP."
             : $"Controller host {uri.Host} resolved as firewall remote IP {remoteIp}.";
@@ -271,6 +273,33 @@ public static class WindowsFirewallSelfHeal
         return string.IsNullOrWhiteSpace(programPath)
             ? null
             : programPath.Trim();
+    }
+
+    private static string BuildRuleName(string prefix, string? programPath, params string[] suffixParts)
+    {
+        var parts = new List<string> { prefix };
+        var programPart = GetProgramRuleNamePart(programPath);
+        if (programPart is not null)
+        {
+            parts.Add(programPart);
+        }
+
+        parts.AddRange(suffixParts);
+        return string.Join(" ", parts);
+    }
+
+    private static string? GetProgramRuleNamePart(string? programPath)
+    {
+        if (string.IsNullOrWhiteSpace(programPath))
+        {
+            return null;
+        }
+
+        var fileName = Path.GetFileNameWithoutExtension(
+            programPath.Trim().Split('\\', '/').LastOrDefault() ?? "");
+        return string.IsNullOrWhiteSpace(fileName)
+            ? null
+            : SanitizeRuleNamePart(fileName);
     }
 
     private static void ValidateTcpPort(int port, string parameterName)

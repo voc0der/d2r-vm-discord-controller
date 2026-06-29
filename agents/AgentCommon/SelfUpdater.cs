@@ -52,7 +52,7 @@ public static class SelfUpdater
 
         try
         {
-            if (!TryGetCurrentExecutable(options, out var currentExe, out var executableMessage))
+            if (!TryGetCurrentExecutable(out var currentExe, out var executableMessage))
             {
                 return SelfUpdateResult.Skipped(executableMessage);
             }
@@ -121,24 +121,22 @@ public static class SelfUpdater
             && disabled;
     }
 
-    private static bool TryGetCurrentExecutable(
-        SelfUpdateOptions options,
-        out string currentExe,
-        out string message)
+    private static bool TryGetCurrentExecutable(out string currentExe, out string message)
     {
         currentExe = Environment.ProcessPath ?? "";
+        return IsPublishedWindowsExePath(currentExe, File.Exists, out message);
+    }
+
+    internal static bool IsPublishedWindowsExePath(
+        string? currentExe,
+        Func<string, bool> fileExists,
+        out string message)
+    {
         if (string.IsNullOrWhiteSpace(currentExe)
             || !currentExe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-            || !File.Exists(currentExe))
+            || !fileExists(currentExe))
         {
             message = "Current process is not a published Windows exe.";
-            return false;
-        }
-
-        var expectedName = options.AppName + ".exe";
-        if (!string.Equals(Path.GetFileName(currentExe), expectedName, StringComparison.OrdinalIgnoreCase))
-        {
-            message = $"Current process is {Path.GetFileName(currentExe)}, not {expectedName}.";
             return false;
         }
 
@@ -209,6 +207,7 @@ public static class SelfUpdater
         var logPath = Path.ChangeExtension(scriptPath, ".log");
         var restartArgumentLine = string.Join(" ", options.RestartArgs.Select(WindowsArgumentQuote));
         var restartScheduledTaskName = options.RestartScheduledTaskName ?? "";
+        var targetExeName = Path.GetFileName(currentExe);
 
         var script = $$"""
             $ErrorActionPreference = 'Stop'
@@ -217,6 +216,7 @@ public static class SelfUpdater
             $downloadUrl = {{PsQuote(release.DownloadUrl)}}
             $installDirectory = {{PsQuote(installDirectory)}}
             $targetExe = {{PsQuote(currentExe)}}
+            $targetExeName = {{PsQuote(targetExeName)}}
             $restartArgumentLine = {{PsQuote(restartArgumentLine)}}
             $restartScheduledTaskName = {{PsQuote(restartScheduledTaskName)}}
             $logPath = {{PsQuote(logPath)}}
@@ -225,6 +225,43 @@ public static class SelfUpdater
 
             function Write-UpdateLog([string]$message) {
                 Add-Content -Path $logPath -Value ((Get-Date).ToString('o') + ' ' + $message)
+            }
+
+            function Resolve-RestartExe {
+                $sameNamePayload = Get-ChildItem -LiteralPath $extractDirectory -Filter $targetExeName -File -Recurse | Select-Object -First 1
+                if ($null -ne $sameNamePayload) {
+                    return (Join-Path $installDirectory $sameNamePayload.Name)
+                }
+
+                $payloadExes = @(Get-ChildItem -LiteralPath $extractDirectory -Filter '*.exe' -File -Recurse)
+                if ($payloadExes.Count -eq 1) {
+                    return (Join-Path $installDirectory $payloadExes[0].Name)
+                }
+
+                if ($payloadExes.Count -gt 1) {
+                    $names = ($payloadExes | ForEach-Object { $_.Name } | Sort-Object -Unique) -join ', '
+                    throw ('Could not choose a restart exe from update payload: ' + $names)
+                }
+
+                return $targetExe
+            }
+
+            function New-D2ROpsScheduledTaskAction([string]$restartExe) {
+                if ($restartArgumentLine.Length -gt 0) {
+                    return New-ScheduledTaskAction -Execute $restartExe -Argument $restartArgumentLine -WorkingDirectory $installDirectory
+                }
+
+                return New-ScheduledTaskAction -Execute $restartExe -WorkingDirectory $installDirectory
+            }
+
+            function Start-D2ROpsProcess([string]$restartExe) {
+                if ($restartArgumentLine.Length -gt 0) {
+                    Write-UpdateLog ('Restarting process ' + $restartExe)
+                    Start-Process -FilePath $restartExe -ArgumentList $restartArgumentLine -WorkingDirectory $installDirectory
+                } else {
+                    Write-UpdateLog ('Restarting process ' + $restartExe)
+                    Start-Process -FilePath $restartExe -WorkingDirectory $installDirectory
+                }
             }
 
             try {
@@ -239,36 +276,43 @@ public static class SelfUpdater
                 New-Item -ItemType Directory -Force -Path $extractDirectory | Out-Null
                 Expand-Archive -Path $zipPath -DestinationPath $extractDirectory -Force
 
+                $restartExe = Resolve-RestartExe
+                Write-UpdateLog ('Restart exe resolved as ' + $restartExe)
+
                 Write-UpdateLog ('Copying files to ' + $installDirectory)
                 Copy-Item -Path (Join-Path $extractDirectory '*') -Destination $installDirectory -Recurse -Force
 
                 if ($restartScheduledTaskName.Length -gt 0) {
                     $task = Get-ScheduledTask -TaskName $restartScheduledTaskName -ErrorAction SilentlyContinue
+                    $taskRestarted = $false
                     if ($null -ne $task) {
-                        Write-UpdateLog ('Restarting scheduled task ' + $restartScheduledTaskName)
-                        for ($attempt = 0; $attempt -lt 20; $attempt++) {
-                            $task = Get-ScheduledTask -TaskName $restartScheduledTaskName -ErrorAction SilentlyContinue
-                            if ($null -eq $task -or $task.State -ne 'Running') {
-                                break
+                        try {
+                            Write-UpdateLog ('Updating scheduled task action ' + $restartScheduledTaskName + ' -> ' + $restartExe)
+                            Set-ScheduledTask -TaskName $restartScheduledTaskName -Action (New-D2ROpsScheduledTaskAction $restartExe) | Out-Null
+                            Write-UpdateLog ('Restarting scheduled task ' + $restartScheduledTaskName)
+                            for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                                $task = Get-ScheduledTask -TaskName $restartScheduledTaskName -ErrorAction SilentlyContinue
+                                if ($null -eq $task -or $task.State -ne 'Running') {
+                                    break
+                                }
+
+                                Start-Sleep -Milliseconds 500
                             }
 
-                            Start-Sleep -Milliseconds 500
+                            Start-ScheduledTask -TaskName $restartScheduledTaskName
+                            $taskRestarted = $true
+                        } catch {
+                            Write-UpdateLog ('Could not restart scheduled task ' + $restartScheduledTaskName + ': ' + $_.Exception.Message)
                         }
-
-                        Start-ScheduledTask -TaskName $restartScheduledTaskName
-                    } elseif ($restartArgumentLine.Length -gt 0) {
-                        Write-UpdateLog ('Scheduled task not found; restarting process ' + $targetExe)
-                        Start-Process -FilePath $targetExe -ArgumentList $restartArgumentLine -WorkingDirectory $installDirectory
                     } else {
-                        Write-UpdateLog ('Scheduled task not found; restarting process ' + $targetExe)
-                        Start-Process -FilePath $targetExe -WorkingDirectory $installDirectory
+                        Write-UpdateLog ('Scheduled task not found: ' + $restartScheduledTaskName)
                     }
-                } elseif ($restartArgumentLine.Length -gt 0) {
-                    Write-UpdateLog ('Restarting process ' + $targetExe)
-                    Start-Process -FilePath $targetExe -ArgumentList $restartArgumentLine -WorkingDirectory $installDirectory
+
+                    if (-not $taskRestarted) {
+                        Start-D2ROpsProcess $restartExe
+                    }
                 } else {
-                    Write-UpdateLog ('Restarting process ' + $targetExe)
-                    Start-Process -FilePath $targetExe -WorkingDirectory $installDirectory
+                    Start-D2ROpsProcess $restartExe
                 }
                 Write-UpdateLog 'Update completed.'
             } catch {

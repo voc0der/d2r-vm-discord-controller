@@ -6,7 +6,7 @@ The canonical 1366x768 click/sample map is [automation-coordinate-catalog.md](au
 
 ## 1. Confirm session and elevation match
 
-On the VM, open Task Manager → Details tab → enable the "Session ID" and "Elevated" columns. Compare `D2RAgent.exe` against `D2R.exe`/`Battle.net.exe`.
+On the VM, open Task Manager -> Details tab -> enable the "Session ID" and "Elevated" columns. Compare the VM agent exe (`D2RAgent.exe` by default, or the `AGENT_EXE_NAME` value from the release) against `D2R.exe`/`Battle.net.exe`.
 
 - **Session ID must match.** Process/window detection (`WindowsProcessFinder`) only sees windows in the agent's own interactive session. A mismatch means the scheduled task and the game are running in different logons.
 - **Elevated does not need to match for detection to work**, and a confirmed mismatch (agent elevated, game not) did not by itself break `Process.GetProcessesByName` lookups. It does matter for input - see #3.

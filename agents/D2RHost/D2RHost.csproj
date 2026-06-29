@@ -11,6 +11,10 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Override the published exe name with -p:HostExeName=Whatever or HOST_EXE_NAME. -->
+    <HostExeName Condition="'$(HostExeName)' == '' and '$(HOST_EXE_NAME)' != ''">$(HOST_EXE_NAME)</HostExeName>
+    <HostAssemblyName Condition="'$(HostExeName)' != ''">$([System.IO.Path]::GetFileNameWithoutExtension('$(HostExeName)'))</HostAssemblyName>
+    <AssemblyName Condition="'$(HostAssemblyName)' != ''">$(HostAssemblyName)</AssemblyName>
   </PropertyGroup>
 
 </Project>

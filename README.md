@@ -24,13 +24,15 @@ Discord
 
 The host PC does not need Docker or Node. The VM agents connect outbound to the host over WebSocket, so the VMs only need to reach `ws://HOST_LAN_IP:8080/agent`.
 
+`D2RHost.exe` and `D2RAgent.exe` are the default published executable names. Release builds can rename them with the repo-level Actions variables `HOST_EXE_NAME` and `AGENT_EXE_NAME`; the release zip names stay `D2RHost-win-x64.zip` and `D2RAgent-win-x64.zip` so self-update can keep finding the right assets.
+
 ## Updates
 
-`D2RHost.exe` checks the latest GitHub release on startup. If a newer version exists, the host starts an in-place updater, exits, and restarts before it accepts VM-agent connections. After the updated host is running and VM agents authenticate, the host sends each authenticated VM agent a self-update command.
+The host executable checks the latest GitHub release on startup. If a newer version exists, the host starts an in-place updater, exits, and restarts before it accepts VM-agent connections. After the updated host is running and VM agents authenticate, the host sends each authenticated VM agent a self-update command.
 
-`D2RAgent.exe` can still check for an update when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
+The VM agent executable can still check for an update when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
 
-When an update is started, the app starts a PowerShell updater, exits, downloads the matching release zip, replaces the files in the exe directory, and restarts the same exe.
+When an update is started, the app starts a PowerShell updater, exits, downloads the matching release zip, replaces the files in the exe directory, and restarts the published exe from that release. If the exe name changed, the updater also points the scheduled task at the new exe before starting it.
 
 Versions before `v0.1.3` do not include the updater, so those installs need one manual replacement before future updates can self-apply.
 
@@ -103,7 +105,7 @@ New-Item -ItemType Directory -Force -Path C:\D2ROps | Out-Null
 Copy-Item .\D2RHost-win-x64\* C:\D2ROps\ -Recurse -Force
 ```
 
-4. Double-click `D2RHost.exe`, or run it from PowerShell:
+4. Double-click the host exe (`D2RHost.exe` unless `HOST_EXE_NAME` changed it), or run it from PowerShell:
 
 ```powershell
 C:\D2ROps\D2RHost.exe
@@ -131,6 +133,8 @@ You can still copy `samples/d2r-host.config.example.json` and edit it by hand if
 Start-ScheduledTask -TaskName "D2R Host Controller"
 ```
 
+If the extracted release folder contains only one `.exe`, `install-d2r-host.ps1` can auto-detect it and `-ExePath` is optional.
+
 The default scheduled task runs as `SYSTEM` at startup. If you keep the Discord token in an environment variable instead of the config file, use a machine-level environment variable so the task can see it.
 
 Health checks:
@@ -153,7 +157,7 @@ New-Item -ItemType Directory -Force -Path C:\D2ROps | Out-Null
 Copy-Item .\D2RAgent-win-x64\* C:\D2ROps\ -Recurse -Force
 ```
 
-3. Double-click `D2RAgent.exe`, or run it from PowerShell:
+3. Double-click the VM agent exe (`D2RAgent.exe` unless `AGENT_EXE_NAME` changed it), or run it from PowerShell:
 
 ```powershell
 C:\D2ROps\D2RAgent.exe
@@ -183,6 +187,8 @@ By default, a VM agent quits D2R with Alt+F4 after 30 minutes at the character s
 Start-ScheduledTask -TaskName "D2R VM Agent"
 ```
 
+If the extracted release folder contains only one `.exe`, `install-vm-agent.ps1` can auto-detect it and `-ExePath` is optional.
+
 Run the VM agent as a scheduled task at user logon, not as a Windows service. D2R and Battle.net are desktop apps, so the agent needs the logged-in user session for screenshots and input.
 
 The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play every `ui.readyNudgeMinDelayMs` to `ui.readyNudgeMaxDelayMs` until D2R starts, waits for D2R to expose a focusable window, then keeps nudging intro/title states at the same jittered interval until it visually confirms the character screen by sampling the Play/Lobby button regions. If cold startup is still racing ahead of D2R, raise `d2rStartTimeoutSeconds` or `ui.characterScreenReadyTimeoutSeconds` in `vm-agent.config.json`.
@@ -211,6 +217,8 @@ dotnet build D2ROps.sln --configuration Release
 dotnet publish agents/D2RHost/D2RHost.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o artifacts/D2RHost
 dotnet publish agents/D2RAgent/D2RAgent.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o artifacts/D2RAgent
 ```
+
+Override the published executable names with `-p:HostExeName=Whatever` and `-p:AgentExeName=Whatever`, or set `HOST_EXE_NAME` and `AGENT_EXE_NAME`. Values may include or omit `.exe`; the build strips the extension for the assembly name.
 
 Run the host without Discord while testing VM-agent WebSocket connections:
 

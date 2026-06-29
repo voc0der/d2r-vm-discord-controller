@@ -2,7 +2,7 @@
 
 ```text
 Discord slash commands
-  -> D2RHost.exe on the Windows Hyper-V host
+  -> D2RHost.exe on the Windows Hyper-V host (default published name)
     -> HTTP health API
     -> WebSocket server at /agent
       <- outbound VM agents
@@ -11,6 +11,8 @@ Discord slash commands
 ```
 
 `D2RHost` is the only process that talks to Discord. It also owns the VM WebSocket listener, account mapping, SQLite state, and Hyper-V operations.
+
+Release builds can rename the published host and VM-agent executables with `HOST_EXE_NAME` and `AGENT_EXE_NAME`. The project names and release zip names remain `D2RHost` and `D2RAgent`.
 
 ## D2RHost
 
