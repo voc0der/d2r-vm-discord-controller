@@ -169,6 +169,14 @@ internal sealed class WindowsInput
         Click(point, MouseButton.Right, coordinateProcessNames);
     }
 
+    public void VisibleClickOnce(UiPoint point, MouseButton button)
+    {
+        EnsureWindows();
+
+        var (x, y) = ToScreen(point, coordinateProcessNames: null);
+        SendLegacyMouseClick(x, y, button);
+    }
+
     public bool SendWindowClick(UiPoint point, IEnumerable<string> processNames, MouseButton button)
     {
         EnsureWindows();

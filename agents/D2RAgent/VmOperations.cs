@@ -1143,7 +1143,7 @@ public sealed class VmOperations
         if (!IsFriendsDrawerOpen(input))
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): opening friends drawer");
-            ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
+            ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
             await DelayLongAsync(cancellationToken);
         }
         else
@@ -1161,7 +1161,7 @@ public sealed class VmOperations
         if (!IsFriendsListExpanded(input))
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion");
-            ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
+            ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
             await DelayLongAsync(cancellationToken);
         }
         else
@@ -2527,6 +2527,28 @@ public sealed class VmOperations
         var afterCursor = input.GetCursorPosition();
         RecordD2RInputAction(
             kind: "click",
+            button: button.ToString(),
+            point,
+            target,
+            beforeCursor,
+            afterCursor,
+            beforeDiagnostics: null,
+            afterDiagnostics: null);
+    }
+
+    private void ClickD2RStatefulToggle(
+        WindowsInput input,
+        AgentCommon.UiPoint point,
+        MouseButton button = MouseButton.Left)
+    {
+        // The redundant ClickD2R layers are useful for ordinary buttons, but a second delivered
+        // click on a toggle (friends drawer, accordion header) immediately reverses the first.
+        var target = input.ResolveScreenPoint(point);
+        var beforeCursor = input.GetCursorPosition();
+        input.VisibleClickOnce(point, button);
+        var afterCursor = input.GetCursorPosition();
+        RecordD2RInputAction(
+            kind: "stateful-toggle-click",
             button: button.ToString(),
             point,
             target,
