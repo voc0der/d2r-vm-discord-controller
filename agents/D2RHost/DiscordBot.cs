@@ -2546,7 +2546,7 @@ public sealed class DiscordBot
         try
         {
             captureResult = await _registry.SendCommandAsync(
-                bindAccount.AgentId, "menu_follow_bind", BuildAccountArgs(resolvedAccountKey, bindAccount), TimeSpan.FromSeconds(210));
+                bindAccount.AgentId, "menu_follow_bind", BuildMenuArgs(resolvedAccountKey, bindAccount, null, context), TimeSpan.FromSeconds(210));
         }
         catch (Exception ex)
         {
@@ -2689,11 +2689,30 @@ public sealed class DiscordBot
                 foreach (var (accountKey, account) in pending)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    var args = BuildMenuArgs(accountKey, account, null, context);
+                    CommandResultInfo? readyResult;
+                    try
+                    {
+                        readyResult = await SendReadyIfNotMenuReadyAsync(account, args);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "menu_ready before follow-auto failed for {AccountKey}.", accountKey);
+                        checkFailures.Add($"{accountKey}: ready failed before follow-auto check: {FormatExceptionWithAccountStatus(ex, accountKey, account)}");
+                        continue;
+                    }
+
+                    if (readyResult?.Ok == false)
+                    {
+                        checkFailures.Add($"{accountKey}: ready failed before follow-auto check: {readyResult.Message}");
+                        continue;
+                    }
+
                     CommandResultInfo result;
                     try
                     {
                         result = await _registry.SendCommandAsync(
-                            account.AgentId, "menu_follow_auto_check", BuildAccountArgs(accountKey, account), TimeSpan.FromSeconds(210), cancellationToken);
+                            account.AgentId, "menu_follow_auto_check", args, TimeSpan.FromSeconds(210), cancellationToken);
                     }
                     catch (Exception ex)
                     {
@@ -2737,6 +2756,35 @@ public sealed class DiscordBot
 
                 if (!anyBound)
                 {
+                    if (checkFailures.Count > 0 && unboundReports.Count == 0)
+                    {
+                        var waitingReport = "checks could not complete: " + string.Join("; ", checkFailures);
+                        if (!string.Equals(waitingReport, lastWaitingReport, StringComparison.Ordinal)
+                            || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
+                        {
+                            await SendJoinAutoMessageAsync(channel, $"follow-auto waiting: {waitingReport}");
+                            lastWaitingReport = waitingReport;
+                            lastWaitingReportUtc = DateTimeOffset.UtcNow;
+                        }
+
+                        if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
+                        {
+                            await SendJoinAutoMessageAsync(channel, "follow-auto: idle timeout detected, disabled.");
+                            break;
+                        }
+
+                        if (delaySeconds > 0)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
+                        }
+                        else
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
+                        }
+
+                        continue;
+                    }
+
                     var details = string.Join("; ", checkFailures.Concat(unboundReports));
                     var reason = checkFailures.Count > 0
                         ? "follow-auto stopped: no VM reported a usable follow-bind fingerprint. "
