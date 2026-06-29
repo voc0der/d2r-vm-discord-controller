@@ -7,7 +7,7 @@ public sealed class FriendFingerprintTests
 {
     private static FriendFingerprint MakeFingerprint(params byte[] samples)
     {
-        return new FriendFingerprint(GridColumns: samples.Length, GridRows: 1, Samples: samples);
+        return new FriendFingerprint(GridColumns: samples.Length / 3, GridRows: 1, Samples: samples);
     }
 
     [Fact]
@@ -35,6 +35,20 @@ public sealed class FriendFingerprintTests
         var b = MakeFingerprint(240, 230, 220, 5, 8, 3);
 
         Assert.False(FriendFingerprint.IsMatch(a, b));
+    }
+
+    [Fact]
+    public void CompareReportsSignalDifferenceSeparatelyFromSharedDarkBackground()
+    {
+        var a = MakeFingerprint(8, 8, 8, 180, 180, 180, 8, 8, 8, 8, 8, 8);
+        var b = MakeFingerprint(8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8);
+
+        var comparison = FriendFingerprint.Compare(a, b);
+
+        Assert.True(comparison.Comparable);
+        Assert.Equal(4, comparison.TotalPixels);
+        Assert.Equal(1, comparison.SignalPixels);
+        Assert.True(comparison.SignalAverageDifference > comparison.AverageDifference);
     }
 
     [Fact]

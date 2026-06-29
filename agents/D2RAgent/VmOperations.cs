@@ -44,6 +44,10 @@ public sealed class VmOperations
     // These sibling entry-loop checks all use the same pixel-sampling path, so bound them at
     // their definitions instead of trying to guard every current and future call site.
     private const int EntryLoopCheckBoundMs = 1500;
+    private const double FollowFingerprintMaxAverageDifference = 18.0;
+    private const double FollowFingerprintMaxSignalAverageDifference = 42.0;
+    private const double FollowFingerprintMinSignalSeparation = 6.0;
+    private const int FollowFingerprintMinSignalPixels = 3;
     // Each slot is one small region capture - cheap relative to the in-game HUD checks above,
     // but there are up to 8 of them per tick, so still bound each individually rather than
     // relying on the tick interval alone to cap worst-case cost.
@@ -1148,24 +1152,39 @@ public sealed class VmOperations
         }
 
         var maxRows = _config.Ui.FriendRowFingerprintMaxScanRows > 0 ? _config.Ui.FriendRowFingerprintMaxScanRows : 10;
-        var matchedRow = 0;
+        var rowMatches = new List<FriendRowFingerprintMatch>();
         for (var row = 1; row <= maxRows; row++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
             var samples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows);
-            if (FriendFingerprint.IsMatch(template, new FriendFingerprint(region.GridColumns, region.GridRows, samples)))
-            {
-                matchedRow = row;
-                break;
-            }
+            var comparison = FriendFingerprint.Compare(template, new FriendFingerprint(region.GridColumns, region.GridRows, samples));
+            rowMatches.Add(new FriendRowFingerprintMatch(row, comparison));
         }
 
-        if (matchedRow == 0)
+        var rankedMatches = rowMatches
+            .Where(match => match.Comparison.Comparable)
+            .OrderBy(match => match.Comparison.SignalAverageDifference)
+            .ThenBy(match => match.Comparison.AverageDifference)
+            .ToList();
+        var bestMatch = rankedMatches.FirstOrDefault();
+        if (bestMatch is null || !IsUsableFollowFingerprintMatch(bestMatch.Comparison))
         {
-            return CommandResult.Success("Bound friend not found in the visible friends list this cycle.", new { bound = true, joined = false });
+            return CommandResult.Success(
+                $"Bound friend not confidently found in the visible friends list this cycle. {FormatFollowFingerprintScores(rowMatches)}",
+                new { bound = true, joined = false, fingerprintScores = FormatFollowFingerprintScores(rowMatches) });
         }
 
+        var secondMatch = rankedMatches.Skip(1).FirstOrDefault();
+        if (secondMatch is not null
+            && secondMatch.Comparison.SignalAverageDifference <= bestMatch.Comparison.SignalAverageDifference + FollowFingerprintMinSignalSeparation)
+        {
+            return CommandResult.Success(
+                $"Bound friend fingerprint was ambiguous; not clicking a friend row this cycle. {FormatFollowFingerprintScores(rowMatches)}",
+                new { bound = true, joined = false, fingerprintScores = FormatFollowFingerprintScores(rowMatches) });
+        }
+
+        var matchedRow = bestMatch.Row;
         MarkCommandCheckpoint($"FollowAutoCheckAsync: matched bound friend at row {matchedRow}");
         var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(input, matchedRow, "follow-auto", cancellationToken);
         if (!entry.Entered)
@@ -1175,8 +1194,52 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
+        if (!await WaitForStrictFollowAutoEntryAsync(input, cancellationToken))
+        {
+            return CommandResult.Failure(
+                $"Found the bound friend at row {matchedRow} and clicked Join Game, but strict in-game HUD confirmation did not appear after the join flow reported success.",
+                await CollectStatusAsync(cancellationToken));
+        }
+
         MarkLobbyOrGameInteraction("Joined bound friend's game via follow-auto.");
         return CommandResult.Success("Joined the bound friend's game.", new { bound = true, joined = true });
+    }
+
+    private static bool IsUsableFollowFingerprintMatch(FriendFingerprintComparison comparison)
+    {
+        return comparison.Comparable
+            && comparison.SignalPixels >= FollowFingerprintMinSignalPixels
+            && comparison.AverageDifference <= FollowFingerprintMaxAverageDifference
+            && comparison.SignalAverageDifference <= FollowFingerprintMaxSignalAverageDifference;
+    }
+
+    private static string FormatFollowFingerprintScores(IEnumerable<FriendRowFingerprintMatch> matches)
+    {
+        var parts = matches.Select(match => match.Comparison.Comparable
+            ? $"r{match.Row}=avg{match.Comparison.AverageDifference:0.0}/sig{match.Comparison.SignalAverageDifference:0.0}/px{match.Comparison.SignalPixels}"
+            : $"r{match.Row}=n/a");
+        return $"scores: {string.Join(", ", parts)}.";
+    }
+
+    private async Task<bool> WaitForStrictFollowAutoEntryAsync(WindowsInput input, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 3, 8));
+        do
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            MarkCommandCheckpoint("FollowAutoCheckAsync: verifying strict in-game HUD");
+            if (TryRunBounded(() => IsInGameReadyStrict(input), InGameHudSampleBoundMs, fallback: false))
+            {
+                RecordObservedFrame(VisibleD2RState.InGame.ToString());
+                MarkLobbyOrGameInteraction("Strictly confirmed in-game HUD for follow-auto.");
+                return true;
+            }
+
+            await Task.Delay(EntryPollIntervalMs, cancellationToken);
+        }
+        while (DateTimeOffset.UtcNow < deadline);
+
+        return false;
     }
 
     private async Task<GameEntryAttemptResult> ClickFriendJoinOptionUntilEnteredGameAsync(
@@ -4824,6 +4887,10 @@ public sealed class VmOperations
         LegacyProfile,
         Frame
     }
+
+    private sealed record FriendRowFingerprintMatch(
+        int Row,
+        FriendFingerprintComparison Comparison);
 
     private sealed record GameEntryAttemptResult(
         bool Entered,

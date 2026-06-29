@@ -1,0 +1,303 @@
+2026-06-24 09:49:55Z hc1 (D2R_1): frame NotRunning (1m32s ago) [degraded] | last no input yet
+2026-06-24 09:49:55Z hc2 (D2R_2): frame NotRunning (1m32s ago) [degraded] | last no input yet
+2026-06-24 09:49:55Z hc3 (D2R_3): frame NotRunning (1m33s ago) [degraded] | last no input yet
+2026-06-24 09:49:58Z hc1 (D2R_1): frame NotRunning (1m34s ago) [degraded] | last no input yet
+2026-06-24 09:49:58Z hc2 (D2R_2): frame NotRunning (1m34s ago) [degraded] | last no input yet
+2026-06-24 09:49:58Z hc3 (D2R_3): frame NotRunning (1m35s ago) [degraded] | last no input yet
+2026-06-24 09:50:00Z hc1 (D2R_1): frame NotRunning (1m36s ago) [degraded] | last no input yet
+2026-06-24 09:50:00Z hc2 (D2R_2): frame NotRunning (1m37s ago) [degraded] | last no input yet
+2026-06-24 09:50:00Z hc3 (D2R_3): frame NotRunning (1m38s ago) [degraded] | last no input yet
+2026-06-24 09:50:02Z hc1 (D2R_1): frame NotRunning (1m39s ago) [degraded] | last no input yet
+2026-06-24 09:50:02Z hc2 (D2R_2): frame NotRunning (1m39s ago) [degraded] | last no input yet
+2026-06-24 09:50:02Z hc3 (D2R_3): frame NotRunning (1m40s ago) [degraded] | last no input yet
+2026-06-24 09:50:05Z hc1 (D2R_1): frame NotRunning (1m41s ago) [degraded] | last no input yet
+2026-06-24 09:50:05Z hc2 (D2R_2): frame NotRunning (1m41s ago) [degraded] | last no input yet
+2026-06-24 09:50:05Z hc3 (D2R_3): frame NotRunning (1m42s ago) [degraded] | last no input yet
+2026-06-24 09:50:07Z hc1 (D2R_1): frame NotRunning (1m43s ago) [degraded] | last no input yet
+2026-06-24 09:50:07Z hc2 (D2R_2): frame NotRunning (1m44s ago) [degraded] | last no input yet
+2026-06-24 09:50:07Z hc3 (D2R_3): frame NotRunning (1m45s ago) [degraded] | last no input yet
+2026-06-24 09:50:09Z hc1 (D2R_1): frame NotRunning (1m46s ago) [degraded] | last no input yet
+2026-06-24 09:50:09Z hc2 (D2R_2): frame NotRunning (1m46s ago) [degraded] | last no input yet
+2026-06-24 09:50:09Z hc3 (D2R_3): frame NotRunning (1m47s ago) [degraded] | last no input yet
+2026-06-24 09:50:12Z hc1 (D2R_1): frame NotRunning (1m48s ago) [degraded] | last no input yet
+2026-06-24 09:50:12Z hc2 (D2R_2): frame NotRunning (1m48s ago) [degraded] | last no input yet
+2026-06-24 09:50:12Z hc3 (D2R_3): frame NotRunning (1m50s ago) [degraded] | last no input yet
+2026-06-24 09:50:14Z hc1 (D2R_1): frame NotRunning (1m50s ago) [degraded] | last no input yet
+2026-06-24 09:50:14Z hc2 (D2R_2): frame NotRunning (1m51s ago) [degraded] | last no input yet
+2026-06-24 09:50:14Z hc3 (D2R_3): frame NotRunning (1m52s ago) [degraded] | last no input yet
+2026-06-24 09:50:16Z hc1 (D2R_1): frame NotRunning (1m53s ago) [degraded] | last no input yet
+2026-06-24 09:50:16Z hc2 (D2R_2): frame NotRunning (1m53s ago) [degraded] | last no input yet
+2026-06-24 09:50:16Z hc3 (D2R_3): frame NotRunning (1m54s ago) [degraded] | last no input yet
+2026-06-24 09:50:18Z hc1 (D2R_1): frame NotRunning (1m55s ago) [degraded] | last no input yet
+2026-06-24 09:50:18Z hc2 (D2R_2): frame NotRunning (1m55s ago) [degraded] | last no input yet
+2026-06-24 09:50:18Z hc3 (D2R_3): frame NotRunning (1m56s ago) [degraded] | last no input yet
+2026-06-24 09:50:21Z hc1 (D2R_1): frame NotRunning (1m57s ago) [degraded] | last no input yet
+2026-06-24 09:50:21Z hc2 (D2R_2): frame NotRunning (1m57s ago) [degraded] | last no input yet
+2026-06-24 09:50:21Z hc3 (D2R_3): frame NotRunning (1m59s ago) [degraded] | last no input yet
+2026-06-24 09:50:23Z hc1 (D2R_1): frame NotRunning (1m59s ago) [degraded] | last no input yet
+2026-06-24 09:50:23Z hc2 (D2R_2): frame NotRunning (2m0s ago) [degraded] | last no input yet
+2026-06-24 09:50:23Z hc3 (D2R_3): frame NotRunning (2m1s ago) [degraded] | last no input yet
+2026-06-24 09:50:25Z hc1 (D2R_1): frame NotRunning (2m2s ago) [degraded] | last no input yet
+2026-06-24 09:50:25Z hc2 (D2R_2): frame NotRunning (2m2s ago) [degraded] | last no input yet
+2026-06-24 09:50:25Z hc3 (D2R_3): frame NotRunning (2m3s ago) [degraded] | last no input yet
+2026-06-24 09:50:27Z hc1 (D2R_1): frame NotRunning (2m4s ago) [degraded] | last no input yet
+2026-06-24 09:50:27Z hc2 (D2R_2): frame NotRunning (2m4s ago) [degraded] | last no input yet
+2026-06-24 09:50:27Z hc3 (D2R_3): frame NotRunning (2m5s ago) [degraded] | last no input yet
+2026-06-24 09:50:30Z hc1 (D2R_1): frame NotRunning (2m6s ago) [degraded] | last no input yet
+2026-06-24 09:50:30Z hc2 (D2R_2): frame NotRunning (2m6s ago) [degraded] | last no input yet
+2026-06-24 09:50:30Z hc3 (D2R_3): frame NotRunning (2m8s ago) [degraded] | last no input yet
+2026-06-24 09:50:32Z hc1 (D2R_1): frame NotRunning (2m8s ago) [degraded] | last no input yet
+2026-06-24 09:50:32Z hc2 (D2R_2): frame NotRunning (2m9s ago) [degraded] | last no input yet
+2026-06-24 09:50:32Z hc3 (D2R_3): frame NotRunning (2m10s ago) [degraded] | last no input yet
+2026-06-24 09:50:34Z hc1 (D2R_1): frame NotRunning (2m11s ago) [degraded] | last no input yet
+2026-06-24 09:50:34Z hc2 (D2R_2): frame NotRunning (2m11s ago) [degraded] | last no input yet
+2026-06-24 09:50:34Z hc3 (D2R_3): frame NotRunning (2m12s ago) [degraded] | last no input yet
+2026-06-24 09:50:37Z hc1 (D2R_1): frame NotRunning (2m13s ago) [degraded] | last no input yet
+2026-06-24 09:50:37Z hc2 (D2R_2): frame NotRunning (2m13s ago) [degraded] | last no input yet
+2026-06-24 09:50:37Z hc3 (D2R_3): frame NotRunning (2m14s ago) [degraded] | last no input yet
+2026-06-24 09:50:39Z hc1 (D2R_1): frame NotRunning (2m15s ago) [degraded] | last no input yet
+2026-06-24 09:50:39Z hc2 (D2R_2): frame NotRunning (2m16s ago) [degraded] | last no input yet
+2026-06-24 09:50:39Z hc3 (D2R_3): frame NotRunning (2m17s ago) [degraded] | last no input yet
+2026-06-24 09:50:41Z hc1 (D2R_1): frame NotRunning (2m18s ago) [degraded] | last no input yet
+2026-06-24 09:50:41Z hc2 (D2R_2): frame NotRunning (2m18s ago) [degraded] | last no input yet
+2026-06-24 09:50:41Z hc3 (D2R_3): frame NotRunning (2m19s ago) [degraded] | last no input yet
+2026-06-24 09:50:44Z hc1 (D2R_1): frame NotRunning (2m20s ago) [degraded] | last no input yet
+2026-06-24 09:50:44Z hc2 (D2R_2): frame NotRunning (2m20s ago) [degraded] | last no input yet
+2026-06-24 09:50:44Z hc3 (D2R_3): frame NotRunning (2m22s ago) [degraded] | last no input yet
+2026-06-24 09:50:46Z hc1 (D2R_1): frame NotRunning (2m22s ago) [degraded] | last no input yet
+2026-06-24 09:50:46Z hc2 (D2R_2): frame NotRunning (2m23s ago) [degraded] | last no input yet
+2026-06-24 09:50:46Z hc3 (D2R_3): frame NotRunning (2m24s ago) [degraded] | last no input yet
+2026-06-24 09:50:49Z hc1 (D2R_1): frame NotRunning (2m25s ago) [degraded] | last no input yet
+2026-06-24 09:50:49Z hc2 (D2R_2): frame NotRunning (2m25s ago) [degraded] | last no input yet
+2026-06-24 09:50:49Z hc3 (D2R_3): frame NotRunning (2m26s ago) [degraded] | last no input yet
+2026-06-24 09:50:51Z hc1 (D2R_1): frame NotRunning (2m28s ago) [degraded] | last no input yet
+2026-06-24 09:50:51Z hc2 (D2R_2): frame NotRunning (2m28s ago) [degraded] | last no input yet
+2026-06-24 09:50:51Z hc3 (D2R_3): frame NotRunning (2m29s ago) [degraded] | last no input yet
+2026-06-24 09:50:54Z hc1 (D2R_1): frame NotRunning (2m30s ago) [degraded] | last no input yet
+2026-06-24 09:50:54Z hc2 (D2R_2): frame NotRunning (2m30s ago) [degraded] | last no input yet
+2026-06-24 09:50:54Z hc3 (D2R_3): frame NotRunning (2m31s ago) [degraded] | last no input yet
+2026-06-24 09:50:56Z hc1 (D2R_1): frame NotRunning (2m32s ago) [degraded] | last no input yet
+2026-06-24 09:50:56Z hc2 (D2R_2): frame NotRunning (2m33s ago) [degraded] | last no input yet
+2026-06-24 09:50:56Z hc3 (D2R_3): frame NotRunning (2m34s ago) [degraded] | last no input yet
+2026-06-24 09:50:58Z hc1 (D2R_1): frame NotRunning (2m35s ago) [degraded] | last no input yet
+2026-06-24 09:50:58Z hc2 (D2R_2): frame NotRunning (2m35s ago) [degraded] | last no input yet
+2026-06-24 09:50:58Z hc3 (D2R_3): frame NotRunning (2m36s ago) [degraded] | last no input yet
+2026-06-24 09:51:00Z hc1 (D2R_1): frame NotRunning (2m37s ago) [degraded] | last no input yet
+2026-06-24 09:51:00Z hc2 (D2R_2): frame NotRunning (2m37s ago) [degraded] | last no input yet
+2026-06-24 09:51:00Z hc3 (D2R_3): frame DiabloSplash (0s ago) [degraded] | last no input yet
+2026-06-24 09:51:03Z hc1 (D2R_1): frame NotRunning (2m39s ago) [degraded] | last no input yet
+2026-06-24 09:51:03Z hc2 (D2R_2): frame DiabloSplash (1s ago) [degraded] | last click/Left@683,384 (0s ago), fg ?
+2026-06-24 09:51:03Z hc3 (D2R_3): frame DiabloSplash (2s ago) [degraded] | last click/Left@683,384 (1s ago), fg ?
+2026-06-24 09:51:05Z hc1 (D2R_1): frame NotRunning (2m41s ago) [degraded] | last no input yet
+2026-06-24 09:51:05Z hc2 (D2R_2): frame DiabloSplash (4s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 09:51:05Z hc3 (D2R_3): frame DiabloSplash (4s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1s ago), fg ?
+2026-06-24 09:51:07Z hc1 (D2R_1): frame NotRunning (2m44s ago) [degraded] | last no input yet
+2026-06-24 09:51:07Z hc2 (D2R_2): frame DiabloSplash (6s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 09:51:07Z hc3 (D2R_3): frame DiabloSplash (7s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 09:51:09Z hc1 (D2R_1): frame NotRunning (2m46s ago) [degraded] | last no input yet
+2026-06-24 09:51:09Z hc2 (D2R_2): frame DiabloSplash (8s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 09:51:09Z hc3 (D2R_3): frame DiabloSplash (9s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (6s ago), fg ?
+2026-06-24 09:51:12Z hc1 (D2R_1): frame NotRunning (2m48s ago) [degraded] | last no input yet
+2026-06-24 09:51:12Z hc2 (D2R_2): frame DiabloSplash (10s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 09:51:12Z hc3 (D2R_3): frame DiabloSplash (11s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (8s ago), fg ?
+2026-06-24 09:51:14Z hc1 (D2R_1): frame NotRunning (2m50s ago) [degraded] | last no input yet
+2026-06-24 09:51:14Z hc2 (D2R_2): frame DiabloSplash (12s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 09:51:14Z hc3 (D2R_3): frame DiabloSplash (13s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (10s ago), fg ?
+2026-06-24 09:51:16Z hc1 (D2R_1): frame Unknown (1s ago) [degraded] | last no input yet
+2026-06-24 09:51:16Z hc2 (D2R_2): frame DiabloSplash (15s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (12s ago), fg ?
+2026-06-24 09:51:16Z hc3 (D2R_3): frame DiabloSplash (16s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (12s ago), fg ?
+2026-06-24 09:51:19Z hc1 (D2R_1): frame Unknown (3s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 09:51:19Z hc2 (D2R_2): frame DiabloSplash (17s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (14s ago), fg ?
+2026-06-24 09:51:19Z hc3 (D2R_3): frame DiabloSplash (18s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (15s ago), fg ?
+2026-06-24 09:51:21Z hc1 (D2R_1): frame Unknown (6s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 09:51:21Z hc2 (D2R_2): frame DiabloSplash (19s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (16s ago), fg ?
+2026-06-24 09:51:21Z hc3 (D2R_3): frame DiabloSplash (20s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (17s ago), fg ?
+2026-06-24 09:51:23Z hc1 (D2R_1): frame Unknown (8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 09:51:23Z hc2 (D2R_2): frame DiabloSplash (22s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (18s ago), fg ?
+2026-06-24 09:51:23Z hc3 (D2R_3): frame DiabloSplash (23s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (19s ago), fg ?
+2026-06-24 09:51:25Z hc1 (D2R_1): frame Unknown (10s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 09:51:25Z hc2 (D2R_2): frame DiabloSplash (24s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (21s ago), fg ?
+2026-06-24 09:51:25Z hc3 (D2R_3): frame DiabloSplash (25s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (22s ago), fg ?
+2026-06-24 09:51:27Z hc1 (D2R_1): frame Unknown (12s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 09:51:27Z hc2 (D2R_2): frame DiabloSplash (26s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (23s ago), fg ?
+2026-06-24 09:51:27Z hc3 (D2R_3): frame DiabloSplash (27s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (24s ago), fg ?
+2026-06-24 09:51:30Z hc1 (D2R_1): frame Unknown (15s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (11s ago), fg ?
+2026-06-24 09:51:30Z hc2 (D2R_2): frame DiabloSplash (28s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (25s ago), fg ?
+2026-06-24 09:51:30Z hc3 (D2R_3): frame DiabloSplash (29s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (26s ago), fg ?
+2026-06-24 09:51:32Z hc1 (D2R_1): frame Unknown (17s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (14s ago), fg ?
+2026-06-24 09:51:32Z hc2 (D2R_2): frame DiabloSplash (31s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (27s ago), fg ?
+2026-06-24 09:51:32Z hc3 (D2R_3): frame DiabloSplash (31s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (28s ago), fg ?
+2026-06-24 09:51:34Z hc1 (D2R_1): frame Unknown (19s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (16s ago), fg ?
+2026-06-24 09:51:34Z hc2 (D2R_2): frame DiabloSplash (33s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (30s ago), fg ?
+2026-06-24 09:51:34Z hc3 (D2R_3): frame DiabloSplash (34s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (31s ago), fg ?
+2026-06-24 09:51:36Z hc1 (D2R_1): frame Unknown (21s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (18s ago), fg ?
+2026-06-24 09:51:36Z hc2 (D2R_2): frame DiabloSplash (35s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (32s ago), fg ?
+2026-06-24 09:51:36Z hc3 (D2R_3): frame DiabloSplash (36s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (33s ago), fg ?
+2026-06-24 09:51:39Z hc1 (D2R_1): frame Unknown (24s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (20s ago), fg ?
+2026-06-24 09:51:39Z hc2 (D2R_2): frame DiabloSplash (37s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (34s ago), fg ?
+2026-06-24 09:51:39Z hc3 (D2R_3): frame DiabloSplash (38s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (35s ago), fg ?
+2026-06-24 09:51:41Z hc1 (D2R_1): frame Unknown (26s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (23s ago), fg ?
+2026-06-24 09:51:41Z hc2 (D2R_2): frame DiabloSplash (39s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (36s ago), fg ?
+2026-06-24 09:51:41Z hc3 (D2R_3): frame DiabloSplash (40s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (37s ago), fg ?
+2026-06-24 09:51:43Z hc1 (D2R_1): frame Unknown (28s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (25s ago), fg ?
+2026-06-24 09:51:43Z hc2 (D2R_2): frame DiabloSplash (42s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (39s ago), fg ?
+2026-06-24 09:51:43Z hc3 (D2R_3): frame DiabloSplash (43s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (39s ago), fg ?
+2026-06-24 09:51:45Z hc1 (D2R_1): frame Unknown (30s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (27s ago), fg ?
+2026-06-24 09:51:45Z hc2 (D2R_2): frame DiabloSplash (44s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (41s ago), fg ?
+2026-06-24 09:51:45Z hc3 (D2R_3): frame DiabloSplash (45s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (42s ago), fg ?
+2026-06-24 09:51:48Z hc1 (D2R_1): frame Unknown (32s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (29s ago), fg ?
+2026-06-24 09:51:48Z hc2 (D2R_2): frame DiabloSplash (46s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (43s ago), fg ?
+2026-06-24 09:51:48Z hc3 (D2R_3): frame DiabloSplash (47s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (44s ago), fg ?
+2026-06-24 09:51:50Z hc1 (D2R_1): frame Unknown (35s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (32s ago), fg ?
+2026-06-24 09:51:50Z hc2 (D2R_2): frame DiabloSplash (48s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (45s ago), fg ?
+2026-06-24 09:51:50Z hc3 (D2R_3): frame DiabloSplash (49s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (46s ago), fg ?
+2026-06-24 09:51:52Z hc1 (D2R_1): frame Unknown (37s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (34s ago), fg ?
+2026-06-24 09:51:52Z hc2 (D2R_2): frame DiabloSplash (51s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (47s ago), fg ?
+2026-06-24 09:51:52Z hc3 (D2R_3): frame DiabloSplash (51s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (48s ago), fg ?
+2026-06-24 09:51:54Z hc1 (D2R_1): frame CharacterScreen (0s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (36s ago), fg ?
+2026-06-24 09:51:54Z hc2 (D2R_2): frame DiabloSplash (53s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (50s ago), fg ?
+2026-06-24 09:51:54Z hc3 (D2R_3): frame DiabloSplash (54s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (50s ago), fg ?
+2026-06-24 09:51:57Z hc1 (D2R_1): frame CharacterScreen (2s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (38s ago), fg ?
+2026-06-24 09:51:57Z hc2 (D2R_2): frame DiabloSplash (55s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (52s ago), fg ?
+2026-06-24 09:51:57Z hc3 (D2R_3): frame DiabloSplash (56s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (53s ago), fg ?
+2026-06-24 09:51:59Z hc1 (D2R_1): frame CharacterScreen (4s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (41s ago), fg ?
+2026-06-24 09:51:59Z hc2 (D2R_2): frame CharacterScreen (1s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (54s ago), fg ?
+2026-06-24 09:51:59Z hc3 (D2R_3): frame CharacterScreen (2s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (55s ago), fg ?
+2026-06-24 09:52:01Z hc1 (D2R_1): frame CharacterScreen (7s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (43s ago), fg ?
+2026-06-24 09:52:01Z hc2 (D2R_2): frame CharacterScreen (3s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (57s ago), fg ?
+2026-06-24 09:52:01Z hc3 (D2R_3): frame CharacterScreen (4s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (58s ago), fg ?
+2026-06-24 09:52:04Z hc1 (D2R_1): frame CharacterScreen (9s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (45s ago), fg ?
+2026-06-24 09:52:04Z hc2 (D2R_2): frame CharacterScreen (6s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (59s ago), fg ?
+2026-06-24 09:52:04Z hc3 (D2R_3): frame CharacterScreen (7s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m0s ago), fg ?
+2026-06-24 09:52:06Z hc1 (D2R_1): frame CharacterScreen (11s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (48s ago), fg ?
+2026-06-24 09:52:06Z hc2 (D2R_2): frame CharacterScreen (8s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m1s ago), fg ?
+2026-06-24 09:52:06Z hc3 (D2R_3): frame CharacterScreen (9s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m2s ago), fg ?
+2026-06-24 09:52:08Z hc1 (D2R_1): frame CharacterScreen (13s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (50s ago), fg ?
+2026-06-24 09:52:08Z hc2 (D2R_2): frame CharacterScreen (10s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m3s ago), fg ?
+2026-06-24 09:52:08Z hc3 (D2R_3): frame CharacterScreen (11s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m4s ago), fg ?
+2026-06-24 09:52:10Z hc1 (D2R_1): frame CharacterScreen (16s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (52s ago), fg ?
+2026-06-24 09:52:10Z hc2 (D2R_2): frame CharacterScreen (12s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m6s ago), fg ?
+2026-06-24 09:52:10Z hc3 (D2R_3): frame CharacterScreen (13s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m7s ago), fg ?
+2026-06-24 09:52:12Z hc1 (D2R_1): frame CharacterScreen (18s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (54s ago), fg ?
+2026-06-24 09:52:12Z hc2 (D2R_2): frame CharacterScreen (15s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m8s ago), fg ?
+2026-06-24 09:52:12Z hc3 (D2R_3): frame CharacterScreen (15s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m9s ago), fg ?
+2026-06-24 09:52:15Z hc1 (D2R_1): frame CharacterScreen (20s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (56s ago), fg ?
+2026-06-24 09:52:15Z hc2 (D2R_2): frame CharacterScreen (17s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m10s ago), fg ?
+2026-06-24 09:52:15Z hc3 (D2R_3): frame CharacterScreen (18s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m11s ago), fg ?
+2026-06-24 09:52:17Z hc1 (D2R_1): frame CharacterScreen (22s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (59s ago), fg ?
+2026-06-24 09:52:17Z hc2 (D2R_2): frame CharacterScreen (19s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m12s ago), fg ?
+2026-06-24 09:52:17Z hc3 (D2R_3): frame CharacterScreen (20s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m13s ago), fg ?
+2026-06-24 09:52:19Z hc1 (D2R_1): frame CharacterScreen (25s ago) [degraded] | last click/Left@799,689 (0s ago), fg ? | at EnsureLobbyOpenedAsync: remembered-character-screen click (1s ago)
+2026-06-24 09:52:19Z hc2 (D2R_2): frame CharacterScreen (21s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m15s ago), fg ?
+2026-06-24 09:52:19Z hc3 (D2R_3): frame CharacterScreen (22s ago) [degraded] | last key/SplashContinue/G/Space/Enter@683,384 (1m15s ago), fg ?
+2026-06-24 09:52:26Z hc1 (D2R_1): frame CharacterScreen (27s ago) [degraded] | last click/Left@919,55 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (0s ago)
+2026-06-24 09:52:26Z hc2 (D2R_2): frame NotRunning (0s ago) [degraded] | last click/Left@799,689 (0s ago), fg ? | at EnsureLobbyOpenedAsync: remembered-character-screen click (1s ago)
+2026-06-24 09:52:26Z hc3 (D2R_3): frame NotRunning (5s ago) [degraded] | last click/Left@952,106 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (2s ago)
+2026-06-24 09:52:32Z hc1 (D2R_1): frame CharacterScreen (33s ago) [degraded] | last click/Left@952,269 (0s ago), fg ? | at CreateGameAsync: filling game name/password fields (5s ago)
+2026-06-24 09:52:32Z hc2 (D2R_2): frame NotRunning (10s ago) [degraded] | last click/Left@1143,106 (2s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (7s ago)
+2026-06-24 09:52:32Z hc3 (D2R_3): frame NotRunning (7s ago) [degraded] | last click/Left@1143,106 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (4s ago)
+2026-06-24 09:52:34Z hc1 (D2R_1): frame CharacterScreen (40s ago) [degraded] | last click/Left@1045,475 (5s ago), fg ? | at CreateGameAsync: filling game name/password fields (11s ago)
+2026-06-24 09:52:34Z hc2 (D2R_2): frame NotRunning (12s ago) [degraded] | last click/Left@1143,106 (5s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (9s ago)
+2026-06-24 09:52:34Z hc3 (D2R_3): frame NotRunning (13s ago) [degraded] | last click/Left@1143,106 (5s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (10s ago)
+2026-06-24 09:52:36Z hc1 (D2R_1): frame CharacterScreen (42s ago) [degraded] | last click/Left@1045,475 (7s ago), fg ? | at CreateGameAsync: filling game name/password fields (14s ago)
+2026-06-24 09:52:36Z hc2 (D2R_2): frame NotRunning (14s ago) [degraded] | last click/Left@1143,106 (7s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (12s ago)
+2026-06-24 09:52:36Z hc3 (D2R_3): frame NotRunning (16s ago) [degraded] | last click/Left@1143,106 (8s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (12s ago)
+2026-06-24 09:52:39Z hc1 (D2R_1): frame CharacterScreen (44s ago) [degraded] | last click/Left@1045,475 (10s ago), fg ? | at CreateGameAsync: filling game name/password fields (16s ago)
+2026-06-24 09:52:39Z hc2 (D2R_2): frame NotRunning (17s ago) [degraded] | last click/Left@1143,106 (9s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (14s ago)
+2026-06-24 09:52:39Z hc3 (D2R_3): frame NotRunning (18s ago) [degraded] | last click/Left@1143,106 (10s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (15s ago)
+2026-06-24 09:52:41Z hc1 (D2R_1): frame CharacterScreen (46s ago) [degraded] | last click/Left@1045,475 (12s ago), fg ? | at CreateGameAsync: filling game name/password fields (18s ago)
+2026-06-24 09:52:41Z hc2 (D2R_2): frame NotRunning (19s ago) [degraded] | last click/Left@1143,106 (12s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (16s ago)
+2026-06-24 09:52:41Z hc3 (D2R_3): frame NotRunning (20s ago) [degraded] | last click/Left@1143,106 (12s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (17s ago)
+2026-06-24 09:52:43Z hc1 (D2R_1): frame CharacterScreen (49s ago) [degraded] | last click/Left@1045,475 (14s ago), fg ? | at CreateGameAsync: filling game name/password fields (21s ago)
+2026-06-24 09:52:43Z hc2 (D2R_2): frame NotRunning (21s ago) [degraded] | last click/Left@1143,106 (14s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (19s ago)
+2026-06-24 09:52:43Z hc3 (D2R_3): frame NotRunning (22s ago) [degraded] | last click/Left@1143,106 (15s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (19s ago)
+2026-06-24 09:52:46Z hc1 (D2R_1): frame CharacterScreen (51s ago) [degraded] | last click/Left@1045,475 (17s ago), fg ? | at CreateGameAsync: filling game name/password fields (23s ago)
+2026-06-24 09:52:46Z hc2 (D2R_2): frame NotRunning (24s ago) [degraded] | last click/Left@1143,106 (16s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (21s ago)
+2026-06-24 09:52:46Z hc3 (D2R_3): frame NotRunning (25s ago) [degraded] | last click/Left@1143,106 (17s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (22s ago)
+2026-06-24 09:52:48Z hc1 (D2R_1): frame CharacterScreen (53s ago) [degraded] | last click/Left@1045,475 (19s ago), fg ? | at CreateGameAsync: filling game name/password fields (25s ago)
+2026-06-24 09:52:48Z hc2 (D2R_2): frame NotRunning (26s ago) [degraded] | last click/Left@1143,106 (18s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (23s ago)
+2026-06-24 09:52:48Z hc3 (D2R_3): frame NotRunning (27s ago) [degraded] | last click/Left@1143,106 (19s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (24s ago)
+2026-06-24 09:52:50Z hc1 (D2R_1): frame CharacterScreen (56s ago) [degraded] | last click/Left@1045,475 (21s ago), fg ? | at CreateGameAsync: filling game name/password fields (27s ago)
+2026-06-24 09:52:50Z hc2 (D2R_2): frame NotRunning (28s ago) [degraded] | last click/Left@1143,106 (21s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (25s ago)
+2026-06-24 09:52:50Z hc3 (D2R_3): frame NotRunning (29s ago) [degraded] | last click/Left@1143,106 (22s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (26s ago)
+2026-06-24 09:52:52Z hc1 (D2R_1): frame CharacterScreen (58s ago) [degraded] | last click/Left@1045,475 (23s ago), fg ? | at CreateGameAsync: filling game name/password fields (30s ago)
+2026-06-24 09:52:52Z hc2 (D2R_2): frame NotRunning (30s ago) [degraded] | last click/Left@1143,106 (23s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (28s ago)
+2026-06-24 09:52:52Z hc3 (D2R_3): frame NotRunning (32s ago) [degraded] | last click/Left@1143,106 (24s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (29s ago)
+2026-06-24 09:52:55Z hc1 (D2R_1): frame CharacterScreen (1m0s ago) [degraded] | last click/Left@1045,475 (26s ago), fg ? | at CreateGameAsync: filling game name/password fields (32s ago)
+2026-06-24 09:52:55Z hc2 (D2R_2): frame NotRunning (33s ago) [degraded] | last click/Left@1143,106 (25s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (30s ago)
+2026-06-24 09:52:55Z hc3 (D2R_3): frame NotRunning (34s ago) [degraded] | last click/Left@1143,106 (26s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (31s ago)
+2026-06-24 09:52:57Z hc1 (D2R_1): frame CharacterScreen (1m2s ago) [degraded] | last click/Left@1045,475 (28s ago), fg ? | at CreateGameAsync: filling game name/password fields (34s ago)
+2026-06-24 09:52:57Z hc2 (D2R_2): frame NotRunning (35s ago) [degraded] | last click/Left@1143,106 (27s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (32s ago)
+2026-06-24 09:52:57Z hc3 (D2R_3): frame NotRunning (36s ago) [degraded] | last click/Left@1143,106 (28s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (33s ago)
+2026-06-24 09:53:03Z hc1 (D2R_1): frame NotRunning (5s ago) [degraded] | last click/Left@1045,475 (34s ago), fg ? | at CreateGameAsync: filling game name/password fields (40s ago)
+2026-06-24 09:53:03Z hc2 (D2R_2): frame NotRunning (37s ago) [degraded] | last click/Left@1143,106 (30s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (34s ago)
+2026-06-24 09:53:03Z hc3 (D2R_3): frame NotRunning (38s ago) [degraded] | last click/Left@1143,106 (31s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (35s ago)
+2026-06-24 09:53:05Z hc1 (D2R_1): frame NotRunning (8s ago) [degraded] | last click/Left@1045,475 (36s ago), fg ? | at CreateGameAsync: filling game name/password fields (42s ago)
+2026-06-24 09:53:05Z hc2 (D2R_2): frame NotRunning (43s ago) [degraded] | last click/Left@1143,106 (36s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (41s ago)
+2026-06-24 09:53:05Z hc3 (D2R_3): frame NotRunning (44s ago) [degraded] | last click/Left@1143,106 (37s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (41s ago)
+2026-06-24 09:53:08Z hc1 (D2R_1): frame NotRunning (10s ago) [degraded] | last click/Left@1045,475 (39s ago), fg ? | at CreateGameAsync: filling game name/password fields (45s ago)
+2026-06-24 09:53:08Z hc2 (D2R_2): frame NotRunning (46s ago) [degraded] | last click/Left@1143,106 (38s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (43s ago)
+2026-06-24 09:53:08Z hc3 (D2R_3): frame NotRunning (47s ago) [degraded] | last click/Left@1143,106 (39s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (44s ago)
+2026-06-24 09:53:10Z hc1 (D2R_1): frame NotRunning (12s ago) [degraded] | last click/Left@1045,475 (41s ago), fg ? | at CreateGameAsync: filling game name/password fields (47s ago)
+2026-06-24 09:53:10Z hc2 (D2R_2): frame NotRunning (48s ago) [degraded] | last click/Left@1046,55 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (0s ago)
+2026-06-24 09:53:10Z hc3 (D2R_3): frame NotRunning (49s ago) [degraded] | last click/Left@1046,55 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (0s ago)
+2026-06-24 09:53:12Z hc1 (D2R_1): frame NotRunning (14s ago) [degraded] | last click/Left@1045,475 (43s ago), fg ? | at CreateGameAsync: filling game name/password fields (49s ago)
+2026-06-24 09:53:12Z hc2 (D2R_2): frame NotRunning (50s ago) [degraded] | last click/Left@952,106 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (3s ago)
+2026-06-24 09:53:12Z hc3 (D2R_3): frame NotRunning (51s ago) [degraded] | last click/Left@952,106 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (2s ago)
+2026-06-24 09:53:14Z hc1 (D2R_1): frame NotRunning (17s ago) [degraded] | last click/Left@1045,475 (45s ago), fg ? | at CreateGameAsync: filling game name/password fields (52s ago)
+2026-06-24 09:53:14Z hc2 (D2R_2): frame NotRunning (52s ago) [degraded] | last click/Left@1143,106 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (5s ago)
+2026-06-24 09:53:14Z hc3 (D2R_3): frame NotRunning (54s ago) [degraded] | last click/Left@1143,106 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (5s ago)
+2026-06-24 09:53:17Z hc1 (D2R_1): frame NotRunning (19s ago) [degraded] | last click/Left@1045,475 (48s ago), fg ? | at CreateGameAsync: filling game name/password fields (54s ago)
+2026-06-24 09:53:17Z hc2 (D2R_2): frame NotRunning (55s ago) [degraded] | last click/Left@1045,478 (1s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (7s ago)
+2026-06-24 09:53:17Z hc3 (D2R_3): frame NotRunning (56s ago) [degraded] | last click/Left@1045,478 (1s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (7s ago)
+2026-06-24 09:53:19Z hc1 (D2R_1): frame NotRunning (21s ago) [degraded] | last click/Left@1045,475 (50s ago), fg ? | at CreateGameAsync: filling game name/password fields (56s ago)
+2026-06-24 09:53:19Z hc2 (D2R_2): frame NotRunning (57s ago) [degraded] | last click/Left@1045,478 (4s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (10s ago)
+2026-06-24 09:53:19Z hc3 (D2R_3): frame NotRunning (58s ago) [degraded] | last click/Left@1045,478 (4s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (10s ago)
+2026-06-24 09:53:22Z hc1 (D2R_1): frame NotRunning (24s ago) [degraded] | last click/Left@1045,475 (53s ago), fg ? | at CreateGameAsync: filling game name/password fields (59s ago)
+2026-06-24 09:53:22Z hc2 (D2R_2): frame NotRunning (59s ago) [degraded] | last click/Left@1045,478 (6s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (12s ago)
+2026-06-24 09:53:22Z hc3 (D2R_3): frame NotRunning (1m1s ago) [degraded] | last click/Left@1045,478 (6s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (12s ago)
+2026-06-24 09:53:24Z hc1 (D2R_1): frame NotRunning (26s ago) [degraded] | last click/Left@1045,475 (55s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m1s ago)
+2026-06-24 09:53:24Z hc2 (D2R_2): frame NotRunning (1m2s ago) [degraded] | last click/Left@1045,478 (8s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (14s ago)
+2026-06-24 09:53:24Z hc3 (D2R_3): frame NotRunning (1m3s ago) [degraded] | last click/Left@1045,478 (8s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (14s ago)
+2026-06-24 09:53:26Z hc1 (D2R_1): frame NotRunning (29s ago) [degraded] | last click/Left@1045,475 (57s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m3s ago)
+2026-06-24 09:53:26Z hc2 (D2R_2): frame NotRunning (1m4s ago) [degraded] | last click/Left@1045,478 (11s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (17s ago)
+2026-06-24 09:53:26Z hc3 (D2R_3): frame NotRunning (1m5s ago) [degraded] | last click/Left@1045,478 (11s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (17s ago)
+2026-06-24 09:53:29Z hc1 (D2R_1): frame NotRunning (31s ago) [degraded] | last click/Left@1045,475 (1m0s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m6s ago)
+2026-06-24 09:53:29Z hc2 (D2R_2): frame NotRunning (1m7s ago) [degraded] | last click/Left@1045,478 (13s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (19s ago)
+2026-06-24 09:53:29Z hc3 (D2R_3): frame NotRunning (1m8s ago) [degraded] | last click/Left@1045,478 (13s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (19s ago)
+2026-06-24 09:53:31Z hc1 (D2R_1): frame NotRunning (33s ago) [degraded] | last click/Left@1045,475 (1m2s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m8s ago)
+2026-06-24 09:53:31Z hc2 (D2R_2): frame NotRunning (1m9s ago) [degraded] | last click/Left@1045,478 (15s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (21s ago)
+2026-06-24 09:53:31Z hc3 (D2R_3): frame NotRunning (1m10s ago) [degraded] | last click/Left@1045,478 (15s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (21s ago)
+2026-06-24 09:53:33Z hc1 (D2R_1): frame NotRunning (35s ago) [degraded] | last click/Left@1045,475 (1m4s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m10s ago)
+2026-06-24 09:53:33Z hc2 (D2R_2): frame NotRunning (1m11s ago) [degraded] | last click/Left@1045,478 (17s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (23s ago)
+2026-06-24 09:53:33Z hc3 (D2R_3): frame NotRunning (1m12s ago) [degraded] | last click/Left@1045,478 (18s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (23s ago)
+2026-06-24 09:53:36Z hc1 (D2R_1): frame NotRunning (38s ago) [degraded] | last click/Left@1045,475 (1m7s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m13s ago)
+2026-06-24 09:53:36Z hc2 (D2R_2): frame NotRunning (1m14s ago) [degraded] | last click/Left@1045,478 (20s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (27s ago)
+2026-06-24 09:53:36Z hc3 (D2R_3): frame NotRunning (1m15s ago) [degraded] | last click/Left@1045,478 (21s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (26s ago)
+2026-06-24 09:53:38Z hc1 (D2R_1): frame NotRunning (41s ago) [degraded] | last click/Left@1045,475 (1m9s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m16s ago)
+2026-06-24 09:53:38Z hc2 (D2R_2): frame NotRunning (1m16s ago) [degraded] | last click/Left@1045,478 (23s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (29s ago)
+2026-06-24 09:53:38Z hc3 (D2R_3): frame NotRunning (1m18s ago) [degraded] | last click/Left@1045,478 (23s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (29s ago)
+2026-06-24 09:53:41Z hc1 (D2R_1): frame NotRunning (43s ago) [degraded] | last click/Left@1045,475 (1m12s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m18s ago)
+2026-06-24 09:53:41Z hc2 (D2R_2): frame NotRunning (1m19s ago) [degraded] | last click/Left@1045,478 (25s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (31s ago)
+2026-06-24 09:53:41Z hc3 (D2R_3): frame NotRunning (1m20s ago) [degraded] | last click/Left@1045,478 (25s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (31s ago)
+2026-06-24 09:53:43Z hc1 (D2R_1): frame NotRunning (45s ago) [degraded] | last click/Left@1045,475 (1m14s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m20s ago)
+2026-06-24 09:53:43Z hc2 (D2R_2): frame NotRunning (1m21s ago) [degraded] | last click/Left@1045,478 (27s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (33s ago)
+2026-06-24 09:53:43Z hc3 (D2R_3): frame NotRunning (1m22s ago) [degraded] | last click/Left@1045,478 (27s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (33s ago)
+2026-06-24 09:53:45Z hc1 (D2R_1): frame NotRunning (48s ago) [degraded] | last click/Left@1045,475 (1m16s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m22s ago)
+2026-06-24 09:53:45Z hc2 (D2R_2): frame NotRunning (1m23s ago) [degraded] | last click/Left@1045,478 (30s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (36s ago)
+2026-06-24 09:53:45Z hc3 (D2R_3): frame NotRunning (1m24s ago) [degraded] | last click/Left@1045,478 (30s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (36s ago)
+2026-06-24 09:53:47Z hc1 (D2R_1): frame NotRunning (50s ago) [degraded] | last click/Left@1045,475 (1m19s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m25s ago)
+2026-06-24 09:53:47Z hc2 (D2R_2): frame NotRunning (1m25s ago) [degraded] | last click/Left@1045,478 (32s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (38s ago)
+2026-06-24 09:53:47Z hc3 (D2R_3): frame NotRunning (1m27s ago) [degraded] | last click/Left@1045,478 (32s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (38s ago)
+2026-06-24 09:53:51Z hc1 (D2R_1): frame NotRunning (52s ago) [degraded] | last click/Left@1045,475 (1m21s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m27s ago)
+2026-06-24 09:53:51Z hc2 (D2R_2): frame NotRunning (1m28s ago) [degraded] | last click/Left@1045,478 (34s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (40s ago)
+2026-06-24 09:53:51Z hc3 (D2R_3): frame NotRunning (1m29s ago) [degraded] | last click/Left@1045,478 (34s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (40s ago)
+2026-06-24 09:53:53Z hc1 (D2R_1): frame NotRunning (55s ago) [degraded] | last click/Left@1045,475 (1m24s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m30s ago)
+2026-06-24 09:53:53Z hc2 (D2R_2): frame NotRunning (1m31s ago) [degraded] | last click/Left@1045,478 (37s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (43s ago)
+2026-06-24 09:53:53Z hc3 (D2R_3): frame NotRunning (1m32s ago) [degraded] | last click/Left@1045,478 (37s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (43s ago)
+2026-06-24 09:53:55Z hc1 (D2R_1): frame NotRunning (57s ago) [degraded] | last click/Left@1045,475 (1m26s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m32s ago)
+2026-06-24 09:53:55Z hc2 (D2R_2): frame NotRunning (1m33s ago) [degraded] | last click/Left@1045,478 (40s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (46s ago)
+2026-06-24 09:53:55Z hc3 (D2R_3): frame NotRunning (1m34s ago) [degraded] | last click/Left@1045,478 (40s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (46s ago)
+2026-06-24 09:54:01Z hc1 (D2R_1): frame InGame (6s ago) [degraded] | last click/Left@1045,475 (1m32s ago), fg ? | at CreateGameAsync: filling game name/password fields (1m39s ago)
+2026-06-24 09:54:01Z hc2 (D2R_2): frame NotRunning (1m35s ago) [degraded] | last click/Left@1045,478 (42s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (48s ago)
+2026-06-24 09:54:01Z hc3 (D2R_3): frame NotRunning (1m37s ago) [degraded] | last click/Left@1045,478 (42s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (48s ago)

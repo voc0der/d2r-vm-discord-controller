@@ -1,0 +1,339 @@
+2026-06-24 16:49:24Z hc1 (D2R_1): frame unknown [degraded] | last no input yet
+2026-06-24 16:49:24Z hc2 (D2R_2): frame unknown [degraded] | last no input yet
+2026-06-24 16:49:24Z hc3 (D2R_3): frame unknown [degraded] | last no input yet
+2026-06-24 16:49:27Z hc1 (D2R_1): frame unknown [degraded] | last no input yet
+2026-06-24 16:49:27Z hc2 (D2R_2): frame unknown [degraded] | last no input yet
+2026-06-24 16:49:27Z hc3 (D2R_3): frame unknown [degraded] | last no input yet
+2026-06-24 16:49:29Z hc1 (D2R_1): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:49:29Z hc2 (D2R_2): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:49:29Z hc3 (D2R_3): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:49:31Z hc1 (D2R_1): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 16:49:31Z hc2 (D2R_2): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 16:49:31Z hc3 (D2R_3): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 16:49:34Z hc1 (D2R_1): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:49:34Z hc2 (D2R_2): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:49:34Z hc3 (D2R_3): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:49:36Z hc1 (D2R_1): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:49:36Z hc2 (D2R_2): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:49:36Z hc3 (D2R_3): frame unknown [degraded] | last key/Escape/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:49:38Z hc1 (D2R_1): frame Unknown (0s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (10s ago), fg ?
+2026-06-24 16:49:38Z hc2 (D2R_2): frame Unknown (0s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (10s ago), fg ?
+2026-06-24 16:49:38Z hc3 (D2R_3): frame Unknown (0s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (10s ago), fg ?
+2026-06-24 16:49:41Z hc1 (D2R_1): frame Unknown (2s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (12s ago), fg ?
+2026-06-24 16:49:41Z hc2 (D2R_2): frame Unknown (2s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (12s ago), fg ?
+2026-06-24 16:49:41Z hc3 (D2R_3): frame Unknown (2s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (12s ago), fg ?
+2026-06-24 16:49:44Z hc1 (D2R_1): frame Unknown (6s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:49:44Z hc2 (D2R_2): frame Unknown (5s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1s ago), fg ?
+2026-06-24 16:49:44Z hc3 (D2R_3): frame Unknown (5s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1s ago), fg ?
+2026-06-24 16:49:47Z hc1 (D2R_1): frame Unknown (8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:49:47Z hc2 (D2R_2): frame Unknown (8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:49:47Z hc3 (D2R_3): frame Unknown (8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:49:49Z hc1 (D2R_1): frame Unknown (11s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:49:49Z hc2 (D2R_2): frame Unknown (11s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:49:49Z hc3 (D2R_3): frame Unknown (11s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:49:51Z hc1 (D2R_1): frame Unknown (13s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (10s ago), fg ?
+2026-06-24 16:49:51Z hc2 (D2R_2): frame Unknown (13s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 16:49:51Z hc3 (D2R_3): frame Unknown (13s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 16:49:54Z hc1 (D2R_1): frame Unknown (16s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (12s ago), fg ?
+2026-06-24 16:49:54Z hc2 (D2R_2): frame Unknown (15s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (12s ago), fg ?
+2026-06-24 16:49:54Z hc3 (D2R_3): frame Unknown (15s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (11s ago), fg ?
+2026-06-24 16:49:56Z hc1 (D2R_1): frame Unknown (18s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (14s ago), fg ?
+2026-06-24 16:49:56Z hc2 (D2R_2): frame Unknown (18s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (14s ago), fg ?
+2026-06-24 16:49:56Z hc3 (D2R_3): frame Unknown (0s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (14s ago), fg ?
+2026-06-24 16:49:59Z hc1 (D2R_1): frame Unknown (1s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (17s ago), fg ?
+2026-06-24 16:49:59Z hc2 (D2R_2): frame Unknown (1s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (17s ago), fg ?
+2026-06-24 16:49:59Z hc3 (D2R_3): frame Unknown (3s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (17s ago), fg ?
+2026-06-24 16:50:02Z hc1 (D2R_1): frame Unknown (4s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (20s ago), fg ?
+2026-06-24 16:50:02Z hc2 (D2R_2): frame Unknown (4s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (20s ago), fg ?
+2026-06-24 16:50:02Z hc3 (D2R_3): frame Unknown (5s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:50:05Z hc1 (D2R_1): frame Unknown (7s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:50:05Z hc2 (D2R_2): frame Unknown (7s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1s ago), fg ?
+2026-06-24 16:50:05Z hc3 (D2R_3): frame Unknown (8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 16:50:07Z hc1 (D2R_1): frame Unknown (9s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:50:07Z hc2 (D2R_2): frame Unknown (9s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:50:07Z hc3 (D2R_3): frame Unknown (11s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (6s ago), fg ?
+2026-06-24 16:50:09Z hc1 (D2R_1): frame Unknown (12s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:50:09Z hc2 (D2R_2): frame Unknown (11s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (6s ago), fg ?
+2026-06-24 16:50:09Z hc3 (D2R_3): frame Unknown (13s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (8s ago), fg ?
+2026-06-24 16:50:11Z hc1 (D2R_1): frame Unknown (14s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 16:50:11Z hc2 (D2R_2): frame Unknown (14s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 16:50:11Z hc3 (D2R_3): frame Unknown (15s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (10s ago), fg ?
+2026-06-24 16:50:14Z hc1 (D2R_1): frame Unknown (1s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (11s ago), fg ?
+2026-06-24 16:50:14Z hc2 (D2R_2): frame Unknown (1s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (11s ago), fg ?
+2026-06-24 16:50:14Z hc3 (D2R_3): frame Unknown (1s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (13s ago), fg ?
+2026-06-24 16:50:16Z hc1 (D2R_1): frame Unknown (3s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (14s ago), fg ?
+2026-06-24 16:50:16Z hc2 (D2R_2): frame Unknown (4s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (13s ago), fg ?
+2026-06-24 16:50:16Z hc3 (D2R_3): frame Unknown (4s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (15s ago), fg ?
+2026-06-24 16:50:18Z hc1 (D2R_1): frame Unknown (5s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (16s ago), fg ?
+2026-06-24 16:50:18Z hc2 (D2R_2): frame Unknown (6s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (16s ago), fg ?
+2026-06-24 16:50:18Z hc3 (D2R_3): frame Unknown (6s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (17s ago), fg ?
+2026-06-24 16:50:21Z hc1 (D2R_1): frame Unknown (8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (18s ago), fg ?
+2026-06-24 16:50:21Z hc2 (D2R_2): frame Unknown (8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (18s ago), fg ?
+2026-06-24 16:50:21Z hc3 (D2R_3): frame Unknown (8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (19s ago), fg ?
+2026-06-24 16:50:23Z hc1 (D2R_1): frame Unknown (10s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (21s ago), fg ?
+2026-06-24 16:50:23Z hc2 (D2R_2): frame Unknown (11s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (20s ago), fg ?
+2026-06-24 16:50:23Z hc3 (D2R_3): frame Unknown (11s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (22s ago), fg ?
+2026-06-24 16:50:25Z hc1 (D2R_1): frame Unknown (12s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (23s ago), fg ?
+2026-06-24 16:50:25Z hc2 (D2R_2): frame Unknown (13s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (23s ago), fg ?
+2026-06-24 16:50:25Z hc3 (D2R_3): frame Unknown (13s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (24s ago), fg ?
+2026-06-24 16:50:28Z hc1 (D2R_1): frame Unknown (15s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (25s ago), fg ?
+2026-06-24 16:50:28Z hc2 (D2R_2): frame Unknown (15s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (25s ago), fg ?
+2026-06-24 16:50:28Z hc3 (D2R_3): frame Unknown (15s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (26s ago), fg ?
+2026-06-24 16:50:30Z hc1 (D2R_1): frame Unknown (17s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (28s ago), fg ?
+2026-06-24 16:50:30Z hc2 (D2R_2): frame Unknown (18s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (27s ago), fg ?
+2026-06-24 16:50:30Z hc3 (D2R_3): frame Unknown (18s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (29s ago), fg ?
+2026-06-24 16:50:32Z hc1 (D2R_1): frame Unknown (20s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (30s ago), fg ?
+2026-06-24 16:50:32Z hc2 (D2R_2): frame Unknown (20s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (30s ago), fg ?
+2026-06-24 16:50:32Z hc3 (D2R_3): frame Unknown (20s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (31s ago), fg ?
+2026-06-24 16:50:35Z hc1 (D2R_1): frame Unknown (22s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (32s ago), fg ?
+2026-06-24 16:50:35Z hc2 (D2R_2): frame Unknown (22s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (32s ago), fg ?
+2026-06-24 16:50:35Z hc3 (D2R_3): frame Unknown (22s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (33s ago), fg ?
+2026-06-24 16:50:37Z hc1 (D2R_1): frame Unknown (24s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (35s ago), fg ?
+2026-06-24 16:50:37Z hc2 (D2R_2): frame Unknown (25s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (34s ago), fg ?
+2026-06-24 16:50:37Z hc3 (D2R_3): frame Unknown (25s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (36s ago), fg ?
+2026-06-24 16:50:39Z hc1 (D2R_1): frame Unknown (26s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (37s ago), fg ?
+2026-06-24 16:50:39Z hc2 (D2R_2): frame Unknown (27s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (37s ago), fg ?
+2026-06-24 16:50:39Z hc3 (D2R_3): frame Unknown (27s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (38s ago), fg ?
+2026-06-24 16:50:42Z hc1 (D2R_1): frame Unknown (29s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (39s ago), fg ?
+2026-06-24 16:50:42Z hc2 (D2R_2): frame Unknown (29s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (39s ago), fg ?
+2026-06-24 16:50:42Z hc3 (D2R_3): frame Unknown (29s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (40s ago), fg ?
+2026-06-24 16:50:44Z hc1 (D2R_1): frame Unknown (31s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (42s ago), fg ?
+2026-06-24 16:50:44Z hc2 (D2R_2): frame Unknown (32s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (41s ago), fg ?
+2026-06-24 16:50:44Z hc3 (D2R_3): frame InGame (0s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (43s ago), fg ?
+2026-06-24 16:50:46Z hc1 (D2R_1): frame Unknown (33s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (44s ago), fg ?
+2026-06-24 16:50:46Z hc2 (D2R_2): frame Unknown (34s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (43s ago), fg ?
+2026-06-24 16:50:46Z hc3 (D2R_3): frame InGame (2s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (45s ago), fg ?
+2026-06-24 16:50:49Z hc1 (D2R_1): frame Unknown (36s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (46s ago), fg ?
+2026-06-24 16:50:49Z hc2 (D2R_2): frame Unknown (36s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (46s ago), fg ?
+2026-06-24 16:50:49Z hc3 (D2R_3): frame InGame (5s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (47s ago), fg ?
+2026-06-24 16:50:51Z hc1 (D2R_1): frame Unknown (38s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (49s ago), fg ?
+2026-06-24 16:50:51Z hc2 (D2R_2): frame Unknown (39s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (48s ago), fg ?
+2026-06-24 16:50:51Z hc3 (D2R_3): frame InGame (7s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (50s ago), fg ?
+2026-06-24 16:50:53Z hc1 (D2R_1): frame Unknown (40s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (51s ago), fg ?
+2026-06-24 16:50:53Z hc2 (D2R_2): frame Unknown (41s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (50s ago), fg ?
+2026-06-24 16:50:53Z hc3 (D2R_3): frame InGame (9s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (52s ago), fg ?
+2026-06-24 16:50:56Z hc1 (D2R_1): frame Unknown (43s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (53s ago), fg ?
+2026-06-24 16:50:56Z hc2 (D2R_2): frame Unknown (43s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (53s ago), fg ?
+2026-06-24 16:50:56Z hc3 (D2R_3): frame InGame (12s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (54s ago), fg ?
+2026-06-24 16:50:58Z hc1 (D2R_1): frame Unknown (45s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (56s ago), fg ?
+2026-06-24 16:50:58Z hc2 (D2R_2): frame Unknown (46s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (55s ago), fg ?
+2026-06-24 16:50:58Z hc3 (D2R_3): frame InGame (14s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (57s ago), fg ?
+2026-06-24 16:51:00Z hc1 (D2R_1): frame Unknown (47s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (58s ago), fg ?
+2026-06-24 16:51:00Z hc2 (D2R_2): frame Unknown (48s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (57s ago), fg ?
+2026-06-24 16:51:00Z hc3 (D2R_3): frame InGame (16s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (59s ago), fg ?
+2026-06-24 16:51:03Z hc1 (D2R_1): frame Unknown (50s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m0s ago), fg ?
+2026-06-24 16:51:03Z hc2 (D2R_2): frame Unknown (50s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m0s ago), fg ?
+2026-06-24 16:51:03Z hc3 (D2R_3): frame InGame (19s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m1s ago), fg ?
+2026-06-24 16:51:05Z hc1 (D2R_1): frame Unknown (52s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m2s ago), fg ?
+2026-06-24 16:51:05Z hc2 (D2R_2): frame Unknown (53s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m2s ago), fg ?
+2026-06-24 16:51:05Z hc3 (D2R_3): frame Unknown (1s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m4s ago), fg ?
+2026-06-24 16:51:07Z hc1 (D2R_1): frame Unknown (54s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m5s ago), fg ?
+2026-06-24 16:51:07Z hc2 (D2R_2): frame Unknown (55s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m4s ago), fg ?
+2026-06-24 16:51:07Z hc3 (D2R_3): frame Unknown (4s ago) [degraded] | last key/G/Space/Enter@683,384 (1s ago), fg ?
+2026-06-24 16:51:09Z hc1 (D2R_1): frame Unknown (56s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m7s ago), fg ?
+2026-06-24 16:51:09Z hc2 (D2R_2): frame Unknown (57s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m7s ago), fg ?
+2026-06-24 16:51:09Z hc3 (D2R_3): frame Unknown (6s ago) [degraded] | last key/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 16:51:12Z hc1 (D2R_1): frame Unknown (59s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m9s ago), fg ?
+2026-06-24 16:51:12Z hc2 (D2R_2): frame Unknown (59s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m9s ago), fg ?
+2026-06-24 16:51:12Z hc3 (D2R_3): frame Unknown (1s ago) [degraded] | last key/G/Space/Enter@683,384 (6s ago), fg ?
+2026-06-24 16:51:14Z hc1 (D2R_1): frame Unknown (1m1s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m11s ago), fg ?
+2026-06-24 16:51:14Z hc2 (D2R_2): frame Unknown (1m2s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m11s ago), fg ?
+2026-06-24 16:51:14Z hc3 (D2R_3): frame Unknown (3s ago) [degraded] | last key/G/Space/Enter@683,384 (1s ago), fg ?
+2026-06-24 16:51:16Z hc1 (D2R_1): frame Unknown (1m3s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m14s ago), fg ?
+2026-06-24 16:51:16Z hc2 (D2R_2): frame Unknown (1m4s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m13s ago), fg ?
+2026-06-24 16:51:16Z hc3 (D2R_3): frame Unknown (5s ago) [degraded] | last key/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 16:51:18Z hc1 (D2R_1): frame Unknown (1m5s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m16s ago), fg ?
+2026-06-24 16:51:18Z hc2 (D2R_2): frame Unknown (1m6s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m15s ago), fg ?
+2026-06-24 16:51:18Z hc3 (D2R_3): frame Unknown (1s ago) [degraded] | last key/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:51:21Z hc1 (D2R_1): frame Unknown (1m8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m18s ago), fg ?
+2026-06-24 16:51:21Z hc2 (D2R_2): frame Unknown (1m8s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m18s ago), fg ?
+2026-06-24 16:51:21Z hc3 (D2R_3): frame Unknown (3s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:23Z hc1 (D2R_1): frame Unknown (1m10s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m20s ago), fg ?
+2026-06-24 16:51:23Z hc2 (D2R_2): frame Unknown (0s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m20s ago), fg ?
+2026-06-24 16:51:23Z hc3 (D2R_3): frame Unknown (6s ago) [degraded] | last key/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:51:25Z hc1 (D2R_1): frame Unknown (2s ago) [degraded] | last key/Escape/G/Space/Enter@683,384 (1m23s ago), fg ?
+2026-06-24 16:51:25Z hc2 (D2R_2): frame Unknown (3s ago) [degraded] | last key/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:51:25Z hc3 (D2R_3): frame Unknown (0s ago) [degraded] | last key/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:51:28Z hc1 (D2R_1): frame Unknown (2s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:28Z hc2 (D2R_2): frame Unknown (5s ago) [degraded] | last key/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 16:51:28Z hc3 (D2R_3): frame Unknown (2s ago) [degraded] | last key/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 16:51:30Z hc1 (D2R_1): frame Unknown (4s ago) [degraded] | last key/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:51:30Z hc2 (D2R_2): frame Unknown (8s ago) [degraded] | last key/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:51:30Z hc3 (D2R_3): frame Unknown (5s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:33Z hc1 (D2R_1): frame Unknown (2s ago) [degraded] | last key/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:51:33Z hc2 (D2R_2): frame Unknown (10s ago) [degraded] | last key/G/Space/Enter@683,384 (8s ago), fg ?
+2026-06-24 16:51:33Z hc3 (D2R_3): frame Unknown (7s ago) [degraded] | last key/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:51:35Z hc1 (D2R_1): frame Unknown (4s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:35Z hc2 (D2R_2): frame Unknown (0s ago) [degraded] | last key/G/Space/Enter@683,384 (10s ago), fg ?
+2026-06-24 16:51:35Z hc3 (D2R_3): frame Unknown (10s ago) [degraded] | last key/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:51:37Z hc1 (D2R_1): frame Unknown (7s ago) [degraded] | last key/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:51:37Z hc2 (D2R_2): frame Unknown (2s ago) [degraded] | last key/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:51:37Z hc3 (D2R_3): frame Unknown (1s ago) [degraded] | last key/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 16:51:40Z hc1 (D2R_1): frame Unknown (1s ago) [degraded] | last key/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:51:40Z hc2 (D2R_2): frame Unknown (4s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:40Z hc3 (D2R_3): frame Unknown (3s ago) [degraded] | last key/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:51:42Z hc1 (D2R_1): frame Unknown (4s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:42Z hc2 (D2R_2): frame Unknown (6s ago) [degraded] | last key/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:51:42Z hc3 (D2R_3): frame Unknown (5s ago) [degraded] | last key/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 16:51:44Z hc1 (D2R_1): frame Unknown (6s ago) [degraded] | last key/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:51:44Z hc2 (D2R_2): frame Unknown (9s ago) [degraded] | last key/G/Space/Enter@683,384 (6s ago), fg ?
+2026-06-24 16:51:44Z hc3 (D2R_3): frame Unknown (0s ago) [degraded] | last key/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:51:46Z hc1 (D2R_1): frame Unknown (0s ago) [degraded] | last key/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:51:46Z hc2 (D2R_2): frame Unknown (11s ago) [degraded] | last key/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 16:51:46Z hc3 (D2R_3): frame Unknown (3s ago) [degraded] | last key/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:51:49Z hc1 (D2R_1): frame Unknown (3s ago) [degraded] | last key/G/Space/Enter@683,384 (0s ago), fg ?
+2026-06-24 16:51:49Z hc2 (D2R_2): frame Unknown (1s ago) [degraded] | last key/G/Space/Enter@683,384 (11s ago), fg ?
+2026-06-24 16:51:49Z hc3 (D2R_3): frame ConnectingToBattleNet (1s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:51Z hc1 (D2R_1): frame Unknown (5s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:51Z hc2 (D2R_2): frame Unknown (3s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:51Z hc3 (D2R_3): frame ConnectingToBattleNet (2s ago) [degraded] | last key/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:51:54Z hc1 (D2R_1): frame Unknown (7s ago) [degraded] | last key/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:51:54Z hc2 (D2R_2): frame Unknown (6s ago) [degraded] | last key/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:51:54Z hc3 (D2R_3): frame ConnectingToBattleNet (4s ago) [degraded] | last key/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:51:56Z hc1 (D2R_1): frame Unknown (2s ago) [degraded] | last key/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:51:56Z hc2 (D2R_2): frame Unknown (8s ago) [degraded] | last key/G/Space/Enter@683,384 (7s ago), fg ?
+2026-06-24 16:51:56Z hc3 (D2R_3): frame ConnectingToBattleNet (7s ago) [degraded] | last key/G/Space/Enter@683,384 (10s ago), fg ?
+2026-06-24 16:51:59Z hc1 (D2R_1): frame Unknown (4s ago) [degraded] | last key/G/Space/Enter@683,384 (2s ago), fg ?
+2026-06-24 16:51:59Z hc2 (D2R_2): frame Unknown (11s ago) [degraded] | last key/G/Space/Enter@683,384 (9s ago), fg ?
+2026-06-24 16:51:59Z hc3 (D2R_3): frame ConnectingToBattleNet (9s ago) [degraded] | last key/G/Space/Enter@683,384 (12s ago), fg ?
+2026-06-24 16:52:05Z hc1 (D2R_1): frame Unknown (7s ago) [degraded] | last key/G/Space/Enter@683,384 (4s ago), fg ?
+2026-06-24 16:52:05Z hc2 (D2R_2): frame Unknown (13s ago) [degraded] | last key/G/Space/Enter@683,384 (11s ago), fg ?
+2026-06-24 16:52:05Z hc3 (D2R_3): frame ConnectingToBattleNet (15s ago) [degraded] | last key/G/Space/Enter@683,384 (19s ago), fg ?
+2026-06-24 16:52:07Z hc1 (D2R_1): frame Unknown (6s ago) [degraded] | last key/G/Space/Enter@683,384 (3s ago), fg ?
+2026-06-24 16:52:07Z hc2 (D2R_2): frame Unknown (19s ago) [degraded] | last key/G/Space/Enter@683,384 (18s ago), fg ?
+2026-06-24 16:52:07Z hc3 (D2R_3): frame ConnectingToBattleNet (18s ago) [degraded] | last key/G/Space/Enter@683,384 (21s ago), fg ?
+2026-06-24 16:52:10Z hc1 (D2R_1): frame CharacterScreen (1s ago) [degraded] | last key/G/Space/Enter@683,384 (5s ago), fg ?
+2026-06-24 16:52:10Z hc2 (D2R_2): frame Unknown (22s ago) [degraded] | last key/G/Space/Enter@683,384 (20s ago), fg ?
+2026-06-24 16:52:10Z hc3 (D2R_3): frame ConnectingToBattleNet (20s ago) [degraded] | last key/G/Space/Enter@683,384 (23s ago), fg ?
+2026-06-24 16:52:12Z hc1 (D2R_1): frame CharacterScreen (4s ago) [degraded] | last key/G/Space/Enter@683,384 (8s ago), fg ?
+2026-06-24 16:52:12Z hc2 (D2R_2): frame Unknown (24s ago) [degraded] | last key/G/Space/Enter@683,384 (23s ago), fg ?
+2026-06-24 16:52:12Z hc3 (D2R_3): frame ConnectingToBattleNet (23s ago) [degraded] | last key/G/Space/Enter@683,384 (26s ago), fg ?
+2026-06-24 16:52:14Z hc1 (D2R_1): frame CharacterScreen (6s ago) [degraded] | last key/G/Space/Enter@683,384 (10s ago), fg ?
+2026-06-24 16:52:14Z hc2 (D2R_2): frame Unknown (26s ago) [degraded] | last key/G/Space/Enter@683,384 (25s ago), fg ?
+2026-06-24 16:52:14Z hc3 (D2R_3): frame ConnectingToBattleNet (25s ago) [degraded] | last key/G/Space/Enter@683,384 (28s ago), fg ?
+2026-06-24 16:52:16Z hc1 (D2R_1): frame CharacterScreen (8s ago) [degraded] | last key/G/Space/Enter@683,384 (12s ago), fg ?
+2026-06-24 16:52:16Z hc2 (D2R_2): frame Unknown (28s ago) [degraded] | last key/G/Space/Enter@683,384 (27s ago), fg ?
+2026-06-24 16:52:16Z hc3 (D2R_3): frame ConnectingToBattleNet (27s ago) [degraded] | last key/G/Space/Enter@683,384 (30s ago), fg ?
+2026-06-24 16:52:19Z hc1 (D2R_1): frame CharacterScreen (11s ago) [degraded] | last key/G/Space/Enter@683,384 (15s ago), fg ?
+2026-06-24 16:52:19Z hc2 (D2R_2): frame Unknown (31s ago) [degraded] | last key/G/Space/Enter@683,384 (29s ago), fg ?
+2026-06-24 16:52:19Z hc3 (D2R_3): frame ConnectingToBattleNet (29s ago) [degraded] | last key/G/Space/Enter@683,384 (32s ago), fg ?
+2026-06-24 16:52:21Z hc1 (D2R_1): frame CharacterScreen (13s ago) [degraded] | last key/G/Space/Enter@683,384 (17s ago), fg ?
+2026-06-24 16:52:21Z hc2 (D2R_2): frame Unknown (33s ago) [degraded] | last key/G/Space/Enter@683,384 (32s ago), fg ?
+2026-06-24 16:52:21Z hc3 (D2R_3): frame ConnectingToBattleNet (32s ago) [degraded] | last key/G/Space/Enter@683,384 (35s ago), fg ?
+2026-06-24 16:52:23Z hc1 (D2R_1): frame CharacterScreen (15s ago) [degraded] | last key/G/Space/Enter@683,384 (19s ago), fg ? | at EnsureLobbyOpenedAsync: remembered-character-screen click (0s ago)
+2026-06-24 16:52:23Z hc2 (D2R_2): frame Unknown (35s ago) [degraded] | last key/G/Space/Enter@683,384 (34s ago), fg ?
+2026-06-24 16:52:23Z hc3 (D2R_3): frame ConnectingToBattleNet (34s ago) [degraded] | last key/G/Space/Enter@683,384 (37s ago), fg ?
+2026-06-24 16:52:25Z hc1 (D2R_1): frame CharacterScreen (17s ago) [degraded] | last click/Left@799,689 (1s ago), fg ? | at ClickLobbyTabDirectAsync: first ClickD2R (0s ago)
+2026-06-24 16:52:25Z hc2 (D2R_2): frame Unknown (37s ago) [degraded] | last key/G/Space/Enter@683,384 (36s ago), fg ?
+2026-06-24 16:52:25Z hc3 (D2R_3): frame ConnectingToBattleNet (36s ago) [degraded] | last key/G/Space/Enter@683,384 (39s ago), fg ?
+2026-06-24 16:52:27Z hc1 (D2R_1): frame CharacterScreen (19s ago) [degraded] | last click/Left@952,106 (0s ago), fg ? | at RestoreJoinGameFormAsync: fill game name (0s ago)
+2026-06-24 16:52:27Z hc2 (D2R_2): frame Unknown (40s ago) [degraded] | last key/G/Space/Enter@683,384 (38s ago), fg ?
+2026-06-24 16:52:27Z hc3 (D2R_3): frame ConnectingToBattleNet (38s ago) [degraded] | last key/G/Space/Enter@683,384 (41s ago), fg ?
+2026-06-24 16:52:30Z hc1 (D2R_1): frame CharacterScreen (22s ago) [degraded] | last click/Left@1143,106 (0s ago), fg ? | at RestoreJoinGameFormAsync: fill password (0s ago)
+2026-06-24 16:52:30Z hc2 (D2R_2): frame Unknown (42s ago) [degraded] | last key/G/Space/Enter@683,384 (40s ago), fg ?
+2026-06-24 16:52:30Z hc3 (D2R_3): frame ConnectingToBattleNet (40s ago) [degraded] | last key/G/Space/Enter@683,384 (44s ago), fg ?
+2026-06-24 16:52:32Z hc1 (D2R_1): frame CharacterScreen (24s ago) [degraded] | last click/Left@1046,55 (0s ago), fg ? | at ClickLobbyTabDirectAsync: second ClickD2R (0s ago)
+2026-06-24 16:52:32Z hc2 (D2R_2): frame Unknown (44s ago) [degraded] | last key/G/Space/Enter@683,384 (43s ago), fg ?
+2026-06-24 16:52:32Z hc3 (D2R_3): frame ConnectingToBattleNet (43s ago) [degraded] | last key/G/Space/Enter@683,384 (46s ago), fg ?
+2026-06-24 16:52:34Z hc1 (D2R_1): frame CharacterScreen (26s ago) [degraded] | last click/Left@952,106 (0s ago), fg ? | at RestoreJoinGameFormAsync: fill game name (1s ago)
+2026-06-24 16:52:34Z hc2 (D2R_2): frame Unknown (46s ago) [degraded] | last key/G/Space/Enter@683,384 (45s ago), fg ?
+2026-06-24 16:52:34Z hc3 (D2R_3): frame ConnectingToBattleNet (45s ago) [degraded] | last key/G/Space/Enter@683,384 (48s ago), fg ?
+2026-06-24 16:52:36Z hc1 (D2R_1): frame CharacterScreen (28s ago) [degraded] | last click/Left@1143,106 (0s ago), fg ? | at RestoreJoinGameFormAsync: fill password (1s ago)
+2026-06-24 16:52:36Z hc2 (D2R_2): frame Unknown (48s ago) [degraded] | last key/G/Space/Enter@683,384 (47s ago), fg ?
+2026-06-24 16:52:36Z hc3 (D2R_3): frame ConnectingToBattleNet (47s ago) [degraded] | last key/G/Space/Enter@683,384 (50s ago), fg ?
+2026-06-24 16:52:39Z hc1 (D2R_1): frame CharacterScreen (31s ago) [degraded] | last click/Left@1045,478 (1s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (2s ago)
+2026-06-24 16:52:39Z hc2 (D2R_2): frame Unknown (0s ago) [degraded] | last key/G/Space/Enter@683,384 (49s ago), fg ?
+2026-06-24 16:52:39Z hc3 (D2R_3): frame ConnectingToBattleNet (49s ago) [degraded] | last key/G/Space/Enter@683,384 (52s ago), fg ?
+2026-06-24 16:52:45Z hc1 (D2R_1): frame CharacterScreen (33s ago) [degraded] | last click/Left@1045,478 (4s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (4s ago)
+2026-06-24 16:52:45Z hc2 (D2R_2): frame Unknown (6s ago) [degraded] | last key/G/Space/Enter@683,384 (56s ago), fg ?
+2026-06-24 16:52:45Z hc3 (D2R_3): frame ConnectingToBattleNet (52s ago) [degraded] | last key/G/Space/Enter@683,384 (55s ago), fg ?
+2026-06-24 16:52:47Z hc1 (D2R_1): frame CharacterScreen (39s ago) [degraded] | last click/Left@1045,478 (10s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (11s ago)
+2026-06-24 16:52:47Z hc2 (D2R_2): frame Unknown (9s ago) [degraded] | last key/G/Space/Enter@683,384 (58s ago), fg ?
+2026-06-24 16:52:47Z hc3 (D2R_3): frame ConnectingToBattleNet (58s ago) [degraded] | last key/G/Space/Enter@683,384 (1m1s ago), fg ?
+2026-06-24 16:52:50Z hc1 (D2R_1): frame CharacterScreen (42s ago) [degraded] | last click/Left@1045,478 (12s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (13s ago)
+2026-06-24 16:52:50Z hc2 (D2R_2): frame Unknown (11s ago) [degraded] | last key/G/Space/Enter@683,384 (1m0s ago), fg ?
+2026-06-24 16:52:50Z hc3 (D2R_3): frame CharacterScreen (0s ago) [degraded] | last key/G/Space/Enter@683,384 (1m3s ago), fg ?
+2026-06-24 16:52:52Z hc1 (D2R_1): frame CharacterScreen (44s ago) [degraded] | last click/Left@1045,478 (14s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (15s ago)
+2026-06-24 16:52:52Z hc2 (D2R_2): frame Unknown (13s ago) [degraded] | last key/G/Space/Enter@683,384 (1m3s ago), fg ?
+2026-06-24 16:52:52Z hc3 (D2R_3): frame CharacterScreen (2s ago) [degraded] | last key/G/Space/Enter@683,384 (1m6s ago), fg ?
+2026-06-24 16:52:54Z hc1 (D2R_1): frame CharacterScreen (46s ago) [degraded] | last click/Left@1045,478 (17s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (17s ago)
+2026-06-24 16:52:54Z hc2 (D2R_2): frame Unknown (15s ago) [degraded] | last key/G/Space/Enter@683,384 (1m5s ago), fg ?
+2026-06-24 16:52:54Z hc3 (D2R_3): frame CharacterScreen (4s ago) [degraded] | last key/G/Space/Enter@683,384 (1m8s ago), fg ?
+2026-06-24 16:52:57Z hc1 (D2R_1): frame CharacterScreen (48s ago) [degraded] | last click/Left@1045,478 (19s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (20s ago)
+2026-06-24 16:52:57Z hc2 (D2R_2): frame Unknown (18s ago) [degraded] | last key/G/Space/Enter@683,384 (1m7s ago), fg ?
+2026-06-24 16:52:57Z hc3 (D2R_3): frame CharacterScreen (7s ago) [degraded] | last key/G/Space/Enter@683,384 (1m10s ago), fg ?
+2026-06-24 16:52:59Z hc1 (D2R_1): frame CharacterScreen (51s ago) [degraded] | last click/Left@1045,478 (21s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (22s ago)
+2026-06-24 16:52:59Z hc2 (D2R_2): frame Unknown (20s ago) [degraded] | last key/G/Space/Enter@683,384 (1m10s ago), fg ?
+2026-06-24 16:52:59Z hc3 (D2R_3): frame CharacterScreen (9s ago) [degraded] | last key/G/Space/Enter@683,384 (1m13s ago), fg ?
+2026-06-24 16:53:01Z hc1 (D2R_1): frame CharacterScreen (53s ago) [degraded] | last click/Left@1045,478 (24s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (24s ago)
+2026-06-24 16:53:01Z hc2 (D2R_2): frame Unknown (22s ago) [degraded] | last key/G/Space/Enter@683,384 (1m12s ago), fg ?
+2026-06-24 16:53:01Z hc3 (D2R_3): frame CharacterScreen (11s ago) [degraded] | last key/G/Space/Enter@683,384 (1m15s ago), fg ?
+2026-06-24 16:53:03Z hc1 (D2R_1): frame CharacterScreen (55s ago) [degraded] | last click/Left@1045,478 (26s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (27s ago)
+2026-06-24 16:53:03Z hc2 (D2R_2): frame Unknown (24s ago) [degraded] | last key/G/Space/Enter@683,384 (1m14s ago), fg ?
+2026-06-24 16:53:03Z hc3 (D2R_3): frame CharacterScreen (13s ago) [degraded] | last key/G/Space/Enter@683,384 (1m17s ago), fg ?
+2026-06-24 16:53:06Z hc1 (D2R_1): frame CharacterScreen (58s ago) [degraded] | last click/Left@1045,478 (28s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (29s ago)
+2026-06-24 16:53:06Z hc2 (D2R_2): frame Unknown (27s ago) [degraded] | last key/G/Space/Enter@683,384 (1m16s ago), fg ?
+2026-06-24 16:53:06Z hc3 (D2R_3): frame CharacterScreen (16s ago) [degraded] | last key/G/Space/Enter@683,384 (1m20s ago), fg ?
+2026-06-24 16:53:08Z hc1 (D2R_1): frame CharacterScreen (1m0s ago) [degraded] | last click/Left@1045,478 (31s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (31s ago)
+2026-06-24 16:53:08Z hc2 (D2R_2): frame Unknown (29s ago) [degraded] | last key/G/Space/Enter@683,384 (1m19s ago), fg ?
+2026-06-24 16:53:08Z hc3 (D2R_3): frame CharacterScreen (18s ago) [degraded] | last key/G/Space/Enter@683,384 (1m22s ago), fg ?
+2026-06-24 16:53:11Z hc1 (D2R_1): frame CharacterScreen (1m2s ago) [degraded] | last click/Left@1045,478 (33s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (33s ago)
+2026-06-24 16:53:11Z hc2 (D2R_2): frame Unknown (31s ago) [degraded] | last key/G/Space/Enter@683,384 (1m21s ago), fg ?
+2026-06-24 16:53:11Z hc3 (D2R_3): frame CharacterScreen (20s ago) [degraded] | last key/G/Space/Enter@683,384 (1m24s ago), fg ?
+2026-06-24 16:53:13Z hc1 (D2R_1): frame CharacterScreen (1m5s ago) [degraded] | last click/Left@1045,478 (36s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (36s ago)
+2026-06-24 16:53:13Z hc2 (D2R_2): frame Unknown (34s ago) [degraded] | last key/G/Space/Enter@683,384 (1m24s ago), fg ?
+2026-06-24 16:53:13Z hc3 (D2R_3): frame CharacterScreen (23s ago) [degraded] | last key/G/Space/Enter@683,384 (1m27s ago), fg ?
+2026-06-24 16:53:15Z hc1 (D2R_1): frame CharacterScreen (1m7s ago) [degraded] | last click/Left@1045,478 (38s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (38s ago)
+2026-06-24 16:53:15Z hc2 (D2R_2): frame Unknown (36s ago) [degraded] | last key/G/Space/Enter@683,384 (1m26s ago), fg ?
+2026-06-24 16:53:15Z hc3 (D2R_3): frame CharacterScreen (25s ago) [degraded] | last key/G/Space/Enter@683,384 (1m29s ago), fg ?
+2026-06-24 16:53:18Z hc1 (D2R_1): frame CharacterScreen (1m9s ago) [degraded] | last click/Left@1045,478 (40s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (41s ago)
+2026-06-24 16:53:18Z hc2 (D2R_2): frame Unknown (39s ago) [degraded] | last key/G/Space/Enter@683,384 (1m28s ago), fg ?
+2026-06-24 16:53:18Z hc3 (D2R_3): frame CharacterScreen (28s ago) [degraded] | last key/G/Space/Enter@683,384 (1m31s ago), fg ?
+2026-06-24 16:53:20Z hc1 (D2R_1): frame CharacterScreen (1m12s ago) [degraded] | last click/Left@1045,478 (42s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (43s ago)
+2026-06-24 16:53:20Z hc2 (D2R_2): frame Unknown (41s ago) [degraded] | last key/G/Space/Enter@683,384 (1m31s ago), fg ?
+2026-06-24 16:53:20Z hc3 (D2R_3): frame CharacterScreen (30s ago) [degraded] | last key/G/Space/Enter@683,384 (1m34s ago), fg ?
+2026-06-24 16:53:22Z hc1 (D2R_1): frame CharacterScreen (1m14s ago) [degraded] | last click/Left@1045,478 (45s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (45s ago)
+2026-06-24 16:53:22Z hc2 (D2R_2): frame Unknown (43s ago) [degraded] | last key/G/Space/Enter@683,384 (1m33s ago), fg ?
+2026-06-24 16:53:22Z hc3 (D2R_3): frame CharacterScreen (32s ago) [degraded] | last key/G/Space/Enter@683,384 (1m36s ago), fg ?
+2026-06-24 16:53:24Z hc1 (D2R_1): frame CharacterScreen (1m16s ago) [degraded] | last click/Left@1045,478 (47s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (47s ago)
+2026-06-24 16:53:24Z hc2 (D2R_2): frame Unknown (45s ago) [degraded] | last key/G/Space/Enter@683,384 (1m35s ago), fg ?
+2026-06-24 16:53:24Z hc3 (D2R_3): frame CharacterScreen (34s ago) [degraded] | last key/G/Space/Enter@683,384 (1m38s ago), fg ?
+2026-06-24 16:53:27Z hc1 (D2R_1): frame CharacterScreen (1m19s ago) [degraded] | last click/Left@1045,478 (49s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (50s ago)
+2026-06-24 16:53:27Z hc2 (D2R_2): frame Unknown (48s ago) [degraded] | last key/G/Space/Enter@683,384 (1m37s ago), fg ?
+2026-06-24 16:53:27Z hc3 (D2R_3): frame CharacterScreen (37s ago) [degraded] | last key/G/Space/Enter@683,384 (1m41s ago), fg ?
+2026-06-24 16:53:29Z hc1 (D2R_1): frame CharacterScreen (1m21s ago) [degraded] | last click/Left@1045,478 (52s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (52s ago)
+2026-06-24 16:53:29Z hc2 (D2R_2): frame Unknown (50s ago) [degraded] | last key/G/Space/Enter@683,384 (1m40s ago), fg ?
+2026-06-24 16:53:29Z hc3 (D2R_3): frame CharacterScreen (39s ago) [degraded] | last key/G/Space/Enter@683,384 (1m43s ago), fg ?
+2026-06-24 16:53:31Z hc1 (D2R_1): frame CharacterScreen (1m23s ago) [degraded] | last click/Left@1045,478 (54s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (54s ago)
+2026-06-24 16:53:31Z hc2 (D2R_2): frame Unknown (52s ago) [degraded] | last key/G/Space/Enter@683,384 (1m42s ago), fg ?
+2026-06-24 16:53:31Z hc3 (D2R_3): frame CharacterScreen (41s ago) [degraded] | last key/G/Space/Enter@683,384 (1m45s ago), fg ?
+2026-06-24 16:53:34Z hc1 (D2R_1): frame CharacterScreen (1m26s ago) [degraded] | last click/Left@1045,478 (56s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (57s ago)
+2026-06-24 16:53:34Z hc2 (D2R_2): frame Unknown (55s ago) [degraded] | last key/G/Space/Enter@683,384 (1m44s ago), fg ?
+2026-06-24 16:53:34Z hc3 (D2R_3): frame CharacterScreen (44s ago) [degraded] | last key/G/Space/Enter@683,384 (1m47s ago), fg ?
+2026-06-24 16:53:36Z hc1 (D2R_1): frame CharacterScreen (1m28s ago) [degraded] | last click/Left@1045,478 (58s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (59s ago)
+2026-06-24 16:53:36Z hc2 (D2R_2): frame Unknown (57s ago) [degraded] | last key/G/Space/Enter@683,384 (1m47s ago), fg ?
+2026-06-24 16:53:36Z hc3 (D2R_3): frame CharacterScreen (46s ago) [degraded] | last key/G/Space/Enter@683,384 (1m50s ago), fg ?
+2026-06-24 16:53:38Z hc1 (D2R_1): frame CharacterScreen (1m30s ago) [degraded] | last click/Left@1045,478 (1m1s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (1m1s ago)
+2026-06-24 16:53:38Z hc2 (D2R_2): frame Unknown (59s ago) [degraded] | last key/G/Space/Enter@683,384 (1m49s ago), fg ?
+2026-06-24 16:53:38Z hc3 (D2R_3): frame CharacterScreen (48s ago) [degraded] | last key/G/Space/Enter@683,384 (1m52s ago), fg ?
+2026-06-24 16:53:40Z hc1 (D2R_1): frame CharacterScreen (1m32s ago) [degraded] | last click/Left@1045,478 (1m3s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (1m3s ago)
+2026-06-24 16:53:40Z hc2 (D2R_2): frame Unknown (1m1s ago) [degraded] | last key/G/Space/Enter@683,384 (1m51s ago), fg ?
+2026-06-24 16:53:40Z hc3 (D2R_3): frame CharacterScreen (50s ago) [degraded] | last key/G/Space/Enter@683,384 (1m54s ago), fg ?
+2026-06-24 16:53:47Z hc1 (D2R_1): frame CharacterScreen (1m34s ago) [degraded] | last click/Left@1045,478 (1m5s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (1m6s ago)
+2026-06-24 16:53:47Z hc2 (D2R_2): frame Unknown (1m4s ago) [degraded] | last key/G/Space/Enter@683,384 (1m53s ago), fg ?
+2026-06-24 16:53:47Z hc3 (D2R_3): frame CharacterScreen (4s ago) [degraded] | last key/G/Space/Enter@683,384 (2m0s ago), fg ?
+2026-06-24 16:53:49Z hc1 (D2R_1): frame CharacterScreen (1m41s ago) [degraded] | last click/Left@1045,478 (1m11s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (1m12s ago)
+2026-06-24 16:53:49Z hc2 (D2R_2): frame Unknown (1m10s ago) [degraded] | last key/G/Space/Enter@683,384 (2m0s ago), fg ?
+2026-06-24 16:53:49Z hc3 (D2R_3): frame CharacterScreen (7s ago) [degraded] | last key/G/Space/Enter@683,384 (2m3s ago), fg ?
+2026-06-24 16:53:51Z hc1 (D2R_1): frame CharacterScreen (1m43s ago) [degraded] | last click/Left@1045,478 (1m14s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (1m14s ago)
+2026-06-24 16:53:51Z hc2 (D2R_2): frame Unknown (1m12s ago) [degraded] | last key/G/Space/Enter@683,384 (2m2s ago), fg ?
+2026-06-24 16:53:51Z hc3 (D2R_3): frame CharacterScreen (9s ago) [degraded] | last key/G/Space/Enter@683,384 (2m5s ago), fg ?
+2026-06-24 16:53:53Z hc1 (D2R_1): frame CharacterScreen (1m45s ago) [degraded] | last click/Left@1045,478 (1m16s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (1m16s ago)
+2026-06-24 16:53:53Z hc2 (D2R_2): frame Unknown (1m14s ago) [degraded] | last key/G/Space/Enter@683,384 (2m4s ago), fg ?
+2026-06-24 16:53:53Z hc3 (D2R_3): frame CharacterScreen (11s ago) [degraded] | last key/G/Space/Enter@683,384 (2m7s ago), fg ?
+2026-06-24 16:53:56Z hc1 (D2R_1): frame CharacterScreen (1m48s ago) [degraded] | last click/Left@1045,478 (1m18s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (1m19s ago)
+2026-06-24 16:53:56Z hc2 (D2R_2): frame Unknown (1m17s ago) [degraded] | last key/G/Space/Enter@683,384 (2m6s ago), fg ?
+2026-06-24 16:53:56Z hc3 (D2R_3): frame CharacterScreen (13s ago) [degraded] | last key/G/Space/Enter@683,384 (2m9s ago), fg ?
+2026-06-24 16:53:58Z hc1 (D2R_1): frame CharacterScreen (1m50s ago) [degraded] | last click/Left@1045,478 (1m20s ago), fg ? | at ClickMenuEntryButtonUntilEnteredGameAsync: initial click (1m21s ago)
+2026-06-24 16:53:58Z hc2 (D2R_2): frame Unknown (1m19s ago) [degraded] | last key/G/Space/Enter@683,384 (2m8s ago), fg ?
+2026-06-24 16:53:58Z hc3 (D2R_3): frame CharacterScreen (16s ago) [degraded] | last key/G/Space/Enter@683,384 (2m12s ago), fg ?

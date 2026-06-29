@@ -1,5 +1,20 @@
 namespace AgentCommon;
 
+public sealed record FriendFingerprintComparison(
+    bool Comparable,
+    double AverageDifference,
+    double SignalAverageDifference,
+    int SignalPixels,
+    int TotalPixels)
+{
+    public static FriendFingerprintComparison NotComparable { get; } = new(
+        Comparable: false,
+        AverageDifference: double.PositiveInfinity,
+        SignalAverageDifference: double.PositiveInfinity,
+        SignalPixels: 0,
+        TotalPixels: 0);
+}
+
 // A small grid of RGB samples taken from a friends-drawer row's name-text area, used to recognize
 // a specific bound friend across all VMs without ever needing to OCR or store a real image file -
 // same grid-sample-and-compare shape as every other on-screen classifier in this codebase, just
@@ -45,23 +60,67 @@ public sealed record FriendFingerprint(int GridColumns, int GridRows, byte[] Sam
 
     public static bool IsMatch(FriendFingerprint? a, FriendFingerprint? b, double toleranceFraction = DefaultToleranceFraction)
     {
+        var comparison = Compare(a, b);
+        return comparison.Comparable
+            && comparison.AverageDifference <= toleranceFraction * 255;
+    }
+
+    public static FriendFingerprintComparison Compare(FriendFingerprint? a, FriendFingerprint? b)
+    {
         if (a is null || b is null)
         {
-            return false;
+            return FriendFingerprintComparison.NotComparable;
         }
 
-        if (a.GridColumns != b.GridColumns || a.GridRows != b.GridRows || a.Samples.Length != b.Samples.Length || a.Samples.Length == 0)
+        if (a.GridColumns != b.GridColumns
+            || a.GridRows != b.GridRows
+            || a.Samples.Length != b.Samples.Length
+            || a.Samples.Length == 0
+            || a.Samples.Length % 3 != 0
+            || a.Samples.Length != a.GridColumns * a.GridRows * 3
+            || b.Samples.Length != b.GridColumns * b.GridRows * 3)
         {
-            return false;
+            return FriendFingerprintComparison.NotComparable;
         }
 
         long totalDifference = 0;
+        long signalDifference = 0;
+        var signalPixels = 0;
         for (var i = 0; i < a.Samples.Length; i++)
         {
             totalDifference += Math.Abs(a.Samples[i] - b.Samples[i]);
         }
 
+        for (var i = 0; i < a.Samples.Length; i += 3)
+        {
+            var aLuminance = GetLuminance(a.Samples[i], a.Samples[i + 1], a.Samples[i + 2]);
+            var bLuminance = GetLuminance(b.Samples[i], b.Samples[i + 1], b.Samples[i + 2]);
+            if (aLuminance < 45 && bLuminance < 45)
+            {
+                continue;
+            }
+
+            signalPixels++;
+            signalDifference += Math.Abs(a.Samples[i] - b.Samples[i]);
+            signalDifference += Math.Abs(a.Samples[i + 1] - b.Samples[i + 1]);
+            signalDifference += Math.Abs(a.Samples[i + 2] - b.Samples[i + 2]);
+        }
+
         var averageDifference = totalDifference / (double)a.Samples.Length;
-        return averageDifference <= toleranceFraction * 255;
+        var signalAverageDifference = signalPixels > 0
+            ? signalDifference / (signalPixels * 3.0)
+            : averageDifference;
+
+        return new FriendFingerprintComparison(
+            Comparable: true,
+            AverageDifference: averageDifference,
+            SignalAverageDifference: signalAverageDifference,
+            SignalPixels: signalPixels,
+            TotalPixels: a.Samples.Length / 3);
+    }
+
+    private static double GetLuminance(byte red, byte green, byte blue)
+    {
+        return (red * 0.2126) + (green * 0.7152) + (blue * 0.0722);
     }
 }

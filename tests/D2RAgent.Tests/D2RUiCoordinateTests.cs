@@ -128,6 +128,7 @@ public sealed class D2RUiCoordinateTests
     [Theory]
     [InlineData(0.318, 0.322)]
     [InlineData(0.318, 0.223)]
+    [InlineData(0.318, 0.354)]
     public void FriendContextJoinGameIgnoresStalePersistedDefaults(double x, double y)
     {
         var ui = new D2RUiAutomationConfig

@@ -1,0 +1,75 @@
+2026-06-26 14:20:05.209Z [Startup] Windows firewall rule already exists: D2ROps Host inbound TCP 8080
+2026-06-26 14:20:05.450Z [Information] D2RHost.DiscordBot: Discord: Discord.Net v3.20.1 (API v10)
+2026-06-26 14:20:05.460Z [Information] D2RHost.DiscordBot: Gateway: Connecting
+2026-06-26 14:20:05.481Z [Information] Microsoft.Hosting.Lifetime: Now listening on: http://0.0.0.0:8080
+2026-06-26 14:20:05.481Z [Information] Microsoft.Hosting.Lifetime: Application started. Press Ctrl+C to shut down.
+2026-06-26 14:20:05.482Z [Information] Microsoft.Hosting.Lifetime: Hosting environment: Production
+2026-06-26 14:20:05.482Z [Information] Microsoft.Hosting.Lifetime: Content root path: C:\D2ROps
+2026-06-26 14:20:06.217Z [Information] D2RHost.DiscordBot: Gateway: Connected
+2026-06-26 14:20:06.722Z [Information] D2RHost.DiscordBot: Discord bot logged in as ⁦brocoder⁩#5308
+2026-06-26 14:20:06.752Z [Warning] D2RHost.DiscordBot: Gateway: A Ready handler has thrown an unhandled exception.
+System.ArgumentException: Value must be at most 100. (Parameter 'description')
+   at Discord.Preconditions.AtMost(Int32 obj, Int32 value, String name, String msg)
+   at Discord.SlashCommandOptionBuilder.EnsureValidCommandOptionDescription(String description)
+   at Discord.SlashCommandOptionBuilder.set_Description(String value)
+   at Discord.SlashCommandOptionBuilder.WithDescription(String description)
+   at D2RHost.DiscordSlashCommands.Sub(String name, String description, SlashCommandOptionBuilder[] options) in D:\a\d2r-vm-discord-controller\d2r-vm-discord-controller\agents\D2RHost\DiscordSlashCommands.cs:line 89
+   at D2RHost.DiscordSlashCommands.Build() in D:\a\d2r-vm-discord-controller\d2r-vm-discord-controller\agents\D2RHost\DiscordSlashCommands.cs:line 9
+   at D2RHost.DiscordBot.OnReadyAsync() in D:\a\d2r-vm-discord-controller\d2r-vm-discord-controller\agents\D2RHost\DiscordBot.cs:line 98
+   at Discord.EventExtensions.InvokeAsync(AsyncEvent`1 eventHandler)
+   at Discord.WebSocket.DiscordSocketClient.TimeoutWrap(String name, Func`1 action)
+2026-06-26 14:20:06.753Z [Information] D2RHost.DiscordBot: Gateway: Ready
+2026-06-26 14:20:08.096Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request starting HTTP/1.1 GET http://10.2.3.83:8080/agent - - -
+2026-06-26 14:20:08.096Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request starting HTTP/1.1 GET http://10.2.3.83:8080/agent - - -
+2026-06-26 14:20:08.096Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request starting HTTP/1.1 GET http://10.2.3.83:8080/agent - - -
+2026-06-26 14:20:08.127Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executing endpoint '/agent'
+2026-06-26 14:20:08.127Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executing endpoint '/agent'
+2026-06-26 14:20:08.127Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executing endpoint '/agent'
+2026-06-26 14:20:08.157Z [Information] D2RHost.AgentRegistry: Agent authenticated: D2R_2
+2026-06-26 14:20:08.159Z [Information] D2RHost.AgentRegistry: Agent authenticated: D2R_1
+2026-06-26 14:20:08.162Z [Information] D2RHost.AgentRegistry: Agent authenticated: D2R_3
+2026-06-26 14:20:10.266Z [Information] D2RHost.AgentRegistry: Satellite auto-update command completed for D2R_3: Updater started for D2RAgent v0.2.103.
+2026-06-26 14:20:10.268Z [Information] D2RHost.AgentRegistry: Satellite auto-update command completed for D2R_1: Updater started for D2RAgent v0.2.103.
+2026-06-26 14:20:10.272Z [Warning] D2RHost.AgentRegistry: Agent disconnected: D2R_1
+2026-06-26 14:20:10.274Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executed endpoint '/agent'
+2026-06-26 14:20:10.280Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request finished HTTP/1.1 GET http://10.2.3.83:8080/agent - 101 - - 2184.6427ms
+2026-06-26 14:20:10.280Z [Warning] D2RHost.AgentRegistry: Agent disconnected: D2R_3
+2026-06-26 14:20:10.281Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executed endpoint '/agent'
+2026-06-26 14:20:10.282Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request finished HTTP/1.1 GET http://10.2.3.83:8080/agent - 101 - - 2187.2630ms
+2026-06-26 14:20:10.298Z [Information] D2RHost.AgentRegistry: Satellite auto-update command completed for D2R_2: Updater started for D2RAgent v0.2.103.
+2026-06-26 14:20:10.301Z [Warning] D2RHost.AgentRegistry: Agent disconnected: D2R_2
+2026-06-26 14:20:10.302Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executed endpoint '/agent'
+2026-06-26 14:20:10.302Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request finished HTTP/1.1 GET http://10.2.3.83:8080/agent - 101 - - 2207.5811ms
+2026-06-26 14:20:15.685Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request starting HTTP/1.1 GET http://10.2.3.83:8080/agent - - -
+2026-06-26 14:20:15.686Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executing endpoint '/agent'
+2026-06-26 14:20:15.709Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executed endpoint '/agent'
+2026-06-26 14:20:15.710Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request finished HTTP/1.1 GET http://10.2.3.83:8080/agent - 101 - - 25.0938ms
+2026-06-26 14:20:15.722Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request starting HTTP/1.1 GET http://10.2.3.83:8080/agent - - -
+2026-06-26 14:20:15.722Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executing endpoint '/agent'
+2026-06-26 14:20:15.729Z [Information] D2RHost.AgentRegistry: Agent authenticated: D2R_1
+2026-06-26 14:20:15.893Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request starting HTTP/1.1 GET http://10.2.3.83:8080/agent - - -
+2026-06-26 14:20:15.894Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executing endpoint '/agent'
+2026-06-26 14:20:15.911Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executed endpoint '/agent'
+2026-06-26 14:20:15.912Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request finished HTTP/1.1 GET http://10.2.3.83:8080/agent - 101 - - 18.2853ms
+2026-06-26 14:20:15.924Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request starting HTTP/1.1 GET http://10.2.3.83:8080/agent - - -
+2026-06-26 14:20:15.924Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executing endpoint '/agent'
+2026-06-26 14:20:15.929Z [Information] D2RHost.AgentRegistry: Agent authenticated: D2R_2
+2026-06-26 14:20:17.041Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request starting HTTP/1.1 GET http://10.2.3.83:8080/agent - - -
+2026-06-26 14:20:17.042Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executing endpoint '/agent'
+2026-06-26 14:20:17.062Z [Warning] D2RHost.AgentRegistry: Agent websocket failed for (unauthenticated)
+System.Net.WebSockets.WebSocketException (0x80004005): The remote party closed the WebSocket connection without completing the close handshake.
+   at System.Net.WebSockets.ManagedWebSocket.ThrowEOFUnexpected()
+   at System.Net.WebSockets.ManagedWebSocket.EnsureBufferContainsAsync(Int32 minimumRequiredBytes, CancellationToken cancellationToken)
+   at System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder`1.StateMachineBox`1.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at System.Net.WebSockets.ManagedWebSocket.ReceiveAsyncPrivate[TResult](Memory`1 payloadBuffer, CancellationToken cancellationToken)
+   at System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder`1.StateMachineBox`1.System.Threading.Tasks.Sources.IValueTaskSource<TResult>.GetResult(Int16 token)
+   at System.Net.WebSockets.ManagedWebSocket.CloseAsyncPrivate(WebSocketCloseStatus closeStatus, String statusDescription, CancellationToken cancellationToken)
+   at D2RHost.AgentRegistry.HandleWebSocketAsync(WebSocket socket, CancellationToken cancellationToken) in D:\a\d2r-vm-discord-controller\d2r-vm-discord-controller\agents\D2RHost\AgentRegistry.cs:line 78
+2026-06-26 14:20:17.063Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executed endpoint '/agent'
+2026-06-26 14:20:17.063Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request finished HTTP/1.1 GET http://10.2.3.83:8080/agent - 101 - - 21.8975ms
+2026-06-26 14:20:17.069Z [Information] Microsoft.AspNetCore.Hosting.Diagnostics: Request starting HTTP/1.1 GET http://10.2.3.83:8080/agent - - -
+2026-06-26 14:20:17.069Z [Information] Microsoft.AspNetCore.Routing.EndpointMiddleware: Executing endpoint '/agent'
+2026-06-26 14:20:17.076Z [Information] D2RHost.AgentRegistry: Agent authenticated: D2R_3
+2026-06-26 14:20:17.776Z [Information] D2RHost.AgentRegistry: Satellite auto-update command completed for D2R_1: D2RAgent is current at 0.2.103.
+2026-06-26 14:20:17.969Z [Information] D2RHost.AgentRegistry: Satellite auto-update command completed for D2R_2: D2RAgent is current at 0.2.103.
+2026-06-26 14:20:19.115Z [Information] D2RHost.AgentRegistry: Satellite auto-update command completed for D2R_3: D2RAgent is current at 0.2.103.

@@ -405,7 +405,16 @@ public static class D2RUiCoordinateCatalog
     private static bool IsKnownStaleFriendContextJoinGame(UiPoint point)
     {
         return IsNear(point, x: 0.318, y: 0.322)
-            || IsNear(point, x: 0.318, y: 0.223);
+            || IsNear(point, x: 0.318, y: 0.223)
+            || IsStaleFriendContextJoinGameFamily(point);
+    }
+
+    private static bool IsStaleFriendContextJoinGameFamily(UiPoint point)
+    {
+        const double xTolerance = 0.004;
+        return Math.Abs(point.X - 0.318) <= xTolerance
+            && point.Y >= 0.200
+            && point.Y <= 0.380;
     }
 
     private static bool IsNear(UiPoint point, double x, double y)
