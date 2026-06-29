@@ -18,6 +18,7 @@ public enum D2RUiCoordinateTarget
     CharacterLobbyButton,
     CharacterOnlineTab,
     LobbyPartyIcon,
+    FriendsAccordionHeader,
     FriendRowStart,
     FriendContextJoinGame,
     JoinGameTab,
@@ -114,6 +115,7 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.CharacterLobbyButton => Choose(ui.CharacterLobbyButton, Defaults.CharacterLobbyButton),
             D2RUiCoordinateTarget.CharacterOnlineTab => Choose(ui.CharacterOnlineTab, Defaults.CharacterOnlineTab),
             D2RUiCoordinateTarget.LobbyPartyIcon => Choose(ui.LobbyPartyIcon, Defaults.LobbyPartyIcon),
+            D2RUiCoordinateTarget.FriendsAccordionHeader => Choose(ui.FriendsAccordionHeader, Defaults.FriendsAccordionHeader),
             D2RUiCoordinateTarget.FriendRowStart => Choose(ui.FriendRowStart, Defaults.FriendRowStart),
             D2RUiCoordinateTarget.FriendContextJoinGame => Choose(ui.FriendContextJoinGame, Defaults.FriendContextJoinGame),
             D2RUiCoordinateTarget.JoinGameTab => Choose(ui.JoinGameTab, Defaults.JoinGameTab),
@@ -265,6 +267,7 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.CharacterLobbyButton => "Character Lobby button",
             D2RUiCoordinateTarget.CharacterOnlineTab => "Character Online tab",
             D2RUiCoordinateTarget.LobbyPartyIcon => "Lobby party/friends icon",
+            D2RUiCoordinateTarget.FriendsAccordionHeader => "Friends accordion header",
             D2RUiCoordinateTarget.FriendRowStart => "Friends drawer row 1",
             D2RUiCoordinateTarget.FriendContextJoinGame => "Friend context Join Game option",
             D2RUiCoordinateTarget.JoinGameTab => "Lobby Join Game tab",
@@ -327,6 +330,7 @@ public static class D2RUiCoordinateCatalog
                 or D2RUiCoordinateTarget.CharacterLobbyButton
                 or D2RUiCoordinateTarget.CharacterOnlineTab => "1366x768/char_screen_act1.png",
             D2RUiCoordinateTarget.LobbyPartyIcon
+                or D2RUiCoordinateTarget.FriendsAccordionHeader
                 or D2RUiCoordinateTarget.FriendRowStart
                 or D2RUiCoordinateTarget.FriendContextJoinGame => "1366x768/lobby_right_click_friend_join_game_available.png",
             D2RUiCoordinateTarget.JoinGameTab
@@ -359,6 +363,7 @@ public static class D2RUiCoordinateCatalog
     {
         return target switch
         {
+            D2RUiCoordinateTarget.FriendsAccordionHeader => "Click after opening the drawer if the Friends accordion is collapsed.",
             D2RUiCoordinateTarget.FriendRowStart => "Additional rows use friendRowHeight, default 0.049 of window height.",
             D2RUiCoordinateTarget.IntroSkipPoint => "Center click/key target used during intro, splash, and title skip bursts.",
             D2RUiCoordinateTarget.ModernHealthGlobe

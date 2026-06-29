@@ -1,3 +1,4 @@
+using AgentCommon;
 using D2RAgent;
 using Xunit;
 
@@ -73,6 +74,37 @@ public sealed class D2RScreenClassifierTests
             tab,
             characterButtonPairReady: false,
             characterMenuReady: false));
+    }
+
+    [Theory]
+    [InlineData("lobby_hover_party_icon_chat.png", false)]
+    [InlineData("lobby_click_party_icon.png", true)]
+    [InlineData("lobby_friends_tab_party.png", true)]
+    public void FriendsDrawerHeaderVisibleMatchesReferenceCaptures(string capture, bool expected)
+    {
+        var stats = FullCaptureRegionSampler.Sample(
+            capture,
+            D2RUiCoordinateCatalog.GetPoint(new D2RUiAutomationConfig(), D2RUiCoordinateTarget.FriendsAccordionHeader),
+            widthRatio: 0.200,
+            heightRatio: 0.022);
+
+        Assert.Equal(expected, D2RScreenClassifier.IsFriendsDrawerHeaderVisible(stats));
+    }
+
+    [Theory]
+    [InlineData("lobby_hover_party_icon_chat.png", false)]
+    [InlineData("lobby_click_party_icon.png", false)]
+    [InlineData("lobby_friends_tab_party.png", true)]
+    public void FriendRowNameVisibleMatchesReferenceCaptures(string capture, bool expected)
+    {
+        var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(new D2RUiAutomationConfig(), row: 1);
+        var stats = FullCaptureRegionSampler.Sample(
+            capture,
+            region.Center,
+            region.WidthRatio,
+            region.HeightRatio);
+
+        Assert.Equal(expected, D2RScreenClassifier.IsFriendRowNameVisible(stats));
     }
 
     [Fact]

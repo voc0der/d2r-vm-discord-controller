@@ -29,6 +29,7 @@ The implementation source of truth is `D2RUiCoordinateCatalog` in `agents/AgentC
 | Character Lobby button | `CharacterLobbyButton` | `0.585,0.897` | `799,689` | Click/sample | `1366x768/snippets/character_lobby_button_text.png` | Click center lands inside the Lobby text snippet crop. |
 | Character Online tab | `CharacterOnlineTab` | `0.850,0.049` | `1161,38` | Click/sample | `1366x768/snippets/character_online_tab_text.png` | Used to recover from the offline character screen. |
 | Lobby party/friends icon | `LobbyPartyIcon` | `0.096,0.707` | `131,543` | Click | `1366x768/lobby_click_party_icon.png` | Opens the friends drawer near chat. |
+| Friends accordion header | `FriendsAccordionHeader` | `0.180,0.139` | `246,107` | Click/sample | `1366x768/lobby_friends_tab_party.png` | Click after opening the drawer if the Friends accordion is collapsed. |
 | Friends drawer row 1 | `FriendRowStart` | `0.180,0.180` | `246,138` | Right-click | `1366x768/lobby_right_click_friend_join_game_available.png` | Row N uses `FriendRowStart.y + ((N - 1) * FriendRowHeight)`. |
 | Friend context Join Game | `FriendContextJoinGame` | `0.318,0.322` | `434,247` | Click/sample | `1366x768/lobby_right_click_friend_join_game_available.png` | Context menu option after right-clicking a friend row. |
 | Lobby Join Game tab | `JoinGameTab` | `0.766,0.071` | `1046,55` | Click/sample | `1366x768/snippets/lobby_join_game_tab_text.png` | Active tab and click target. |

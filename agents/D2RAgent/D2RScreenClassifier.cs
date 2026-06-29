@@ -98,6 +98,20 @@ internal static class D2RScreenClassifier
             && tab.DarkRatio < 0.80;
     }
 
+    public static bool IsFriendsDrawerHeaderVisible(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 35
+            && stats.GreyRatio > 0.45
+            && stats.DarkRatio < 0.50;
+    }
+
+    public static bool IsFriendRowNameVisible(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 36
+            && stats.GreyRatio > 0.45
+            && stats.DarkRatio < 0.55;
+    }
+
     public static bool IsInGameHudProfile(
         ScreenRegionStats health,
         ScreenRegionStats mana,

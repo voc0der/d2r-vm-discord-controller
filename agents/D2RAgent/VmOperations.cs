@@ -948,8 +948,12 @@ public sealed class VmOperations
             MarkLobbyOrGameInteraction("Confirmed Lobby for follow after the cached state did not match what was actually on screen.");
         }
 
-        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
-        await DelayLongAsync(cancellationToken);
+        var friends = await EnsureFriendsListVisibleAsync(input, "follow", cancellationToken);
+        if (friends is not null)
+        {
+            return friends;
+        }
+
         ClickD2R(input, GetFriendRowPoint(args.FriendRow), MouseButton.Right);
         await DelayStepAsync(cancellationToken);
         ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.FriendContextJoinGame));
@@ -997,8 +1001,11 @@ public sealed class VmOperations
             MarkLobbyOrGameInteraction("Confirmed Lobby for follow-bind after the cached state did not match what was actually on screen.");
         }
 
-        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
-        await DelayLongAsync(cancellationToken);
+        var friends = await EnsureFriendsListVisibleAsync(input, "follow-bind", cancellationToken);
+        if (friends is not null)
+        {
+            return friends;
+        }
 
         var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row: 1);
         var samples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows);
@@ -1087,8 +1094,11 @@ public sealed class VmOperations
             MarkLobbyOrGameInteraction("Confirmed Lobby for follow-auto after the cached state did not match what was actually on screen.");
         }
 
-        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
-        await DelayLongAsync(cancellationToken);
+        var friends = await EnsureFriendsListVisibleAsync(input, "follow-auto", cancellationToken);
+        if (friends is not null)
+        {
+            return friends;
+        }
 
         var maxRows = _config.Ui.FriendRowFingerprintMaxScanRows > 0 ? _config.Ui.FriendRowFingerprintMaxScanRows : 10;
         var matchedRow = 0;
@@ -1123,6 +1133,77 @@ public sealed class VmOperations
 
         MarkLobbyOrGameInteraction("Joined bound friend's game via follow-auto.");
         return CommandResult.Success("Joined the bound friend's game.", new { bound = true, joined = true });
+    }
+
+    private async Task<CommandResult?> EnsureFriendsListVisibleAsync(
+        WindowsInput input,
+        string context,
+        CancellationToken cancellationToken)
+    {
+        if (!IsFriendsDrawerOpen(input))
+        {
+            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): opening friends drawer");
+            ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
+            await DelayLongAsync(cancellationToken);
+        }
+        else
+        {
+            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): friends drawer already open");
+        }
+
+        if (!IsFriendsDrawerOpen(input))
+        {
+            return CommandResult.Failure(
+                $"Could not open the friends drawer before {context}.",
+                await CollectStatusAsync(cancellationToken));
+        }
+
+        if (!IsFriendsListExpanded(input))
+        {
+            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion");
+            ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
+            await DelayLongAsync(cancellationToken);
+        }
+        else
+        {
+            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): Friends accordion already expanded");
+        }
+
+        if (!IsFriendsListExpanded(input))
+        {
+            return CommandResult.Failure(
+                $"Could not expand the Friends list before {context}.",
+                await CollectStatusAsync(cancellationToken));
+        }
+
+        return null;
+    }
+
+    private bool IsFriendsDrawerOpen(WindowsInput input)
+    {
+        return TryRunBounded(() =>
+        {
+            var stats = input.SampleRegion(
+                GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader),
+                widthRatio: 0.200,
+                heightRatio: 0.022,
+                sampleGrid: MenuSampleGrid);
+            return D2RScreenClassifier.IsFriendsDrawerHeaderVisible(stats);
+        }, EntryLoopCheckBoundMs);
+    }
+
+    private bool IsFriendsListExpanded(WindowsInput input)
+    {
+        return TryRunBounded(() =>
+        {
+            var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row: 1);
+            var stats = input.SampleRegion(
+                region.Center,
+                region.WidthRatio,
+                region.HeightRatio,
+                sampleGrid: MenuSampleGrid);
+            return D2RScreenClassifier.IsFriendRowNameVisible(stats);
+        }, EntryLoopCheckBoundMs);
     }
 
     private async Task<CommandResult> SaveAndExitAsync(CancellationToken cancellationToken)

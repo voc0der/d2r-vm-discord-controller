@@ -352,10 +352,11 @@ References:
 Manual path:
 
 1. From Lobby, click the party/friends icon to the left of the chat box.
-2. The friends drawer opens.
-3. Find the target online friend.
-4. Right-click the target friend.
-5. Choose Join Game from the context menu.
+2. The friends drawer opens. On a fresh drawer, the Friends accordion starts collapsed.
+3. Click the Friends accordion header if the friend rows are not visible.
+4. Find the target online friend.
+5. Right-click the target friend.
+6. Choose Join Game from the context menu.
 
 Automation:
 
@@ -439,13 +440,15 @@ Use the new image set to make the flow less guessy:
 - Lobby open: after clicking Lobby, verify the active tab, the entry button, and the dark lobby form panel using `lobby_join_game_screen.png`, `lobby_create_game_screen.png`, or the party/chat drawer captures. The lobby detector must reject character select even when the old tab/button sample points overlap usable-looking art.
 - Create game: use `lobby_create_game_screen.png` and `lobby_create_game_filled.png` to verify that the form accepted focus and text. Use `lobby_create_game_terror_zones_not_available.png` so the terrorized checkbox state is not mistaken for a failure.
 - Join game: use `lobby_join_game_screen.png` and the difficulty dropdown capture to verify the active tab and difficulty selection before typing. Use `game_password_doesnt_match.png` and `cant_join_hell.png` as explicit recoverable error dialogs.
-- Friend follow: use the party icon hover/click captures to verify the drawer state. Distinguish `lobby_right_click_friend_join_game_available.png` from `lobby_right_click_friend_nojoin_game_available.png` so follow fails fast when Join Game is not present.
+- Friend follow: use the party icon hover/click captures to verify the drawer state. Fresh drawer opens show `lobby_click_party_icon.png` with the Friends accordion collapsed; expanded rows are shown in `lobby_friends_tab_party.png`. Distinguish `lobby_right_click_friend_join_game_available.png` from `lobby_right_click_friend_nojoin_game_available.png` so follow fails fast when Join Game is not present.
 - Game entry: use `just_landed_in_game_checkforhealthandmanaglobes.png` and `low_graphics_mode_generic.png` as positive success states. The detector has separate modern and legacy globe anchors because legacy mode is pillarboxed at 1366x768.
 - Save and exit: use both modern and legacy save/exit captures so the clean-leave flow works before and after the legacy graphics toggle.
 
 ## Follow Bind/Auto (Issue #25)
 
 `/d2r follow bind:true` captures a small grid-sample "fingerprint" of friend row 1's name-text area (`FriendFingerprint` in `AgentCommon`, captured via `WindowsInput.CaptureFingerprintGrid` - the same BitBlt-into-a-local-bitmap approach as every other classifier in this file, just a wide-short grid over the name line instead of a square grid over a threshold region) instead of a literal screenshot crop - smaller to transport over the existing JSON command protocol, no new image-codec dependency, and tolerant of normal rendering noise the same way every other pixel classifier here is. The operator is responsible for the target friend actually being at the top of the binding account's friends list at bind time; the command has no way to identify who it captured, only where it looked.
+
+Bind/auto/follow first make the friend list idempotently visible: if the drawer is closed they click `LobbyPartyIcon`; if it is open they leave it alone; if the Friends accordion is collapsed they click `FriendsAccordionHeader`. This avoids the old blind party-icon click that closed an already-open drawer and avoids capturing the empty black drawer body after a fresh drawer open.
 
 `/d2r follow auto:true` has every online account scan **all** its visible friend rows (`FriendRowFingerprintMaxScanRows`, default 10) against the saved fingerprint each cycle, not just row 1 - if a second tracked friend comes online, Battle.net's own online-sort can put them above the bound friend, and a top-row-only check would silently follow the wrong person. Match tolerance and the name-text capture region (`FriendRowFingerprint*` in `AgentConfig`) are estimated from `lobby_friends_tab_party.png`, not yet calibrated against a live VM - if matching is too loose (follows the wrong row) or too tight (never matches), tune those values the same way `pixel-classifier-catalog.md` documents the other classifiers' thresholds.
 

@@ -23,6 +23,7 @@ public sealed class D2RUiCoordinateTests
         { D2RUiCoordinateTarget.CharacterLobbyButton, 799, 689 },
         { D2RUiCoordinateTarget.CharacterOnlineTab, 1161, 38 },
         { D2RUiCoordinateTarget.LobbyPartyIcon, 131, 543 },
+        { D2RUiCoordinateTarget.FriendsAccordionHeader, 246, 107 },
         { D2RUiCoordinateTarget.FriendRowStart, 246, 138 },
         { D2RUiCoordinateTarget.FriendContextJoinGame, 434, 247 },
         { D2RUiCoordinateTarget.JoinGameTab, 1046, 55 },
@@ -110,6 +111,16 @@ public sealed class D2RUiCoordinateTests
 
         Assert.Equal(new UiPixelPoint(246, 176), D2RUiCoordinateCatalog.ToBaselinePixels(row2));
         Assert.Equal(new UiPixelPoint(246, 214), D2RUiCoordinateCatalog.ToBaselinePixels(row3));
+    }
+
+    [Fact]
+    public void FriendsAccordionHeaderDefaultsToFriendsRibbon()
+    {
+        var header = D2RUiCoordinateCatalog.GetPoint(
+            new D2RUiAutomationConfig(),
+            D2RUiCoordinateTarget.FriendsAccordionHeader);
+
+        Assert.Equal(new UiPixelPoint(246, 107), D2RUiCoordinateCatalog.ToBaselinePixels(header));
     }
 
     [Fact]
