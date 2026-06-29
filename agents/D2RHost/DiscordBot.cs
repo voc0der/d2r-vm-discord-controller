@@ -2566,24 +2566,39 @@ public sealed class DiscordBot
         }
 
         var distributed = 0;
+        var distributionFailures = new List<string>();
         foreach (var (accountKey, account) in online)
         {
             try
             {
-                await _registry.SendCommandAsync(account.AgentId, "follow_set_template", new { fingerprint }, TimeSpan.FromSeconds(15));
-                distributed++;
+                var result = await _registry.SendCommandAsync(account.AgentId, "follow_set_template", new { fingerprint }, TimeSpan.FromSeconds(15));
+                if (result.Ok)
+                {
+                    distributed++;
+                }
+                else
+                {
+                    distributionFailures.Add($"{accountKey}: {result.Message}");
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "follow_set_template failed for {AccountKey}.", accountKey);
+                distributionFailures.Add($"{accountKey}: {ex.Message}");
             }
         }
 
         _followBoundAccountKey = resolvedAccountKey;
+        var followBindMessage =
+            $"Captured the friend at {resolvedAccountKey}'s friend row 1 and distributed it to {distributed}/{online.Length} online accounts. "
+            + "Use /d2r follow auto:true to start following.";
+        if (distributionFailures.Count > 0)
+        {
+            followBindMessage += $" Template save failures: {string.Join("; ", distributionFailures)}";
+        }
+
         await context.Command.ModifyOriginalResponseAsync(
-            properties => properties.Content =
-                $"Captured the friend at {resolvedAccountKey}'s friend row 1 and distributed it to {distributed}/{online.Length} online accounts. "
-                    + "Use /d2r follow auto:true to start following.");
+            properties => properties.Content = DiscordMessageTruncator.Truncate(followBindMessage));
     }
 
     private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, TimeSpan idleTimeout)
@@ -2666,6 +2681,8 @@ public sealed class DiscordBot
                 }
 
                 var anyBound = false;
+                var unboundReports = new List<string>();
+                var checkFailures = new List<string>();
                 foreach (var (accountKey, account) in pending)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -2678,16 +2695,30 @@ public sealed class DiscordBot
                     catch (Exception ex)
                     {
                         _logger.LogDebug(ex, "menu_follow_auto_check failed for {AccountKey}.", accountKey);
+                        checkFailures.Add($"{accountKey}: {ex.Message}");
                         continue;
                     }
 
-                    if (!result.Ok || result.Data is not { } data || !data.TryGetProperty("bound", out var boundProperty) || boundProperty.GetBoolean() != true)
+                    if (!result.Ok)
                     {
+                        checkFailures.Add($"{accountKey}: {result.Message}");
+                        continue;
+                    }
+
+                    if (result.Data is not { } data || !TryGetBoolean(data, "bound", out var bound))
+                    {
+                        checkFailures.Add($"{accountKey}: follow check returned no bound flag ({result.Message})");
+                        continue;
+                    }
+
+                    if (!bound)
+                    {
+                        unboundReports.Add($"{accountKey}: {result.Message}");
                         continue;
                     }
 
                     anyBound = true;
-                    if (data.TryGetProperty("joined", out var joinedProperty) && joinedProperty.GetBoolean())
+                    if (TryGetBoolean(data, "joined", out var didJoin) && didJoin)
                     {
                         joined.Add(accountKey);
                         await SendJoinAutoMessageAsync(channel, $"follow-auto: {accountKey} joined the bound friend's game.");
@@ -2697,7 +2728,11 @@ public sealed class DiscordBot
 
                 if (!anyBound)
                 {
-                    await SendJoinAutoMessageAsync(channel, "follow-auto stopped: no follow-bind fingerprint is set.");
+                    var details = string.Join("; ", checkFailures.Concat(unboundReports));
+                    var reason = checkFailures.Count > 0
+                        ? "follow-auto stopped: no VM reported a usable follow-bind fingerprint. "
+                        : "follow-auto stopped: no follow-bind fingerprint is set. ";
+                    await SendJoinAutoMessageAsync(channel, reason + details);
                     break;
                 }
 

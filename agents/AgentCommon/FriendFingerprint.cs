@@ -14,7 +14,7 @@ public sealed record FriendFingerprint(int GridColumns, int GridRows, byte[] Sam
             return null;
         }
 
-        var parts = base64.Split(':', 3);
+        var parts = base64.Trim().Split(':', 3);
         if (parts.Length != 3 || !int.TryParse(parts[0], out var columns) || !int.TryParse(parts[1], out var rows))
         {
             return null;

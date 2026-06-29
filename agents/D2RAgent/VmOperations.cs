@@ -1023,29 +1023,47 @@ public sealed class VmOperations
 
     private static string FollowTemplatePath => Path.Combine(AppContext.BaseDirectory, FollowTemplateFileName);
 
-    private static FriendFingerprint? LoadFollowTemplate()
+    private sealed record FollowTemplateLoadResult(
+        FriendFingerprint? Template,
+        bool Exists,
+        string Path,
+        int ContentLength,
+        string? Error);
+
+    private static FollowTemplateLoadResult LoadFollowTemplate()
     {
+        var path = FollowTemplatePath;
         try
         {
-            return File.Exists(FollowTemplatePath)
-                ? FriendFingerprint.FromBase64(File.ReadAllText(FollowTemplatePath))
-                : null;
+            if (!File.Exists(path))
+            {
+                return new FollowTemplateLoadResult(null, Exists: false, path, ContentLength: 0, Error: null);
+            }
+
+            var content = File.ReadAllText(path).Trim();
+            var template = FriendFingerprint.FromBase64(content);
+            return template is not null
+                ? new FollowTemplateLoadResult(template, Exists: true, path, content.Length, Error: null)
+                : new FollowTemplateLoadResult(null, Exists: true, path, content.Length, Error: "file does not contain a valid follow-bind fingerprint");
         }
-        catch (IOException)
+        catch (Exception ex)
         {
-            return null;
+            return new FollowTemplateLoadResult(null, File.Exists(path), path, ContentLength: 0, $"{ex.GetType().Name}: {ex.Message}");
         }
     }
 
     private static CommandResult FollowSetTemplate(MenuCommandArgs args)
     {
-        if (string.IsNullOrWhiteSpace(args.Fingerprint) || FriendFingerprint.FromBase64(args.Fingerprint) is null)
+        var fingerprint = args.Fingerprint?.Trim();
+        if (string.IsNullOrWhiteSpace(fingerprint) || FriendFingerprint.FromBase64(fingerprint) is null)
         {
             return CommandResult.Failure("follow_set_template requires a valid fingerprint.");
         }
 
-        File.WriteAllText(FollowTemplatePath, args.Fingerprint);
-        return CommandResult.Success("Follow-bind fingerprint saved.");
+        File.WriteAllText(FollowTemplatePath, fingerprint);
+        return CommandResult.Success(
+            "Follow-bind fingerprint saved.",
+            new { templatePath = FollowTemplatePath, templateLength = fingerprint.Length });
     }
 
     private static CommandResult FollowClearTemplate()
@@ -1064,12 +1082,24 @@ public sealed class VmOperations
     // online can outrank the bound friend in Battle.net's own online-sort at any point.
     private async Task<CommandResult> FollowAutoCheckAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
-        var template = LoadFollowTemplate();
-        if (template is null)
+        var templateLoad = LoadFollowTemplate();
+        if (templateLoad.Template is null)
         {
-            return CommandResult.Success("No follow-bind fingerprint is set.", new { bound = false, joined = false });
+            var message = templateLoad.Exists
+                ? $"No valid follow-bind fingerprint is set at {templateLoad.Path}: {templateLoad.Error ?? "unknown template parse error"}."
+                : $"No follow-bind fingerprint is set at {templateLoad.Path}.";
+            return CommandResult.Success(message, new
+            {
+                bound = false,
+                joined = false,
+                templatePath = templateLoad.Path,
+                templateExists = templateLoad.Exists,
+                templateLength = templateLoad.ContentLength,
+                templateError = templateLoad.Error
+            });
         }
 
+        var template = templateLoad.Template;
         var input = FocusD2R();
         var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
         if (lobby is not null)

@@ -70,6 +70,17 @@ public sealed class FriendFingerprintTests
     }
 
     [Fact]
+    public void FromBase64TrimsWhitespace()
+    {
+        var original = MakeFingerprint(1, 2, 3, 4, 5, 6, 250, 251, 252);
+
+        var restored = FriendFingerprint.FromBase64($"  {original.ToBase64()}\r\n");
+
+        Assert.NotNull(restored);
+        Assert.Equal(original.Samples, restored!.Samples);
+    }
+
+    [Fact]
     public void FromBase64RejectsGarbageWithoutThrowing()
     {
         Assert.Null(FriendFingerprint.FromBase64("not-a-valid-fingerprint"));
