@@ -10,6 +10,9 @@ obj/
 data/
 config/
 logs/
+log.*
+watch-*.log
+sitting_in_town*.png
 *.db
 *.sqlite
 *.sqlite3
