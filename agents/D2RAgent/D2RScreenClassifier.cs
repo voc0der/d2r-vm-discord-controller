@@ -112,6 +112,13 @@ internal static class D2RScreenClassifier
             && stats.DarkRatio < 0.85;
     }
 
+    public static bool IsLowGreyFriendRowNameVisible(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 32
+            && stats.GreyRatio > 0.04
+            && stats.DarkRatio < 0.93;
+    }
+
     public static bool IsFriendRowMarkerVisible(ScreenRegionStats stats)
     {
         return stats.LuminanceStdDev > 18

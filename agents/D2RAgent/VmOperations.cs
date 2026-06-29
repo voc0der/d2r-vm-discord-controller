@@ -1209,7 +1209,8 @@ public sealed class VmOperations
                     nameRegion.WidthRatio,
                     nameRegion.HeightRatio,
                     sampleGrid: MenuSampleGrid);
-                var nameVisible = D2RScreenClassifier.IsFriendRowNameVisible(nameStats);
+                var nameVisible = D2RScreenClassifier.IsFriendRowNameVisible(nameStats)
+                    || (row > 1 && D2RScreenClassifier.IsLowGreyFriendRowNameVisible(nameStats));
 
                 var markerPoint = GetFriendRowMarkerPoint(row);
                 var markerStats = input.SampleRegion(

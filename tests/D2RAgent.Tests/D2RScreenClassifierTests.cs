@@ -108,6 +108,22 @@ public sealed class D2RScreenClassifierTests
     }
 
     [Theory]
+    [InlineData(35, 0.14, 0.85)]
+    [InlineData(39, 0.06, 0.91)]
+    public void LowGreyFriendRowNameVisibleAcceptsLiveExpandedFollowEvidence(
+        double averageLuminance,
+        double greyRatio,
+        double darkRatio)
+    {
+        var stats = Stats(
+            averageLuminance: averageLuminance,
+            greyRatio: greyRatio,
+            darkRatio: darkRatio);
+
+        Assert.True(D2RScreenClassifier.IsLowGreyFriendRowNameVisible(stats));
+    }
+
+    [Theory]
     [InlineData("lobby_hover_party_icon_chat.png", false)]
     [InlineData("lobby_friends_tab_party.png", true)]
     public void FriendRowMarkerVisibleMatchesReferenceCaptures(string capture, bool expected)
@@ -143,6 +159,18 @@ public sealed class D2RScreenClassifierTests
             && D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
 
         Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void FriendRowExpandedEvidenceAcceptsLiveRowTwoLowGreyText()
+    {
+        var nameStats = Stats(averageLuminance: 39, greyRatio: 0.06, darkRatio: 0.91);
+        var markerStats = Stats(averageLuminance: 39, luminanceStdDev: 24, greyRatio: 0.14, darkRatio: 0.81);
+
+        var actual = D2RScreenClassifier.IsLowGreyFriendRowNameVisible(nameStats)
+            && D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
+
+        Assert.True(actual);
     }
 
     [Fact]
