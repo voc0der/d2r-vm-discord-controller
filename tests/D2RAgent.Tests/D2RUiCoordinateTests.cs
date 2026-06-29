@@ -25,7 +25,7 @@ public sealed class D2RUiCoordinateTests
         { D2RUiCoordinateTarget.LobbyPartyIcon, 131, 543 },
         { D2RUiCoordinateTarget.FriendsAccordionHeader, 246, 107 },
         { D2RUiCoordinateTarget.FriendRowStart, 246, 138 },
-        { D2RUiCoordinateTarget.FriendContextJoinGame, 434, 247 },
+        { D2RUiCoordinateTarget.FriendContextJoinGame, 434, 171 },
         { D2RUiCoordinateTarget.JoinGameTab, 1046, 55 },
         { D2RUiCoordinateTarget.JoinGameNameField, 952, 106 },
         { D2RUiCoordinateTarget.JoinPasswordField, 1143, 106 },
@@ -120,9 +120,9 @@ public sealed class D2RUiCoordinateTests
         var row2 = D2RUiCoordinateCatalog.GetFriendContextJoinGamePoint(new D2RUiAutomationConfig(), 2);
         var row3 = D2RUiCoordinateCatalog.GetFriendContextJoinGamePoint(new D2RUiAutomationConfig(), 3);
 
-        Assert.Equal(new UiPixelPoint(434, 247), D2RUiCoordinateCatalog.ToBaselinePixels(row1));
-        Assert.Equal(new UiPixelPoint(434, 285), D2RUiCoordinateCatalog.ToBaselinePixels(row2));
-        Assert.Equal(new UiPixelPoint(434, 323), D2RUiCoordinateCatalog.ToBaselinePixels(row3));
+        Assert.Equal(new UiPixelPoint(434, 171), D2RUiCoordinateCatalog.ToBaselinePixels(row1));
+        Assert.Equal(new UiPixelPoint(434, 209), D2RUiCoordinateCatalog.ToBaselinePixels(row2));
+        Assert.Equal(new UiPixelPoint(434, 247), D2RUiCoordinateCatalog.ToBaselinePixels(row3));
     }
 
     [Fact]

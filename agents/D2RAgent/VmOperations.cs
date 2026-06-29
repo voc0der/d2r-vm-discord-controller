@@ -954,14 +954,11 @@ public sealed class VmOperations
             return friends;
         }
 
-        ClickD2R(input, GetFriendRowPoint(args.FriendRow), MouseButton.Right);
-        await DelayStepAsync(cancellationToken);
-        ClickD2R(input, GetFriendContextJoinGamePoint(args.FriendRow));
-        var entry = await WaitForGameEntryAsync(input, cancellationToken);
-        if (entry != GameEntryWaitResult.EnteredGame)
+        var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(input, args.FriendRow ?? 1, "follow", cancellationToken);
+        if (!entry.Entered)
         {
             return CommandResult.Failure(
-                $"Clicked friend Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {FormatGameEntryWaitFailure(entry)}",
+                $"Clicked friend Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {entry.Message}",
                 await CollectStatusAsync(cancellationToken));
         }
 
@@ -1170,19 +1167,61 @@ public sealed class VmOperations
         }
 
         MarkCommandCheckpoint($"FollowAutoCheckAsync: matched bound friend at row {matchedRow}");
-        ClickD2R(input, GetFriendRowPoint(matchedRow), MouseButton.Right);
-        await DelayStepAsync(cancellationToken);
-        ClickD2R(input, GetFriendContextJoinGamePoint(matchedRow));
-        var entry = await WaitForGameEntryAsync(input, cancellationToken);
-        if (entry != GameEntryWaitResult.EnteredGame)
+        var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(input, matchedRow, "follow-auto", cancellationToken);
+        if (!entry.Entered)
         {
             return CommandResult.Failure(
-                $"Found the bound friend at row {matchedRow} and clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {FormatGameEntryWaitFailure(entry)}",
+                $"Found the bound friend at row {matchedRow} and clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {entry.Message}",
                 await CollectStatusAsync(cancellationToken));
         }
 
         MarkLobbyOrGameInteraction("Joined bound friend's game via follow-auto.");
         return CommandResult.Success("Joined the bound friend's game.", new { bound = true, joined = true });
+    }
+
+    private async Task<GameEntryAttemptResult> ClickFriendJoinOptionUntilEnteredGameAsync(
+        WindowsInput input,
+        int friendRow,
+        string context,
+        CancellationToken cancellationToken)
+    {
+        var joinGameTab = GetUiPoint(D2RUiCoordinateTarget.JoinGameTab);
+
+        async Task<bool> SelectFriendGameAsync()
+        {
+            var friends = await EnsureFriendsListVisibleAsync(input, $"{context}-entry-retry", cancellationToken);
+            if (friends is not null)
+            {
+                return false;
+            }
+
+            ClickD2R(input, GetFriendRowPoint(friendRow), MouseButton.Right);
+            await DelayStepAsync(cancellationToken);
+            ClickD2R(input, GetFriendContextJoinGamePoint(friendRow));
+            await DelayFastMenuAsync(cancellationToken);
+            return !IsAnyLobbyEntryMenuVisible(input) || IsLobbyTabReady(input, joinGameTab);
+        }
+
+        if (!await SelectFriendGameAsync())
+        {
+            return new GameEntryAttemptResult(false, DialogRetries: 0, ConnectionRetries: 0, "The friend Join Game option could not be selected.");
+        }
+
+        if (!IsAnyLobbyEntryMenuVisible(input))
+        {
+            var entry = await WaitForGameEntryAsync(input, cancellationToken);
+            return entry == GameEntryWaitResult.EnteredGame
+                ? new GameEntryAttemptResult(true, DialogRetries: 0, ConnectionRetries: 0, "Entered game.")
+                : new GameEntryAttemptResult(false, DialogRetries: 0, ConnectionRetries: 0, FormatGameEntryWaitFailure(entry));
+        }
+
+        MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): submitting Join Game tab");
+        return await ClickMenuEntryButtonUntilEnteredGameAsync(
+            input,
+            GetUiPoint(D2RUiCoordinateTarget.JoinGameButton),
+            joinGameTab,
+            SelectFriendGameAsync,
+            cancellationToken);
     }
 
     private async Task<CommandResult?> EnsureFriendsListVisibleAsync(

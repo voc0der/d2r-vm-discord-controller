@@ -94,7 +94,7 @@ public sealed class D2RUiAutomationConfig
     public UiPoint LobbyPartyIcon { get; set; } = new(0.096, 0.707);
     public UiPoint FriendsAccordionHeader { get; set; } = new(0.180, 0.139);
     public UiPoint FriendRowStart { get; set; } = new(0.180, 0.180);
-    public UiPoint FriendContextJoinGame { get; set; } = new(0.318, 0.322);
+    public UiPoint FriendContextJoinGame { get; set; } = new(0.318, 0.223);
     public UiPoint JoinGameTab { get; set; } = new(0.766, 0.071);
     public UiPoint JoinGameNameField { get; set; } = new(0.697, 0.138);
     public UiPoint JoinPasswordField { get; set; } = new(0.837, 0.138);

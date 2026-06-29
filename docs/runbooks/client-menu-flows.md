@@ -32,10 +32,10 @@ The canonical click/sample coordinate table is [automation-coordinate-catalog.md
 | Dismiss game-entry error | `GameEntryErrorDialogOkButton` | `683,414` | `game_and_password_dont_match.jpg` |
 | Open friends drawer | `LobbyPartyIcon` | `131,543` | `1366x768/lobby_click_party_icon.png` |
 | Right-click friend row 1 | `FriendRowStart` | `246,138` | `1366x768/lobby_right_click_friend_join_game_available.png` |
-| Click friend Join Game | `FriendContextJoinGame` | `434,247` | `1366x768/lobby_right_click_friend_join_game_available.png` |
+| Click friend Join Game | `FriendContextJoinGame` | `434,171` | `1366x768/lobby_right_click_friend_join_game_available.png` |
 | Click Save and Exit | `SaveAndExitButton` | `683,337` | `save_and_exit_resurrected.jpg` |
 
-`FriendContextJoinGame` is the row-1 reference point. The context menu is anchored to the mouse position when the friend row is right-clicked, so runtime clicks offset that point from the actual row that opened the menu.
+`FriendContextJoinGame` is the row-1 reference point. The context menu is anchored to the mouse position when the friend row is right-clicked, so runtime clicks offset that point from the actual row that opened the menu. The checked-in right-click reference capture is opened from row 3, where this resolves to `434,247`.
 
 ## Visual Anchors
 

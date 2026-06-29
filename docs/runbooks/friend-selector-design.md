@@ -53,7 +53,7 @@ The implemented selector is driven by visible row number and config, not by chec
 | --- | --- | --- | --- |
 | Open friends drawer | `LobbyPartyIcon` | `131,543` | Icon beside chat input. |
 | Right-click friend row 1 | `FriendRowStart` | `246,138` | Row 2 is `246,176`; row 3 is `246,214`. |
-| Click context Join Game | `FriendContextJoinGame` | `434,247` | Row-1 reference point. Runtime clicks offset from the right-clicked row because the menu opens at the mouse position. |
+| Click context Join Game | `FriendContextJoinGame` | `434,171` | Row-1 reference point. Runtime clicks offset from the right-clicked row because the menu opens at the mouse position; the reference capture opens row 3, where this resolves to `434,247`. |
 
 The full shared coordinate table is [automation-coordinate-catalog.md](automation-coordinate-catalog.md). Runtime code uses `D2RUiCoordinateCatalog.GetFriendRowPoint`, so invalid or missing row config falls back to the default row start/height instead of drifting into stale docs.
 

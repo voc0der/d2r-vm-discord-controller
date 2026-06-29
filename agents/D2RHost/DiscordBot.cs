@@ -2373,7 +2373,7 @@ public sealed class DiscordBot
 
                 await SendJoinAutoMessageAsync(channel, $"join-auto: player count dropped - leaving {gameName}.");
                 await UpdateJoinAutoMonitorAsync($"Player count dropped - leaving {gameName}...");
-                await LeaveAllJoinAutoAsync(channel);
+                await LeaveAllJoinAutoAsync(channel, "join-auto");
                 _joinAutoCyclesCompleted++;
                 await UpdateJoinAutoMonitorAsync($"Left {gameName}. Advancing to the next game...", joined: 0);
             }
@@ -2668,6 +2668,11 @@ public sealed class DiscordBot
         var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
         string? lastWaitingReport = null;
         var lastWaitingReportUtc = DateTimeOffset.MinValue;
+        async Task DelayNextFollowCheckAsync()
+        {
+            await Task.Delay(TimeSpan.FromSeconds(delaySeconds > 0 ? delaySeconds : 15), cancellationToken);
+        }
+
         try
         {
             while (true)
@@ -2678,8 +2683,15 @@ public sealed class DiscordBot
                 var pending = online.Where(entry => !joined.Contains(entry.Key)).ToArray();
                 if (pending.Length == 0 && online.Length > 0)
                 {
-                    await SendJoinAutoMessageAsync(channel, "follow-auto: all online accounts have joined the bound friend's game.");
-                    break;
+                    await SendJoinAutoMessageAsync(channel, "follow-auto: all online accounts have joined the bound friend's game. Watching for someone to leave...");
+                    var baseline = await TryFetchFirstOnlineAccountPlayerCountAsync();
+                    await WaitForPlayerCountDropAsync(baseline, cancellationToken);
+                    await SendJoinAutoMessageAsync(channel, "follow-auto: player count dropped - leaving the bound friend's game.");
+                    await LeaveAllJoinAutoAsync(channel, "follow-auto");
+                    joined.Clear();
+                    idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                    await DelayNextFollowCheckAsync();
+                    continue;
                 }
 
                 var anyBound = false;
@@ -2773,14 +2785,7 @@ public sealed class DiscordBot
                             break;
                         }
 
-                        if (delaySeconds > 0)
-                        {
-                            await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
-                        }
-                        else
-                        {
-                            await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
-                        }
+                        await DelayNextFollowCheckAsync();
 
                         continue;
                     }
@@ -2811,14 +2816,7 @@ public sealed class DiscordBot
                     break;
                 }
 
-                if (delaySeconds > 0)
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
-                }
-                else
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
-                }
+                await DelayNextFollowCheckAsync();
             }
         }
         catch (OperationCanceledException)
@@ -3009,12 +3007,12 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task LeaveAllJoinAutoAsync(IMessageChannel channel)
+    private async Task LeaveAllJoinAutoAsync(IMessageChannel channel, string label)
     {
         var (entries, _) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            await SendJoinAutoMessageAsync(channel, "join-auto: no online accounts to leave with.");
+            await SendJoinAutoMessageAsync(channel, $"{label}: no online accounts to leave with.");
             return;
         }
 
@@ -3034,8 +3032,8 @@ public sealed class DiscordBot
 
         var failed = leaveResults.Where(result => !result.Ok).ToArray();
         await SendJoinAutoMessageAsync(channel, failed.Length == 0
-            ? "join-auto: all accounts left."
-            : "join-auto: leave failed for " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+            ? $"{label}: all accounts left."
+            : $"{label}: leave failed for " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
     }
 
     // Polls independently of RunPartyMemberMonitorAsync's own 30s tick - this needs to notice a
