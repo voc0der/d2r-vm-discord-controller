@@ -2698,75 +2698,29 @@ public sealed class DiscordBot
                 var unboundReports = new List<string>();
                 var checkFailures = new List<string>();
                 var waitingReports = new List<string>();
-                foreach (var (accountKey, account) in pending)
+                var checkResults = await Task.WhenAll(pending.Select(entry => RunFollowAutoCheckEntryAsync(context, entry, cancellationToken)));
+                foreach (var result in checkResults)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var args = BuildMenuArgs(accountKey, account, null, context);
-                    CommandResultInfo? readyResult;
-                    try
-                    {
-                        readyResult = await SendReadyIfNotMenuReadyAsync(account, args);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDebug(ex, "menu_ready before follow-auto failed for {AccountKey}.", accountKey);
-                        checkFailures.Add($"{accountKey}: ready failed before follow-auto check: {FormatExceptionWithAccountStatus(ex, accountKey, account)}");
-                        continue;
-                    }
 
-                    if (readyResult?.Ok == false)
+                    switch (result.Outcome)
                     {
-                        checkFailures.Add($"{accountKey}: ready failed before follow-auto check: {readyResult.Message}");
-                        continue;
-                    }
-
-                    CommandResultInfo result;
-                    try
-                    {
-                        result = await _registry.SendCommandAsync(
-                            account.AgentId, "menu_follow_auto_check", args, TimeSpan.FromSeconds(210), cancellationToken);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDebug(ex, "menu_follow_auto_check failed for {AccountKey}.", accountKey);
-                        checkFailures.Add($"{accountKey}: {ex.Message}");
-                        continue;
-                    }
-
-                    if (!result.Ok)
-                    {
-                        checkFailures.Add($"{accountKey}: {result.Message}");
-                        continue;
-                    }
-
-                    if (result.Data is not { } data || !TryGetBoolean(data, "bound", out var bound))
-                    {
-                        checkFailures.Add($"{accountKey}: follow check returned no bound flag ({result.Message})");
-                        continue;
-                    }
-
-                    if (!bound)
-                    {
-                        unboundReports.Add($"{accountKey}: {result.Message}");
-                        continue;
-                    }
-
-                    anyBound = true;
-                    if (TryGetBoolean(data, "d2rReady", out var d2rReady) && !d2rReady)
-                    {
-                        waitingReports.Add($"{accountKey}: {result.Message}");
-                        continue;
-                    }
-
-                    if (TryGetBoolean(data, "joined", out var didJoin) && didJoin)
-                    {
-                        joined.Add(accountKey);
-                        await SendJoinAutoMessageAsync(channel, $"follow-auto: {accountKey} joined the bound friend's game.");
-                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                    }
-                    else
-                    {
-                        waitingReports.Add($"{accountKey}: {result.Message}");
+                        case FollowAutoCheckOutcome.Joined:
+                            anyBound = true;
+                            joined.Add(result.AccountKey);
+                            await SendJoinAutoMessageAsync(channel, $"follow-auto: {result.AccountKey} joined the bound friend's game.");
+                            idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                            break;
+                        case FollowAutoCheckOutcome.Waiting:
+                            anyBound = true;
+                            waitingReports.Add($"{result.AccountKey}: {result.Message}");
+                            break;
+                        case FollowAutoCheckOutcome.Unbound:
+                            unboundReports.Add($"{result.AccountKey}: {result.Message}");
+                            break;
+                        case FollowAutoCheckOutcome.CheckFailure:
+                            checkFailures.Add($"{result.AccountKey}: {result.Message}");
+                            break;
                     }
                 }
 
@@ -2850,6 +2804,79 @@ public sealed class DiscordBot
                 _followAutoLock.Release();
             }
         }
+    }
+
+    private async Task<FollowAutoCheckResult> RunFollowAutoCheckEntryAsync(
+        SlashContext context,
+        KeyValuePair<string, AccountConfig> entry,
+        CancellationToken cancellationToken)
+    {
+        var accountKey = entry.Key;
+        var account = entry.Value;
+        var args = BuildMenuArgs(accountKey, account, null, context);
+        CommandResultInfo? readyResult;
+        try
+        {
+            readyResult = await SendReadyIfNotMenuReadyAsync(account, args);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "menu_ready before follow-auto failed for {AccountKey}.", accountKey);
+            return new FollowAutoCheckResult(
+                accountKey,
+                FollowAutoCheckOutcome.CheckFailure,
+                $"ready failed before follow-auto check: {FormatExceptionWithAccountStatus(ex, accountKey, account)}");
+        }
+
+        if (readyResult?.Ok == false)
+        {
+            return new FollowAutoCheckResult(
+                accountKey,
+                FollowAutoCheckOutcome.CheckFailure,
+                $"ready failed before follow-auto check: {readyResult.Message}");
+        }
+
+        CommandResultInfo result;
+        try
+        {
+            result = await _registry.SendCommandAsync(
+                account.AgentId, "menu_follow_auto_check", args, TimeSpan.FromSeconds(210), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "menu_follow_auto_check failed for {AccountKey}.", accountKey);
+            return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.CheckFailure, ex.Message);
+        }
+
+        if (!result.Ok)
+        {
+            return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.CheckFailure, result.Message);
+        }
+
+        if (result.Data is not { } data || !TryGetBoolean(data, "bound", out var bound))
+        {
+            return new FollowAutoCheckResult(
+                accountKey,
+                FollowAutoCheckOutcome.CheckFailure,
+                $"follow check returned no bound flag ({result.Message})");
+        }
+
+        if (!bound)
+        {
+            return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.Unbound, result.Message);
+        }
+
+        if (TryGetBoolean(data, "d2rReady", out var d2rReady) && !d2rReady)
+        {
+            return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.Waiting, result.Message);
+        }
+
+        if (TryGetBoolean(data, "joined", out var didJoin) && didJoin)
+        {
+            return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.Joined, result.Message);
+        }
+
+        return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.Waiting, result.Message);
     }
 
     // issue #24: "the join-auto feature should still make a game monitor like the other one
@@ -3640,6 +3667,19 @@ public sealed class DiscordBot
     private sealed record ReadyResult(string AccountKey, bool Ok, string Message, bool RanReady);
 
     private sealed record JoinResult(string AccountKey, bool Ok, string Message);
+
+    private enum FollowAutoCheckOutcome
+    {
+        Joined,
+        Waiting,
+        Unbound,
+        CheckFailure
+    }
+
+    private sealed record FollowAutoCheckResult(
+        string AccountKey,
+        FollowAutoCheckOutcome Outcome,
+        string Message);
 
     private sealed class SlashContext
     {
