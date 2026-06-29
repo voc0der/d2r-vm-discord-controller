@@ -19,4 +19,18 @@ public sealed class FriendsAccordionDecisionTests
 
         Assert.Equal((VmOperations.FriendsAccordionAction)expected, action);
     }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(1, false)]
+    [InlineData(2, true)]
+    public void ExpansionVerificationOnlyRunsWhenAccordionWasAlreadyExpanded(
+        int action,
+        bool expected)
+    {
+        var verify = VmOperations.ShouldVerifyFriendsExpansionAfterAction(
+            (VmOperations.FriendsAccordionAction)action);
+
+        Assert.Equal(expected, verify);
+    }
 }

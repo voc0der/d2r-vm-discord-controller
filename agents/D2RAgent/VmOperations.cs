@@ -1322,7 +1322,9 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
-        var expanded = GetFriendsListExpandedEvidence(input);
+        var expanded = openedDrawer
+            ? (IsExpanded: false, Summary: "fresh drawer open; skipped pre-expand row evidence")
+            : GetFriendsListExpandedEvidence(input);
         var accordionAction = ChooseFriendsAccordionAction(openedDrawer, expanded.IsExpanded);
         if (accordionAction == FriendsAccordionAction.ExpandAfterOpeningDrawer)
         {
@@ -1341,6 +1343,13 @@ public sealed class VmOperations
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): Friends accordion already expanded");
         }
 
+        if (!ShouldVerifyFriendsExpansionAfterAction(accordionAction))
+        {
+            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): Friends accordion clicked; proceeding to row scan");
+            return null;
+        }
+
+        MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): verifying already-expanded Friends rows");
         expanded = GetFriendsListExpandedEvidence(input);
         if (!expanded.IsExpanded)
         {
@@ -1362,6 +1371,11 @@ public sealed class VmOperations
         return expandedEvidence
             ? FriendsAccordionAction.SkipExpanded
             : FriendsAccordionAction.ExpandCollapsed;
+    }
+
+    internal static bool ShouldVerifyFriendsExpansionAfterAction(FriendsAccordionAction action)
+    {
+        return action == FriendsAccordionAction.SkipExpanded;
     }
 
     private bool IsFriendsDrawerOpen(WindowsInput input)
