@@ -1313,13 +1313,14 @@ public sealed class VmOperations
         }
 
         var expanded = GetFriendsListExpandedEvidence(input);
-        if (openedDrawer)
+        var accordionAction = ChooseFriendsAccordionAction(openedDrawer, expanded.IsExpanded);
+        if (accordionAction == FriendsAccordionAction.ExpandAfterOpeningDrawer)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion after opening drawer");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
             await DelayLongAsync(cancellationToken);
         }
-        else if (!expanded.IsExpanded)
+        else if (accordionAction == FriendsAccordionAction.ExpandCollapsed)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
@@ -1339,6 +1340,18 @@ public sealed class VmOperations
         }
 
         return null;
+    }
+
+    internal static FriendsAccordionAction ChooseFriendsAccordionAction(bool openedDrawer, bool expandedEvidence)
+    {
+        if (openedDrawer)
+        {
+            return FriendsAccordionAction.ExpandAfterOpeningDrawer;
+        }
+
+        return expandedEvidence
+            ? FriendsAccordionAction.SkipExpanded
+            : FriendsAccordionAction.ExpandCollapsed;
     }
 
     private bool IsFriendsDrawerOpen(WindowsInput input)
@@ -4894,6 +4907,13 @@ public sealed class VmOperations
         ModernProfile,
         LegacyProfile,
         Frame
+    }
+
+    internal enum FriendsAccordionAction
+    {
+        ExpandAfterOpeningDrawer,
+        ExpandCollapsed,
+        SkipExpanded
     }
 
     private sealed record FriendRowFingerprintMatch(
