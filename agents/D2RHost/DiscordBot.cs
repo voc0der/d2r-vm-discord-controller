@@ -2666,6 +2666,8 @@ public sealed class DiscordBot
         var channel = context.Command.Channel;
         var joined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+        string? lastWaitingReport = null;
+        var lastWaitingReportUtc = DateTimeOffset.MinValue;
         try
         {
             while (true)
@@ -2683,6 +2685,7 @@ public sealed class DiscordBot
                 var anyBound = false;
                 var unboundReports = new List<string>();
                 var checkFailures = new List<string>();
+                var waitingReports = new List<string>();
                 foreach (var (accountKey, account) in pending)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -2718,6 +2721,12 @@ public sealed class DiscordBot
                     }
 
                     anyBound = true;
+                    if (TryGetBoolean(data, "d2rReady", out var d2rReady) && !d2rReady)
+                    {
+                        waitingReports.Add($"{accountKey}: {result.Message}");
+                        continue;
+                    }
+
                     if (TryGetBoolean(data, "joined", out var didJoin) && didJoin)
                     {
                         joined.Add(accountKey);
@@ -2734,6 +2743,18 @@ public sealed class DiscordBot
                         : "follow-auto stopped: no follow-bind fingerprint is set. ";
                     await SendJoinAutoMessageAsync(channel, reason + details);
                     break;
+                }
+
+                if (waitingReports.Count > 0)
+                {
+                    var waitingReport = string.Join("; ", waitingReports);
+                    if (!string.Equals(waitingReport, lastWaitingReport, StringComparison.Ordinal)
+                        || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
+                    {
+                        await SendJoinAutoMessageAsync(channel, $"follow-auto waiting: {waitingReport}");
+                        lastWaitingReport = waitingReport;
+                        lastWaitingReportUtc = DateTimeOffset.UtcNow;
+                    }
                 }
 
                 if (DateTimeOffset.UtcNow >= idleDeadlineUtc)

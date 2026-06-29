@@ -1100,7 +1100,27 @@ public sealed class VmOperations
         }
 
         var template = templateLoad.Template;
-        var input = FocusD2R();
+        WindowsInput input;
+        try
+        {
+            input = FocusD2R();
+        }
+        catch (InvalidOperationException ex) when (ex.Message.StartsWith("Process is not running:", StringComparison.Ordinal))
+        {
+            return CommandResult.Success(
+                $"Follow-bind fingerprint is set, but D2R is not running: {FormatProcessNames(GetD2RProcessNames())}.",
+                new
+                {
+                    bound = true,
+                    joined = false,
+                    d2rReady = false,
+                    d2rRunning = false,
+                    templatePath = templateLoad.Path,
+                    templateExists = templateLoad.Exists,
+                    templateLength = templateLoad.ContentLength
+                });
+        }
+
         var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
         if (lobby is not null)
         {
