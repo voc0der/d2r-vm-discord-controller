@@ -152,6 +152,8 @@ above are what it's built on, not a standalone diagnostic.
 | `IsLobbyEntryButtonReady` | `CreateGameButton`/`JoinGameButton` (`0.16x0.055`) | `AverageLuminance > 30 && AverageLuminance < 110 && GreyRatio > 0.30 && DarkRatio < 0.70`. The upper luminance bound and lower `DarkRatio` floor were widened after the original thresholds couldn't recognize the actual button captures (`DarkRatio=0.00`, `AverageLuminance` up to 90.5 - bright label text on a light/grey panel, no dark pixels at all). |
 | `IsLobbyFormPanelReady` (inline in `VmOperations.cs`, not in `D2RScreenClassifier`) | `0.765,0.365` `0.30x0.42` | `AverageLuminance < 30 && GreyRatio < 0.25 && DarkRatio > 0.80` |
 | `IsGameEntryMenuVisible` | combines the above | `tabReady ? (entryButtonReady || formPanelReady) : (entryButtonReady && formPanelReady)` |
+| `IsFriendsDrawerHeaderVisible` | `FriendsAccordionHeader` (`0.180,0.139` `0.200x0.022`) | `AverageLuminance > 35 && GreyRatio > 0.45 && DarkRatio < 0.50`; distinguishes drawer-open header text from the closed lobby/chat view. |
+| `IsFriendsListBodyVisible` | around configured friend row 2 (`0.190x0.130`) | `AverageLuminance > 24 && GreyRatio > 0.18 && DarkRatio < 0.85`; distinguishes expanded friend rows from the empty black collapsed drawer body without depending on the narrow row-1 fingerprint/name crop. |
 
 `LobbyOrGame` is `IsGameEntryMenuVisible(createTab || joinTab, entryButtonReady, formPanelReady)`.
 Top-level visible-state detection (`v0.2.85`) checks **strict** in-game evidence

@@ -188,6 +188,18 @@ public static class D2RUiCoordinateCatalog
         return new UiPoint(start.X, Clamp01(start.Y + ((row - 1) * rowHeight)));
     }
 
+    public static UiPoint GetFriendContextJoinGamePoint(D2RUiAutomationConfig? ui, int? friendRow)
+    {
+        ui ??= Defaults;
+        var rowPoint = GetFriendRowPoint(ui, friendRow);
+        var row1Point = GetFriendRowPoint(ui, 1);
+        var row1JoinGame = GetPoint(ui, D2RUiCoordinateTarget.FriendContextJoinGame);
+
+        return new UiPoint(
+            Clamp01(rowPoint.X + (row1JoinGame.X - row1Point.X)),
+            Clamp01(rowPoint.Y + (row1JoinGame.Y - row1Point.Y)));
+    }
+
     // The capture region for a follow-bind fingerprint: the same row math GetFriendRowPoint uses,
     // shifted to the name-text sub-area of that row instead of the row's right-click center.
     public static FriendRowFingerprintRegion GetFriendRowFingerprintRegion(D2RUiAutomationConfig? ui, int row)
@@ -365,6 +377,7 @@ public static class D2RUiCoordinateCatalog
         {
             D2RUiCoordinateTarget.FriendsAccordionHeader => "Click after opening the drawer if the Friends accordion is collapsed.",
             D2RUiCoordinateTarget.FriendRowStart => "Additional rows use friendRowHeight, default 0.049 of window height.",
+            D2RUiCoordinateTarget.FriendContextJoinGame => "Row-1 context-menu option; runtime clicks offset it from the right-clicked friend row because the menu is anchored to the mouse position.",
             D2RUiCoordinateTarget.IntroSkipPoint => "Center click/key target used during intro, splash, and title skip bursts.",
             D2RUiCoordinateTarget.ModernHealthGlobe
                 or D2RUiCoordinateTarget.ModernManaGlobe

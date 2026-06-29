@@ -112,6 +112,13 @@ internal static class D2RScreenClassifier
             && stats.DarkRatio < 0.55;
     }
 
+    public static bool IsFriendsListBodyVisible(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 24
+            && stats.GreyRatio > 0.18
+            && stats.DarkRatio < 0.85;
+    }
+
     public static bool IsInGameHudProfile(
         ScreenRegionStats health,
         ScreenRegionStats mana,

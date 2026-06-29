@@ -107,6 +107,22 @@ public sealed class D2RScreenClassifierTests
         Assert.Equal(expected, D2RScreenClassifier.IsFriendRowNameVisible(stats));
     }
 
+    [Theory]
+    [InlineData("lobby_hover_party_icon_chat.png", false)]
+    [InlineData("lobby_click_party_icon.png", false)]
+    [InlineData("lobby_friends_tab_party.png", true)]
+    public void FriendsListBodyVisibleMatchesReferenceCaptures(string capture, bool expected)
+    {
+        var row2 = D2RUiCoordinateCatalog.GetFriendRowPoint(new D2RUiAutomationConfig(), 2);
+        var stats = FullCaptureRegionSampler.Sample(
+            capture,
+            row2,
+            widthRatio: 0.190,
+            heightRatio: 0.130);
+
+        Assert.Equal(expected, D2RScreenClassifier.IsFriendsListBodyVisible(stats));
+    }
+
     [Fact]
     public void OnlineCharacterListRejectsEmptyOfflinePanel()
     {

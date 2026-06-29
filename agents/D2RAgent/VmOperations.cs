@@ -956,7 +956,7 @@ public sealed class VmOperations
 
         ClickD2R(input, GetFriendRowPoint(args.FriendRow), MouseButton.Right);
         await DelayStepAsync(cancellationToken);
-        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.FriendContextJoinGame));
+        ClickD2R(input, GetFriendContextJoinGamePoint(args.FriendRow));
         var entry = await WaitForGameEntryAsync(input, cancellationToken);
         if (entry != GameEntryWaitResult.EnteredGame)
         {
@@ -1122,7 +1122,7 @@ public sealed class VmOperations
         MarkCommandCheckpoint($"FollowAutoCheckAsync: matched bound friend at row {matchedRow}");
         ClickD2R(input, GetFriendRowPoint(matchedRow), MouseButton.Right);
         await DelayStepAsync(cancellationToken);
-        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.FriendContextJoinGame));
+        ClickD2R(input, GetFriendContextJoinGamePoint(matchedRow));
         var entry = await WaitForGameEntryAsync(input, cancellationToken);
         if (entry != GameEntryWaitResult.EnteredGame)
         {
@@ -1196,13 +1196,13 @@ public sealed class VmOperations
     {
         return TryRunBounded(() =>
         {
-            var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row: 1);
+            var row2 = D2RUiCoordinateCatalog.GetFriendRowPoint(_config.Ui, 2);
             var stats = input.SampleRegion(
-                region.Center,
-                region.WidthRatio,
-                region.HeightRatio,
+                row2,
+                widthRatio: 0.190,
+                heightRatio: 0.130,
                 sampleGrid: MenuSampleGrid);
-            return D2RScreenClassifier.IsFriendRowNameVisible(stats);
+            return D2RScreenClassifier.IsFriendsListBodyVisible(stats);
         }, EntryLoopCheckBoundMs);
     }
 
@@ -4159,6 +4159,11 @@ public sealed class VmOperations
     private AgentCommon.UiPoint GetFriendRowPoint(int? friendRow)
     {
         return D2RUiCoordinateCatalog.GetFriendRowPoint(_config.Ui, friendRow);
+    }
+
+    private AgentCommon.UiPoint GetFriendContextJoinGamePoint(int? friendRow)
+    {
+        return D2RUiCoordinateCatalog.GetFriendContextJoinGamePoint(_config.Ui, friendRow);
     }
 
     private AgentCommon.UiPoint GetCreateDifficultyPoint(string? difficulty)

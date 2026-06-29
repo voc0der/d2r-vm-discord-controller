@@ -114,6 +114,18 @@ public sealed class D2RUiCoordinateTests
     }
 
     [Fact]
+    public void FriendContextJoinGamePointTracksRightClickedRow()
+    {
+        var row1 = D2RUiCoordinateCatalog.GetFriendContextJoinGamePoint(new D2RUiAutomationConfig(), 1);
+        var row2 = D2RUiCoordinateCatalog.GetFriendContextJoinGamePoint(new D2RUiAutomationConfig(), 2);
+        var row3 = D2RUiCoordinateCatalog.GetFriendContextJoinGamePoint(new D2RUiAutomationConfig(), 3);
+
+        Assert.Equal(new UiPixelPoint(434, 247), D2RUiCoordinateCatalog.ToBaselinePixels(row1));
+        Assert.Equal(new UiPixelPoint(434, 285), D2RUiCoordinateCatalog.ToBaselinePixels(row2));
+        Assert.Equal(new UiPixelPoint(434, 323), D2RUiCoordinateCatalog.ToBaselinePixels(row3));
+    }
+
+    [Fact]
     public void FriendsAccordionHeaderDefaultsToFriendsRibbon()
     {
         var header = D2RUiCoordinateCatalog.GetPoint(

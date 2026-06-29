@@ -31,7 +31,7 @@ The implementation source of truth is `D2RUiCoordinateCatalog` in `agents/AgentC
 | Lobby party/friends icon | `LobbyPartyIcon` | `0.096,0.707` | `131,543` | Click | `1366x768/lobby_click_party_icon.png` | Opens the friends drawer near chat. |
 | Friends accordion header | `FriendsAccordionHeader` | `0.180,0.139` | `246,107` | Click/sample | `1366x768/lobby_friends_tab_party.png` | Click after opening the drawer if the Friends accordion is collapsed. |
 | Friends drawer row 1 | `FriendRowStart` | `0.180,0.180` | `246,138` | Right-click | `1366x768/lobby_right_click_friend_join_game_available.png` | Row N uses `FriendRowStart.y + ((N - 1) * FriendRowHeight)`. |
-| Friend context Join Game | `FriendContextJoinGame` | `0.318,0.322` | `434,247` | Click/sample | `1366x768/lobby_right_click_friend_join_game_available.png` | Context menu option after right-clicking a friend row. |
+| Friend context Join Game | `FriendContextJoinGame` | `0.318,0.322` | `434,247` | Click/sample | `1366x768/lobby_right_click_friend_join_game_available.png` | Row-1 context-menu option; runtime clicks offset it from the right-clicked friend row because the menu is anchored to the mouse position. |
 | Lobby Join Game tab | `JoinGameTab` | `0.766,0.071` | `1046,55` | Click/sample | `1366x768/snippets/lobby_join_game_tab_text.png` | Active tab and click target. |
 | Join Game name field | `JoinGameNameField` | `0.697,0.138` | `952,106` | Click/type | `1366x768/lobby_join_game_screen.png` | Game name input. |
 | Join Game password field | `JoinPasswordField` | `0.837,0.138` | `1143,106` | Click/type | `1366x768/lobby_join_game_screen.png` | Password input. |
