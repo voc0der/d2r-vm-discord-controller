@@ -1292,10 +1292,12 @@ public sealed class VmOperations
         string context,
         CancellationToken cancellationToken)
     {
+        var openedDrawer = false;
         if (!IsFriendsDrawerOpen(input))
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): opening friends drawer");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
+            openedDrawer = true;
             await DelayLongAsync(cancellationToken);
         }
         else
@@ -1311,7 +1313,13 @@ public sealed class VmOperations
         }
 
         var expanded = GetFriendsListExpandedEvidence(input);
-        if (!expanded.IsExpanded)
+        if (openedDrawer)
+        {
+            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion after opening drawer");
+            ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
+            await DelayLongAsync(cancellationToken);
+        }
+        else if (!expanded.IsExpanded)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
