@@ -45,5 +45,5 @@ Primary state-to-coordinate links:
 | Character select | `CharacterSlot1`, `CharacterPlayButton`, `CharacterLobbyButton`, `CharacterOnlineTab` | `1216,92`, `574,689`, `799,689`, `1161,38` |
 | Join Game lobby | `JoinGameTab`, `JoinGameNameField`, `JoinPasswordField`, `JoinGameButton` | `1046,55`, `952,106`, `1143,106`, `1045,478` |
 | Create Game lobby | `CreateGameTab`, `CreateGameNameField`, `CreatePasswordField`, `CreateGameButton` | `919,55`, `1046,123`, `1046,172`, `1045,475` |
-| Friend follow | `LobbyPartyIcon`, `FriendRowStart`, `FriendContextJoinGame` | `131,543`, `246,138`, `434,171` (row-1 context reference; row 3 resolves to `434,247`) |
+| Friend follow | `LobbyPartyIcon`, `FriendRowStart`, `FriendContextJoinGame` | `131,543`, `246,138`, `380,264` (row-1 context reference; runtime offsets from the right-clicked row) |
 | In game | `ModernHealthGlobe`, `ModernManaGlobe`, `InGameHudBar` | `355,691`, `1038,691`, `683,733` |

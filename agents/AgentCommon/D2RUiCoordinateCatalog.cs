@@ -117,7 +117,7 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.LobbyPartyIcon => Choose(ui.LobbyPartyIcon, Defaults.LobbyPartyIcon),
             D2RUiCoordinateTarget.FriendsAccordionHeader => Choose(ui.FriendsAccordionHeader, Defaults.FriendsAccordionHeader),
             D2RUiCoordinateTarget.FriendRowStart => Choose(ui.FriendRowStart, Defaults.FriendRowStart),
-            D2RUiCoordinateTarget.FriendContextJoinGame => Choose(ui.FriendContextJoinGame, Defaults.FriendContextJoinGame),
+            D2RUiCoordinateTarget.FriendContextJoinGame => ChooseFriendContextJoinGame(ui),
             D2RUiCoordinateTarget.JoinGameTab => Choose(ui.JoinGameTab, Defaults.JoinGameTab),
             D2RUiCoordinateTarget.JoinGameNameField => Choose(ui.JoinGameNameField, Defaults.JoinGameNameField),
             D2RUiCoordinateTarget.JoinPasswordField => Choose(ui.JoinPasswordField, Defaults.JoinPasswordField),
@@ -377,7 +377,7 @@ public static class D2RUiCoordinateCatalog
         {
             D2RUiCoordinateTarget.FriendsAccordionHeader => "Click after opening the drawer if the Friends accordion is collapsed.",
             D2RUiCoordinateTarget.FriendRowStart => "Additional rows use friendRowHeight, default 0.049 of window height.",
-            D2RUiCoordinateTarget.FriendContextJoinGame => "Row-1 context-menu option; runtime clicks offset it from the right-clicked friend row because the menu is anchored to the mouse position.",
+            D2RUiCoordinateTarget.FriendContextJoinGame => "Row-1 context-menu option; runtime clicks keep the same in-menu offset from the right-clicked friend row because the menu is anchored to the pointer position.",
             D2RUiCoordinateTarget.IntroSkipPoint => "Center click/key target used during intro, splash, and title skip bursts.",
             D2RUiCoordinateTarget.ModernHealthGlobe
                 or D2RUiCoordinateTarget.ModernManaGlobe
@@ -392,6 +392,27 @@ public static class D2RUiCoordinateCatalog
     private static UiPoint Choose(UiPoint? candidate, UiPoint fallback)
     {
         return IsValid(candidate) ? Copy(candidate!) : Copy(fallback);
+    }
+
+    private static UiPoint ChooseFriendContextJoinGame(D2RUiAutomationConfig ui)
+    {
+        var point = Choose(ui.FriendContextJoinGame, Defaults.FriendContextJoinGame);
+        return IsKnownStaleFriendContextJoinGame(point)
+            ? Copy(Defaults.FriendContextJoinGame)
+            : point;
+    }
+
+    private static bool IsKnownStaleFriendContextJoinGame(UiPoint point)
+    {
+        return IsNear(point, x: 0.318, y: 0.322)
+            || IsNear(point, x: 0.318, y: 0.223);
+    }
+
+    private static bool IsNear(UiPoint point, double x, double y)
+    {
+        const double tolerance = 0.001;
+        return Math.Abs(point.X - x) <= tolerance
+            && Math.Abs(point.Y - y) <= tolerance;
     }
 
     private static bool IsValid(UiPoint? point)
