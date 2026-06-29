@@ -1156,9 +1156,14 @@ public sealed class VmOperations
         for (var row = 1; row <= maxRows; row++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            MarkCommandCheckpoint($"FollowAutoCheckAsync: sampling friend row {row}");
             var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
-            var samples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows);
-            var comparison = FriendFingerprint.Compare(template, new FriendFingerprint(region.GridColumns, region.GridRows, samples));
+            var samples = TryCaptureFriendFingerprintSamples(
+                () => input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows),
+                EntryLoopCheckBoundMs);
+            var comparison = samples is null
+                ? FriendFingerprintComparison.NotComparable
+                : FriendFingerprint.Compare(template, new FriendFingerprint(region.GridColumns, region.GridRows, samples));
             rowMatches.Add(new FriendRowFingerprintMatch(row, comparison));
         }
 
@@ -1211,6 +1216,11 @@ public sealed class VmOperations
             && comparison.SignalPixels >= FollowFingerprintMinSignalPixels
             && comparison.AverageDifference <= FollowFingerprintMaxAverageDifference
             && comparison.SignalAverageDifference <= FollowFingerprintMaxSignalAverageDifference;
+    }
+
+    internal static byte[]? TryCaptureFriendFingerprintSamples(Func<byte[]> capture, int timeoutMs)
+    {
+        return TryRunBounded<byte[]?>(capture, timeoutMs, fallback: null);
     }
 
     private static string FormatFollowFingerprintScores(IEnumerable<FriendRowFingerprintMatch> matches)
