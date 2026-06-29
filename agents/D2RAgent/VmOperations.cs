@@ -1249,6 +1249,15 @@ public sealed class VmOperations
         return TryRunBounded<byte[]?>(capture, timeoutMs, fallback: null);
     }
 
+    internal static bool ShouldReselectFriendGameBeforeRetry(GameEntryWaitResult waitResult)
+    {
+        return waitResult is GameEntryWaitResult.ConnectionInterrupted
+            or GameEntryWaitResult.ErrorDialog
+            or GameEntryWaitResult.ReturnedToMenu
+            or GameEntryWaitResult.ReturnedToCharacterScreen
+            or GameEntryWaitResult.OfflineCharacterScreen;
+    }
+
     private static string FormatFollowFingerprintScores(IEnumerable<FriendRowFingerprintMatch> matches)
     {
         var parts = matches.Select(match => match.Comparison.Comparable
@@ -1314,13 +1323,114 @@ public sealed class VmOperations
                 : new GameEntryAttemptResult(false, DialogRetries: 0, ConnectionRetries: 0, FormatGameEntryWaitFailure(entry));
         }
 
-        MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): submitting Join Game tab");
-        return await ClickMenuEntryButtonUntilEnteredGameAsync(
-            input,
-            GetUiPoint(D2RUiCoordinateTarget.JoinGameButton),
-            joinGameTab,
-            SelectFriendGameAsync,
-            cancellationToken);
+        var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        var dialogRetries = 0;
+        var connectionRetries = 0;
+        var legacyToggle = new LegacyGraphicsToggleState();
+
+        async Task<bool> SelectAndSubmitFriendGameAsync(string reason, bool resetDeadline = false)
+        {
+            MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): {reason}: selecting friend context Join Game");
+            if (!await SelectFriendGameAsync())
+            {
+                return false;
+            }
+
+            if (resetDeadline)
+            {
+                deadline = DateTimeOffset.UtcNow + timeout;
+            }
+
+            if (!IsAnyLobbyEntryMenuVisible(input))
+            {
+                return true;
+            }
+
+            MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): {reason}: submitting selected friend game");
+            await ClickMenuEntryButtonAsync(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameButton), cancellationToken, guardAgainstInGame: true);
+            return true;
+        }
+
+        if (!await SelectAndSubmitFriendGameAsync("initial"))
+        {
+            return new GameEntryAttemptResult(false, DialogRetries: 0, ConnectionRetries: 0, "The selected friend game could not be submitted.");
+        }
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var broadHudFrameAcceptAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 3, 8));
+            var waitResult = await WaitForGameEntryAsync(input, joinGameTab, cancellationToken, legacyToggle, broadHudFrameAcceptAt);
+            if (waitResult == GameEntryWaitResult.EnteredGame)
+            {
+                return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
+            }
+
+            if (!ShouldReselectFriendGameBeforeRetry(waitResult))
+            {
+                break;
+            }
+
+            if (waitResult == GameEntryWaitResult.ErrorDialog || IsGameEntryErrorDialogOpen(input))
+            {
+                dialogRetries++;
+                MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): stale/error dialog, reselecting friend game");
+                if (!await DismissGameEntryErrorDialogAsync(input, cancellationToken)
+                    || !await SelectAndSubmitFriendGameAsync("retry after game-entry dialog", resetDeadline: true))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "A game-entry error dialog appeared, but the friend game could not be reselected.");
+                }
+
+                continue;
+            }
+
+            if (waitResult == GameEntryWaitResult.ConnectionInterrupted)
+            {
+                connectionRetries++;
+                MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): connection interrupted, reselecting friend game");
+                if (!await WaitForMenuAfterConnectionInterruptedAsync(input, joinGameTab, cancellationToken)
+                    || !await SelectAndSubmitFriendGameAsync("retry after connection interruption", resetDeadline: true))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "Connection was interrupted, but the friend game could not be reselected.");
+                }
+
+                continue;
+            }
+
+            if (waitResult == GameEntryWaitResult.OfflineCharacterScreen)
+            {
+                if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
+                    || !await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true)
+                    || !await SelectAndSubmitFriendGameAsync("retry after offline character screen", resetDeadline: true))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the friend game could not be reselected after clicking Online.");
+                }
+
+                continue;
+            }
+
+            if (waitResult == GameEntryWaitResult.ReturnedToCharacterScreen)
+            {
+                if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true)
+                    || !await SelectAndSubmitFriendGameAsync("retry after character screen return", resetDeadline: true))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the friend game could not be reselected.");
+                }
+
+                continue;
+            }
+
+            if (waitResult == GameEntryWaitResult.ReturnedToMenu)
+            {
+                if (!await SelectAndSubmitFriendGameAsync("retry after menu return", resetDeadline: true))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned from game entry, but the friend game could not be reselected.");
+                }
+            }
+        }
+
+        return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, joinGameTab, dialogRetries, connectionRetries));
     }
 
     private async Task<CommandResult?> EnsureFriendsListVisibleAsync(
@@ -4940,7 +5050,7 @@ public sealed class VmOperations
         CharacterScreen
     }
 
-    private enum GameEntryWaitResult
+    internal enum GameEntryWaitResult
     {
         EnteredGame,
         ConnectionInterrupted,
