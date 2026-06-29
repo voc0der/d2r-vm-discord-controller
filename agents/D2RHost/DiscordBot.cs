@@ -2764,6 +2764,10 @@ public sealed class DiscordBot
                         await SendJoinAutoMessageAsync(channel, $"follow-auto: {accountKey} joined the bound friend's game.");
                         idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                     }
+                    else
+                    {
+                        waitingReports.Add($"{accountKey}: {result.Message}");
+                    }
                 }
 
                 if (!anyBound)

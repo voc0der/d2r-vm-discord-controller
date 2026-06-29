@@ -1167,29 +1167,22 @@ public sealed class VmOperations
             rowMatches.Add(new FriendRowFingerprintMatch(row, comparison));
         }
 
-        var rankedMatches = rowMatches
-            .Where(match => match.Comparison.Comparable)
-            .OrderBy(match => match.Comparison.SignalAverageDifference)
-            .ThenBy(match => match.Comparison.AverageDifference)
-            .ToList();
-        var bestMatch = rankedMatches.FirstOrDefault();
-        if (bestMatch is null || !IsUsableFollowFingerprintMatch(bestMatch.Comparison))
+        var selection = SelectFollowFingerprintMatch(rowMatches);
+        if (selection.Status == FollowFingerprintSelectionStatus.NoUsableMatch || selection.Match is null)
         {
             return CommandResult.Success(
                 $"Bound friend not confidently found in the visible friends list this cycle. {FormatFollowFingerprintScores(rowMatches)}",
                 new { bound = true, joined = false, fingerprintScores = FormatFollowFingerprintScores(rowMatches) });
         }
 
-        var secondMatch = rankedMatches.Skip(1).FirstOrDefault();
-        if (secondMatch is not null
-            && secondMatch.Comparison.SignalAverageDifference <= bestMatch.Comparison.SignalAverageDifference + FollowFingerprintMinSignalSeparation)
+        if (selection.Status == FollowFingerprintSelectionStatus.Ambiguous)
         {
             return CommandResult.Success(
                 $"Bound friend fingerprint was ambiguous; not clicking a friend row this cycle. {FormatFollowFingerprintScores(rowMatches)}",
                 new { bound = true, joined = false, fingerprintScores = FormatFollowFingerprintScores(rowMatches) });
         }
 
-        var matchedRow = bestMatch.Row;
+        var matchedRow = selection.Match.Row;
         MarkCommandCheckpoint($"FollowAutoCheckAsync: matched bound friend at row {matchedRow}");
         var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(input, matchedRow, "follow-auto", cancellationToken);
         if (!entry.Entered)
@@ -1216,6 +1209,30 @@ public sealed class VmOperations
             && comparison.SignalPixels >= FollowFingerprintMinSignalPixels
             && comparison.AverageDifference <= FollowFingerprintMaxAverageDifference
             && comparison.SignalAverageDifference <= FollowFingerprintMaxSignalAverageDifference;
+    }
+
+    internal static FollowFingerprintSelection SelectFollowFingerprintMatch(IEnumerable<FriendRowFingerprintMatch> matches)
+    {
+        var usableMatches = matches
+            .Where(match => IsUsableFollowFingerprintMatch(match.Comparison))
+            .OrderBy(match => match.Comparison.SignalAverageDifference)
+            .ThenBy(match => match.Comparison.AverageDifference)
+            .ToList();
+
+        var bestMatch = usableMatches.FirstOrDefault();
+        if (bestMatch is null)
+        {
+            return new FollowFingerprintSelection(FollowFingerprintSelectionStatus.NoUsableMatch, Match: null);
+        }
+
+        var secondMatch = usableMatches.Skip(1).FirstOrDefault();
+        if (secondMatch is not null
+            && secondMatch.Comparison.SignalAverageDifference <= bestMatch.Comparison.SignalAverageDifference + FollowFingerprintMinSignalSeparation)
+        {
+            return new FollowFingerprintSelection(FollowFingerprintSelectionStatus.Ambiguous, bestMatch);
+        }
+
+        return new FollowFingerprintSelection(FollowFingerprintSelectionStatus.Selected, bestMatch);
     }
 
     internal static byte[]? TryCaptureFriendFingerprintSamples(Func<byte[]> capture, int timeoutMs)
@@ -4940,9 +4957,20 @@ public sealed class VmOperations
         SkipExpanded
     }
 
-    private sealed record FriendRowFingerprintMatch(
+    internal enum FollowFingerprintSelectionStatus
+    {
+        Selected,
+        NoUsableMatch,
+        Ambiguous
+    }
+
+    internal sealed record FriendRowFingerprintMatch(
         int Row,
         FriendFingerprintComparison Comparison);
+
+    internal sealed record FollowFingerprintSelection(
+        FollowFingerprintSelectionStatus Status,
+        FriendRowFingerprintMatch? Match);
 
     private sealed record GameEntryAttemptResult(
         bool Entered,
