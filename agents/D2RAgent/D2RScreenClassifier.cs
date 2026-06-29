@@ -107,16 +107,16 @@ internal static class D2RScreenClassifier
 
     public static bool IsFriendRowNameVisible(ScreenRegionStats stats)
     {
-        return stats.AverageLuminance > 36
-            && stats.GreyRatio > 0.45
-            && stats.DarkRatio < 0.55;
-    }
-
-    public static bool IsFriendsListBodyVisible(ScreenRegionStats stats)
-    {
         return stats.AverageLuminance > 24
             && stats.GreyRatio > 0.18
             && stats.DarkRatio < 0.85;
+    }
+
+    public static bool IsFriendRowMarkerVisible(ScreenRegionStats stats)
+    {
+        return stats.LuminanceStdDev > 18
+            && stats.DarkRatio < 0.95
+            && (stats.BrightRatio > 0.02 || stats.GreyRatio > 0.12 || stats.OrangeRatio > 0.02);
     }
 
     public static bool IsInGameHudProfile(

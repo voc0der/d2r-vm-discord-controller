@@ -1158,7 +1158,8 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
-        if (!IsFriendsListExpanded(input))
+        var expanded = GetFriendsListExpandedEvidence(input);
+        if (!expanded.IsExpanded)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
@@ -1169,10 +1170,11 @@ public sealed class VmOperations
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): Friends accordion already expanded");
         }
 
-        if (!IsFriendsListExpanded(input))
+        expanded = GetFriendsListExpandedEvidence(input);
+        if (!expanded.IsExpanded)
         {
             return CommandResult.Failure(
-                $"Could not expand the Friends list before {context}.",
+                $"Could not expand the Friends list before {context}. Friends list evidence: {expanded.Summary}.",
                 await CollectStatusAsync(cancellationToken));
         }
 
@@ -1192,18 +1194,52 @@ public sealed class VmOperations
         }, EntryLoopCheckBoundMs);
     }
 
-    private bool IsFriendsListExpanded(WindowsInput input)
+    private (bool IsExpanded, string Summary) GetFriendsListExpandedEvidence(WindowsInput input)
     {
         return TryRunBounded(() =>
         {
-            var row2 = D2RUiCoordinateCatalog.GetFriendRowPoint(_config.Ui, 2);
-            var stats = input.SampleRegion(
-                row2,
-                widthRatio: 0.190,
-                heightRatio: 0.130,
-                sampleGrid: MenuSampleGrid);
-            return D2RScreenClassifier.IsFriendsListBodyVisible(stats);
-        }, EntryLoopCheckBoundMs);
+            var expanded = false;
+            var summary = new StringBuilder();
+
+            for (var row = 1; row <= 3; row++)
+            {
+                var nameRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
+                var nameStats = input.SampleRegion(
+                    nameRegion.Center,
+                    nameRegion.WidthRatio,
+                    nameRegion.HeightRatio,
+                    sampleGrid: MenuSampleGrid);
+                var nameVisible = D2RScreenClassifier.IsFriendRowNameVisible(nameStats);
+
+                var markerPoint = GetFriendRowMarkerPoint(row);
+                var markerStats = input.SampleRegion(
+                    markerPoint,
+                    widthRatio: 0.035,
+                    heightRatio: 0.032,
+                    sampleGrid: MenuSampleGrid);
+                var markerVisible = D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
+
+                expanded |= nameVisible && markerVisible;
+
+                if (summary.Length > 0)
+                {
+                    summary.Append(' ');
+                }
+
+                summary
+                    .Append(FormatCheck($"r{row}txt", nameVisible, nameStats))
+                    .Append('/')
+                    .Append(FormatCheck($"r{row}mark", markerVisible, markerStats));
+            }
+
+            return (expanded, summary.ToString());
+        }, EntryLoopCheckBoundMs, (false, "timeout"));
+    }
+
+    private AgentCommon.UiPoint GetFriendRowMarkerPoint(int row)
+    {
+        var rowPoint = D2RUiCoordinateCatalog.GetFriendRowPoint(_config.Ui, row);
+        return new AgentCommon.UiPoint(Math.Clamp(rowPoint.X - 0.090, 0, 1), rowPoint.Y);
     }
 
     private async Task<CommandResult> SaveAndExitAsync(CancellationToken cancellationToken)

@@ -109,18 +109,40 @@ public sealed class D2RScreenClassifierTests
 
     [Theory]
     [InlineData("lobby_hover_party_icon_chat.png", false)]
-    [InlineData("lobby_click_party_icon.png", false)]
     [InlineData("lobby_friends_tab_party.png", true)]
-    public void FriendsListBodyVisibleMatchesReferenceCaptures(string capture, bool expected)
+    public void FriendRowMarkerVisibleMatchesReferenceCaptures(string capture, bool expected)
     {
-        var row2 = D2RUiCoordinateCatalog.GetFriendRowPoint(new D2RUiAutomationConfig(), 2);
         var stats = FullCaptureRegionSampler.Sample(
             capture,
-            row2,
-            widthRatio: 0.190,
-            heightRatio: 0.130);
+            FriendRowMarkerPoint(row: 1),
+            widthRatio: 0.035,
+            heightRatio: 0.032);
 
-        Assert.Equal(expected, D2RScreenClassifier.IsFriendsListBodyVisible(stats));
+        Assert.Equal(expected, D2RScreenClassifier.IsFriendRowMarkerVisible(stats));
+    }
+
+    [Theory]
+    [InlineData("lobby_hover_party_icon_chat.png", false)]
+    [InlineData("lobby_click_party_icon.png", false)]
+    [InlineData("lobby_friends_tab_party.png", true)]
+    public void FriendRowExpandedEvidenceMatchesReferenceCaptures(string capture, bool expected)
+    {
+        var nameRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(new D2RUiAutomationConfig(), row: 1);
+        var nameStats = FullCaptureRegionSampler.Sample(
+            capture,
+            nameRegion.Center,
+            nameRegion.WidthRatio,
+            nameRegion.HeightRatio);
+        var markerStats = FullCaptureRegionSampler.Sample(
+            capture,
+            FriendRowMarkerPoint(row: 1),
+            widthRatio: 0.035,
+            heightRatio: 0.032);
+
+        var actual = D2RScreenClassifier.IsFriendRowNameVisible(nameStats)
+            && D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
+
+        Assert.Equal(expected, actual);
     }
 
     [Fact]
@@ -384,5 +406,11 @@ public sealed class D2RScreenClassifierTests
             redRatio,
             blueRatio,
             Samples: 289);
+    }
+
+    private static UiPoint FriendRowMarkerPoint(int row)
+    {
+        var rowPoint = D2RUiCoordinateCatalog.GetFriendRowPoint(new D2RUiAutomationConfig(), row);
+        return new UiPoint(Math.Clamp(rowPoint.X - 0.090, 0, 1), rowPoint.Y);
     }
 }

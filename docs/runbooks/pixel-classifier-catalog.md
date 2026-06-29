@@ -153,7 +153,7 @@ above are what it's built on, not a standalone diagnostic.
 | `IsLobbyFormPanelReady` (inline in `VmOperations.cs`, not in `D2RScreenClassifier`) | `0.765,0.365` `0.30x0.42` | `AverageLuminance < 30 && GreyRatio < 0.25 && DarkRatio > 0.80` |
 | `IsGameEntryMenuVisible` | combines the above | `tabReady ? (entryButtonReady || formPanelReady) : (entryButtonReady && formPanelReady)` |
 | `IsFriendsDrawerHeaderVisible` | `FriendsAccordionHeader` (`0.180,0.139` `0.200x0.022`) | `AverageLuminance > 35 && GreyRatio > 0.45 && DarkRatio < 0.50`; distinguishes drawer-open header text from the closed lobby/chat view. |
-| `IsFriendsListBodyVisible` | around configured friend row 2 (`0.190x0.130`) | `AverageLuminance > 24 && GreyRatio > 0.18 && DarkRatio < 0.85`; distinguishes expanded friend rows from the empty black collapsed drawer body without depending on the narrow row-1 fingerprint/name crop. |
+| `IsFriendRowNameVisible` + `IsFriendRowMarkerVisible` | name strip from `GetFriendRowFingerprintRegion`; marker at `FriendRowStart.x - 0.090`, same row Y | Expanded-list proof scans rows 1-3 and requires both text (`AverageLuminance > 24 && GreyRatio > 0.18 && DarkRatio < 0.85`) and marker evidence (`LuminanceStdDev > 18 && DarkRatio < 0.95 && (BrightRatio > 0.02 || GreyRatio > 0.12 || OrangeRatio > 0.02)`) on any one row. Failure messages include per-row `rNtxt/rNmark` stats. |
 
 `LobbyOrGame` is `IsGameEntryMenuVisible(createTab || joinTab, entryButtonReady, formPanelReady)`.
 Top-level visible-state detection (`v0.2.85`) checks **strict** in-game evidence
