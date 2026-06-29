@@ -66,7 +66,7 @@ public sealed class D2RUiAutomationConfig
     public double FriendRowFingerprintHeightRatio { get; set; } = 0.022;
     public int FriendRowFingerprintGridColumns { get; set; } = 12;
     public int FriendRowFingerprintGridRows { get; set; } = 4;
-    public int FriendRowFingerprintMaxScanRows { get; set; } = 10;
+    public int FriendRowFingerprintMaxScanRows { get; set; } = 8;
     public bool ClickBattleNetPlayWhenNeeded { get; set; } = true;
     public bool DismissBattleNetWhatsNewWhenNeeded { get; set; } = true;
     public UiPoint BattleNetPlayButton { get; set; } = new(0.129, 0.703);

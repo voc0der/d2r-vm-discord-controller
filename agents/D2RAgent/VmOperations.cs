@@ -45,9 +45,10 @@ public sealed class VmOperations
     // their definitions instead of trying to guard every current and future call site.
     private const int EntryLoopCheckBoundMs = 1500;
     private const double FollowFingerprintMaxAverageDifference = 18.0;
-    private const double FollowFingerprintMaxSignalAverageDifference = 42.0;
-    private const double FollowFingerprintMinSignalSeparation = 6.0;
+    private const double FollowFingerprintMaxSignalAverageDifference = 90.0;
+    private const double FollowFingerprintMinSignalSeparation = 1.0;
     private const int FollowFingerprintMinSignalPixels = 3;
+    private const int FollowFingerprintMaxVisibleFriendRows = 8;
     // Each slot is one small region capture - cheap relative to the in-game HUD checks above,
     // but there are up to 8 of them per tick, so still bound each individually rather than
     // relying on the tick interval alone to cap worst-case cost.
@@ -1151,7 +1152,7 @@ public sealed class VmOperations
             return friends;
         }
 
-        var maxRows = _config.Ui.FriendRowFingerprintMaxScanRows > 0 ? _config.Ui.FriendRowFingerprintMaxScanRows : 10;
+        var maxRows = GetFollowFingerprintMaxScanRows(_config.Ui);
         var rowMatches = new List<FriendRowFingerprintMatch>();
         for (var row = 1; row <= maxRows; row++)
         {
@@ -1233,6 +1234,14 @@ public sealed class VmOperations
         }
 
         return new FollowFingerprintSelection(FollowFingerprintSelectionStatus.Selected, bestMatch);
+    }
+
+    internal static int GetFollowFingerprintMaxScanRows(D2RUiAutomationConfig ui)
+    {
+        var configuredMaxRows = ui.FriendRowFingerprintMaxScanRows > 0
+            ? ui.FriendRowFingerprintMaxScanRows
+            : new D2RUiAutomationConfig().FriendRowFingerprintMaxScanRows;
+        return Math.Clamp(configuredMaxRows, 1, FollowFingerprintMaxVisibleFriendRows);
     }
 
     internal static byte[]? TryCaptureFriendFingerprintSamples(Func<byte[]> capture, int timeoutMs)
