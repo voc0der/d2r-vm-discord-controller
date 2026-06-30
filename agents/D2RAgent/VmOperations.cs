@@ -1306,9 +1306,9 @@ public sealed class VmOperations
             ClickD2R(input, GetFriendRowPoint(friendRow), MouseButton.Right);
             await DelayStepAsync(cancellationToken);
             var friendJoinPoint = GetFriendContextJoinGamePoint(friendRow);
-            if (!IsFriendJoinGameOptionReady(input, friendJoinPoint))
+            if (!IsFriendContextJoinPointInLeftPane(friendJoinPoint))
             {
-                MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): friend context Join Game option was not visible at row {friendRow}");
+                MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): friend context Join Game point was outside the Friends pane at row {friendRow}");
                 return false;
             }
 
@@ -4052,29 +4052,9 @@ public sealed class VmOperations
         }, EntryLoopCheckBoundMs);
     }
 
-    private bool IsFriendJoinGameOptionReady(WindowsInput input)
-    {
-        return IsFriendJoinGameOptionReady(input, GetUiPoint(D2RUiCoordinateTarget.FriendContextJoinGame));
-    }
-
-    private bool IsFriendJoinGameOptionReady(WindowsInput input, AgentCommon.UiPoint point)
-    {
-        return IsFriendContextJoinPointInLeftPane(point)
-            && (IsFriendJoinGameOptionReady(input, point, windowRelative: false)
-                || IsFriendJoinGameOptionReady(input, point, windowRelative: true));
-    }
-
     internal static bool IsFriendContextJoinPointInLeftPane(AgentCommon.UiPoint point)
     {
         return point.X < 0.45;
-    }
-
-    private bool IsFriendJoinGameOptionReady(WindowsInput input, AgentCommon.UiPoint point, bool windowRelative)
-    {
-        var stats = SampleD2RRegion(input, point, widthRatio: 0.12, heightRatio: 0.040, windowRelative: windowRelative);
-        return stats.AverageLuminance > 36
-            && stats.GreyRatio > 0.56
-            && stats.DarkRatio < 0.44;
     }
 
     private bool IsInGameReady(WindowsInput input)
