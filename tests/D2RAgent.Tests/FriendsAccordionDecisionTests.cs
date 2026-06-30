@@ -39,6 +39,21 @@ public sealed class FriendsAccordionDecisionTests
     }
 
     [Theory]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, false, false)]
+    public void AccordionToggleAvoidanceDependsOnReliabilityNotWeakRowEvidence(
+        bool expandedEvidence,
+        bool reliableEvidence,
+        bool expected)
+    {
+        var avoid = VmOperations.ShouldAvoidFriendsAccordionToggle(expandedEvidence, reliableEvidence);
+
+        Assert.Equal(expected, avoid);
+    }
+
+    [Theory]
     [InlineData(0, false, true, true, false)]
     [InlineData(0, false, false, false, false)]
     [InlineData(1, false, false, true, false)]
@@ -83,7 +98,7 @@ public sealed class FriendsAccordionDecisionTests
     [InlineData(0, 1, false)]
     [InlineData(0, 2, true)]
     [InlineData(1, 0, true)]
-    public void FriendsListRowEvidenceUsesWeakProofOnlyToAvoidToggleAfterOpen(
+    public void FriendsListRowEvidenceTracksWeakProofForRecoveryDecisions(
         int visibleRows,
         int markerRows,
         bool expected)

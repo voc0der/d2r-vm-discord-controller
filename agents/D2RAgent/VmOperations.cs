@@ -1658,7 +1658,7 @@ public sealed class VmOperations
         var accordionAction = ChooseFriendsAccordionAction(
             openedDrawer,
             expanded.IsExpanded,
-            expanded.HasRowEvidence || !expanded.IsReliable);
+            ShouldAvoidFriendsAccordionToggle(expanded.IsExpanded, expanded.IsReliable));
         if (accordionAction == FriendsAccordionAction.ExpandAfterOpeningDrawer)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion after opening drawer");
@@ -1726,6 +1726,11 @@ public sealed class VmOperations
     internal static bool ShouldVerifyFriendsExpansionAfterAction(FriendsAccordionAction action)
     {
         return true;
+    }
+
+    internal static bool ShouldAvoidFriendsAccordionToggle(bool expandedEvidence, bool reliableEvidence)
+    {
+        return !expandedEvidence && !reliableEvidence;
     }
 
     internal static bool ShouldRecoverFriendsAccordionAfterVerification(
