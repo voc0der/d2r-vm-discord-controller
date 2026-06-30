@@ -46,7 +46,7 @@ public sealed class VmOperations
     private const int EntryLoopCheckBoundMs = 1500;
     private const double FollowFingerprintMaxAverageDifference = 18.0;
     private const double FollowFingerprintMaxSignalAverageDifference = 90.0;
-    private const double FollowFingerprintMinSignalSeparation = 1.0;
+    private const double FollowFingerprintMinSignalSeparation = 12.0;
     private const int FollowFingerprintMinSignalPixels = 3;
     private const int FollowFingerprintMaxVisibleFriendRows = 8;
     private const int FollowFingerprintMinAutoClickGridColumns = 16;
@@ -961,11 +961,12 @@ public sealed class VmOperations
             return friends;
         }
 
-        var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(input, args.FriendRow ?? 1, "follow", cancellationToken);
+        var friendRow = ResolveFriendRow(args.FriendRow);
+        var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(input, friendRow, "follow", cancellationToken);
         if (!entry.Entered)
         {
             return CommandResult.Failure(
-                $"Clicked friend Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {entry.Message}",
+                $"Clicked friend row {friendRow} Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {entry.Message}",
                 await CollectStatusAsync(cancellationToken));
         }
 
@@ -973,12 +974,12 @@ public sealed class VmOperations
         return CommandResult.Success("Join friend/follow flow completed.", await CollectStatusAsync(cancellationToken));
     }
 
-    // Issue #25: capture a small grid-sample "fingerprint" of whoever is sitting in friend row 1
+    // Issue #25: capture a small grid-sample "fingerprint" of whoever is sitting in the selected friend row
     // right now, so the Host can distribute it to every agent and follow-auto can later recognize
     // that same name wherever it appears, instead of every agent needing a manually-supplied
     // friendRow that breaks the moment the friends list re-sorts. The operator is responsible for
-    // making sure the intended friend is actually at the top of their own list before binding -
-    // this command has no way to know who it's capturing, only where to look.
+    // making sure the intended friend is actually in the selected row before binding - this command
+    // has no way to know who it's capturing, only where to look.
     private async Task<CommandResult> FollowBindCaptureAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
         var input = FocusD2R();
@@ -1011,13 +1012,14 @@ public sealed class VmOperations
             return friends;
         }
 
-        var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row: 1);
+        var friendRow = ResolveFriendRow(args.FriendRow);
+        var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row: friendRow);
         var samples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows);
         var fingerprint = new FriendFingerprint(region.GridColumns, region.GridRows, samples);
 
         return CommandResult.Success(
-            "Captured a follow-bind fingerprint from the top friend row.",
-            new { fingerprint = fingerprint.ToBase64() });
+            $"Captured a follow-bind fingerprint from friend row {friendRow}.",
+            new { fingerprint = fingerprint.ToBase64(), friendRow });
     }
 
     // Pure local file I/O, no D2R interaction - bypasses _commandGate the same way screenshot and
@@ -1187,22 +1189,24 @@ public sealed class VmOperations
         }
 
         var selection = SelectFollowFingerprintMatch(rowMatches);
+        var scoreSummary = FormatFollowFingerprintScores(rowMatches);
         if (selection.Status == FollowFingerprintSelectionStatus.NoUsableMatch || selection.Match is null)
         {
+            MarkCommandCheckpoint($"FollowAutoCheckAsync: no confident bound friend match; {scoreSummary}");
             return CommandResult.Success(
-                $"Bound friend not confidently found in the visible friends list this cycle. {FormatFollowFingerprintScores(rowMatches)}",
-                new { bound = true, joined = false, fingerprintScores = FormatFollowFingerprintScores(rowMatches) });
+                $"Bound friend not confidently found in the visible friends list this cycle. {scoreSummary}",
+                new { bound = true, joined = false, fingerprintScores = scoreSummary });
         }
 
         if (selection.Status == FollowFingerprintSelectionStatus.Ambiguous)
         {
+            MarkCommandCheckpoint($"FollowAutoCheckAsync: ambiguous bound friend match; {scoreSummary}");
             return CommandResult.Success(
-                $"Bound friend fingerprint was ambiguous; not clicking a friend row this cycle. {FormatFollowFingerprintScores(rowMatches)}",
-                new { bound = true, joined = false, fingerprintScores = FormatFollowFingerprintScores(rowMatches) });
+                $"Bound friend fingerprint was ambiguous; not clicking a friend row this cycle. {scoreSummary}",
+                new { bound = true, joined = false, fingerprintScores = scoreSummary });
         }
 
         var matchedRow = selection.Match.Row;
-        var scoreSummary = FormatFollowFingerprintScores(rowMatches);
         MarkCommandCheckpoint($"FollowAutoCheckAsync: matched bound friend at row {matchedRow}; {scoreSummary}");
         var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(input, matchedRow, "follow-auto", cancellationToken);
         if (!entry.Entered)
@@ -4545,6 +4549,12 @@ public sealed class VmOperations
     private AgentCommon.UiPoint GetFriendRowPoint(int? friendRow)
     {
         return D2RUiCoordinateCatalog.GetFriendRowPoint(_config.Ui, friendRow);
+    }
+
+    private int ResolveFriendRow(int? friendRow)
+    {
+        var row = friendRow ?? _config.Ui.DefaultFriendRow;
+        return row > 0 ? row : new D2RUiAutomationConfig().DefaultFriendRow;
     }
 
     private AgentCommon.UiPoint GetFriendContextJoinGamePoint(int? friendRow)

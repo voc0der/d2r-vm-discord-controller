@@ -66,7 +66,7 @@ public sealed class FollowFingerprintSelectionTests
     }
 
     [Fact]
-    public void SelectFollowFingerprintMatchAcceptsLiveRowTwoScores()
+    public void SelectFollowFingerprintMatchRejectsCloseLiveRowTwoScores()
     {
         var selection = VmOperations.SelectFollowFingerprintMatch(
         [
@@ -80,7 +80,7 @@ public sealed class FollowFingerprintSelectionTests
             Match(row: 8, average: 6.5, signalAverage: 124.5, signalPixels: 2)
         ]);
 
-        Assert.Equal(VmOperations.FollowFingerprintSelectionStatus.Selected, selection.Status);
+        Assert.Equal(VmOperations.FollowFingerprintSelectionStatus.Ambiguous, selection.Status);
         Assert.Equal(2, selection.Match?.Row);
     }
 

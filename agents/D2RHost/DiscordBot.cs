@@ -2572,7 +2572,7 @@ public sealed class DiscordBot
         return channel.SendMessageAsync(DiscordMessageTruncator.Truncate(content));
     }
 
-    // Issue #25: capture a follow-bind fingerprint from one account's friend row 1, then push it
+    // Issue #25: capture a follow-bind fingerprint from one account's selected friend row, then push it
     // (or clear it) to every online account so follow-auto can recognize the same name anywhere.
     // Deliberately simpler messaging than join-auto's persistent monitor message - plain
     // progress/outcome posts only, not a live-edited status message. Worth revisiting if this
@@ -2609,7 +2609,7 @@ public sealed class DiscordBot
         if (bindAccountKey is null)
         {
             await context.Command.RespondAsync(
-                "follow bind:true requires account (whose friend row 1 to capture from).",
+                "follow bind:true requires account (whose selected friend row to capture from).",
                 ephemeral: true);
             return;
         }
@@ -2640,6 +2640,9 @@ public sealed class DiscordBot
             return;
         }
 
+        var capturedFriendRow = TryGetInt(data, "friendRow", out var friendRow)
+            ? friendRow
+            : context.GetInt("friend-row") ?? 1;
         var distributed = 0;
         var distributionFailures = new List<string>();
         foreach (var (accountKey, account) in online)
@@ -2665,7 +2668,7 @@ public sealed class DiscordBot
 
         _followBoundAccountKey = resolvedAccountKey;
         var followBindMessage =
-            $"Captured the friend at {resolvedAccountKey}'s friend row 1 and distributed it to {distributed}/{online.Length} online accounts. "
+            $"Captured the friend at {resolvedAccountKey}'s friend row {capturedFriendRow} and distributed it to {distributed}/{online.Length} online accounts. "
             + "Use /d2r follow auto:true to start following.";
         if (distributionFailures.Count > 0)
         {

@@ -165,7 +165,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("friend-row")
-            .WithDescription("Visible friends drawer row to right-click; defaults to VM config")
+            .WithDescription("Visible friends drawer row for follow/bind; defaults to VM config")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(1)
@@ -218,7 +218,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("bind")
-            .WithDescription("Capture (true) or clear (false) the friend to auto-follow, from account's friend row 1")
+            .WithDescription("Capture (true) or clear (false) the friend to auto-follow from selected friend-row")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
