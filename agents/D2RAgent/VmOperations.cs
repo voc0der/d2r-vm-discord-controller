@@ -2022,7 +2022,7 @@ public sealed class VmOperations
             || DateTimeOffset.UtcNow - _lastObservedFrameUtc.Value > TimeSpan.FromSeconds(15)
             || string.IsNullOrWhiteSpace(_lastObservedFrame))
         {
-            return VisibleD2RState.Unknown;
+            return FallbackProcessOnlyVisibleState();
         }
 
         return _lastObservedFrame switch
@@ -2034,8 +2034,19 @@ public sealed class VmOperations
             nameof(VisibleD2RState.NotRunning) => VisibleD2RState.NotRunning,
             nameof(VisibleD2RState.LobbyOrGame) => VisibleD2RState.LobbyOrGame,
             nameof(VisibleD2RState.InGame) => VisibleD2RState.InGame,
-            _ => VisibleD2RState.Unknown
+            _ => FallbackProcessOnlyVisibleState()
         };
+    }
+
+    private VisibleD2RState FallbackProcessOnlyVisibleState()
+    {
+        var interaction = _lastLobbyOrGameInteractionUtc;
+        if (interaction is not null && DateTimeOffset.UtcNow - interaction.Value < TimeSpan.FromSeconds(120))
+        {
+            return VisibleD2RState.LobbyOrGame;
+        }
+
+        return VisibleD2RState.Unknown;
     }
 
     private VisibleD2RState DetectVisibleD2RState(bool d2rRunning)
