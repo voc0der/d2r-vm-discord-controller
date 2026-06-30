@@ -955,7 +955,7 @@ public sealed class VmOperations
         if (!IsAnyLobbyEntryMenuVisible(input))
         {
             MarkCommandCheckpoint("JoinFriendAsync: lobby not visually confirmed - navigating directly");
-            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken, guardAgainstInGame: true);
+            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
             await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
             await DelayStepAsync(cancellationToken);
 
@@ -1006,7 +1006,7 @@ public sealed class VmOperations
         if (!IsAnyLobbyEntryMenuVisible(input))
         {
             MarkCommandCheckpoint("FollowBindCaptureAsync: lobby not visually confirmed - navigating directly");
-            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken, guardAgainstInGame: true);
+            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
             await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
             await DelayStepAsync(cancellationToken);
 
@@ -1230,7 +1230,7 @@ public sealed class VmOperations
         if (!IsAnyLobbyEntryMenuVisible(input))
         {
             MarkCommandCheckpoint("FollowAutoCheckAsync: lobby not visually confirmed - navigating directly");
-            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken, guardAgainstInGame: true);
+            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
             ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
             await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
             await DelayStepAsync(cancellationToken);
@@ -3349,8 +3349,8 @@ public sealed class VmOperations
         }
 
         MarkCommandCheckpoint("EnsureLobbyOpenedAsync: direct character slot/lobby click");
-        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken, guardAgainstInGame: true);
-        await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
+        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+        await ClickLobbyDirectAsync(input, cancellationToken);
         MarkLobbyOrGameInteraction("Clicked Lobby without visual verification.");
         return null;
     }
@@ -4509,15 +4509,8 @@ public sealed class VmOperations
     private async Task SelectCharacterAsync(
         WindowsInput input,
         int? characterSlot,
-        CancellationToken cancellationToken,
-        bool guardAgainstInGame = false)
+        CancellationToken cancellationToken)
     {
-        if (ShouldSkipMenuClickForInGameSafety(guardAgainstInGame, () => MightAlreadyBeInGame(input)))
-        {
-            MarkCommandCheckpoint("SelectCharacterAsync: skipped click, might already be in-game");
-            return;
-        }
-
         ClickD2R(input, GetCharacterSlotPoint(characterSlot));
         await DelayFastMenuAsync(cancellationToken);
     }
