@@ -1618,6 +1618,15 @@ public sealed class VmOperations
 
         MarkCommandCheckpoint(FormatFriendsExpansionVerificationCheckpoint(context, accordionAction));
         expanded = GetFriendsListExpandedEvidence(input);
+        if (!expanded.IsExpanded
+            && accordionAction is FriendsAccordionAction.VerifyAfterOpeningDrawer or FriendsAccordionAction.SkipExpanded)
+        {
+            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion after verification found it collapsed");
+            ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
+            await DelayLongAsync(cancellationToken);
+            expanded = GetFriendsListExpandedEvidence(input);
+        }
+
         if (!expanded.IsExpanded)
         {
             return CommandResult.Failure(
