@@ -39,6 +39,31 @@ public sealed class FriendsAccordionDecisionTests
     }
 
     [Theory]
+    [InlineData(0, false, true, true, false)]
+    [InlineData(0, false, false, false, false)]
+    [InlineData(1, false, false, true, false)]
+    [InlineData(2, false, false, true, false)]
+    [InlineData(3, false, false, true, true)]
+    [InlineData(3, false, true, true, false)]
+    [InlineData(3, false, false, false, false)]
+    [InlineData(3, true, false, true, false)]
+    public void AccordionRecoveryOnlyRetogglesWhenStrongPriorExpansionDisappears(
+        int action,
+        bool expandedEvidence,
+        bool rowEvidence,
+        bool reliableEvidence,
+        bool expected)
+    {
+        var recover = VmOperations.ShouldRecoverFriendsAccordionAfterVerification(
+            (VmOperations.FriendsAccordionAction)action,
+            expandedEvidence,
+            rowEvidence,
+            reliableEvidence);
+
+        Assert.Equal(expected, recover);
+    }
+
+    [Theory]
     [InlineData(0, 0, false)]
     [InlineData(1, 1, false)]
     [InlineData(1, 2, true)]

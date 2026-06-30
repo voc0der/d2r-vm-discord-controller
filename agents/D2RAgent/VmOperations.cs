@@ -956,7 +956,13 @@ public sealed class VmOperations
         {
             MarkCommandCheckpoint("JoinFriendAsync: lobby not visually confirmed - navigating directly");
             await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
-            await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
+            if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true))
+            {
+                return CommandResult.Failure(
+                    "Could not safely click Lobby before attempting to follow a friend because the client might already be in-game.",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
             await DelayStepAsync(cancellationToken);
 
             if (!IsAnyLobbyEntryMenuVisible(input))
@@ -1007,7 +1013,13 @@ public sealed class VmOperations
         {
             MarkCommandCheckpoint("FollowBindCaptureAsync: lobby not visually confirmed - navigating directly");
             await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
-            await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
+            if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true))
+            {
+                return CommandResult.Failure(
+                    "Could not safely click Lobby before capturing a follow-bind fingerprint because the client might already be in-game.",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
             await DelayStepAsync(cancellationToken);
 
             if (!IsAnyLobbyEntryMenuVisible(input))
@@ -1232,7 +1244,21 @@ public sealed class VmOperations
             MarkCommandCheckpoint("FollowAutoCheckAsync: lobby not visually confirmed - navigating directly");
             await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
             ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
-            await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
+            if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true))
+            {
+                return CommandResult.Success(
+                    "Lobby navigation was skipped because the in-game safety check was inconclusive; waiting for the next follow-auto cycle.",
+                    new
+                    {
+                        bound = true,
+                        joined = false,
+                        d2rReady = false,
+                        templatePath = templateLoad.Path,
+                        templateExists = templateLoad.Exists,
+                        templateLength = templateLoad.ContentLength
+                    });
+            }
+
             await DelayStepAsync(cancellationToken);
             ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
 
@@ -1652,8 +1678,11 @@ public sealed class VmOperations
 
         MarkCommandCheckpoint(FormatFriendsExpansionVerificationCheckpoint(context, accordionAction));
         expanded = GetFriendsListExpandedEvidence(input);
-        if (!expanded.IsExpanded
-            && accordionAction is FriendsAccordionAction.VerifyAfterOpeningDrawer or FriendsAccordionAction.SkipExpanded)
+        if (ShouldRecoverFriendsAccordionAfterVerification(
+                accordionAction,
+                expanded.IsExpanded,
+                expanded.HasRowEvidence,
+                expanded.IsReliable))
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion after verification found it collapsed");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
@@ -1697,6 +1726,18 @@ public sealed class VmOperations
     internal static bool ShouldVerifyFriendsExpansionAfterAction(FriendsAccordionAction action)
     {
         return true;
+    }
+
+    internal static bool ShouldRecoverFriendsAccordionAfterVerification(
+        FriendsAccordionAction action,
+        bool expandedEvidence,
+        bool rowEvidence,
+        bool reliableEvidence)
+    {
+        return action == FriendsAccordionAction.SkipExpanded
+            && !expandedEvidence
+            && !rowEvidence
+            && reliableEvidence;
     }
 
     internal static string FormatFriendsExpansionVerificationCheckpoint(string context, FriendsAccordionAction action)
@@ -2151,7 +2192,7 @@ public sealed class VmOperations
         // unchanged from v0.2.64, which added that ordering because a filled join/create form
         // could satisfy IsInGameHudFrame's looser thresholds - reordering this block back
         // wholesale would have resurrected that exact bug.
-        if (IsInGameReadyStrict(input))
+        if (IsInGameReadyStrictBounded(input, fallbackOnTimeout: false))
         {
             return VisibleD2RState.InGame;
         }
@@ -2233,7 +2274,7 @@ public sealed class VmOperations
             var charMenuLogo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: false, sampleGrid: sampleGrid);
             var charButtons = IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid);
             var charMenu = IsCharacterMenuReady(input, windowRelative: false, sampleGrid);
-            var inGameStrict = IsInGameReadyStrict(input);
+            var inGameStrict = IsInGameReadyStrictBounded(input, fallbackOnTimeout: false);
             var lobby = IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(input);
             var createTab = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab), widthRatio: 0.12, heightRatio: 0.040, windowRelative: false, sampleGrid: sampleGrid);
             var joinTab = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), widthRatio: 0.12, heightRatio: 0.040, windowRelative: false, sampleGrid: sampleGrid);
@@ -3498,7 +3539,7 @@ public sealed class VmOperations
         if (ShouldSkipMenuClickForInGameSafety(guardAgainstInGame, () => MightAlreadyBeInGame(input)))
         {
             MarkCommandCheckpoint("ClickLobbyDirectAsync: skipped click, might already be in-game");
-            return true;
+            return false;
         }
 
         ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CharacterLobbyButton));
@@ -4069,7 +4110,7 @@ public sealed class VmOperations
         // the lobby or a live game, instead of treating "lobby" or "in-game" as Unknown and
         // continuing to blast input. A misdirected click in a live game is a movement click,
         // which can kill a Hardcore character (the v0.2.79 incident this guards against).
-        if (IsInGameReadyStrict(input))
+        if (IsInGameReadyStrictBounded(input, fallbackOnTimeout: true))
         {
             return ReadyScreenState.InGame;
         }
@@ -4164,7 +4205,7 @@ public sealed class VmOperations
         // See DetectReadyScreenState for why strict in-game evidence is checked before the
         // lobby check, and why both matter here: stopping the ready loop's input bursts the
         // moment the client has reached the lobby or a live game, not just reporting Unknown.
-        if (IsInGameReadyStrict(input))
+        if (IsInGameReadyStrictBounded(input, fallbackOnTimeout: true))
         {
             return ReadyScreenState.InGame;
         }
@@ -4197,7 +4238,7 @@ public sealed class VmOperations
         // See DetectReadyScreenState for why strict in-game evidence is checked before the
         // lobby check, and why both matter here: stopping the ready loop's input bursts the
         // moment the client has reached the lobby or a live game, not just reporting Unknown.
-        if (IsInGameReadyStrict(input))
+        if (IsInGameReadyStrictBounded(input, fallbackOnTimeout: true))
         {
             return ReadyScreenState.InGame;
         }
@@ -4420,6 +4461,11 @@ public sealed class VmOperations
     {
         return DetectInGameHudMatch(input, windowRelative: false) is InGameHudMatchKind.ModernProfile or InGameHudMatchKind.LegacyProfile
             || DetectInGameHudMatch(input, windowRelative: true) is InGameHudMatchKind.ModernProfile or InGameHudMatchKind.LegacyProfile;
+    }
+
+    private bool IsInGameReadyStrictBounded(WindowsInput input, bool fallbackOnTimeout)
+    {
+        return TryRunBounded(() => IsInGameReadyStrict(input), InGameHudSampleBoundMs, fallbackOnTimeout);
     }
 
     private bool IsInGameReady(WindowsInput input, string checkpointContext, DateTimeOffset? broadHudFrameAcceptAt = null, bool forceFreshSample = false)
