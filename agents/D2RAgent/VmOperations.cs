@@ -332,7 +332,7 @@ public sealed class VmOperations
             "quit_d2r" => await QuitD2RAsync(cancellationToken),
             "restart_d2r" => await RestartD2RAsync(cancellationToken),
             "screenshot" => await TakeScreenshotAsync(cancellationToken),
-            "menu_ready" => await ReadyClientAsync(cancellationToken),
+            "menu_ready" => await ReadyClientAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_lobby" => await GoLobbyAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_play" => await PlayCharacterAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_prepare_join_game" => await PrepareJoinGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
@@ -659,8 +659,9 @@ public sealed class VmOperations
         return CommandResult.Success("Alt+F4 sent to D2R.", await CollectStatusAsync(cancellationToken));
     }
 
-    private async Task<CommandResult> ReadyClientAsync(CancellationToken cancellationToken)
+    private async Task<CommandResult> ReadyClientAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
+        var followAutoRunId = args.FollowAutoRunId;
         var launch = BeginD2RReadyLaunch();
         if (!launch.Ok)
         {
@@ -668,14 +669,15 @@ public sealed class VmOperations
         }
 
         var input = new WindowsInput();
-        var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken, keepLaunchAlive: true);
+        var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken, keepLaunchAlive: true, followAutoRunId: followAutoRunId);
         if (!ready.Ready)
         {
             var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(
                 input,
                 cancellationToken,
                 Math.Max(GetReadyLoopTimeoutSeconds(), MenuReadyFallbackTimeoutSeconds),
-                keepLaunchAlive: true);
+                keepLaunchAlive: true,
+                followAutoRunId: followAutoRunId);
             ready = detectorReady with
             {
                 Nudges = ready.Nudges + detectorReady.Nudges,
@@ -2492,7 +2494,8 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken,
         int? timeoutSeconds = null,
-        bool keepLaunchAlive = false)
+        bool keepLaunchAlive = false,
+        long? followAutoRunId = null)
     {
         var skipSeconds = timeoutSeconds ?? GetReadyLoopTimeoutSeconds();
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
@@ -2520,7 +2523,7 @@ public sealed class VmOperations
 
         while (DateTimeOffset.UtcNow < deadline)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
 
             var now = DateTimeOffset.UtcNow;
 
@@ -2616,7 +2619,8 @@ public sealed class VmOperations
     private async Task<ReadyWaitResult> RunStartupReadyInputPlanUntilCharacterScreenAsync(
         WindowsInput input,
         CancellationToken cancellationToken,
-        bool keepLaunchAlive = false)
+        bool keepLaunchAlive = false,
+        long? followAutoRunId = null)
     {
         var plan = StartupReadyInputPlan.FromConfig(_config.Ui);
         var timeoutSeconds = GetReadyStartupSkipSeconds();
@@ -2644,7 +2648,7 @@ public sealed class VmOperations
 
         for (var i = 0; i < plan.IntroClickCount && DateTimeOffset.UtcNow < deadline; i++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
 
             var now = DateTimeOffset.UtcNow;
 
@@ -2720,7 +2724,7 @@ public sealed class VmOperations
 
         for (var i = 0; i < plan.TitleScreenKeyPressCount && DateTimeOffset.UtcNow < deadline; i++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
 
             var now = DateTimeOffset.UtcNow;
 
