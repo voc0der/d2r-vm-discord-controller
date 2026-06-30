@@ -80,6 +80,7 @@ public sealed class VmOperations
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
     private DateTimeOffset _nextInGameHudSampleAt = DateTimeOffset.MinValue;
     private bool _lastInGameHudResult;
+    private long _followAutoStoppedThroughRunId;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -291,10 +292,10 @@ public sealed class VmOperations
             return CommandResult.Success("Status collected.", await CollectStatusAsync(cancellationToken));
         }
 
-        // follow_set_template/follow_clear_template are pure local file writes, no D2R
-        // interaction - same reasoning as screenshot/status above, so binding/unbinding from the
-        // Host doesn't queue behind whatever long-running menu command this agent is mid-way
-        // through.
+        // follow_set_template/follow_clear_template/follow_stop_auto are pure local state
+        // changes, no D2R interaction - same reasoning as screenshot/status above, so
+        // binding/unbinding/stopping from the Host doesn't queue behind whatever long-running
+        // menu command this agent is mid-way through.
         if (string.Equals(request.Command, "follow_set_template", StringComparison.OrdinalIgnoreCase))
         {
             return FollowSetTemplate(MenuCommandArgs.From(request.Args));
@@ -303,6 +304,11 @@ public sealed class VmOperations
         if (string.Equals(request.Command, "follow_clear_template", StringComparison.OrdinalIgnoreCase))
         {
             return FollowClearTemplate();
+        }
+
+        if (string.Equals(request.Command, "follow_stop_auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return FollowStopAuto(MenuCommandArgs.From(request.Args));
         }
 
         await _commandGate.WaitAsync(cancellationToken);
@@ -1082,12 +1088,73 @@ public sealed class VmOperations
         return CommandResult.Success("Follow-bind fingerprint cleared.");
     }
 
+    private CommandResult FollowStopAuto(MenuCommandArgs args)
+    {
+        var stoppedThroughRunId = RecordFollowAutoStoppedThrough(args.FollowAutoRunId);
+        MarkCommandCheckpoint(args.FollowAutoRunId is > 0
+            ? $"follow-auto stop requested through run {args.FollowAutoRunId.Value}"
+            : "follow-auto stop requested without a run id");
+        return CommandResult.Success(
+            "Follow-auto stop signal recorded.",
+            new
+            {
+                followAutoRunId = args.FollowAutoRunId,
+                stoppedThroughRunId
+            });
+    }
+
+    private long RecordFollowAutoStoppedThrough(long? followAutoRunId)
+    {
+        if (followAutoRunId is not > 0)
+        {
+            return Volatile.Read(ref _followAutoStoppedThroughRunId);
+        }
+
+        var runId = followAutoRunId.Value;
+        while (true)
+        {
+            var current = Volatile.Read(ref _followAutoStoppedThroughRunId);
+            if (current >= runId)
+            {
+                return current;
+            }
+
+            var observed = Interlocked.CompareExchange(ref _followAutoStoppedThroughRunId, runId, current);
+            if (observed == current)
+            {
+                return runId;
+            }
+        }
+    }
+
+    private void ThrowIfFollowAutoStopped(long? followAutoRunId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var stoppedThroughRunId = Volatile.Read(ref _followAutoStoppedThroughRunId);
+        if (!IsFollowAutoRunStopped(followAutoRunId, stoppedThroughRunId))
+        {
+            return;
+        }
+
+        MarkCommandCheckpoint($"follow-auto run {followAutoRunId!.Value} stopped before next click");
+        throw new OperationCanceledException("follow-auto was stopped.", cancellationToken);
+    }
+
+    internal static bool IsFollowAutoRunStopped(long? followAutoRunId, long stoppedThroughRunId)
+    {
+        return followAutoRunId is > 0
+            && stoppedThroughRunId >= followAutoRunId.Value;
+    }
+
     // One cycle of follow-auto: if nobody's bound, say so (not a failure - this is the normal
     // state for any account that isn't part of a follow-auto run). If bound, scan every visible
     // friend row for a fingerprint match - not just row 1 - since other tracked friends coming
     // online can outrank the bound friend in Battle.net's own online-sort at any point.
     private async Task<CommandResult> FollowAutoCheckAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
+        var followAutoRunId = args.FollowAutoRunId;
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
+
         var templateLoad = LoadFollowTemplate();
         if (templateLoad.Template is null)
         {
@@ -1122,6 +1189,7 @@ public sealed class VmOperations
                 });
         }
 
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         WindowsInput input;
         try
         {
@@ -1143,7 +1211,9 @@ public sealed class VmOperations
                 });
         }
 
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         if (lobby is not null)
         {
             return lobby;
@@ -1153,8 +1223,10 @@ public sealed class VmOperations
         {
             MarkCommandCheckpoint("FollowAutoCheckAsync: lobby not visually confirmed - navigating directly");
             await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+            ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
             await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
             await DelayStepAsync(cancellationToken);
+            ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
 
             if (!IsAnyLobbyEntryMenuVisible(input))
             {
@@ -1167,6 +1239,7 @@ public sealed class VmOperations
         }
 
         var friends = await EnsureFriendsListVisibleAsync(input, "follow-auto", cancellationToken);
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         if (friends is not null)
         {
             return friends;
@@ -1176,7 +1249,7 @@ public sealed class VmOperations
         var rowMatches = new List<FriendRowFingerprintMatch>();
         for (var row = 1; row <= maxRows; row++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
             MarkCommandCheckpoint($"FollowAutoCheckAsync: sampling friend row {row}");
             var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
             var samples = TryCaptureFriendFingerprintSamples(
@@ -1188,6 +1261,7 @@ public sealed class VmOperations
             rowMatches.Add(new FriendRowFingerprintMatch(row, comparison));
         }
 
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         var selection = SelectFollowFingerprintMatch(rowMatches);
         var scoreSummary = FormatFollowFingerprintScores(rowMatches);
         if (selection.Status == FollowFingerprintSelectionStatus.NoUsableMatch || selection.Match is null)
@@ -1208,7 +1282,13 @@ public sealed class VmOperations
 
         var matchedRow = selection.Match.Row;
         MarkCommandCheckpoint($"FollowAutoCheckAsync: matched bound friend at row {matchedRow}; {scoreSummary}");
-        var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(input, matchedRow, "follow-auto", cancellationToken);
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
+        var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(
+            input,
+            matchedRow,
+            "follow-auto",
+            cancellationToken,
+            () => ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken));
         if (!entry.Entered)
         {
             return CommandResult.Failure(
@@ -1216,6 +1296,7 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         if (!await WaitForStrictFollowAutoEntryAsync(input, cancellationToken))
         {
             return CommandResult.Failure(
@@ -1320,13 +1401,16 @@ public sealed class VmOperations
         WindowsInput input,
         int friendRow,
         string context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? stopCheck = null)
     {
         var joinGameTab = GetUiPoint(D2RUiCoordinateTarget.JoinGameTab);
 
         async Task<bool> SelectFriendGameAsync()
         {
+            stopCheck?.Invoke();
             var friends = await EnsureFriendsListVisibleAsync(input, $"{context}-entry-retry", cancellationToken);
+            stopCheck?.Invoke();
             if (friends is not null)
             {
                 return false;
@@ -1334,6 +1418,7 @@ public sealed class VmOperations
 
             ClickD2R(input, GetFriendRowPoint(friendRow), MouseButton.Right);
             await DelayStepAsync(cancellationToken);
+            stopCheck?.Invoke();
             var friendJoinPoint = GetFriendContextJoinGamePoint(friendRow);
             if (!IsFriendContextJoinPointInLeftPane(friendJoinPoint))
             {
@@ -1343,6 +1428,7 @@ public sealed class VmOperations
 
             ClickD2R(input, friendJoinPoint);
             await DelayFastMenuAsync(cancellationToken);
+            stopCheck?.Invoke();
             return true;
         }
 
@@ -1367,6 +1453,7 @@ public sealed class VmOperations
 
         async Task<bool> SelectAndSubmitFriendGameAsync(string reason, bool resetDeadline = false)
         {
+            stopCheck?.Invoke();
             MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): {reason}: selecting friend context Join Game");
             if (!await SelectFriendGameAsync())
             {
@@ -1389,8 +1476,10 @@ public sealed class VmOperations
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            stopCheck?.Invoke();
             var broadHudFrameAcceptAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 3, 8));
             var waitResult = await WaitForGameEntryAsync(input, joinGameTab, cancellationToken, legacyToggle, broadHudFrameAcceptAt);
+            stopCheck?.Invoke();
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
@@ -1405,6 +1494,7 @@ public sealed class VmOperations
             {
                 dialogRetries++;
                 MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): stale/error dialog, reselecting friend game");
+                stopCheck?.Invoke();
                 if (!await DismissGameEntryErrorDialogAsync(input, cancellationToken)
                     || !await SelectAndSubmitFriendGameAsync("retry after game-entry dialog", resetDeadline: true))
                 {
@@ -1418,6 +1508,7 @@ public sealed class VmOperations
             {
                 connectionRetries++;
                 MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): connection interrupted, reselecting friend game");
+                stopCheck?.Invoke();
                 if (!await WaitForMenuAfterConnectionInterruptedAsync(input, joinGameTab, cancellationToken)
                     || !await SelectAndSubmitFriendGameAsync("retry after connection interruption", resetDeadline: true))
                 {
@@ -1429,9 +1520,19 @@ public sealed class VmOperations
 
             if (waitResult == GameEntryWaitResult.OfflineCharacterScreen)
             {
-                if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken)
-                    || !await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true)
-                    || !await SelectAndSubmitFriendGameAsync("retry after offline character screen", resetDeadline: true))
+                stopCheck?.Invoke();
+                if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the friend game could not be reselected after clicking Online.");
+                }
+
+                stopCheck?.Invoke();
+                if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the friend game could not be reselected after clicking Online.");
+                }
+
+                if (!await SelectAndSubmitFriendGameAsync("retry after offline character screen", resetDeadline: true))
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to the offline character screen, and the friend game could not be reselected after clicking Online.");
                 }
@@ -1441,8 +1542,13 @@ public sealed class VmOperations
 
             if (waitResult == GameEntryWaitResult.ReturnedToCharacterScreen)
             {
-                if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true)
-                    || !await SelectAndSubmitFriendGameAsync("retry after character screen return", resetDeadline: true))
+                stopCheck?.Invoke();
+                if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true))
+                {
+                    return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the friend game could not be reselected.");
+                }
+
+                if (!await SelectAndSubmitFriendGameAsync("retry after character screen return", resetDeadline: true))
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned to character select, but the friend game could not be reselected.");
                 }
@@ -1452,6 +1558,7 @@ public sealed class VmOperations
 
             if (waitResult == GameEntryWaitResult.ReturnedToMenu)
             {
+                stopCheck?.Invoke();
                 if (!await SelectAndSubmitFriendGameAsync("retry after menu return", resetDeadline: true))
                 {
                     return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, "The client returned from game entry, but the friend game could not be reselected.");

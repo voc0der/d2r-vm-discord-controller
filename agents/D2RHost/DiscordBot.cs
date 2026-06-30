@@ -47,6 +47,8 @@ public sealed class DiscordBot
     private CancellationTokenSource? _followAutoCts;
     private string? _followAutoStopReason;
     private string? _followBoundAccountKey;
+    private long _followAutoRunSequence = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    private long _followAutoCurrentRunId;
 
     // join-all's "join the last known game if it's recent" (issue #20, item 5) needs to mean
     // a game create-game-all/join-all actually acted on, not just whatever /game set last had -
@@ -289,7 +291,8 @@ public sealed class DiscordBot
             // with "exceeded agent-side timeout of 25s" while join-auto was actively retrying a
             // join in the background - the gate was always going to free up, just not within 30s.
             await CancelJoinAutoIfRunningAsync("quit-all was called");
-            await CancelFollowAutoIfRunningAsync("quit-all was called");
+            var followAutoCancel = await CancelFollowAutoIfRunningAsync("quit-all was called");
+            QueueFollowAutoStopSignal(followAutoCancel.RunId);
             await QueueAllCommandsAsync(
                 context,
                 "quit_d2r",
@@ -336,7 +339,8 @@ public sealed class DiscordBot
             case "quit":
                 // See the quit-all gate-wait comment above - same risk for a single account.
                 await CancelJoinAutoIfRunningAsync($"quit was called for {singleAccountKey}");
-                await CancelFollowAutoIfRunningAsync($"quit was called for {singleAccountKey}");
+                var followAutoCancel = await CancelFollowAutoIfRunningAsync($"quit was called for {singleAccountKey}");
+                QueueFollowAutoStopSignal(followAutoCancel.RunId);
                 await RunVmCommandAsync(context, singleAccount, "quit_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
                 return;
             case "restart-client":
@@ -2235,7 +2239,8 @@ public sealed class DiscordBot
         string accountKey,
         AccountConfig account,
         GameInput? game,
-        SlashContext context)
+        SlashContext context,
+        long? followAutoRunId = null)
     {
         return new
         {
@@ -2246,7 +2251,8 @@ public sealed class DiscordBot
             password = game?.Password,
             difficulty = game?.Difficulty,
             characterSlot = context.GetInt("character-slot") ?? account.CharacterSlot,
-            friendRow = context.GetInt("friend-row")
+            friendRow = context.GetInt("friend-row"),
+            followAutoRunId
         };
     }
 
@@ -2583,8 +2589,9 @@ public sealed class DiscordBot
 
         if (!bindFlag)
         {
-            await CancelFollowAutoIfRunningAsync("the follow-bind target was cleared");
             await context.Command.DeferAsync(ephemeral: true);
+            var followAutoCancel = await CancelFollowAutoIfRunningAsync("the follow-bind target was cleared");
+            var stopSignals = await SignalFollowAutoStopAgentsAsync(followAutoCancel.RunId);
             var cleared = 0;
             foreach (var (accountKey, account) in online)
             {
@@ -2600,8 +2607,11 @@ public sealed class DiscordBot
             }
 
             _followBoundAccountKey = null;
+            var stopSummary = stopSignals.Attempted > 0
+                ? $" Follow-auto stop signal reached {stopSignals.Succeeded}/{stopSignals.Attempted} online agent(s)."
+                : "";
             await context.Command.ModifyOriginalResponseAsync(
-                properties => properties.Content = $"Follow-bind cleared on {cleared}/{online.Length} online accounts.");
+                properties => properties.Content = $"Follow-bind cleared on {cleared}/{online.Length} online accounts.{stopSummary}");
             return;
         }
 
@@ -2683,6 +2693,7 @@ public sealed class DiscordBot
     {
         await _followAutoLock.WaitAsync();
         CancellationTokenSource cts;
+        long runId;
         try
         {
             if (_followAutoCts is not null)
@@ -2695,6 +2706,8 @@ public sealed class DiscordBot
 
             cts = new CancellationTokenSource();
             _followAutoCts = cts;
+            runId = ++_followAutoRunSequence;
+            _followAutoCurrentRunId = runId;
         }
         finally
         {
@@ -2706,33 +2719,38 @@ public sealed class DiscordBot
                 + (watch ? " Watch diagnostics are enabled." : ""),
             ephemeral: true);
 
-        _ = Task.Run(() => RunFollowAutoLoopAsync(context, delaySeconds, watch, idleTimeout, cts.Token));
+        _ = Task.Run(() => RunFollowAutoLoopAsync(context, delaySeconds, watch, idleTimeout, runId, cts.Token));
     }
 
     private async Task StopFollowAutoAsync(SlashContext context)
     {
-        var wasRunning = await CancelFollowAutoIfRunningAsync(reason: null);
-        await context.Command.RespondAsync(
-            wasRunning ? "follow-auto is stopping." : "follow-auto is not running.",
-            ephemeral: true);
+        await context.Command.DeferAsync(ephemeral: true);
+        var cancel = await CancelFollowAutoIfRunningAsync(reason: null);
+        var stopSignals = await SignalFollowAutoStopAgentsAsync(cancel.RunId);
+        var stopSummary = stopSignals.Attempted > 0
+            ? $" Stop signal reached {stopSignals.Succeeded}/{stopSignals.Attempted} online agent(s) to abort in-flight follow clicks."
+            : "";
+        await context.Command.ModifyOriginalResponseAsync(properties =>
+            properties.Content = (cancel.WasRunning ? "follow-auto stopped." : "follow-auto is not running.") + stopSummary);
     }
 
     // Same "if you quit, it should stop auto if its running" precedent as join-auto (issue #24) -
     // wired into the same quit/quit-all call sites as CancelJoinAutoIfRunningAsync.
-    private async Task<bool> CancelFollowAutoIfRunningAsync(string? reason)
+    private async Task<FollowAutoCancelResult> CancelFollowAutoIfRunningAsync(string? reason)
     {
         await _followAutoLock.WaitAsync();
         try
         {
+            var runId = _followAutoCurrentRunId;
             if (_followAutoCts is null)
             {
-                return false;
+                return new FollowAutoCancelResult(false, runId);
             }
 
             _followAutoStopReason = reason;
             _followAutoCts.Cancel();
             _followAutoCts = null;
-            return true;
+            return new FollowAutoCancelResult(true, runId);
         }
         finally
         {
@@ -2740,7 +2758,61 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task RunFollowAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, CancellationToken cancellationToken)
+    private async Task<FollowAutoStopSignalResult> SignalFollowAutoStopAgentsAsync(long followAutoRunId)
+    {
+        if (followAutoRunId <= 0)
+        {
+            return new FollowAutoStopSignalResult(0, 0);
+        }
+
+        var (online, _) = GetAccountEntriesByConnectivity();
+        var agentIds = online
+            .Select(entry => entry.Value.AgentId)
+            .Where(agentId => !string.IsNullOrWhiteSpace(agentId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (agentIds.Length == 0)
+        {
+            return new FollowAutoStopSignalResult(0, 0);
+        }
+
+        var results = await Task.WhenAll(agentIds.Select(async agentId =>
+        {
+            try
+            {
+                var result = await _registry.SendCommandAsync(
+                    agentId,
+                    "follow_stop_auto",
+                    new { followAutoRunId },
+                    TimeSpan.FromSeconds(5));
+                if (!result.Ok)
+                {
+                    _logger.LogDebug("follow_stop_auto returned failure for {AgentId}: {Message}", agentId, result.Message);
+                }
+
+                return result.Ok;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "follow_stop_auto failed for {AgentId}.", agentId);
+                return false;
+            }
+        }));
+
+        return new FollowAutoStopSignalResult(agentIds.Length, results.Count(ok => ok));
+    }
+
+    private void QueueFollowAutoStopSignal(long followAutoRunId)
+    {
+        if (followAutoRunId <= 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(() => SignalFollowAutoStopAgentsAsync(followAutoRunId));
+    }
+
+    private async Task RunFollowAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, long runId, CancellationToken cancellationToken)
     {
         var channel = context.Command.Channel;
         var joined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2790,7 +2862,7 @@ public sealed class DiscordBot
                 var unboundReports = new List<string>();
                 var checkFailures = new List<string>();
                 var waitingReports = new List<string>();
-                var checkResults = await Task.WhenAll(pending.Select(entry => RunFollowAutoCheckEntryAsync(context, entry, cancellationToken)));
+                var checkResults = await Task.WhenAll(pending.Select(entry => RunFollowAutoCheckEntryAsync(context, entry, runId, cancellationToken)));
                 foreach (var result in checkResults)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -2905,11 +2977,12 @@ public sealed class DiscordBot
     private async Task<FollowAutoCheckResult> RunFollowAutoCheckEntryAsync(
         SlashContext context,
         KeyValuePair<string, AccountConfig> entry,
+        long followAutoRunId,
         CancellationToken cancellationToken)
     {
         var accountKey = entry.Key;
         var account = entry.Value;
-        var args = BuildMenuArgs(accountKey, account, null, context);
+        var args = BuildMenuArgs(accountKey, account, null, context, followAutoRunId);
         CommandResultInfo? readyResult;
         try
         {
@@ -3763,6 +3836,10 @@ public sealed class DiscordBot
     private sealed record ReadyResult(string AccountKey, bool Ok, string Message, bool RanReady);
 
     private sealed record JoinResult(string AccountKey, bool Ok, string Message);
+
+    private sealed record FollowAutoCancelResult(bool WasRunning, long RunId);
+
+    private sealed record FollowAutoStopSignalResult(int Attempted, int Succeeded);
 
     private enum FollowAutoCheckOutcome
     {

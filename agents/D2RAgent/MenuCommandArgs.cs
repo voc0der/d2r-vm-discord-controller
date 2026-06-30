@@ -10,6 +10,7 @@ internal sealed class MenuCommandArgs
     public string? Password { get; set; }
     public string? Difficulty { get; set; }
     public string? Fingerprint { get; set; }
+    public long? FollowAutoRunId { get; set; }
 
     public static MenuCommandArgs From(JsonElement element)
     {
@@ -25,6 +26,7 @@ internal sealed class MenuCommandArgs
         args.Password = TryGetString(element, "password");
         args.Difficulty = TryGetString(element, "difficulty");
         args.Fingerprint = TryGetString(element, "fingerprint");
+        args.FollowAutoRunId = TryGetLong(element, "followAutoRunId");
         return args;
     }
 
@@ -52,6 +54,26 @@ internal sealed class MenuCommandArgs
         }
 
         if (property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out value))
+        {
+            return value;
+        }
+
+        return null;
+    }
+
+    private static long? TryGetLong(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var value))
+        {
+            return value;
+        }
+
+        if (property.ValueKind == JsonValueKind.String && long.TryParse(property.GetString(), out value))
         {
             return value;
         }
