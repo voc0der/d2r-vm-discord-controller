@@ -95,6 +95,29 @@ public sealed class FollowFingerprintSelectionTests
         Assert.Equal(8, VmOperations.GetFollowFingerprintMaxScanRows(ui));
     }
 
+    [Fact]
+    public void OldLowDetailFingerprintsCannotDriveAutoClicks()
+    {
+        var template = new FriendFingerprint(
+            GridColumns: 12,
+            GridRows: 4,
+            Samples: new byte[12 * 4 * 3]);
+
+        Assert.False(VmOperations.CanAutoClickFollowFingerprint(template));
+    }
+
+    [Fact]
+    public void WiderDefaultFingerprintsCanDriveAutoClicks()
+    {
+        var defaults = new D2RUiAutomationConfig();
+        var template = new FriendFingerprint(
+            defaults.FriendRowFingerprintGridColumns,
+            defaults.FriendRowFingerprintGridRows,
+            new byte[defaults.FriendRowFingerprintGridColumns * defaults.FriendRowFingerprintGridRows * 3]);
+
+        Assert.True(VmOperations.CanAutoClickFollowFingerprint(template));
+    }
+
     private static VmOperations.FriendRowFingerprintMatch Match(
         int row,
         double average,

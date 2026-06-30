@@ -54,17 +54,15 @@ public sealed class D2RUiAutomationConfig
     public int DefaultCharacterSlot { get; set; } = 1;
     public int DefaultFriendRow { get; set; } = 1;
     public double FriendRowHeight { get; set; } = 0.049;
-    // Sub-region within a friend row used for the follow-bind fingerprint - offset left of the
-    // row's right-click center onto the visible name text, sized to avoid the class icon and the
-    // status line below it (which changes constantly: "In Menus" vs "Act I, Hell" vs "Offline").
-    // Estimated from docs/runbooks/assets/d2r-ui/1366x768/lobby_friends_tab_party.png, not yet
-    // calibrated against a live VM capture - see the comment on FriendFingerprint for the same
-    // caveat on the match tolerance.
-    public double FriendRowFingerprintOffsetX { get; set; } = -0.030;
+    // Sub-region within a friend row used for the follow-bind fingerprint. Keep the left edge
+    // on the visible name text and extend rightward for enough letters to avoid false positives
+    // from visually similar short names; avoid the status line below it (which changes
+    // constantly: "In Menus" vs "Act I, Hell" vs "Offline").
+    public double FriendRowFingerprintOffsetX { get; set; } = 0.000;
     public double FriendRowFingerprintOffsetY { get; set; } = -0.010;
-    public double FriendRowFingerprintWidthRatio { get; set; } = 0.100;
+    public double FriendRowFingerprintWidthRatio { get; set; } = 0.160;
     public double FriendRowFingerprintHeightRatio { get; set; } = 0.022;
-    public int FriendRowFingerprintGridColumns { get; set; } = 12;
+    public int FriendRowFingerprintGridColumns { get; set; } = 24;
     public int FriendRowFingerprintGridRows { get; set; } = 4;
     public int FriendRowFingerprintMaxScanRows { get; set; } = 8;
     public bool ClickBattleNetPlayWhenNeeded { get; set; } = true;

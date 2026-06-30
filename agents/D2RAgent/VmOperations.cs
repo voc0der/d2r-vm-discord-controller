@@ -49,6 +49,8 @@ public sealed class VmOperations
     private const double FollowFingerprintMinSignalSeparation = 1.0;
     private const int FollowFingerprintMinSignalPixels = 3;
     private const int FollowFingerprintMaxVisibleFriendRows = 8;
+    private const int FollowFingerprintMinAutoClickGridColumns = 16;
+    private const int FollowFingerprintMinAutoClickGridRows = 4;
     // Each slot is one small region capture - cheap relative to the in-game HUD checks above,
     // but there are up to 8 of them per tick, so still bound each individually rather than
     // relying on the tick interval alone to cap worst-case cost.
@@ -1102,6 +1104,22 @@ public sealed class VmOperations
         }
 
         var template = templateLoad.Template;
+        if (!CanAutoClickFollowFingerprint(template))
+        {
+            return CommandResult.Success(
+                "Follow-bind fingerprint was captured with an older, low-detail grid. Re-run `/d2r follow bind:true` before follow-auto can safely click friend rows.",
+                new
+                {
+                    bound = true,
+                    joined = false,
+                    templatePath = templateLoad.Path,
+                    templateExists = templateLoad.Exists,
+                    templateLength = templateLoad.ContentLength,
+                    templateGridColumns = template.GridColumns,
+                    templateGridRows = template.GridRows
+                });
+        }
+
         WindowsInput input;
         try
         {
@@ -1184,24 +1202,31 @@ public sealed class VmOperations
         }
 
         var matchedRow = selection.Match.Row;
-        MarkCommandCheckpoint($"FollowAutoCheckAsync: matched bound friend at row {matchedRow}");
+        var scoreSummary = FormatFollowFingerprintScores(rowMatches);
+        MarkCommandCheckpoint($"FollowAutoCheckAsync: matched bound friend at row {matchedRow}; {scoreSummary}");
         var entry = await ClickFriendJoinOptionUntilEnteredGameAsync(input, matchedRow, "follow-auto", cancellationToken);
         if (!entry.Entered)
         {
             return CommandResult.Failure(
-                $"Found the bound friend at row {matchedRow} and clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {entry.Message}",
+                $"Found the bound friend at row {matchedRow} and clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {entry.Message} {scoreSummary}",
                 await CollectStatusAsync(cancellationToken));
         }
 
         if (!await WaitForStrictFollowAutoEntryAsync(input, cancellationToken))
         {
             return CommandResult.Failure(
-                $"Found the bound friend at row {matchedRow} and clicked Join Game, but strict in-game HUD confirmation did not appear after the join flow reported success.",
+                $"Found the bound friend at row {matchedRow} and clicked Join Game, but strict in-game HUD confirmation did not appear after the join flow reported success. {scoreSummary}",
                 await CollectStatusAsync(cancellationToken));
         }
 
         MarkLobbyOrGameInteraction("Joined bound friend's game via follow-auto.");
-        return CommandResult.Success("Joined the bound friend's game.", new { bound = true, joined = true });
+        return CommandResult.Success("Joined the bound friend's game.", new { bound = true, joined = true, fingerprintScores = scoreSummary });
+    }
+
+    internal static bool CanAutoClickFollowFingerprint(FriendFingerprint template)
+    {
+        return template.GridColumns >= FollowFingerprintMinAutoClickGridColumns
+            && template.GridRows >= FollowFingerprintMinAutoClickGridRows;
     }
 
     private static bool IsUsableFollowFingerprintMatch(FriendFingerprintComparison comparison)

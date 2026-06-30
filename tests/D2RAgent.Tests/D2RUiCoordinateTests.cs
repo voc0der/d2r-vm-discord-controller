@@ -163,7 +163,7 @@ public sealed class D2RUiCoordinateTests
         Assert.Equal(ui.FriendRowFingerprintHeightRatio, row1.HeightRatio);
         Assert.Equal(ui.FriendRowFingerprintGridColumns, row1.GridColumns);
         Assert.Equal(ui.FriendRowFingerprintGridRows, row1.GridRows);
-        Assert.Equal(new UiPixelPoint(205, 131), D2RUiCoordinateCatalog.ToBaselinePixels(row1.Center));
+        Assert.Equal(new UiPixelPoint(246, 131), D2RUiCoordinateCatalog.ToBaselinePixels(row1.Center));
         Assert.True(row2.Center.Y > row1.Center.Y, "Row 2's fingerprint region should sit below row 1's.");
         Assert.Equal(row1.Center.X, row2.Center.X);
     }
