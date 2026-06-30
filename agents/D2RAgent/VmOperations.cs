@@ -1669,7 +1669,7 @@ public sealed class VmOperations
     {
         return TryRunBounded(() =>
         {
-            var expanded = false;
+            var visibleRows = 0;
             var summary = new StringBuilder();
 
             for (var row = 1; row <= 3; row++)
@@ -1691,7 +1691,10 @@ public sealed class VmOperations
                     sampleGrid: MenuSampleGrid);
                 var markerVisible = D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
 
-                expanded |= nameVisible && markerVisible;
+                if (nameVisible && markerVisible)
+                {
+                    visibleRows++;
+                }
 
                 if (summary.Length > 0)
                 {
@@ -1704,8 +1707,21 @@ public sealed class VmOperations
                     .Append(FormatCheck($"r{row}mark", markerVisible, markerStats));
             }
 
-            return (expanded, summary.ToString());
+            if (summary.Length > 0)
+            {
+                summary.Append(' ');
+            }
+
+            summary.Append("visibleRows=").Append(visibleRows);
+            return (IsFriendsListExpandedByVisibleRows(visibleRows), summary.ToString());
         }, EntryLoopCheckBoundMs, (false, "timeout"));
+    }
+
+    internal static bool IsFriendsListExpandedByVisibleRows(int visibleRows)
+    {
+        // One row can be the party/recently-played/collapsed panel; two rows is the first
+        // reliable signal that the Friends accordion itself is open.
+        return visibleRows >= 2;
     }
 
     private AgentCommon.UiPoint GetFriendRowMarkerPoint(int row)

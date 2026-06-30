@@ -157,6 +157,18 @@ public sealed class D2RScreenClassifierTests
         Assert.False(anyExpandedRow);
     }
 
+    [Theory]
+    [InlineData("lobby_click_party_icon.png", false)]
+    [InlineData("lobby_friends_tab_party.png", true)]
+    [InlineData("lobby_right_click_friend_join_game_available.png", true)]
+    public void FriendsListExpandedVisibleRowCountMatchesReferenceCaptures(string capture, bool expected)
+    {
+        var visibleRows = Enumerable.Range(1, 3)
+            .Count(row => IsFriendRowExpandedEvidence(capture, row));
+
+        Assert.Equal(expected, VmOperations.IsFriendsListExpandedByVisibleRows(visibleRows));
+    }
+
     [Fact]
     public void FriendRowExpandedEvidenceAcceptsLiveRowTwoLowGreyText()
     {

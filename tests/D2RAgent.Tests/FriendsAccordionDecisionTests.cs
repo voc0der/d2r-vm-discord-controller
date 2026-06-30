@@ -33,4 +33,14 @@ public sealed class FriendsAccordionDecisionTests
 
         Assert.Equal(expected, verify);
     }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(1, false)]
+    [InlineData(2, true)]
+    [InlineData(3, true)]
+    public void FriendsListExpansionRequiresMultipleVisibleRows(int visibleRows, bool expected)
+    {
+        Assert.Equal(expected, VmOperations.IsFriendsListExpandedByVisibleRows(visibleRows));
+    }
 }
