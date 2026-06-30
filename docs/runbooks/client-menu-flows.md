@@ -62,54 +62,56 @@ Runtime detectors currently use lightweight stats over these same anchor regions
 Use these commands while driving clients:
 
 ```text
-/d2r start hc1
+/d2r start all:false account:hc1
 /d2r ready hc1
 /d2r lobby hc1 character-slot:1
-/d2r join-game hc1
-/d2r join-all
-/d2r create-game hc1
+/d2r join
+/d2r join name:<game>
+/d2r join all:false account:hc1
+/d2r create-game
+/d2r create-game all:false account:hc1
 /d2r template name:netrunner password:q
-/d2r join-auto delay:5
-/d2r join-auto delay:5 watch:true idle-minutes:30
-/d2r join-auto stop:true
-/d2r follow hc1 friend-row:1
-/d2r follow-all friend-row:1
-/d2r save-exit hc1
-/d2r save-exit-all
-/d2r quit hc1
-/d2r quit-all
+/d2r join auto:true delay:5
+/d2r join auto:true delay:5 watch:true idle-minutes:30
+/d2r join auto:false
+/d2r follow
+/d2r follow all:false account:hc1 friend-row:1
+/d2r save-exit
+/d2r save-exit all:false account:hc1
+/d2r quit
+/d2r quit all:false account:hc1
 /d2r screenshot hc1
 /d2r remote hc1
 /game set name:<game> password:<password> difficulty:hell
 /game show
 /game clear
-/config show
-/config stagger seconds:20
-/config notifications enabled:true channel-id:1517651040340541472
+/d2r config show
+/d2r config stagger seconds:20
+/d2r config notifications enabled:true channel-id:1517651040340541472
 /restart
 ```
 
-`/game show` is meant to keep the name/password in one place while moving each VM through Join Game or Create Game. `/d2r join-game` and `/d2r create-game` use stored `/game set` values when command options are omitted.
+`/game show` is meant to keep the name/password in one place while moving each VM through Join Game or Create Game. `/d2r join` and `/d2r create-game` use stored `/game set` values when command options are omitted.
 
-If `lobby`, `play`, `join-game`, `create-game`, or `follow` is requested while the latest VM status says D2R is stopped or D2R is running with an `Unknown` activity state, `D2RHost` runs `/d2r ready` first and reports that extra step in Discord.
+If `lobby`, `play`, `join`, `create-game`, or `follow` is requested while the latest VM status says D2R is stopped or D2R is running with an `Unknown` activity state, `D2RHost` runs `/d2r ready` first and reports that extra step in Discord.
 
-For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued. `/d2r create-game-all` now starts the creator as soon as the creator is ready; side clients warm up and prepare their Join Game forms in parallel, then submit Join Game after the creator succeeds. `save-exit-all`/`start-all`/`quit-all` now post a single follow-up with a checkmark/no-entry reaction once every queued account finishes, in addition to the existing per-account failure follow-ups (issue #20, item 2).
+For folded commands, `all` defaults to true; pass `all:false account:<x>` for one account. For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued. `/d2r create-game` with `all:true` now starts the creator as soon as the creator is ready; side clients warm up and prepare their Join Game forms in parallel, then submit Join Game after the creator succeeds. `save-exit`/`start`/`quit` with `all:true` now post a single follow-up with a checkmark/no-entry reaction once every queued account finishes, in addition to the existing per-account failure follow-ups (issue #20, item 2).
 
-`/d2r create-game-all` and `/d2r join-all` with no `name` (issue #20, items 3-5): if a recent (<1h) `/game set`/prior create-game-all/join-all game exists, `join-all` reuses it; `create-game-all` only reuses it when no template is set (it never reuses `/game show` while a template is active - otherwise the number could never advance). If `/d2r template name:<x> password:<y>` has been set this run, `create-game-all` mints the next number (`netrunner1`, `netrunner2`, ...) and `join-all` joins whichever number was most recently minted (or `netrunner1` if none yet). With no template and nothing recent, `create-game-all` falls back to a random name/password and `join-all` does nothing. The template and its counter are in-memory only and reset when `D2RHost` restarts. Every successful create-game-all/join-all (however the name was resolved) updates the `/game show` record, so the next plain call sees what's actually running.
+`/d2r create-game` and `/d2r join` with `all:true` and no `name` (issue #20, items 3-5): if a recent (<1h) `/game set`/prior create/join game exists, `join` reuses it; `create-game` only reuses it when no template is set (it never reuses `/game show` while a template is active - otherwise the number could never advance). If `/d2r template name:<x> password:<y>` has been set this run, `create-game` mints the next number (`netrunner1`, `netrunner2`, ...) and `join` joins whichever number was most recently minted (or `netrunner1` if none yet). With no template and nothing recent, `create-game` falls back to a random name/password and `join` does nothing. The template and its counter are in-memory only and reset when `D2RHost` restarts. Every successful create-game/join all-client flow (however the name was resolved) updates the `/game show` record, so the next plain call sees what's actually running.
 
-`/d2r join-auto` (issue #20, item 7) needs a template set first and assumes a human - not one of this bot's own VMs - creates each numbered game externally using that same naming (the `delay` flag, default 0, is the wait before each join attempt specifically so a sorceress can teleport to a boss alone before the bots pile in and spike the difficulty). Each cycle: mint the next number, try to join all online accounts; once everyone's in, poll every 15s via the same `lastPartyMemberCount` the heartbeat tracks until the count drops below where it was right after joining; then leave-all and advance to the next number. Runs until `/d2r join-auto stop:true`, an idle timeout, or the template being cleared - all of it posted to the invoking channel directly rather than as interaction follow-ups, since a multi-cycle farming run easily outlives a follow-up token's ~15 minute lifetime. Deliberately does not touch the create-game-all/join-all session message (`_activeSessionMessage`) - an unrelated manual run of either could be using it concurrently.
+`/d2r join` with no arguments, or with `auto:true` (issue #20, item 7), needs a template set first and assumes a human - not one of this bot's own VMs - creates each numbered game externally using that same naming (the `delay` flag, default 0, is the wait before each join attempt specifically so a sorceress can teleport to a boss alone before the bots pile in and spike the difficulty). Each cycle: mint the next number, try to join all online accounts; once everyone's in, poll every 15s via the same `lastPartyMemberCount` the heartbeat tracks until the count drops below where it was right after joining; then leave-all and advance to the next number. Runs until `/d2r join auto:false`, an idle timeout, or the template being cleared - all of it posted to the invoking channel directly rather than as interaction follow-ups, since a multi-cycle farming run easily outlives a follow-up token's ~15 minute lifetime. Deliberately does not touch the create/join session message (`_activeSessionMessage`) - an unrelated manual run of either could be using it concurrently.
 
 Failing to join the next numbered game on the first few attempts is normal, not alarming - a human has to notice the previous game ended and set the next one up, which takes real wall-clock time. **User correction (2026-06-26) that reshaped this:** the original design hard-failed and stopped the whole loop after exactly 4 join attempts, intending that as a safety net - but the actual risk the user cares about is forgetting to run `stop:true`, and a 4-attempt cap fires on completely ordinary "next game isn't set up yet" delays, not just genuine problems. So `TryJoinAutoCycleAsync` now retries joining the next game patiently and indefinitely (same `delay` between attempts), bounded only by `idle-minutes` (default 60) of *unbroken* failure - that's the actual safety net for "really stuck, not just waiting." Per-attempt failure detail (which account failed and why, "no online accounts available") is gated behind the `watch` flag - off by default, since it's just routine waiting most of the time; turn it on specifically to debug a real problem. The always-visible messages (join succeeded, player left, all left, and the three terminal states: stopped/idle-timeout/template-cleared) are unaffected by `watch` either way.
 
 **Bug fixed in the same pass:** `FormatExceptionWithAccountStatus` embeds a full per-account status line (the same text `/d2r status` prints) when `SendCommandAsync` itself throws rather than returning `ok:false`. Aggregating that across multiple failed accounts into one join-auto message has no natural bound, and a real run hit Discord's hard 2000-character message cap, which throws and silently killed the whole loop with a raw exception instead of a clean stop message. Every join-auto channel send now goes through `SendJoinAutoMessageAsync`, which truncates via `DiscordMessageTruncator.Truncate` (`AgentCommon`) before sending - a generically useful guard, since any future aggregating message in this bot shares the same risk.
 
-`/d2r join-auto` posts a persistent monitor message (issue #24), edited in place via `StartJoinAutoMonitorAsync`/`UpdateJoinAutoMonitorAsync`/`CompleteJoinAutoMonitorAsync` for the entire run - current game, status, bots-in-game count, live player count (own account-selection helper, `TryFetchJoinAutoPlayerCountLineAsync` - deliberately not sharing `_activeSessionRepresentativeAgentId`), cycles completed, and session elapsed. Deliberately one message for the whole run rather than one per game (confirmed with the user) since a farming session can advance through many numbered games over hours; it only gets its ✅/⛔ reaction when join-auto itself stops. This is separate from the plain per-event text messages (`SendJoinAutoMessageAsync`), which still post too - the monitor is "current state at a glance," the text messages are the scrollback log of what happened when.
+`/d2r join auto:true` posts a persistent monitor message (issue #24), edited in place via `StartJoinAutoMonitorAsync`/`UpdateJoinAutoMonitorAsync`/`CompleteJoinAutoMonitorAsync` for the entire run - current game, status, bots-in-game count, live player count (own account-selection helper, `TryFetchJoinAutoPlayerCountLineAsync` - deliberately not sharing `_activeSessionRepresentativeAgentId`), cycles completed, and session elapsed. Deliberately one message for the whole run rather than one per game (confirmed with the user) since a farming session can advance through many numbered games over hours; it only gets its ✅/⛔ reaction when join-auto itself stops. This is separate from the plain per-event text messages (`SendJoinAutoMessageAsync`), which still post too - the monitor is "current state at a glance," the text messages are the scrollback log of what happened when.
 
 Two more issue #24 findings from the same real run: (1) **`quit`/`quit-all`/`stop`/`restart-client`/`start` all had timeouts too short to wait out `_commandGate`** (only `status`/`screenshot` bypass it - everything else, including a graceful `quit_d2r`, queues behind whatever's already running) - a live run showed `quit_d2r` failing for 2/3 accounts with "exceeded agent-side timeout of 25s" while join-auto was actively retrying a join in the background; bumped all of them to 210s, matching the save-exit precedent above. (2) **a manual quit on an account join-auto was managing used to just get retried past on the next attempt** - the user's words, "if you quit, it should stop auto if its running." `quit`/`quit-all` now call `CancelJoinAutoIfRunningAsync` first, which also explains why the quit itself was unreliable: join-auto kept re-acquiring the gate for new attempts faster than a queued quit could win it.
 
 **Separate bug, same issue #24 report, unrelated to join-auto:** clearing a join/create-game password field to empty failed silently - `WindowsInput.TypeText` no-ops for an empty string, so `SelectAll()` followed by typing nothing left the old password selected but never actually deleted. Fixed with a new `WindowsInput.DeleteSelection()` (sends Delete) called between `SelectAll()` and `TypeText()` in `FillTextFieldAsync`, regardless of whether the new value is empty or not.
 
-Use `/config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/config notifications enabled:true channel-id:<channel>` to post create-game-all and join-all session updates into a Discord channel. Use `/restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
+Use `/d2r config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/d2r config notifications enabled:true channel-id:<channel>` to post create/join session updates into a Discord channel. Use `/restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
 
 `D2RHost` is respawned unattended (self-update, `/restart`), so a console window is rarely the thing watching it. Every start writes Information-level-and-up logs (including Discord.NET's own internal log, e.g. slash command registration outcomes) to `<config directory>/logs/log.0` and rotates the previous two runs down to `log.1`/`log.2`, oldest dropped, via `LogFileRotator.RotateAndPrepare` (`AgentCommon`). A fatal startup exception that would otherwise only hit `Console.Error` on an unattended process also lands in that file.
 
@@ -134,8 +136,8 @@ Expected state:
 
 Current implementation:
 
-- `/d2r start <account>` sends `launch_d2r` to the VM agent.
-- `/d2r start-all` queues the ready flow for every online VM agent.
+- `/d2r start all:false account:<account>` sends `launch_d2r` to the VM agent.
+- `/d2r start` queues the ready flow for every online VM agent.
 - `/d2r ready <account>` launches D2R, retries the Battle.net launch command and Battle.net Play while waiting for D2R, then nudges intro/title states until character select is visually detected.
 - Before launching D2R, the VM agent shows the desktop to minimize other windows. If Battle.net is already running, the agent restores Battle.net before sending the launch command.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
@@ -245,7 +247,7 @@ If a character-screen menu command is sent while D2R is running but still on an 
 
 `/d2r status` includes an input diagnostic summary when D2R is running: the agent version, whether the process has a main window, whether it is foreground, the foreground process name, the target session, and the current D2R window/client rectangle. It also reports the last input action with target screen coordinate and cursor before/after. D2R and Battle.net detection first use configured process names, then fall back to visible window titles such as `Diablo II: Resurrected`; this covers installs where the process name differs from the expected `D2R`. D2R menu clicks use full-screen proportional coordinates first so a slow process/window lookup cannot block an obvious menu click. If `SetCursorPos`/`mouse_event` produces no visible cursor movement or the cursor after-coordinate does not match the target, restart the `D2R VM Agent` scheduled task in the logged-in desktop session and verify the task uses `LogonType Interactive` and `RunLevel Highest`.
 
-After launch/ready, or after Save and Exit only when D2R visibly returns to the character screen, the VM agent starts a character-screen idle timer. If Save and Exit returns to the previous Join/Create lobby tab instead, the agent must keep that VM in `LobbyOrGame` so the next `/d2r join-all` restores the Join Game form instead of clicking around as though it were at character select. If no lobby/game command touches a character-screen-idle client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
+After launch/ready, or after Save and Exit only when D2R visibly returns to the character screen, the VM agent starts a character-screen idle timer. If Save and Exit returns to the previous Join/Create lobby tab instead, the agent must keep that VM in `LobbyOrGame` so the next `/d2r join` restores the Join Game form instead of clicking around as though it were at character select. If no lobby/game command touches a character-screen-idle client within `idleQuitMinutes`, default 30, the agent focuses D2R and sends Alt+F4.
 
 That idle clock is tracked as a cached state (`MarkCharacterScreenIdle`/`MarkLobbyOrGameInteraction`), only updated when an automated command explicitly transitions it. Issue #20, item 1 reported D2R occasionally getting Alt+F4'd while actually in a game; the root cause was that a join-all attempt whose own entry check fails returns without marking `LobbyOrGame`, so if the client is then actually in a game (the retry succeeded anyway, or it was joined some other way outside the agent's own commands), the cache stays stuck on the `CharacterScreenIdle` it inherited from before that join attempt, with its original timestamp - `/d2r status` already re-derives a live snapshot (`DetectVisibleActivitySnapshot`) rather than trusting that cache for display, but the quit decision didn't, so the cache could drift for the entire `idleQuitMinutes` window with no visible sign anything was wrong. `QuitIfCharacterScreenIdleAsync` now takes that same live look immediately before sending Alt+F4 and resyncs the cache (`ReconcileActivityFromLiveSnapshot`) on any mismatch instead of quitting - see `ActivityReconciliationTests.cs` for the portable half of this (the resync itself); the live-mismatch decision needs a real Windows screen check to verify end to end, same as the BitBlt capture fix above.
 
@@ -287,7 +289,7 @@ Automation:
 
 ```text
 /game set name:<game> password:<password> difficulty:hell
-/d2r join-game hc1 character-slot:1
+/d2r join all:false account:hc1 character-slot:1
 ```
 
 Before typing, the VM agent clicks Lobby, clicks Join Game, then types the game/password even if visual tab confirmation is fuzzy. After typing, it clicks the final Join Game button first, then watches for game entry, error dialogs, connection interrupted, or return to menu. If a game-entry error modal appears, such as password mismatch or game unavailable, the agent clicks OK, restores the Join Game form, re-enters the game/password fields, and retries. If the full-screen connection interrupted message appears, the agent waits for the Join Game tab to return, restores the form, and retries. Restore clicks and retypes even when tab visual confirmation is fuzzy. After confirmed game entry, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
@@ -324,7 +326,7 @@ Automation:
 
 ```text
 /game set name:<game> password:<password> difficulty:hell
-/d2r create-game hc1 character-slot:1
+/d2r create-game all:false account:hc1 character-slot:1
 ```
 
 Before typing, the VM agent clicks Lobby, clicks Create Game, then types the game/password even if visual tab confirmation is fuzzy. After typing, it clicks the final Create Game button first, then watches for game entry, connection interrupted, create-name errors, or return to menu. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. If a create error dialog appears, such as `A Game Already Exists With That Name`, create fails fast instead of retrying the same name until timeout. Restore clicks and retypes even when tab visual confirmation is fuzzy. After confirmed game entry, the agent presses `G` with both scan-code/keybd and window-message input when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
@@ -363,12 +365,12 @@ Manual path:
 Automation:
 
 ```text
-/d2r follow hc1 character-slot:1 friend-row:1
+/d2r follow all:false account:hc1 character-slot:1 friend-row:1
 ```
 
-Pass `watch:true` to post the same live diagnostics ticker and watch log used by `create-game-all` and `join-all`. For `/d2r follow auto:true watch:true`, that ticker stays up for the entire follow-auto run and the log keeps growing across repeated games until follow-auto stops.
+Pass `watch:true` to post the same live diagnostics ticker and watch log used by all-client create/join flows. For `/d2r follow watch:true`, that ticker stays up for the entire follow-auto run and the log keeps growing across repeated games until follow-auto stops.
 
-Root cause of "3 VMs sat at the lobby and never opened the drawer, seemed confused" (issue #20, item 8): `EnsureLobbyOpenedAsync`'s `LobbyOrGame`-cache branch returns without clicking or checking anything, which is fine for create-game/join-game (their next click is a tab, harmless even if we're not quite where expected) but not for follow, whose very next action is a precise click on the party icon - a stale cache (eg. a prior command actually left the client in-game) means that click lands on whatever's really on screen instead of the friends drawer, and every click after it free-wheels with nothing real to land on. `JoinFriendAsync` now confirms live with `IsAnyLobbyEntryMenuVisible` before spending that click, and retries the same direct character-slot+Lobby navigation `EnsureLobbyOpenedAsync`'s other branches already use (guarded against in-game per the safety section above) if the cache didn't match reality - failing clearly if the Lobby still isn't visible after that, rather than clicking blind into the unknown.
+Root cause of "3 VMs sat at the lobby and never opened the drawer, seemed confused" (issue #20, item 8): `EnsureLobbyOpenedAsync`'s `LobbyOrGame`-cache branch returns without clicking or checking anything, which is fine for create/join game flows (their next click is a tab, harmless even if we're not quite where expected) but not for follow, whose very next action is a precise click on the party icon - a stale cache (eg. a prior command actually left the client in-game) means that click lands on whatever's really on screen instead of the friends drawer, and every click after it free-wheels with nothing real to land on. `JoinFriendAsync` now confirms live with `IsAnyLobbyEntryMenuVisible` before spending that click, and retries the same direct character-slot+Lobby navigation `EnsureLobbyOpenedAsync`'s other branches already use (guarded against in-game per the safety section above) if the cache didn't match reality - failing clearly if the Lobby still isn't visible after that, rather than clicking blind into the unknown.
 
 `friend-row` is the visible row number in the opened friends drawer. If omitted, the VM agent uses `ui.defaultFriendRow` from `vm-agent.config.json`.
 After opening the friend context menu, the VM agent clicks the configured `Join Game` row. After choosing Join Game and waiting for load, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
@@ -404,10 +406,10 @@ Manual path:
 Automation:
 
 ```text
-/d2r save-exit hc1
+/d2r save-exit all:false account:hc1
 ```
 
-After clicking Save and Exit, automation polls for either lobby-form evidence or character-screen evidence. Both landings are normal: leaving from a lobby-created game can return to the exact Join/Create tab used for the previous game, while other cases can land back at character select. The remembered activity state must match that visible landing because a following `/d2r join-all` should resume from the existing lobby form when it is already there.
+After clicking Save and Exit, automation polls for either lobby-form evidence or character-screen evidence. Both landings are normal: leaving from a lobby-created game can return to the exact Join/Create tab used for the previous game, while other cases can land back at character select. The remembered activity state must match that visible landing because a following `/d2r join` should resume from the existing lobby form when it is already there.
 
 Notes:
 

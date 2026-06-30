@@ -47,51 +47,46 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 ## Discord Commands
 
 - `/d2r status [account]`
-- `/d2r start account`
+- `/d2r start [account] [all]`
 - `/d2r stop account`
-- `/d2r quit account`
+- `/d2r quit [account] [all]`
 - `/d2r restart-client account`
 - `/d2r screenshot account`
 - `/d2r remote account`
 - `/d2r ready account`
 - `/d2r lobby account [character-slot]`
 - `/d2r play account [character-slot]`
-- `/d2r join-game account [name] [password] [difficulty] [character-slot]`
-- `/d2r create-game account [name] [password] [difficulty] [character-slot]`
-- `/d2r follow [account] [character-slot] [friend-row] [bind] [auto] [delay] [idle-minutes] [watch]`
-- `/d2r save-exit account`
-- `/d2r create-game-all [name] [password] [difficulty] [character-slot] [watch]`
-- `/d2r join-all [name] [password] [difficulty] [character-slot] [watch]`
+- `/d2r join [account] [all] [auto] [name] [password] [difficulty] [character-slot] [delay] [idle-minutes] [watch]`
+- `/d2r create-game [account] [all] [name] [password] [difficulty] [character-slot] [watch]`
+- `/d2r follow [account] [all] [character-slot] [friend-row] [bind] [auto] [delay] [idle-minutes] [watch]`
+- `/d2r save-exit [account] [all]`
 - `/d2r template name [password]`
-- `/d2r join-auto [character-slot] [delay] [stop] [watch] [idle-minutes]`
-- `/d2r follow-all [character-slot] [friend-row]`
-- `/d2r save-exit-all`
-- `/d2r quit-all`
-- `/d2r start-all`
-- `/d2r health`
 - `/restart`
 - `/game set name [password] [difficulty] [notes]`
 - `/game show`
 - `/game clear`
-- `/vm status account`
-- `/vm start account`
-- `/vm stop account`
-- `/vm reboot account`
-- `/vm snapshot account [name]`
+- `/d2r vm status account`
+- `/d2r vm start account`
+- `/d2r vm stop account`
+- `/d2r vm reboot account`
+- `/d2r vm snapshot account [name]`
+- `/d2r config show`
+- `/d2r config stagger seconds`
+- `/d2r config notifications enabled [channel-id]`
 
-`/game set` stores the current game details in SQLite. `join-game`, `create-game`, `create-game-all`, and `join-all` use those stored values when options are omitted.
+`/game set` stores the current game details in SQLite. `join` and `create-game` use those stored values when options are omitted.
 
-All-client commands skip accounts whose VM agent is offline when the command is queued.
+For folded commands, `all` defaults to true. Pass `all:false account:<x>` for one account. All-client commands skip accounts whose VM agent is offline when the command is queued.
 
-`create-game-all` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger. If you do not pass `character-slot`, the host uses each account's optional `characterSlot` value from `d2r-host.config.json`, then falls back to the VM agent's local default.
+`/d2r create-game` with `all:true` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger. If you do not pass `character-slot`, the host uses each account's optional `characterSlot` value from `d2r-host.config.json`, then falls back to the VM agent's local default.
 
-`/d2r start-all` queues the ready flow for every online account, so cold-booted clients should land on character select instead of merely starting the D2R process.
+`/d2r start` with `all:true` queues the ready flow for every online account, so cold-booted clients should land on character select instead of merely starting the D2R process.
 
 `/restart` respawns `D2RHost`. On startup, the host runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed host update once the command exists in Discord.
 
-Menu commands that need D2R running, such as `lobby`, `play`, `join-game`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
+Menu commands that need D2R running, such as `lobby`, `play`, `join`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
 
-`/d2r follow bind:true account:<x> [friend-row:<n>]` captures whoever is sitting in that account's selected friend row right now (default row 1, no need to type a name - useful from a phone with no keyboard) and distributes that snippet to every online account. `bind:false` clears it everywhere. `/d2r follow auto:true [delay] [idle-minutes] [watch]` then has every online account repeatedly scan its own visible friend rows for that same snippet and join only when the best row is clearly separated from the next-best row; weak or ambiguous scores wait instead of clicking. With `watch:true`, follow-auto writes the same live diagnostics log for the whole run, across multiple games, including the latest match-score checkpoint. Old low-detail follow-bind snippets must be rebound before follow-auto will click rows. This is separate from the plain `/d2r follow account friend-row` and `/d2r follow-all friend-row` commands, which still right-click a manually-specified row once.
+`/d2r follow bind:true account:<x> [friend-row:<n>]` captures whoever is sitting in that account's selected friend row right now (default row 1, no need to type a name - useful from a phone with no keyboard) and distributes that snippet to every online account. `bind:false` clears it everywhere. A plain `/d2r follow` starts auto-following that bound friend; `auto:false` stops it. With `watch:true`, follow-auto writes the same live diagnostics log for the whole run, across multiple games, including the latest match-score checkpoint. Old low-detail follow-bind snippets must be rebound before follow-auto will click rows. Use `all:false account:<x>` to right-click a manually-specified row once.
 
 ## Host Setup
 
@@ -206,7 +201,7 @@ The VM agent can drive the flows captured in `docs/runbooks/assets/d2r-ui/`:
 - In-game Save and Exit.
 - D2R window quit via Alt+F4.
 
-Before menu commands click into the lobby, the agent waits for the character screen or lobby tabs to be visually detectable. For `join-game` and `create-game`, it retries the final Join/Create button until the active lobby tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. After `play`, `join-game`, `create-game`, or `follow`, the agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use. Disable that with `ui.toggleLegacyGraphicsAfterEnteringGame: false` in the VM config.
+Before menu commands click into the lobby, the agent waits for the character screen or lobby tabs to be visually detectable. For `join` and `create-game`, it retries the final Join/Create button until the active lobby tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. After `play`, `join`, `create-game`, or `follow`, the agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use. Disable that with `ui.toggleLegacyGraphicsAfterEnteringGame: false` in the VM config.
 
 All-client commands are staggered and skip offline VM agents. Set `CLIENT_STAGGER_SECONDS=30` on the host, or set `startAllDelaySeconds` in `d2r-host.config.json`.
 

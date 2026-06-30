@@ -47,6 +47,61 @@ public sealed class DiscordSlashCommandsTests
         Assert.Equal(ApplicationCommandOptionType.Boolean, watch.Type);
     }
 
+    [Fact]
+    public void FoldedCommandsExposeAllFlagOnD2R()
+    {
+        var d2r = GetD2RCommand();
+        foreach (var name in new[] { "start", "quit", "join", "create-game", "follow", "save-exit" })
+        {
+            var command = Assert.Single(d2r.Options.Value, option => option.Name == name);
+            var all = Assert.Single(command.Options!, option => option.Name == "all");
+
+            Assert.Equal(ApplicationCommandOptionType.Boolean, all.Type);
+        }
+    }
+
+    [Fact]
+    public void D2RCommandIncludesNestedConfigAndVmGroups()
+    {
+        var d2r = GetD2RCommand();
+        var config = Assert.Single(d2r.Options.Value, option => option.Name == "config");
+        var vm = Assert.Single(d2r.Options.Value, option => option.Name == "vm");
+
+        Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, config.Type);
+        Assert.Contains(config.Options!, option => option.Name == "stagger");
+        Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, vm.Type);
+        Assert.Contains(vm.Options!, option => option.Name == "reboot");
+    }
+
+    [Fact]
+    public void LegacyTopLevelAndAllSubcommandsAreNoLongerRegistered()
+    {
+        var commands = DiscordSlashCommands.Build()
+            .Select(Assert.IsType<SlashCommandProperties>)
+            .ToArray();
+        var commandNames = commands.Select(command => command.Name.Value).ToArray();
+
+        Assert.DoesNotContain("config", commandNames);
+        Assert.DoesNotContain("vm", commandNames);
+
+        var d2r = commands.Single(command => command.Name.Value == "d2r");
+        var d2rSubcommands = d2r.Options.Value.Select(option => option.Name).ToArray();
+        foreach (var name in new[] { "create-game-all", "join-all", "join-auto", "join-game", "follow-all", "save-exit-all", "quit-all", "start-all", "health" })
+        {
+            Assert.DoesNotContain(name, d2rSubcommands);
+        }
+    }
+
+    [Fact]
+    public void JoinCommandIncludesAutoFlag()
+    {
+        var d2r = GetD2RCommand();
+        var join = Assert.Single(d2r.Options.Value, option => option.Name == "join");
+        var auto = Assert.Single(join.Options!, option => option.Name == "auto");
+
+        Assert.Equal(ApplicationCommandOptionType.Boolean, auto.Type);
+    }
+
     private static void AssertOptionDescriptions(string commandName, ApplicationCommandOptionProperties option)
     {
         AssertDescription($"{commandName} {option.Name}", option.Description);
@@ -67,5 +122,12 @@ public sealed class DiscordSlashCommandsTests
         Assert.True(
             description.Length <= 100,
             $"{path} description is {description.Length} chars, over Discord's 100-char cap: \"{description}\"");
+    }
+
+    private static SlashCommandProperties GetD2RCommand()
+    {
+        return DiscordSlashCommands.Build()
+            .Select(Assert.IsType<SlashCommandProperties>)
+            .Single(command => command.Name.Value == "d2r");
     }
 }

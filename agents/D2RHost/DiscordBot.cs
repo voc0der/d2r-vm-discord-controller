@@ -9,6 +9,9 @@ namespace D2RHost;
 
 public sealed class DiscordBot
 {
+    private const string TemplateCreateButtonId = "d2r:template:create-game";
+    private const string TemplateJoinButtonId = "d2r:template:join";
+    private const string FollowAutoStartButtonId = "d2r:follow:auto-start";
     // 150s left ~0s margin over the agent's own internal retry budget on slower VM
     // hardware (Battle.net launch + splash-skip retries can legitimately take several
     // minutes), so the command was timing out moments before D2R would have reached
@@ -76,6 +79,7 @@ public sealed class DiscordBot
         _client.Log += OnDiscordLogAsync;
         _client.Ready += OnReadyAsync;
         _client.SlashCommandExecuted += OnSlashCommandAsync;
+        _client.ButtonExecuted += OnButtonExecutedAsync;
     }
 
     public async Task StartAsync()
@@ -141,7 +145,19 @@ public sealed class DiscordBot
             switch (command.CommandName)
             {
                 case "d2r":
-                    await HandleD2RAsync(context);
+                    if (context.GroupName == "config")
+                    {
+                        await HandleConfigAsync(context);
+                    }
+                    else if (context.GroupName == "vm")
+                    {
+                        await HandleVmAsync(context);
+                    }
+                    else
+                    {
+                        await HandleD2RAsync(context);
+                    }
+
                     break;
                 case "vm":
                     await HandleVmAsync(context);
@@ -172,6 +188,84 @@ public sealed class DiscordBot
         }
     }
 
+    private async Task OnButtonExecutedAsync(SocketMessageComponent component)
+    {
+        if (!IsAllowed(component.User.Id))
+        {
+            await component.RespondAsync("Not authorized for this controller.", ephemeral: true);
+            return;
+        }
+
+        try
+        {
+            switch (component.Data.CustomId)
+            {
+                case TemplateCreateButtonId:
+                    await HandleTemplateCreateButtonAsync(component);
+                    return;
+                case TemplateJoinButtonId:
+                    await HandleTemplateJoinButtonAsync(component);
+                    return;
+                case FollowAutoStartButtonId:
+                    await StartFollowAutoAsync(
+                        SlashContext.FromComponent(component, "follow"),
+                        delaySeconds: 0,
+                        watch: false,
+                        TimeSpan.FromMinutes(FollowAutoDefaultIdleMinutes));
+                    return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Discord button failed.");
+            var content = $"Button action failed: {ex.Message}";
+            if (component.HasResponded)
+            {
+                await component.ModifyOriginalResponseAsync(properties => properties.Content = content);
+            }
+            else
+            {
+                await component.RespondAsync(content, ephemeral: true);
+            }
+        }
+    }
+
+    private async Task HandleTemplateCreateButtonAsync(SocketMessageComponent component)
+    {
+        var context = SlashContext.FromComponent(component, "create-game");
+        await QueueCreateGameAllAsync(context, ResolveCreateGameAllInput(context), watch: false);
+    }
+
+    private async Task HandleTemplateJoinButtonAsync(SocketMessageComponent component)
+    {
+        var context = SlashContext.FromComponent(component, "join");
+        var game = ResolveJoinAllInput(context);
+        if (game is null)
+        {
+            await component.RespondAsync(
+                "Nothing to join: no recent game and no template set.",
+                ephemeral: true);
+            return;
+        }
+
+        await QueueJoinAllAsync(context, game, watch: false);
+    }
+
+    private static MessageComponent BuildTemplateActionComponents()
+    {
+        return new ComponentBuilder()
+            .WithButton("Create Game", TemplateCreateButtonId, ButtonStyle.Primary)
+            .WithButton("Join", TemplateJoinButtonId, ButtonStyle.Secondary)
+            .Build();
+    }
+
+    private static MessageComponent BuildFollowBindActionComponents()
+    {
+        return new ComponentBuilder()
+            .WithButton("Start Follow", FollowAutoStartButtonId, ButtonStyle.Primary)
+            .Build();
+    }
+
     private async Task HandleD2RAsync(SlashContext context)
     {
         var subcommand = context.SubcommandName;
@@ -187,13 +281,13 @@ public sealed class DiscordBot
             await context.Command.DeferAsync(ephemeral: true);
             var accountKey = context.GetString("account");
             var content = accountKey is null
-                ? await FormatAllAccountStatusesLiveAsync(CancellationToken.None)
+                ? FormatHealth() + "\n\n" + await FormatAllAccountStatusesLiveAsync(CancellationToken.None)
                 : await FormatAccountStatusLiveAsync(accountKey, CancellationToken.None);
             await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = content);
             return;
         }
 
-        if (subcommand == "start-all")
+        if (subcommand == "start-all" || (subcommand == "start" && ShouldRunAll(context)))
         {
             await QueueAllCommandsAsync(
                 context,
@@ -204,7 +298,31 @@ public sealed class DiscordBot
             return;
         }
 
-        if (subcommand == "join-all")
+        if (subcommand == "start" && !ShouldRunAll(context))
+        {
+            var (accountKey, account) = RequireAccount(context.GetRequiredString("account"));
+            await RunVmCommandAsync(context, account, "launch_d2r", BuildAccountArgs(accountKey, account), TimeSpan.FromSeconds(210));
+            return;
+        }
+
+        if (subcommand == "join-auto"
+            || (subcommand == "join" && (context.OptionCount == 0 || context.GetBool("auto") is not null)))
+        {
+            if (context.GetBool("stop") == true || context.GetBool("auto") == false)
+            {
+                await StopJoinAutoAsync(context);
+                return;
+            }
+
+            await StartJoinAutoAsync(
+                context,
+                Math.Max(context.GetInt("delay") ?? 0, 0),
+                context.GetBool("watch") == true,
+                TimeSpan.FromMinutes(Math.Max(context.GetInt("idle-minutes") ?? JoinAutoDefaultIdleMinutes, 1)));
+            return;
+        }
+
+        if (subcommand == "join-all" || (subcommand == "join" && ShouldRunAll(context)))
         {
             var game = ResolveJoinAllInput(context);
             if (game is null)
@@ -219,9 +337,23 @@ public sealed class DiscordBot
             return;
         }
 
-        if (subcommand == "create-game-all")
+        if (subcommand == "join" && !ShouldRunAll(context))
+        {
+            var (accountKey, account) = RequireAccount(context.GetRequiredString("account"));
+            await RunVmCommandAsync(context, account, "menu_join_game", BuildMenuArgs(accountKey, account, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
+            return;
+        }
+
+        if (subcommand == "create-game-all" || (subcommand == "create-game" && ShouldRunAll(context)))
         {
             await QueueCreateGameAllAsync(context, ResolveCreateGameAllInput(context), watch: context.GetBool("watch") ?? false);
+            return;
+        }
+
+        if (subcommand == "create-game" && !ShouldRunAll(context))
+        {
+            var (accountKey, account) = RequireAccount(context.GetRequiredString("account"));
+            await RunVmCommandAsync(context, account, "menu_create_game", BuildMenuArgs(accountKey, account, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
             return;
         }
 
@@ -233,39 +365,33 @@ public sealed class DiscordBot
             var passwordSuffix = _gameTemplate.Password is null ? string.Empty : $"/{_gameTemplate.Password}";
             await context.Command.RespondAsync(
                 $"Template set: {_gameTemplate.Name}1{passwordSuffix} is next. "
-                    + "create-game-all/join-all with no name will use this until /d2r template is set again or the host restarts.",
-                ephemeral: true);
+                    + "/d2r create-game and /d2r join with no name will use it until /d2r template is set again or the host restarts.",
+                ephemeral: true,
+                components: BuildTemplateActionComponents());
             return;
         }
 
-        if (subcommand == "join-auto")
-        {
-            if (context.GetBool("stop") == true)
-            {
-                await StopJoinAutoAsync(context);
-                return;
-            }
-
-            await StartJoinAutoAsync(
-                context,
-                Math.Max(context.GetInt("delay") ?? 0, 0),
-                context.GetBool("watch") == true,
-                TimeSpan.FromMinutes(Math.Max(context.GetInt("idle-minutes") ?? JoinAutoDefaultIdleMinutes, 1)));
-            return;
-        }
-
-        if (subcommand == "follow-all")
+        if (subcommand == "follow-all"
+            || (subcommand == "follow"
+                && context.GetBool("bind") is null
+                && context.GetBool("auto") is null
+                && IsManualFollowRequest(context)
+                && ShouldRunAll(context)))
         {
             await QueueAllCommandsAsync(
                 context,
                 "menu_join_friend",
                 (accountKey, account) => BuildMenuArgs(accountKey, account, null, context),
                 TimeSpan.FromSeconds(210),
-                readyFirstIfNotMenuReady: true);
+                readyFirstIfNotMenuReady: true,
+                displayName: "follow",
+                watch: context.GetBool("watch") == true,
+                watchLabel: "follow",
+                watchName: "follow");
             return;
         }
 
-        if (subcommand == "save-exit-all")
+        if (subcommand == "save-exit-all" || (subcommand == "save-exit" && ShouldRunAll(context)))
         {
             // menu_save_exit's own automation (Escape, click, wait up to ~12s) is fast - the
             // budget here almost entirely covers time spent waiting for the agent's command
@@ -282,7 +408,14 @@ public sealed class DiscordBot
             return;
         }
 
-        if (subcommand == "quit-all")
+        if (subcommand == "save-exit" && !ShouldRunAll(context))
+        {
+            var (accountKey, account) = RequireAccount(context.GetRequiredString("account"));
+            await RunVmCommandAsync(context, account, "menu_save_exit", BuildAccountArgs(accountKey, account), TimeSpan.FromSeconds(210));
+            return;
+        }
+
+        if (subcommand == "quit-all" || (subcommand == "quit" && ShouldRunAll(context)))
         {
             // Same gate-wait headroom reasoning as save-exit-all above, not yet applied here
             // until issue #24: quit_d2r's own work (focus, Alt+F4, 2s settle) is fast, but it
@@ -301,7 +434,20 @@ public sealed class DiscordBot
             return;
         }
 
-        if (subcommand == "follow" && (context.GetBool("bind") is not null || context.GetBool("auto") is not null))
+        if (subcommand == "quit" && !ShouldRunAll(context))
+        {
+            var (accountKey, account) = RequireAccount(context.GetRequiredString("account"));
+            await CancelJoinAutoIfRunningAsync($"quit was called for {accountKey}");
+            var followAutoCancel = await CancelFollowAutoIfRunningAsync($"quit was called for {accountKey}");
+            QueueFollowAutoStopSignal(followAutoCancel.RunId);
+            await RunVmCommandAsync(context, account, "quit_d2r", BuildAccountArgs(accountKey, account), TimeSpan.FromSeconds(210));
+            return;
+        }
+
+        if (subcommand == "follow"
+            && (context.GetBool("bind") is not null
+                || context.GetBool("auto") is not null
+                || !IsManualFollowRequest(context)))
         {
             if (context.GetBool("auto") is { } autoFlag)
             {
@@ -319,7 +465,32 @@ public sealed class DiscordBot
                 return;
             }
 
-            await HandleFollowBindAsync(context, context.GetBool("bind")!.Value);
+            if (context.GetBool("bind") is { } bindFlag)
+            {
+                await HandleFollowBindAsync(context, bindFlag);
+                return;
+            }
+
+            await StartFollowAutoAsync(
+                context,
+                Math.Max(context.GetInt("delay") ?? 0, 0),
+                context.GetBool("watch") == true,
+                TimeSpan.FromMinutes(Math.Max(context.GetInt("idle-minutes") ?? FollowAutoDefaultIdleMinutes, 1)));
+            return;
+        }
+
+        if (subcommand == "follow" && IsManualFollowRequest(context) && !ShouldRunAll(context))
+        {
+            var (accountKey, account) = RequireAccount(context.GetRequiredString("account"));
+            if (context.GetBool("watch") == true)
+            {
+                await RunWatchedFollowCommandAsync(context, accountKey, account, BuildMenuArgs(accountKey, account, null, context));
+            }
+            else
+            {
+                await RunVmCommandAsync(context, account, "menu_join_friend", BuildMenuArgs(accountKey, account, null, context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
+            }
+
             return;
         }
 
@@ -389,6 +560,22 @@ public sealed class DiscordBot
                 await RunScreenshotAsync(context, singleAccount, BuildAccountArgs(singleAccountKey, singleAccount));
                 return;
         }
+    }
+
+    private static bool ShouldRunAll(SlashContext context)
+    {
+        return context.GetBool("all") ?? true;
+    }
+
+    private static bool IsManualFollowRequest(SlashContext context)
+    {
+        if (context.GetBool("all") is not null)
+        {
+            return true;
+        }
+
+        return context.HasOption("friend-row")
+            || context.HasOption("character-slot");
     }
 
     private async Task HandleVmAsync(SlashContext context)
@@ -715,7 +902,7 @@ public sealed class DiscordBot
         });
     }
 
-    private async Task SetCommandResponseSafeAsync(SocketSlashCommand command, string content)
+    private async Task SetCommandResponseSafeAsync(SocketInteraction command, string content)
     {
         try
         {
@@ -2002,7 +2189,10 @@ public sealed class DiscordBot
         Func<string, AccountConfig, object> argsFactory,
         TimeSpan? timeout = null,
         bool readyFirstIfNotMenuReady = false,
-        string? displayName = null)
+        string? displayName = null,
+        bool watch = false,
+        string? watchLabel = null,
+        string? watchName = null)
     {
         var label = displayName ?? commandName;
         var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
@@ -2025,6 +2215,15 @@ public sealed class DiscordBot
             ephemeral: true);
 
         var tracker = new FanInCompletionTracker(entries.Length);
+        var watchCts = watch ? new CancellationTokenSource() : null;
+        var watchTask = watchCts is null
+            ? null
+            : RunGameAllWatchTickerAsync(
+                context,
+                watchLabel ?? label,
+                watchName ?? label,
+                entries,
+                watchCts.Token);
 
         foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
         {
@@ -2078,6 +2277,9 @@ public sealed class DiscordBot
                 {
                     if (tracker.Complete(ok))
                     {
+                        watchCts?.Cancel();
+                        await AwaitWatchTickerStopAsync(watchTask, watchLabel ?? label);
+                        watchCts?.Dispose();
                         await SendQueueCompletionFollowupAsync(context, label, entries.Length, tracker.FailedCount);
                     }
                 }
@@ -2679,14 +2881,18 @@ public sealed class DiscordBot
         _followBoundAccountKey = resolvedAccountKey;
         var followBindMessage =
             $"Captured the friend at {resolvedAccountKey}'s friend row {capturedFriendRow} and distributed it to {distributed}/{online.Length} online accounts. "
-            + "Use /d2r follow auto:true to start following.";
+            + "Use /d2r follow or the button below to start following.";
         if (distributionFailures.Count > 0)
         {
             followBindMessage += $" Template save failures: {string.Join("; ", distributionFailures)}";
         }
 
         await context.Command.ModifyOriginalResponseAsync(
-            properties => properties.Content = DiscordMessageTruncator.Truncate(followBindMessage));
+            properties =>
+            {
+                properties.Content = DiscordMessageTruncator.Truncate(followBindMessage);
+                properties.Components = BuildFollowBindActionComponents();
+            });
     }
 
     private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout)
@@ -3857,19 +4063,23 @@ public sealed class DiscordBot
     private sealed class SlashContext
     {
         private SlashContext(
-            SocketSlashCommand command,
+            SocketInteraction command,
+            string? groupName,
             string subcommandName,
             IReadOnlyDictionary<string, SocketSlashCommandDataOption> options)
         {
             Command = command;
+            GroupName = groupName;
             SubcommandName = subcommandName;
             _options = options;
         }
 
         private readonly IReadOnlyDictionary<string, SocketSlashCommandDataOption> _options;
 
-        public SocketSlashCommand Command { get; }
+        public SocketInteraction Command { get; }
+        public string? GroupName { get; }
         public string SubcommandName { get; }
+        public int OptionCount => _options.Count;
 
         public static SlashContext From(SocketSlashCommand command)
         {
@@ -3878,14 +4088,36 @@ public sealed class DiscordBot
             {
                 return new SlashContext(
                     command,
+                    groupName: null,
                     "",
                     new Dictionary<string, SocketSlashCommandDataOption>(StringComparer.OrdinalIgnoreCase));
             }
 
+            if (subcommand.Type == ApplicationCommandOptionType.SubCommandGroup)
+            {
+                var nestedSubcommand = subcommand.Options.FirstOrDefault();
+                return new SlashContext(
+                    command,
+                    subcommand.Name,
+                    nestedSubcommand?.Name ?? "",
+                    (nestedSubcommand?.Options ?? Array.Empty<SocketSlashCommandDataOption>())
+                        .ToDictionary(option => option.Name, StringComparer.OrdinalIgnoreCase));
+            }
+
             return new SlashContext(
                 command,
+                groupName: null,
                 subcommand.Name,
                 subcommand.Options.ToDictionary(option => option.Name, StringComparer.OrdinalIgnoreCase));
+        }
+
+        public static SlashContext FromComponent(SocketMessageComponent component, string subcommandName)
+        {
+            return new SlashContext(
+                component,
+                groupName: null,
+                subcommandName,
+                new Dictionary<string, SocketSlashCommandDataOption>(StringComparer.OrdinalIgnoreCase));
         }
 
         public string? GetString(string name)
@@ -3909,6 +4141,11 @@ public sealed class DiscordBot
             }
 
             return Convert.ToInt32(option.Value);
+        }
+
+        public bool HasOption(string name)
+        {
+            return _options.ContainsKey(name);
         }
 
         public int GetRequiredInt(string name)

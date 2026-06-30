@@ -19,39 +19,34 @@ public static class DiscordSlashCommands
                 .WithName("d2r")
                 .WithDescription("Operate Diablo II: Resurrected clients")
                 .AddOptions(
-                    Sub("status", "Show one account or all account client statuses", OptionalAccount()),
-                    Sub("start", "Launch Battle.net/D2R for an account", Account()),
+                    Sub("status", "Show controller health plus one account or all account client statuses", OptionalAccount()),
+                    Sub("start", "Launch one account, or ready all accounts when all is true", OptionalAccount(), AllFlag()),
                     Sub("stop", "Kill the D2R process for an account", Account()),
-                    Sub("quit", "Focus D2R and close it with Alt+F4", Account()),
+                    Sub("quit", "Focus D2R and close it with Alt+F4", OptionalAccount(), AllFlag()),
                     Sub("restart-client", "Restart the D2R process for an account", Account()),
                     Sub("screenshot", "Capture the VM's current primary-screen screenshot", Account()),
                     Sub("remote", "Show the configured remote-control URL for an account VM", Account()),
                     Sub("ready", "Launch D2R, click Battle.net Play if needed, and skip intro screens", Account()),
                     Sub("lobby", "Select character and open Lobby", Account(), CharacterSlot()),
                     Sub("play", "Select character and click Play", Account(), CharacterSlot()),
-                    Sub("join-game", "Open Lobby and join a named game", Account(), GameName(), Password(), Difficulty(), CharacterSlot()),
-                    Sub("create-game", "Open Lobby and create a game", Account(), GameName(), Password(), Difficulty(), CharacterSlot()),
-                    Sub("follow", "Join off a friend, or bind/auto-follow one by name snippet", OptionalAccount(), CharacterSlot(), FriendRow(), FollowBind(), FollowAutoFlag(), Delay(), IdleMinutes(), Watch()),
-                    Sub("save-exit", "Open the in-game menu and click Save and Exit", Account()),
-                    Sub("create-game-all", "First account creates a game, then the rest join it", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
-                    Sub("join-all", "Stagger all accounts into a named game", GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
-                    Sub("template", "Set the create-game-all/join-all auto-naming template (netrunner1, netrunner2, ...)", RequiredGameName(), Password()),
-                    Sub("join-auto", "Auto-join the template game, wait for someone to leave, leave, advance, repeat until stopped", CharacterSlot(), Delay(), StopFlag(), JoinAutoWatch(), IdleMinutes()),
-                    Sub("follow-all", "Stagger all accounts into a friend's game", CharacterSlot(), FriendRow()),
-                    Sub("save-exit-all", "Stagger Save and Exit across all accounts"),
-                    Sub("quit-all", "Stagger Alt+F4 quit across all online accounts"),
-                    Sub("start-all", "Queue staggered ready flows for all configured accounts"),
-                    Sub("health", "Show controller and agent connection health"))
-                .Build(),
-            new SlashCommandBuilder()
-                .WithName("vm")
-                .WithDescription("Operate mapped Hyper-V virtual machines")
-                .AddOptions(
-                    Sub("status", "Get Hyper-V status for an account VM", Account()),
-                    Sub("start", "Start an account VM", Account()),
-                    Sub("stop", "Stop an account VM", Account()),
-                    Sub("reboot", "Restart an account VM", Account()),
-                    Sub("snapshot", "Create a Hyper-V checkpoint for an account VM", Account(), SnapshotName()))
+                    Sub("join", "Join a game, or auto-join template games when auto is true", OptionalAccount(), AllFlag(), JoinAutoFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Delay(), IdleMinutes(), JoinAutoWatch()),
+                    Sub("create-game", "Create one game, or create and join across all accounts", OptionalAccount(), AllFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
+                    Sub("follow", "Follow the bound friend, bind a friend, or join by visible row", OptionalAccount(), AllFlag(), CharacterSlot(), FriendRow(), FollowBind(), FollowAutoFlag(), Delay(), IdleMinutes(), Watch()),
+                    Sub("save-exit", "Open the in-game menu and click Save and Exit", OptionalAccount(), AllFlag()),
+                    Sub("template", "Set the create/join auto-naming template", RequiredGameName(), Password()),
+                    Group("config", "Configure the D2R controller",
+                        Sub("show", "Show runtime controller config"),
+                        Sub("stagger", "Persist all-client stagger seconds and restart the host",
+                            Seconds("seconds", "Delay between all-client actions, in seconds")),
+                        Sub("notifications", "Persist game session notification settings and restart the host",
+                            BoolOption("enabled", "Whether to post game session updates"),
+                            StringOption("channel-id", "Discord text channel ID for session updates", required: false))),
+                    Group("vm", "Operate mapped Hyper-V virtual machines",
+                        Sub("status", "Get Hyper-V status for an account VM", Account()),
+                        Sub("start", "Start an account VM", Account()),
+                        Sub("stop", "Stop an account VM", Account()),
+                        Sub("reboot", "Restart an account VM", Account()),
+                        Sub("snapshot", "Create a Hyper-V checkpoint for an account VM", Account(), SnapshotName())))
                 .Build(),
             new SlashCommandBuilder()
                 .WithName("game")
@@ -64,17 +59,6 @@ public static class DiscordSlashCommands
                         Notes()),
                     Sub("show", "Show the stored game details"),
                     Sub("clear", "Clear the stored game details"))
-                .Build(),
-            new SlashCommandBuilder()
-                .WithName("config")
-                .WithDescription("Configure the D2R controller")
-                .AddOptions(
-                    Sub("show", "Show runtime controller config"),
-                    Sub("stagger", "Persist all-client stagger seconds and restart the host",
-                        Seconds("seconds", "Delay between all-client actions, in seconds")),
-                    Sub("notifications", "Persist game session notification settings and restart the host",
-                        BoolOption("enabled", "Whether to post game session updates"),
-                        StringOption("channel-id", "Discord text channel ID for session updates", required: false)))
                 .Build(),
             new SlashCommandBuilder()
                 .WithName("restart")
@@ -102,6 +86,24 @@ public static class DiscordSlashCommands
         foreach (var option in options)
         {
             builder.AddOption(option);
+        }
+
+        return builder;
+    }
+
+    private static SlashCommandOptionBuilder Group(
+        string name,
+        string description,
+        params SlashCommandOptionBuilder[] subcommands)
+    {
+        var builder = new SlashCommandOptionBuilder()
+            .WithName(name)
+            .WithDescription(description)
+            .WithType(ApplicationCommandOptionType.SubCommandGroup);
+
+        foreach (var subcommand in subcommands)
+        {
+            builder.AddOption(subcommand);
         }
 
         return builder;
@@ -203,6 +205,15 @@ public static class DiscordSlashCommands
             .WithRequired(false);
     }
 
+    private static SlashCommandOptionBuilder AllFlag()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("all")
+            .WithDescription("Run across all online accounts; defaults to true")
+            .WithType(ApplicationCommandOptionType.Boolean)
+            .WithRequired(false);
+    }
+
     private static SlashCommandOptionBuilder IdleMinutes()
     {
         return new SlashCommandOptionBuilder()
@@ -228,6 +239,15 @@ public static class DiscordSlashCommands
         return new SlashCommandOptionBuilder()
             .WithName("auto")
             .WithDescription("Start (true) or stop (false) auto-following the bound friend across all accounts")
+            .WithType(ApplicationCommandOptionType.Boolean)
+            .WithRequired(false);
+    }
+
+    private static SlashCommandOptionBuilder JoinAutoFlag()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("auto")
+            .WithDescription("Start (true) or stop (false) template auto-join")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
