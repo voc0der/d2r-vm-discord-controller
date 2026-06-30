@@ -46,6 +46,9 @@ public sealed class DiscordBot
     private int _joinAutoCyclesCompleted;
     private DateTimeOffset? _joinAutoStartedUtc;
     private const int FollowAutoDefaultIdleMinutes = 60;
+    private const int FollowAutoDefaultCheckSeconds = 5;
+    private const int FollowAutoPostLeaveCheckSeconds = 2;
+    private const int PlayerCountDropPollSeconds = 5;
     private readonly SemaphoreSlim _followAutoLock = new(1, 1);
     private CancellationTokenSource? _followAutoCts;
     private string? _followAutoStopReason;
@@ -3038,9 +3041,14 @@ public sealed class DiscordBot
                 watchCts.Token);
         }
 
-        async Task DelayNextFollowCheckAsync()
+        async Task DelayNextFollowCheckAsync(bool afterLeave = false)
         {
-            await Task.Delay(TimeSpan.FromSeconds(delaySeconds > 0 ? delaySeconds : 15), cancellationToken);
+            var seconds = delaySeconds > 0
+                ? delaySeconds
+                : afterLeave
+                    ? FollowAutoPostLeaveCheckSeconds
+                    : FollowAutoDefaultCheckSeconds;
+            await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
         }
 
         try
@@ -3060,7 +3068,7 @@ public sealed class DiscordBot
                     await LeaveAllJoinAutoAsync(channel, "follow-auto");
                     joined.Clear();
                     idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                    await DelayNextFollowCheckAsync();
+                    await DelayNextFollowCheckAsync(afterLeave: true);
                     continue;
                 }
 
@@ -3450,7 +3458,7 @@ public sealed class DiscordBot
     {
         while (true)
         {
-            await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(PlayerCountDropPollSeconds), cancellationToken);
             var current = await TryFetchFirstOnlineAccountPlayerCountAsync();
             if (current is { } count && baseline is { } known && count < known)
             {
