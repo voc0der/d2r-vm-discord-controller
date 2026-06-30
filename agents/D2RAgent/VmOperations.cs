@@ -4797,8 +4797,22 @@ public sealed class VmOperations
             return false;
         }
 
-        var createTab = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab));
-        var joinTab = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab));
+        // IsLobbyTabReady internally re-runs IsCharacterMenuReady to exclude character-screen
+        // Act backgrounds. When the friends-list drawer is open and expanded, the friend rows'
+        // grey text/icons at the left-side y=0.405/0.460 sample points can trigger a false
+        // positive on IsCharacterMenuReady, which then makes !characterMenuReady=false and
+        // blocks the tab check - even though the outer IsCharacterScreenReady guard (which
+        // requires the full character-select button pair) already confirmed we're not at a
+        // character screen. Sample the tab stats directly and call the classifier with the
+        // character-screen parameters forced to false, trusting the outer guard.
+        var createTabStats = TryRunBounded<ScreenRegionStats?>(
+            () => SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab), widthRatio: 0.10, heightRatio: 0.045, windowRelative: false),
+            EntryLoopCheckBoundMs, null);
+        var joinTabStats = TryRunBounded<ScreenRegionStats?>(
+            () => SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), widthRatio: 0.10, heightRatio: 0.045, windowRelative: false),
+            EntryLoopCheckBoundMs, null);
+        var createTab = createTabStats is { } ct && D2RScreenClassifier.IsLobbyTabReady(ct, characterButtonPairReady: false, characterMenuReady: false);
+        var joinTab = joinTabStats is { } jt && D2RScreenClassifier.IsLobbyTabReady(jt, characterButtonPairReady: false, characterMenuReady: false);
         var entry = IsLobbyEntryButtonReady(input);
         var formScreen = IsLobbyFormPanelReady(input, windowRelative: false);
         var formWindow = IsLobbyFormPanelReady(input, windowRelative: true);

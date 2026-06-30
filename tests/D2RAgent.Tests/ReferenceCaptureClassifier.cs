@@ -230,11 +230,18 @@ internal static class ReferenceCaptureClassifier
             return false;
         }
 
-        var createTab = IsLobbyTabReady(capture, new UiPoint(0.673, 0.071));
-        var joinTab = IsLobbyTabReady(capture, new UiPoint(0.766, 0.071));
+        // Mirrors VmOperations.IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap: the outer
+        // character-screen guards having already run, the tab check passes characterMenuReady=false
+        // to avoid a false negative when the expanded friends-list drawer triggers a false
+        // positive on IsCharacterMenuReady (friend-row content at y=0.405/0.460 can look
+        // like character-menu-button regions, blocking the tab check via !characterMenuReady).
+        var createTab = Sample(capture, new UiPoint(0.673, 0.071), 0.10, 0.045);
+        var joinTab = Sample(capture, new UiPoint(0.766, 0.071), 0.10, 0.045);
+        var createTabReady = D2RScreenClassifier.IsLobbyTabReady(createTab, characterButtonPairReady: false, characterMenuReady: false);
+        var joinTabReady = D2RScreenClassifier.IsLobbyTabReady(joinTab, characterButtonPairReady: false, characterMenuReady: false);
         var entry = IsLobbyEntryButtonReady(capture);
         var formPanel = IsLobbyFormPanelReady(capture);
-        return D2RScreenClassifier.IsGameEntryMenuVisible(createTab || joinTab, entry, formPanel);
+        return D2RScreenClassifier.IsGameEntryMenuVisible(createTabReady || joinTabReady, entry, formPanel);
     }
 
     private static bool IsLobbyTabReady(string capture, UiPoint tab)

@@ -110,6 +110,33 @@ public sealed class ReferenceCaptureFlowTests
             ReferenceCaptureClassifier.IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture));
     }
 
+    // Regression: the expanded friends-list drawer (lobby_friends_tab_party.png,
+    // lobby_right_click_friend_*.png) makes IsCharacterMenuReady return true because the friend-
+    // row content at the left-side y=0.405/0.460 sample points looks like character-menu-button
+    // regions. The previous IsLobbyTabReady call inside IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap
+    // had !characterMenuReady as a required condition, so a false-positive there blocked the
+    // lobby tab check entirely - the function returned false for a screen that was genuinely at
+    // the lobby with the friends list open. Fixed by passing characterMenuReady=false to the
+    // classifier since the outer character-screen guards already confirmed it's not a real
+    // character screen. This test pins every lobby capture to ensure they all confirm as
+    // lobby-visible, including the drawer-open/friends-expanded ones that triggered the bug.
+    [Theory]
+    [InlineData("lobby_create_game_screen.png", true)]
+    [InlineData("lobby_create_game_filled.png", true)]
+    [InlineData("lobby_create_game_terror_zones_not_available.png", true)]
+    [InlineData("lobby_join_game_screen.png", true)]
+    [InlineData("lobby_join_game_screen_difficulty_dropdown.png", true)]
+    [InlineData("lobby_click_party_icon.png", true)]
+    [InlineData("lobby_click_party_icon_hover_friends_tab.png", true)]
+    [InlineData("lobby_hover_party_icon_chat.png", true)]
+    [InlineData("lobby_friends_tab_party.png", true)]
+    [InlineData("lobby_right_click_friend_join_game_available.png", true)]
+    [InlineData("lobby_right_click_friend_nojoin_game_available.png", true)]
+    public void AllLobbySubStatesConfirmAsLobbyVisible(string capture, bool expected)
+    {
+        Assert.Equal(expected, ReferenceCaptureClassifier.IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture));
+    }
+
     // Same corpus as RealCaptureClassifiesAsExpectedState, but through ClassifyReady - the
     // ready loop's own decision tree (VmOperations.DetectReadyScreenStateScreenOnly), not the
     // status detector's. Before this, the ready loop never evaluated lobby/in-game at all, so
