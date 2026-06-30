@@ -1583,19 +1583,24 @@ public sealed class VmOperations
         CancellationToken cancellationToken)
     {
         var openedDrawer = false;
-        if (!IsFriendsDrawerOpen(input))
+        var drawerOpen = TryDetectFriendsDrawerOpen(input);
+        if (drawerOpen == false)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): opening friends drawer");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
             openedDrawer = true;
             await DelayLongAsync(cancellationToken);
         }
-        else
+        else if (drawerOpen == true)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): friends drawer already open");
         }
+        else
+        {
+            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): friends drawer state unknown, skipping toggle");
+        }
 
-        if (!IsFriendsDrawerOpen(input))
+        if (TryDetectFriendsDrawerOpen(input) != true)
         {
             return CommandResult.Failure(
                 $"Could not open the friends drawer before {context}.",
@@ -1684,9 +1689,10 @@ public sealed class VmOperations
         };
     }
 
-    private bool IsFriendsDrawerOpen(WindowsInput input)
+    private bool? TryDetectFriendsDrawerOpen(WindowsInput input)
     {
-        return TryRunBounded(() =>
+        // null = couldn't sample (timeout or slot exhaustion) — callers must not toggle on null
+        return TryRunBounded<bool?>(() =>
         {
             var stats = input.SampleRegion(
                 GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader),
@@ -1694,7 +1700,7 @@ public sealed class VmOperations
                 heightRatio: 0.022,
                 sampleGrid: MenuSampleGrid);
             return D2RScreenClassifier.IsFriendsDrawerHeaderVisible(stats);
-        }, EntryLoopCheckBoundMs);
+        }, EntryLoopCheckBoundMs, fallback: null);
     }
 
     private (bool IsExpanded, bool HasRowEvidence, bool IsReliable, string Summary) GetFriendsListExpandedEvidence(WindowsInput input)
