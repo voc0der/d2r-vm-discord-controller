@@ -1596,7 +1596,13 @@ public sealed class VmOperations
 
         var expanded = GetFriendsListExpandedEvidence(input);
         var accordionAction = ChooseFriendsAccordionAction(openedDrawer, expanded.IsExpanded);
-        if (accordionAction == FriendsAccordionAction.ExpandCollapsed)
+        if (accordionAction == FriendsAccordionAction.ExpandAfterOpeningDrawer)
+        {
+            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion after opening drawer");
+            ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
+            await DelayLongAsync(cancellationToken);
+        }
+        else if (accordionAction == FriendsAccordionAction.ExpandCollapsed)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
@@ -1628,7 +1634,7 @@ public sealed class VmOperations
 
         if (openedDrawer)
         {
-            return FriendsAccordionAction.VerifyAfterOpeningDrawer;
+            return FriendsAccordionAction.ExpandAfterOpeningDrawer;
         }
 
         return FriendsAccordionAction.ExpandCollapsed;
@@ -1644,7 +1650,7 @@ public sealed class VmOperations
         return action switch
         {
             FriendsAccordionAction.SkipExpanded => $"EnsureFriendsListVisibleAsync({context}): verifying already-expanded Friends rows",
-            FriendsAccordionAction.VerifyAfterOpeningDrawer => $"EnsureFriendsListVisibleAsync({context}): verifying Friends rows after opening drawer",
+            FriendsAccordionAction.ExpandAfterOpeningDrawer => $"EnsureFriendsListVisibleAsync({context}): verifying Friends rows after accordion click",
             _ => $"EnsureFriendsListVisibleAsync({context}): verifying Friends rows after accordion click"
         };
     }
@@ -1667,6 +1673,7 @@ public sealed class VmOperations
         return TryRunBounded(() =>
         {
             var visibleRows = 0;
+            var markerRows = 0;
             var summary = new StringBuilder();
 
             for (var row = 1; row <= 3; row++)
@@ -1687,6 +1694,10 @@ public sealed class VmOperations
                     heightRatio: 0.032,
                     sampleGrid: MenuSampleGrid);
                 var markerVisible = D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
+                if (markerVisible)
+                {
+                    markerRows++;
+                }
 
                 if (nameVisible && markerVisible)
                 {
@@ -1709,17 +1720,17 @@ public sealed class VmOperations
                 summary.Append(' ');
             }
 
-            summary.Append("visibleRows=").Append(visibleRows);
-            return (IsFriendsListExpandedByVisibleRows(visibleRows), summary.ToString());
+            summary
+                .Append("visibleRows=").Append(visibleRows)
+                .Append(",markerRows=").Append(markerRows);
+            return (IsFriendsListExpandedByEvidence(visibleRows, markerRows), summary.ToString());
         }, EntryLoopCheckBoundMs, (false, "timeout"));
     }
 
-    internal static bool IsFriendsListExpandedByVisibleRows(int visibleRows)
+    internal static bool IsFriendsListExpandedByEvidence(int visibleRows, int markerRows)
     {
-        // The fingerprint matcher remains strict before any click. At this accordion stage,
-        // one detected friend row is enough to avoid toggling the header closed on sparse or
-        // mostly-offline lists where only one row passes the lightweight visibility filter.
-        return visibleRows >= 1;
+        return visibleRows >= 2
+            || (visibleRows >= 1 && markerRows >= 2);
     }
 
     private AgentCommon.UiPoint GetFriendRowMarkerPoint(int row)
@@ -5220,7 +5231,7 @@ public sealed class VmOperations
 
     internal enum FriendsAccordionAction
     {
-        VerifyAfterOpeningDrawer,
+        ExpandAfterOpeningDrawer,
         ExpandCollapsed,
         SkipExpanded
     }

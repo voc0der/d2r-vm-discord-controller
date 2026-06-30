@@ -10,7 +10,7 @@ public sealed class FriendsAccordionDecisionTests
     [InlineData(true, false, 0)]
     [InlineData(false, false, 1)]
     [InlineData(false, true, 2)]
-    public void FriendsAccordionActionVerifiesBeforeTogglingAfterOpeningDrawer(
+    public void FriendsAccordionActionExpandsWhenRowEvidenceIsMissing(
         bool openedDrawer,
         bool expandedEvidence,
         int expected)
@@ -35,12 +35,15 @@ public sealed class FriendsAccordionDecisionTests
     }
 
     [Theory]
-    [InlineData(0, false)]
-    [InlineData(1, true)]
-    [InlineData(2, true)]
-    [InlineData(3, true)]
-    public void FriendsListExpansionAcceptsAnyVisibleFriendRows(int visibleRows, bool expected)
+    [InlineData(0, 0, false)]
+    [InlineData(1, 1, false)]
+    [InlineData(1, 2, true)]
+    [InlineData(2, 2, true)]
+    public void FriendsListExpansionRejectsSingleRowFalsePositive(
+        int visibleRows,
+        int markerRows,
+        bool expected)
     {
-        Assert.Equal(expected, VmOperations.IsFriendsListExpandedByVisibleRows(visibleRows));
+        Assert.Equal(expected, VmOperations.IsFriendsListExpandedByEvidence(visibleRows, markerRows));
     }
 }

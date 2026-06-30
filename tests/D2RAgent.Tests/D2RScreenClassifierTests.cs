@@ -161,12 +161,14 @@ public sealed class D2RScreenClassifierTests
     [InlineData("lobby_click_party_icon.png", false)]
     [InlineData("lobby_friends_tab_party.png", true)]
     [InlineData("lobby_right_click_friend_join_game_available.png", true)]
-    public void FriendsListExpandedVisibleRowCountMatchesReferenceCaptures(string capture, bool expected)
+    public void FriendsListExpandedEvidenceMatchesReferenceCaptures(string capture, bool expected)
     {
         var visibleRows = Enumerable.Range(1, 3)
             .Count(row => IsFriendRowExpandedEvidence(capture, row));
+        var markerRows = Enumerable.Range(1, 3)
+            .Count(row => IsFriendRowMarkerEvidence(capture, row));
 
-        Assert.Equal(expected, VmOperations.IsFriendsListExpandedByVisibleRows(visibleRows));
+        Assert.Equal(expected, VmOperations.IsFriendsListExpandedByEvidence(visibleRows, markerRows));
     }
 
     [Fact]
@@ -467,5 +469,16 @@ public sealed class D2RScreenClassifierTests
         var nameVisible = D2RScreenClassifier.IsFriendRowNameVisible(nameStats)
             || (row > 1 && D2RScreenClassifier.IsLowGreyFriendRowNameVisible(nameStats));
         return nameVisible && D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
+    }
+
+    private static bool IsFriendRowMarkerEvidence(string capture, int row)
+    {
+        var markerStats = FullCaptureRegionSampler.Sample(
+            capture,
+            FriendRowMarkerPoint(row),
+            widthRatio: 0.035,
+            heightRatio: 0.032);
+
+        return D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
     }
 }
