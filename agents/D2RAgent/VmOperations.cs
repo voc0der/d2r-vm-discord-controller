@@ -955,14 +955,14 @@ public sealed class VmOperations
         if (!IsAnyLobbyEntryMenuVisible(input))
         {
             MarkCommandCheckpoint("JoinFriendAsync: lobby not visually confirmed - navigating directly");
-            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken, guardAgainstInGame: true);
             await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
             await DelayStepAsync(cancellationToken);
 
             if (!IsAnyLobbyEntryMenuVisible(input))
             {
                 return CommandResult.Failure(
-                    "Could not visually confirm the Lobby before attempting to follow a friend.",
+                    $"Could not visually confirm the Lobby before attempting to follow a friend.{FormatLobbyConfirmationDiagnostics(input)}",
                     await CollectStatusAsync(cancellationToken));
             }
 
@@ -1006,14 +1006,14 @@ public sealed class VmOperations
         if (!IsAnyLobbyEntryMenuVisible(input))
         {
             MarkCommandCheckpoint("FollowBindCaptureAsync: lobby not visually confirmed - navigating directly");
-            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken, guardAgainstInGame: true);
             await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
             await DelayStepAsync(cancellationToken);
 
             if (!IsAnyLobbyEntryMenuVisible(input))
             {
                 return CommandResult.Failure(
-                    "Could not visually confirm the Lobby before capturing a follow-bind fingerprint.",
+                    $"Could not visually confirm the Lobby before capturing a follow-bind fingerprint.{FormatLobbyConfirmationDiagnostics(input)}",
                     await CollectStatusAsync(cancellationToken));
             }
 
@@ -1230,7 +1230,7 @@ public sealed class VmOperations
         if (!IsAnyLobbyEntryMenuVisible(input))
         {
             MarkCommandCheckpoint("FollowAutoCheckAsync: lobby not visually confirmed - navigating directly");
-            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
+            await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken, guardAgainstInGame: true);
             ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
             await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
             await DelayStepAsync(cancellationToken);
@@ -1239,7 +1239,7 @@ public sealed class VmOperations
             if (!IsAnyLobbyEntryMenuVisible(input))
             {
                 return CommandResult.Failure(
-                    "Could not visually confirm the Lobby during a follow-auto check.",
+                    $"Could not visually confirm the Lobby during a follow-auto check.{FormatLobbyConfirmationDiagnostics(input)}",
                     await CollectStatusAsync(cancellationToken));
             }
 
@@ -3258,6 +3258,21 @@ public sealed class VmOperations
         }
     }
 
+    // "Could not visually confirm the Lobby" carried no evidence of *why* - the live
+    // IsAnyLobbyEntryMenuVisible check that produced it samples the tab/entry/form regions
+    // and folds them into one bool, so a failure here was previously indistinguishable
+    // between "genuinely not at the lobby," "a bounded sample call timed out under VM load
+    // and defaulted to false" (TryRunBounded's documented bias - see the GDI/dwm.exe history
+    // in pixel-classifier-catalog.md), and "IsInGameReady excluded it." Reuses the same
+    // ComputeVisibleStateClassifierBreakdown the live status detector already builds on
+    // Unknown, so a failure here shows the actual measured tab/entry/form/inGame values
+    // instead of a bare true/false.
+    private string FormatLobbyConfirmationDiagnostics(WindowsInput input)
+    {
+        var breakdown = TryRunBounded(() => ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid), ClassifierBreakdownBoundMs, "");
+        return string.IsNullOrEmpty(breakdown) ? "" : $" Classifier breakdown: {breakdown}";
+    }
+
     private string FormatInputDiagnosticsSuffix()
     {
         MarkCommandCheckpoint("FormatInputDiagnosticsSuffix: collecting input diagnostics");
@@ -3334,8 +3349,8 @@ public sealed class VmOperations
         }
 
         MarkCommandCheckpoint("EnsureLobbyOpenedAsync: direct character slot/lobby click");
-        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
-        await ClickLobbyDirectAsync(input, cancellationToken);
+        await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken, guardAgainstInGame: true);
+        await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true);
         MarkLobbyOrGameInteraction("Clicked Lobby without visual verification.");
         return null;
     }
@@ -4494,8 +4509,15 @@ public sealed class VmOperations
     private async Task SelectCharacterAsync(
         WindowsInput input,
         int? characterSlot,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guardAgainstInGame = false)
     {
+        if (ShouldSkipMenuClickForInGameSafety(guardAgainstInGame, () => MightAlreadyBeInGame(input)))
+        {
+            MarkCommandCheckpoint("SelectCharacterAsync: skipped click, might already be in-game");
+            return;
+        }
+
         ClickD2R(input, GetCharacterSlotPoint(characterSlot));
         await DelayFastMenuAsync(cancellationToken);
     }

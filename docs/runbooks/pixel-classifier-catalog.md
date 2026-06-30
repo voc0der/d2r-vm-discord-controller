@@ -302,6 +302,37 @@ or character-select recovery flow, it needs this same gate - the danger isn't sp
 call site that happened to get caught, it's inherent to clicking fixed lobby coordinates without
 first confirming the lobby is what's actually on screen.
 
+**`v0.2.152`: exactly the predicted "a new blind click was added without this gate" case,
+found in `SelectCharacterAsync`.** Reported live: in a 3-VM follow-auto run, hc1/hc3 rejoined
+the bound friend's game cleanly (confirming the `v0.2.151` lobby/in-game ready-loop fix worked),
+but hc2 failed with `Could not expand the Friends list before follow-auto. Friends list
+evidence: timeout` immediately followed by `Could not visually confirm the Lobby during a
+follow-auto check`, and the user observed it visually stuck with the friends drawer open at the
+lobby - not in a game, not at the character screen, genuinely at the lobby the whole time. Root
+cause: the "lobby not visually confirmed - navigating directly" recovery pattern, repeated
+identically in `JoinFriendAsync`, `FollowBindCaptureAsync`, `FollowAutoCheckAsync`, and
+`EnsureLobbyOpenedAsync`'s `Unknown`-cache fallback, calls `SelectCharacterAsync` (a blind click
+on a fixed character-slot coordinate) immediately before the already-guarded
+`ClickLobbyDirectAsync(guardAgainstInGame: true)` - but `SelectCharacterAsync` itself had no
+`MightAlreadyBeInGame` gate at all, in any of its seven call sites. A transient GDI/dwm
+slowness episode (the same class of issue `IsLobbyTabReady`/`IsLobbyEntryButtonReady`/
+`IsLobbyFormPanelReady` returning their bounded `false` fallback under load - see the
+`v0.2.87`/`v0.2.93` history below) made `IsAnyLobbyEntryMenuVisible` read false negative on a
+screen that was genuinely the lobby, which fell through to this recovery path and clicked the
+character-slot coordinate against the open friends drawer instead of skipping it.
+
+Fixed by giving `SelectCharacterAsync` the same `guardAgainstInGame` parameter and
+`ShouldSkipMenuClickForInGameSafety`/`MightAlreadyBeInGame` gate as `ClickLobbyDirectAsync`/
+`ClickLobbyTabDirectAsync`, and passing `guardAgainstInGame: true` at all four "navigating
+directly" call sites - the same places that already guard their own `ClickLobbyDirectAsync`
+call right next to it. `EnsureLobbyOpenedAsync`'s `Unknown`-fallback `ClickLobbyDirectAsync`
+call was *also* missing `guardAgainstInGame: true` (the only one of its sibling call sites that
+was) and got the same fix. The other three `SelectCharacterAsync` call sites
+(`PlayCharacterAsync`, and the two inside `TryOpenLobbyFromCurrentScreenAsync`/
+`OpenLobbyFromCharacterScreenAsync`) were left unguarded deliberately - each is only reached
+after the surrounding function has already confirmed character-screen state via a different
+live check, so the in-game risk this gate protects against doesn't apply there.
+
 **`IsGameEntryMenuStillVisible` was the one entry-loop check left unbounded after the bounding
 pass above - bounded in `v0.2.84`.** `watch-xiy6-20260625-165553.log`: froze
 `WaitForGameEntryAsync`'s `checking lobby menu return` checkpoint for 130s+ (65 consecutive
