@@ -10,6 +10,7 @@ namespace D2RAgent.Tests;
 // click landing on whatever window already had focus instead. v0.2.46 brought the focus
 // attempt back but bounded to one detection cycle via VmOperations.TryRunBounded. These tests
 // pin the bounding behavior itself, independent of the actual Win32 focus call.
+[Collection(BoundedCallCollection.Name)]
 public sealed class TryRunBoundedTests
 {
     private const int TimeoutMs = 250;

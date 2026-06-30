@@ -3,6 +3,7 @@ using Xunit;
 
 namespace D2RAgent.Tests;
 
+[Collection(BoundedCallCollection.Name)]
 public sealed class FollowFingerprintCaptureTests
 {
     [Fact]
