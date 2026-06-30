@@ -1487,9 +1487,7 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
-        var expanded = openedDrawer
-            ? (IsExpanded: false, Summary: "fresh drawer open; skipped pre-expand row evidence")
-            : GetFriendsListExpandedEvidence(input);
+        var expanded = GetFriendsListExpandedEvidence(input);
         var accordionAction = ChooseFriendsAccordionAction(openedDrawer, expanded.IsExpanded);
         if (accordionAction == FriendsAccordionAction.ExpandAfterOpeningDrawer)
         {
@@ -1508,13 +1506,7 @@ public sealed class VmOperations
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): Friends accordion already expanded");
         }
 
-        if (!ShouldVerifyFriendsExpansionAfterAction(accordionAction))
-        {
-            MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): Friends accordion clicked; proceeding to row scan");
-            return null;
-        }
-
-        MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): verifying already-expanded Friends rows");
+        MarkCommandCheckpoint(FormatFriendsExpansionVerificationCheckpoint(context, accordionAction));
         expanded = GetFriendsListExpandedEvidence(input);
         if (!expanded.IsExpanded)
         {
@@ -1528,19 +1520,29 @@ public sealed class VmOperations
 
     internal static FriendsAccordionAction ChooseFriendsAccordionAction(bool openedDrawer, bool expandedEvidence)
     {
+        if (expandedEvidence)
+        {
+            return FriendsAccordionAction.SkipExpanded;
+        }
+
         if (openedDrawer)
         {
             return FriendsAccordionAction.ExpandAfterOpeningDrawer;
         }
 
-        return expandedEvidence
-            ? FriendsAccordionAction.SkipExpanded
-            : FriendsAccordionAction.ExpandCollapsed;
+        return FriendsAccordionAction.ExpandCollapsed;
     }
 
     internal static bool ShouldVerifyFriendsExpansionAfterAction(FriendsAccordionAction action)
     {
-        return action == FriendsAccordionAction.SkipExpanded;
+        return true;
+    }
+
+    internal static string FormatFriendsExpansionVerificationCheckpoint(string context, FriendsAccordionAction action)
+    {
+        return action == FriendsAccordionAction.SkipExpanded
+            ? $"EnsureFriendsListVisibleAsync({context}): verifying already-expanded Friends rows"
+            : $"EnsureFriendsListVisibleAsync({context}): verifying Friends rows after accordion click";
     }
 
     private bool IsFriendsDrawerOpen(WindowsInput input)

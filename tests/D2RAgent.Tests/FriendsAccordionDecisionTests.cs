@@ -6,11 +6,11 @@ namespace D2RAgent.Tests;
 public sealed class FriendsAccordionDecisionTests
 {
     [Theory]
-    [InlineData(true, true, 0)]
+    [InlineData(true, true, 2)]
     [InlineData(true, false, 0)]
     [InlineData(false, false, 1)]
     [InlineData(false, true, 2)]
-    public void FreshlyOpenedDrawerAlwaysExpandsFriendsAccordion(
+    public void FriendsAccordionActionOnlyExpandsWhenRowEvidenceIsMissing(
         bool openedDrawer,
         bool expandedEvidence,
         int expected)
@@ -21,10 +21,10 @@ public sealed class FriendsAccordionDecisionTests
     }
 
     [Theory]
-    [InlineData(0, false)]
-    [InlineData(1, false)]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
     [InlineData(2, true)]
-    public void ExpansionVerificationOnlyRunsWhenAccordionWasAlreadyExpanded(
+    public void ExpansionVerificationRunsBeforeEveryRowScan(
         int action,
         bool expected)
     {

@@ -143,22 +143,18 @@ public sealed class D2RScreenClassifierTests
     [InlineData("lobby_friends_tab_party.png", true)]
     public void FriendRowExpandedEvidenceMatchesReferenceCaptures(string capture, bool expected)
     {
-        var nameRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(new D2RUiAutomationConfig(), row: 1);
-        var nameStats = FullCaptureRegionSampler.Sample(
-            capture,
-            nameRegion.Center,
-            nameRegion.WidthRatio,
-            nameRegion.HeightRatio);
-        var markerStats = FullCaptureRegionSampler.Sample(
-            capture,
-            FriendRowMarkerPoint(row: 1),
-            widthRatio: 0.035,
-            heightRatio: 0.032);
-
-        var actual = D2RScreenClassifier.IsFriendRowNameVisible(nameStats)
-            && D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
+        var actual = IsFriendRowExpandedEvidence(capture, row: 1);
 
         Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void CollapsedFriendsDrawerDoesNotLookExpandedAcrossScannedRows()
+    {
+        var anyExpandedRow = Enumerable.Range(1, 3)
+            .Any(row => IsFriendRowExpandedEvidence("lobby_click_party_icon.png", row));
+
+        Assert.False(anyExpandedRow);
     }
 
     [Fact]
@@ -440,5 +436,24 @@ public sealed class D2RScreenClassifierTests
     {
         var rowPoint = D2RUiCoordinateCatalog.GetFriendRowPoint(new D2RUiAutomationConfig(), row);
         return new UiPoint(Math.Clamp(rowPoint.X - 0.090, 0, 1), rowPoint.Y);
+    }
+
+    private static bool IsFriendRowExpandedEvidence(string capture, int row)
+    {
+        var nameRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(new D2RUiAutomationConfig(), row);
+        var nameStats = FullCaptureRegionSampler.Sample(
+            capture,
+            nameRegion.Center,
+            nameRegion.WidthRatio,
+            nameRegion.HeightRatio);
+        var markerStats = FullCaptureRegionSampler.Sample(
+            capture,
+            FriendRowMarkerPoint(row),
+            widthRatio: 0.035,
+            heightRatio: 0.032);
+
+        var nameVisible = D2RScreenClassifier.IsFriendRowNameVisible(nameStats)
+            || (row > 1 && D2RScreenClassifier.IsLowGreyFriendRowNameVisible(nameStats));
+        return nameVisible && D2RScreenClassifier.IsFriendRowMarkerVisible(markerStats);
     }
 }
