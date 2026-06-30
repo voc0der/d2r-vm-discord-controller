@@ -109,4 +109,81 @@ public sealed class ReferenceCaptureFlowTests
             expectedLobbyOverlap,
             ReferenceCaptureClassifier.IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture));
     }
+
+    // Same corpus as RealCaptureClassifiesAsExpectedState, but through ClassifyReady - the
+    // ready loop's own decision tree (VmOperations.DetectReadyScreenStateScreenOnly), not the
+    // status detector's. Before this, the ready loop never evaluated lobby/in-game at all, so
+    // a bot already sitting at the lobby or in a live game would read Unknown forever and the
+    // loop would keep sending click/key bursts - the exact issue this whole change fixes.
+    [Theory]
+    // Splash / title family - identical to Classify(), none of these reach the new checks.
+    [InlineData("post_intro_splash_screen.png", ReferenceReadyState.DiabloSplash)]
+    [InlineData("d2r_splash_logging_in.png", ReferenceReadyState.ConnectingToBattleNet)]
+    [InlineData("intro_one_phase1.png", ReferenceReadyState.Unknown)]
+    [InlineData("intro_one_phase2.png", ReferenceReadyState.Unknown)]
+    [InlineData("intro_one_phase3.png", ReferenceReadyState.Unknown)]
+    [InlineData("intro_one_phase4.png", ReferenceReadyState.Unknown)]
+    [InlineData("intro_two_phase1.png", ReferenceReadyState.Unknown)]
+    [InlineData("intro_two_phase2.png", ReferenceReadyState.Unknown)]
+    [InlineData("intro_two_phase3.png", ReferenceReadyState.Unknown)]
+    [InlineData("intro_three_phase1.png", ReferenceReadyState.Unknown)]
+    [InlineData("intro_three_phase2.png", ReferenceReadyState.DiabloSplash)]
+    [InlineData("intro_three_phase3.png", ReferenceReadyState.DiabloSplash)]
+    [InlineData("load_screen_phase_1.png", ReferenceReadyState.Unknown)]
+    [InlineData("load_screen_phase_2.png", ReferenceReadyState.Unknown)]
+    [InlineData("loading_splash_after_intro_videos.png", ReferenceReadyState.Unknown)]
+    // Character select - act1 and not_selected pass the full button-pair check, but
+    // act2-5 only pass the menu-chrome check (no online character data sampled at those
+    // coordinates in those captures), so ClassifyReady reports CharacterMenu for them where
+    // Classify() folds both into CharacterScreen via an OR. Both are accepted "ready" states
+    // for the ready loop (see IsReadyScreenState), so this distinction doesn't change ready
+    // loop behavior - it's surfaced here because ClassifyReady mirrors the real priority order
+    // exactly, not because the difference matters operationally.
+    [InlineData("char_screen_act1.png", ReferenceReadyState.CharacterScreen)]
+    [InlineData("char_screen_act2.png", ReferenceReadyState.CharacterMenu)]
+    [InlineData("char_screen_act3.png", ReferenceReadyState.CharacterMenu)]
+    [InlineData("char_screen_act4.png", ReferenceReadyState.CharacterMenu)]
+    [InlineData("char_screen_act5.png", ReferenceReadyState.CharacterMenu)]
+    [InlineData("char_screen_not_selected.png", ReferenceReadyState.CharacterScreen)]
+    [InlineData("character_screen_but_offline.png", ReferenceReadyState.OfflineCharacterScreen)]
+    // Lobby - every lobby sub-state (Join tab, Create tab, party drawer open/closed, Friends
+    // tab open, friend context menu open) reaches LobbyOrGame the same way, because none of
+    // these captures satisfy any character-screen check first and the lobby check itself
+    // doesn't care which sub-state it's in (IsGameEntryMenuVisible only needs one tab active
+    // plus the entry button or form panel).
+    [InlineData("lobby_create_game_screen.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_create_game_filled.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_create_game_terror_zones_not_available.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_join_game_screen.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_join_game_screen_difficulty_dropdown.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_click_party_icon.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_click_party_icon_hover_friends_tab.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_hover_party_icon_chat.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_friends_tab_party.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_right_click_friend_join_game_available.png", ReferenceReadyState.LobbyOrGame)]
+    [InlineData("lobby_right_click_friend_nojoin_game_available.png", ReferenceReadyState.LobbyOrGame)]
+    // In game - all of these pass strict modern/legacy HUD globe evidence directly, so the
+    // missing broad Frame-kind fallback (deliberately not ported - see class doc comment)
+    // doesn't change any of their results versus Classify().
+    [InlineData("sitting_in_town.png", ReferenceReadyState.InGame)]
+    [InlineData("sitting_in_town2.png", ReferenceReadyState.InGame)]
+    [InlineData("sitting_in_town3_lowestgfx.png", ReferenceReadyState.InGame)]
+    [InlineData("sitting_in_town_again.png", ReferenceReadyState.InGame)]
+    [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", ReferenceReadyState.InGame)]
+    [InlineData("low_graphics_mode_generic.png", ReferenceReadyState.InGame)]
+    [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", ReferenceReadyState.InGame)]
+    [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceReadyState.InGame)]
+    // Same documented gap as Classify(): modern-graphics Save and Exit dims the action bar
+    // past every in-game threshold (strict and broad alike) and doesn't coincidentally overlap
+    // the lobby check either, so Unknown is correct here, not a regression.
+    [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", ReferenceReadyState.Unknown)]
+    [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceReadyState.Unknown)]
+    // Error dialogs overlay the lobby but aren't part of this state machine.
+    [InlineData("cant_join_hell.png", ReferenceReadyState.Unknown)]
+    [InlineData("game_exists_name.png", ReferenceReadyState.Unknown)]
+    [InlineData("game_password_doesnt_match.png", ReferenceReadyState.Unknown)]
+    public void RealCaptureClassifiesAsExpectedReadyState(string capture, ReferenceReadyState expected)
+    {
+        Assert.Equal(expected, ReferenceCaptureClassifier.ClassifyReady(capture));
+    }
 }

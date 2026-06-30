@@ -14,6 +14,22 @@ public enum ReferenceVisibleState
     InGame
 }
 
+// Mirrors VmOperations.ReadyScreenState - distinct from ReferenceVisibleState because the
+// ready loop's CharacterMenu is a real intermediate state here (menu chrome loaded, online
+// character list/buttons not yet confirmed), where Classify()/ReferenceVisibleState folds
+// both into CharacterScreen via an OR.
+public enum ReferenceReadyState
+{
+    Unknown,
+    DiabloSplash,
+    ConnectingToBattleNet,
+    CharacterMenu,
+    OfflineCharacterScreen,
+    CharacterScreen,
+    LobbyOrGame,
+    InGame
+}
+
 // Replicates VmOperations.DetectVisibleD2RState/DetectReadyScreenState's exact region
 // definitions, sample grids, and priority order, but sampling a static reference capture
 // (via FullCaptureRegionSampler) instead of a live D2R window through WindowsInput - the
@@ -60,6 +76,53 @@ internal static class ReferenceCaptureClassifier
         return IsInGameReady(capture)
             ? ReferenceVisibleState.InGame
             : ReferenceVisibleState.Unknown;
+    }
+
+    // Replicates VmOperations.DetectReadyScreenStateScreenOnly's exact priority order - the
+    // decision tree the ready loop itself uses to decide whether to keep sending click/key
+    // input. Unlike Classify() above, CharacterMenu is a real terminal state here (not folded
+    // into CharacterScreen), and there's no broader IsInGameHudFrame fallback after the lobby
+    // check - only strict modern/legacy HUD globe evidence counts as InGame, matching the
+    // production ready-loop functions exactly.
+    public static ReferenceReadyState ClassifyReady(string capture)
+    {
+        if (IsDiabloSplashScreen(capture))
+        {
+            return IsConnectingToBattleNetDialog(capture)
+                ? ReferenceReadyState.ConnectingToBattleNet
+                : ReferenceReadyState.DiabloSplash;
+        }
+
+        if (IsCharacterScreenOffline(capture))
+        {
+            return ReferenceReadyState.OfflineCharacterScreen;
+        }
+
+        if (IsCharacterButtonPairReady(capture))
+        {
+            return ReferenceReadyState.CharacterScreen;
+        }
+
+        if (IsCharacterMenuReady(capture))
+        {
+            return ReferenceReadyState.CharacterMenu;
+        }
+
+        // Stopping the ready loop's input bursts the moment the client has reached the lobby
+        // or a live game - not just reporting Unknown - is the whole point of this addition.
+        // A misdirected click in a live game is a movement click, which can kill a Hardcore
+        // character (see the v0.2.79 incident in the pixel-classifier-catalog runbook).
+        if (IsInGameReadyStrict(capture))
+        {
+            return ReferenceReadyState.InGame;
+        }
+
+        if (IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture))
+        {
+            return ReferenceReadyState.LobbyOrGame;
+        }
+
+        return ReferenceReadyState.Unknown;
     }
 
     public static bool IsDiabloSplashScreen(string capture)

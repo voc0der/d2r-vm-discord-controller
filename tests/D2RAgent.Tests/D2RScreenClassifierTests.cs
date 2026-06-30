@@ -77,6 +77,66 @@ public sealed class D2RScreenClassifierTests
     }
 
     [Theory]
+    [InlineData("lobby_click_party_icon.png", true)]
+    [InlineData("lobby_click_party_icon_hover_friends_tab.png", true)]
+    [InlineData("lobby_create_game_filled.png", true)]
+    [InlineData("lobby_create_game_screen.png", true)]
+    [InlineData("lobby_create_game_terror_zones_not_available.png", true)]
+    [InlineData("lobby_friends_tab_party.png", true)]
+    [InlineData("lobby_hover_party_icon_chat.png", true)]
+    [InlineData("lobby_right_click_friend_join_game_available.png", true)]
+    [InlineData("lobby_right_click_friend_nojoin_game_available.png", true)]
+    [InlineData("lobby_join_game_screen.png", false)]
+    [InlineData("lobby_join_game_screen_difficulty_dropdown.png", false)]
+    [InlineData("char_screen_act1.png", false)]
+    [InlineData("char_screen_act2.png", false)]
+    [InlineData("char_screen_act5.png", false)]
+    [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", false)]
+    [InlineData("sitting_in_town.png", false)]
+    [InlineData("sitting_in_town_again.png", false)]
+    [InlineData("post_intro_splash_screen.png", false)]
+    public void LobbyCreateTabActiveMatchesReferenceCaptures(string capture, bool expected)
+    {
+        var stats = FullCaptureRegionSampler.Sample(
+            capture,
+            D2RUiCoordinateCatalog.GetPoint(new D2RUiAutomationConfig(), D2RUiCoordinateTarget.CreateGameTab),
+            widthRatio: 0.12,
+            heightRatio: 0.04);
+
+        Assert.Equal(expected, D2RScreenClassifier.IsLobbyCreateTabActive(stats));
+    }
+
+    [Theory]
+    [InlineData("lobby_join_game_screen.png", true)]
+    [InlineData("lobby_join_game_screen_difficulty_dropdown.png", true)]
+    [InlineData("lobby_click_party_icon.png", false)]
+    [InlineData("lobby_click_party_icon_hover_friends_tab.png", false)]
+    [InlineData("lobby_create_game_filled.png", false)]
+    [InlineData("lobby_create_game_screen.png", false)]
+    [InlineData("lobby_create_game_terror_zones_not_available.png", false)]
+    [InlineData("lobby_friends_tab_party.png", false)]
+    [InlineData("lobby_hover_party_icon_chat.png", false)]
+    [InlineData("lobby_right_click_friend_join_game_available.png", false)]
+    [InlineData("lobby_right_click_friend_nojoin_game_available.png", false)]
+    [InlineData("char_screen_act1.png", false)]
+    [InlineData("char_screen_act2.png", false)]
+    [InlineData("char_screen_act5.png", false)]
+    [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", false)]
+    [InlineData("sitting_in_town.png", false)]
+    [InlineData("sitting_in_town_again.png", false)]
+    [InlineData("post_intro_splash_screen.png", false)]
+    public void LobbyJoinTabActiveMatchesReferenceCaptures(string capture, bool expected)
+    {
+        var stats = FullCaptureRegionSampler.Sample(
+            capture,
+            D2RUiCoordinateCatalog.GetPoint(new D2RUiAutomationConfig(), D2RUiCoordinateTarget.JoinGameTab),
+            widthRatio: 0.12,
+            heightRatio: 0.04);
+
+        Assert.Equal(expected, D2RScreenClassifier.IsLobbyJoinTabActive(stats));
+    }
+
+    [Theory]
     [InlineData("lobby_hover_party_icon_chat.png", false)]
     [InlineData("lobby_click_party_icon.png", true)]
     [InlineData("lobby_friends_tab_party.png", true)]

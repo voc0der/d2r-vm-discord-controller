@@ -55,17 +55,30 @@ Verified test coverage for everything in this doc:
 
 ## Detection priority order
 
-Both `DetectVisibleD2RState` (used for `/d2r status`) and `DetectReadyScreenState` (used by
-the ready loop) check states in this order and stop at the first match - earlier checks can
-mask a true later state if their region happens to also satisfy an earlier threshold:
+Both `DetectVisibleD2RState` (used for `/d2r status`) and `DetectReadyScreenState`/
+`DetectReadyScreenStateScreenOnly`/`DetectReadyScreenStateWindowOnly` (used by the ready loop)
+check states in this order and stop at the first match - earlier checks can mask a true later
+state if their region happens to also satisfy an earlier threshold. The two trees were
+historically different (the ready loop never evaluated lobby/in-game at all - see "Ready loop
+gains lobby/in-game awareness" below for why and what changed); as of that change they share
+the same lobby/in-game ordering, with two narrow differences called out inline:
 
 1. Diablo splash family (`IsDiabloSplashScreen`, then `IsConnectingToBattleNetDialog` as a
    sub-state)
 2. Offline character screen (`IsCharacterScreenOffline`)
-3. Character screen ready (`IsCharacterButtonPairReady`) or partial character menu (`IsCharacterMenuReady`)
-4. Lobby/game entry menu (`IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap`) - `DetectVisibleD2RState` only
-5. In game (`IsInGameReady`) - `DetectVisibleD2RState` only
-6. `Unknown`
+3. Character screen ready (`IsCharacterButtonPairReady`)
+4. Partial character menu (`IsCharacterMenuReady`) - `DetectVisibleD2RState` folds this into
+   step 3 via OR and never reports it separately; the ready-loop functions report it as its own
+   `ReadyScreenState.CharacterMenu` terminal state, distinct from `CharacterScreen`
+5. Strict in-game HUD evidence (`IsInGameReadyStrict` - modern/legacy globe profiles only,
+   never the broad Frame-kind fallback)
+6. Lobby/game entry menu (`IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap`)
+7. Broad in-game fallback (`IsInGameReady`, including the Frame-kind match) - `DetectVisibleD2RState`
+   only; the ready-loop functions stop at step 6 and report `Unknown` rather than retrying a
+   looser in-game check, since by this point in the ready loop's own decision the safe action is
+   "send nothing else and let the next detection cycle resolve it," not "guess in-game from a
+   weaker signal."
+8. `Unknown`
 
 ## Splash / title family
 
@@ -154,6 +167,8 @@ above are what it's built on, not a standalone diagnostic.
 | `IsGameEntryMenuVisible` | combines the above | `tabReady ? (entryButtonReady || formPanelReady) : (entryButtonReady && formPanelReady)` |
 | `IsFriendsDrawerHeaderVisible` | `FriendsAccordionHeader` (`0.180,0.139` `0.200x0.022`) | `AverageLuminance > 35 && GreyRatio > 0.45 && DarkRatio < 0.50`; distinguishes drawer-open header text from the closed lobby/chat view. |
 | `IsFriendRowNameVisible`/`IsLowGreyFriendRowNameVisible` + `IsFriendRowMarkerVisible` | name strip from `GetFriendRowFingerprintRegion`; marker at `FriendRowStart.x - 0.090`, same row Y | Expanded-list proof scans rows 1-3 and requires both text (`AverageLuminance > 24 && GreyRatio > 0.18 && DarkRatio < 0.85`; rows 2+ also accept live low-grey text `AverageLuminance > 32 && GreyRatio > 0.04 && DarkRatio < 0.93`) and marker evidence (`LuminanceStdDev > 18 && DarkRatio < 0.95 && (BrightRatio > 0.02 || GreyRatio > 0.12 || OrangeRatio > 0.02)`) on any one row. Failure messages include per-row `rNtxt/rNmark` stats. |
+| `IsLobbyCreateTabActive` | `CreateGameTab` (`0.673,0.071` `0.12x0.04`) | `AverageLuminance > 40 && LuminanceStdDev > 30 && GreyRatio > 0.45 && DarkRatio < 0.50`. Diagnostic-only (not part of `IsGameEntryMenuVisible`/`IsAnyLobbyEntryMenuVisible`) - identifies *which* lobby tab is active, for the ready-loop classifier breakdown. The `LuminanceStdDev > 30` guard is load-bearing: without it, `char_screen_act5.png`'s bright Act5 background (std=26.9) and the in-game `sitting_in_town*.png` captures (std=3-4, a flat decorative UI border at this exact coordinate) both false-positive on lum/grey/dark alone. Every real lobby capture measures std≈42.8 here regardless of sub-state (drawer open/closed, Friends tab, context menu) - the std gap is wide enough that no narrower band was needed. |
+| `IsLobbyJoinTabActive` | `JoinGameTab` (`0.766,0.071` `0.12x0.04`) | `AverageLuminance < 48 && GreyRatio > 0.40 && DarkRatio > 0.35 && DarkRatio < 0.50`. Same diagnostic-only purpose as `IsLobbyCreateTabActive`, mirrored for the Join tab. Inactive Join tab reads `dark > 0.90` and active reads `dark` 0.35-0.50, so the dark-ratio band alone separates them; `char_screen_act5.png`'s Join-tab region (`grey=0.75, dark=0.235`) falls outside that band, unlike the Create tab false positive, so no std guard was needed here. |
 
 `LobbyOrGame` is `IsGameEntryMenuVisible(createTab || joinTab, entryButtonReady, formPanelReady)`.
 Top-level visible-state detection (`v0.2.85`) checks **strict** in-game evidence
@@ -179,6 +194,86 @@ that bug; the fix instead splits in-game evidence by strength and interleaves it
 lobby check, so both historical cases stay protected. The older guarded `IsAnyLobbyEntryMenuVisible`
 helper already rejected `InGame` (full, not just strict) before lobby for its call sites and
 didn't need this change.
+
+## Ready loop gains lobby/in-game awareness
+
+**`v0.2.151`: the ready loop (`menu_ready`/`ReadyClientAsync`, called before every follow-auto
+cycle via `SendReadyIfNotMenuReadyAsync`) never evaluated lobby or in-game state at all -
+`DetectReadyScreenStateScreenOnly`/`DetectReadyScreenStateWindowOnly`/`DetectReadyScreenState`
+only recognized the splash/character-screen family and reported `Unknown` for everything else,
+including a client already sitting at the lobby or already in a live game.** Reported by the
+user: two bots stuck "sitting there, unable to do anything" for 100+ seconds while
+`follow-auto waiting` repeated `ready failed before follow-auto check: D2R is running, but the
+character screen was not reached within 90s ... ready input bursts sent: 40`, visibly
+"stutter-stepping (left click + spamming G)" - the ready loop's startup-skip burst, fired every
+cycle because it never recognized the screen it was actually looking at.
+
+Root cause: `GetBestProcessOnlyVisibleState` (the process-only status fallback used while the
+command gate is held - see "skip ready when recent lobby interaction is known" history in
+`v0.2.150`) maps `_lastObservedFrame` strings straight from `ReadyScreenState`/`VisibleD2RState`
+names. The ready loop's per-iteration screen detector (`DetectReadyScreenStateFast`) calls
+`RecordObservedFrame(state.ToString())` on *every* iteration regardless of outcome, so once a
+bot reached the lobby, every detection cycle kept recording `"Unknown"` (the only value the
+ready loop could produce there) - overwriting the otherwise-correct cached `LobbyOrGame` state
+from `MarkLobbyOrGameInteraction` with a fresh, confidently-wrong "Unknown" every ~250ms. The
+`v0.2.150` 120-second-interaction-window fallback could not out-run a detector actively
+relabeling the frame Unknown in a tight loop.
+
+**Fix:** mirror `DetectVisibleD2RState`'s already-proven priority order (strict in-game, then
+lobby, both protected against the documented `sitting_in_town*.png` overlap - see above) into
+all three ready-detection functions, with two new terminal `ReadyScreenState` values,
+`LobbyOrGame` and `InGame`, both added to `IsReadyScreenState` so the loop stops sending input
+the instant either is recognized - see "Detection priority order" above for the exact ordering
+each function now follows.
+
+**Safety, not just correctness.** This is not purely a status-reporting bug: D2R has no concept
+of "this click missed the UI" (see "Safety: blind recovery clicks..." below) - a ready-loop
+click/key burst sent while the client is actually already in a live game is a movement click,
+and in Hardcore, the wrong one can kill a character. Every reference capture the ready loop's
+new `InGame` branch is verified against (`sitting_in_town*.png`,
+`just_landed_in_game_checkforhealthandmanaglobes.png`, `low_graphics_mode_generic.png`,
+`legacy_gfx_ingame_save_and_exit_*.png`) was directly measured to pass strict modern-or-legacy
+HUD globe evidence *before* writing this fix, specifically to confirm the existing
+`sitting_in_town.png` lobby-tab/entry-button overlap (documented above) can never reach the new
+lobby branch in the ready loop either - strict in-game evidence wins first, exactly as it does
+in `DetectVisibleD2RState`.
+
+**Three callers had to change to handle the new terminal states correctly, not just compile
+around them:**
+
+- `ReadyClientAsync` (the `menu_ready` command): previously assumed any `ready.Ready == true`
+  meant the character screen, then unconditionally called `MarkCharacterScreenIdle`. If the
+  ready loop now stops at `LobbyOrGame`/`InGame`, that call would have overwritten the correct
+  cached activity state with a wrong one - silently reintroducing a version of the same bug
+  this fix targets. Now branches: `LobbyOrGame`/`InGame` calls `MarkLobbyOrGameInteraction` and
+  returns success directly (consistent with `MenuReadyPolicy.ShouldRunReadyFirstFromStatusJson`,
+  which already treats both as "ready, no menu_ready needed" - see `v0.2.150`/`AgentCommon/MenuReadyPolicy.cs`).
+- `EnsureCharacterScreenReadyForMenuAsync` (used by `menu_play` and other character-screen-specific
+  automation): the opposite case - this command genuinely *needs* the character screen, so a
+  ready loop that stopped at `LobbyOrGame`/`InGame` instead must be a clear failure, not treated
+  as success. Previously this path would have called `EnsureReadyCharacterScreenOnlineAsync` (a
+  no-op for any state but `OfflineCharacterScreen`) and returned success, then the caller would
+  have clicked character-screen-only coordinates (character slot, Play button) while actually at
+  the lobby or in a game.
+- `EnsureLobbyOpenedAsync`: separately hardened in the same change - previously, if the cached
+  `D2RActivityState` was `Unknown` (e.g. right after an agent restart, before anything has set a
+  fresher state), it fell through to a blind character-slot-select-then-click-Lobby sequence
+  with no live verification at all. Now does one live `IsAnyLobbyEntryMenuVisible` check first,
+  so a fresh/cold cache that happens to already be sitting at the lobby - in *any* sub-state
+  (Join tab, Create tab, party drawer open or closed, Friends tab open, friend context menu
+  open) - self-heals into "already there" instead of blind-clicking through a state it's already
+  past. `IsGameEntryMenuVisible`'s threshold-based composition doesn't care which sub-state it's
+  in (the entry button and form panel read consistently across all of them per the measurements
+  above), so a single check covers every sub-state without needing to enumerate them.
+
+**Diagnostics:** `ComputeReadyScreenClassifierBreakdown` (surfaced live via `lastClassifierBreakdown`
+when the ready loop reports `Unknown`) previously stopped at the character-menu checks, by
+design - the doc comment explicitly said including lobby/in-game "would misleadingly imply they
+were checked as part of this decision." That comment is now wrong by construction (they *are*
+checked), so the function was extended to match: it now also reports `inGameStrict=T/F` and a
+`lobby(any=T/F,create=…,join=…)` breakdown using the new `IsLobbyCreateTabActive`/
+`IsLobbyJoinTabActive` classifiers above, so a stuck ready loop's live diagnostics show exactly
+which lobby sub-state (if any) it's looking at, not just a bare pass/fail.
 
 ## Safety: blind recovery clicks can become movement clicks if already in-game
 

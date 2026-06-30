@@ -98,6 +98,42 @@ internal static class D2RScreenClassifier
             && tab.DarkRatio < 0.80;
     }
 
+    // Distinguishes which lobby tab is active (Create Game vs Join Game), not just whether
+    // the lobby is visible at all - IsLobbyTabReady already covers that. Thresholds were
+    // measured against every docs/runbooks/assets/d2r-ui/1366x768/lobby_*.png capture plus
+    // every non-lobby capture in that directory (char screens, in-game, splash/loading),
+    // sampled at center (0.673,0.071) width 0.12 height 0.04 for Create, (0.766,0.071) same
+    // size for Join - zero mismatches across all 49 reference captures with these bounds.
+    //
+    // LuminanceStdDev > 30 on the Create tab is the key guard against two real false
+    // positives the unguarded lum/grey/dark thresholds alone produced: char_screen_act5.png's
+    // bright Act5 background (std=26.9, lower than every real lobby capture's 42.8) and the
+    // in-game "sitting_in_town*.png" captures, where the same screen coordinates land on a
+    // flat decorative UI border (std=3-4) instead of tab text on a dark background. A real
+    // active tab always has high-contrast text-on-dark texture; a coincidentally bright/grey
+    // region elsewhere on screen usually doesn't.
+    public static bool IsLobbyCreateTabActive(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 40
+            && stats.LuminanceStdDev > 30
+            && stats.GreyRatio > 0.45
+            && stats.DarkRatio < 0.50;
+    }
+
+    // The Join tab's inactive-state luminance is lower than Create's (measured ~24 vs ~28),
+    // so the false-positive shape here is different: char_screen_act5.png's Join-tab region
+    // reads grey=0.75/dark=0.235 - high luminance, low dark ratio, unlike any real inactive
+    // OR active Join tab capture (active: dark 0.35-0.50; inactive: dark > 0.90). The
+    // AverageLuminance<48 and DarkRatio band (0.35-0.50) together exclude it without needing
+    // a LuminanceStdDev guard like the Create tab.
+    public static bool IsLobbyJoinTabActive(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance < 48
+            && stats.GreyRatio > 0.40
+            && stats.DarkRatio > 0.35
+            && stats.DarkRatio < 0.50;
+    }
+
     public static bool IsFriendsDrawerHeaderVisible(ScreenRegionStats stats)
     {
         return stats.AverageLuminance > 35

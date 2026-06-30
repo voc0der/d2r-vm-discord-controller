@@ -697,6 +697,12 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
+        if (ready.LastState is ReadyScreenState.LobbyOrGame or ReadyScreenState.InGame)
+        {
+            MarkLobbyOrGameInteraction($"Ready flow detected {ready.LastState} already in progress.");
+            return CommandResult.Success("D2R ready flow completed; already at the lobby or in a game.", await CollectStatusAsync(cancellationToken));
+        }
+
         var online = await EnsureReadyCharacterScreenOnlineAsync(input, ready, cancellationToken);
         if (online is not null)
         {
@@ -1838,6 +1844,14 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
+        if (ready.LastState is ReadyScreenState.LobbyOrGame or ReadyScreenState.InGame)
+        {
+            MarkLobbyOrGameInteraction($"Ready loop detected {ready.LastState} instead of the character screen.");
+            return CommandResult.Failure(
+                $"D2R reached the {ready.LastState} state instead of the character screen; this command needs the character screen specifically.",
+                await CollectStatusAsync(cancellationToken));
+        }
+
         return await EnsureReadyCharacterScreenOnlineAsync(input, ready, cancellationToken);
     }
 
@@ -2167,9 +2181,10 @@ public sealed class VmOperations
         }
     }
 
-    // Narrower than ComputeVisibleStateClassifierBreakdown - DetectReadyScreenState never
-    // evaluates in-game/lobby, so including them here would misleadingly imply they were
-    // checked as part of this decision.
+    // Now matches ComputeVisibleStateClassifierBreakdown's lobby/in-game evidence too -
+    // DetectReadyScreenState evaluates both (stops the ready loop's input bursts once the
+    // client has reached the lobby or a live game), so omitting them here would hide exactly
+    // the evidence a diagnosis needs when the loop unexpectedly keeps running.
     private string ComputeReadyScreenClassifierBreakdown(WindowsInput input, int sampleGrid)
     {
         try
@@ -2184,9 +2199,15 @@ public sealed class VmOperations
             var charMenuLogo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: false, sampleGrid: sampleGrid);
             var charButtons = IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid);
             var charMenu = IsCharacterMenuReady(input, windowRelative: false, sampleGrid);
+            var inGameStrict = IsInGameReadyStrict(input);
+            var lobby = IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(input);
+            var createTab = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab), widthRatio: 0.12, heightRatio: 0.040, windowRelative: false, sampleGrid: sampleGrid);
+            var joinTab = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), widthRatio: 0.12, heightRatio: 0.040, windowRelative: false, sampleGrid: sampleGrid);
 
             return $"{FormatCheck("splash", splash, logo)} {FormatCheck("connecting", connecting, prompt)} {FormatCheck("offline", offline, emptyPanel)} "
-                + $"char(btn={FormatCheck("", charButtons, play)},menu={FormatCheck("", charMenu, charMenuLogo)})";
+                + $"char(btn={FormatCheck("", charButtons, play)},menu={FormatCheck("", charMenu, charMenuLogo)}) "
+                + $"inGameStrict={(inGameStrict ? "T" : "F")} "
+                + $"lobby(any={(lobby ? "T" : "F")},create={FormatCheck("", D2RScreenClassifier.IsLobbyCreateTabActive(createTab), createTab)},join={FormatCheck("", D2RScreenClassifier.IsLobbyJoinTabActive(joinTab), joinTab)})";
         }
         catch (Exception)
         {
@@ -3291,6 +3312,19 @@ public sealed class VmOperations
             return null;
         }
 
+        // The cached activity state is Unknown or CharacterScreenIdle here - which can simply
+        // mean nothing has recorded a fresher state yet (e.g. right after an agent restart),
+        // not that the client genuinely isn't at the lobby. A live check costs one bounded
+        // sample pass and means this command self-heals regardless of which lobby sub-state
+        // (Join tab, Create tab, party drawer open/closed, Friends tab open) it lands in,
+        // instead of assuming a fixed character-screen-then-lobby sequence and blind-clicking
+        // through it even when the client is already sitting at the lobby.
+        if (IsAnyLobbyEntryMenuVisible(input))
+        {
+            MarkLobbyOrGameInteraction("Confirmed Lobby visually before menu automation.");
+            return null;
+        }
+
         if (activity.State == D2RActivityState.CharacterScreenIdle)
         {
             MarkCommandCheckpoint("EnsureLobbyOpenedAsync: remembered-character-screen click");
@@ -3972,10 +4006,31 @@ public sealed class VmOperations
             return ReadyScreenState.CharacterScreen;
         }
 
-        return IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
-            || IsCharacterMenuReady(input, windowRelative: true, sampleGrid)
-            ? ReadyScreenState.CharacterMenu
-            : ReadyScreenState.Unknown;
+        if (IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
+            || IsCharacterMenuReady(input, windowRelative: true, sampleGrid))
+        {
+            return ReadyScreenState.CharacterMenu;
+        }
+
+        // Mirrors DetectVisibleD2RState's ordering: strict in-game HUD evidence (modern/legacy
+        // globes) is checked before the lobby check, because sitting_in_town*.png proved the
+        // lobby-tab/entry-button thresholds can coincidentally match ordinary outdoor scenery.
+        // Recognizing both here - not just at the top-level status detector - means the ready
+        // loop itself stops sending click/key input the moment the client has already reached
+        // the lobby or a live game, instead of treating "lobby" or "in-game" as Unknown and
+        // continuing to blast input. A misdirected click in a live game is a movement click,
+        // which can kill a Hardcore character (the v0.2.79 incident this guards against).
+        if (IsInGameReadyStrict(input))
+        {
+            return ReadyScreenState.InGame;
+        }
+
+        if (IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(input))
+        {
+            return ReadyScreenState.LobbyOrGame;
+        }
+
+        return ReadyScreenState.Unknown;
     }
 
     private ReadyScreenState DetectReadyScreenStateStable(WindowsInput input)
@@ -4052,9 +4107,25 @@ public sealed class VmOperations
             return ReadyScreenState.CharacterScreen;
         }
 
-        return IsCharacterMenuReady(input, windowRelative: false, sampleGrid)
-            ? ReadyScreenState.CharacterMenu
-            : ReadyScreenState.Unknown;
+        if (IsCharacterMenuReady(input, windowRelative: false, sampleGrid))
+        {
+            return ReadyScreenState.CharacterMenu;
+        }
+
+        // See DetectReadyScreenState for why strict in-game evidence is checked before the
+        // lobby check, and why both matter here: stopping the ready loop's input bursts the
+        // moment the client has reached the lobby or a live game, not just reporting Unknown.
+        if (IsInGameReadyStrict(input))
+        {
+            return ReadyScreenState.InGame;
+        }
+
+        if (IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(input))
+        {
+            return ReadyScreenState.LobbyOrGame;
+        }
+
+        return ReadyScreenState.Unknown;
     }
 
     private ReadyScreenState DetectReadyScreenStateWindowOnly(WindowsInput input, int sampleGrid)
@@ -4069,16 +4140,34 @@ public sealed class VmOperations
             return ReadyScreenState.CharacterScreen;
         }
 
-        return IsCharacterMenuReady(input, windowRelative: true, sampleGrid)
-            ? ReadyScreenState.CharacterMenu
-            : ReadyScreenState.Unknown;
+        if (IsCharacterMenuReady(input, windowRelative: true, sampleGrid))
+        {
+            return ReadyScreenState.CharacterMenu;
+        }
+
+        // See DetectReadyScreenState for why strict in-game evidence is checked before the
+        // lobby check, and why both matter here: stopping the ready loop's input bursts the
+        // moment the client has reached the lobby or a live game, not just reporting Unknown.
+        if (IsInGameReadyStrict(input))
+        {
+            return ReadyScreenState.InGame;
+        }
+
+        if (IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(input))
+        {
+            return ReadyScreenState.LobbyOrGame;
+        }
+
+        return ReadyScreenState.Unknown;
     }
 
     private static bool IsReadyScreenState(ReadyScreenState state)
     {
         return state is ReadyScreenState.CharacterScreen
             or ReadyScreenState.CharacterMenu
-            or ReadyScreenState.OfflineCharacterScreen;
+            or ReadyScreenState.OfflineCharacterScreen
+            or ReadyScreenState.LobbyOrGame
+            or ReadyScreenState.InGame;
     }
 
     private bool IsCharacterButtonPairReady(WindowsInput input, bool windowRelative, int sampleGrid = MenuSampleGrid)
@@ -5254,7 +5343,9 @@ public sealed class VmOperations
         ConnectingToBattleNet,
         CharacterMenu,
         OfflineCharacterScreen,
-        CharacterScreen
+        CharacterScreen,
+        LobbyOrGame,
+        InGame
     }
 
     internal enum GameEntryWaitResult
