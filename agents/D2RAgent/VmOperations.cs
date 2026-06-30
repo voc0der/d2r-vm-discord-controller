@@ -1255,14 +1255,35 @@ public sealed class VmOperations
 
         var maxRows = GetFollowFingerprintMaxScanRows(_config.Ui);
         var rowMatches = new List<FriendRowFingerprintMatch>();
+        MarkCommandCheckpoint($"FollowAutoCheckAsync: sampling friend rows 1-{maxRows}");
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
+        // All rows in one bounded call - each row previously required its own GetDC(NULL)
+        // round-trip; with up to 8 rows per cycle and threads=32 cap, a few cycles of
+        // hung captures exhausted the slot budget. One call acquires one desktop DC and
+        // captures all rows before releasing it.
+        var allRowSamples = TryRunBounded(() =>
+        {
+            var results = new List<(int Row, byte[]? Samples)>();
+            for (var row = 1; row <= maxRows; row++)
+            {
+                var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
+                byte[]? rowSamples;
+                try
+                {
+                    rowSamples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows);
+                }
+                catch
+                {
+                    rowSamples = null;
+                }
+                results.Add((row, rowSamples));
+            }
+            return results;
+        }, EntryLoopCheckBoundMs * maxRows, fallback: null);
         for (var row = 1; row <= maxRows; row++)
         {
-            ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
-            MarkCommandCheckpoint($"FollowAutoCheckAsync: sampling friend row {row}");
             var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
-            var samples = TryCaptureFriendFingerprintSamples(
-                () => input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows),
-                EntryLoopCheckBoundMs);
+            var samples = allRowSamples?.FirstOrDefault(r => r.Row == row).Samples;
             var comparison = samples is null
                 ? FriendFingerprintComparison.NotComparable
                 : FriendFingerprint.Compare(template, new FriendFingerprint(region.GridColumns, region.GridRows, samples));
