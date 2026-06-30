@@ -1731,7 +1731,14 @@ public sealed class VmOperations
             var visibleRows = 0;
             var markerRows = 0;
             var summary = new StringBuilder();
-            var maxRows = GetFollowFingerprintMaxScanRows(_config.Ui);
+            // Expansion detection only needs a few rows to confirm the accordion is open -
+            // GetFollowFingerprintMaxScanRows (up to 8) is for fingerprint matching, and
+            // scanning 8 rows × 2 SampleRegion calls each = 16 GDI calls inside one 1500ms
+            // bounded call. Under DWM load even modest per-call delays push that past the
+            // timeout, abandoning the thread and consuming a BoundedCallSlots slot every time.
+            // Three rows (6 GDI calls, the original pre-fingerprint-expansion limit) is
+            // sufficient to hit visibleRows>=2 or markerRows>=3 on an expanded accordion.
+            var maxRows = Math.Min(GetFollowFingerprintMaxScanRows(_config.Ui), 3);
 
             for (var row = 1; row <= maxRows; row++)
             {

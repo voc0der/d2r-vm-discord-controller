@@ -514,7 +514,10 @@ public sealed class D2RScreenClassifierTests
 
     private static IEnumerable<int> GetVisibleFriendRows()
     {
-        return Enumerable.Range(1, VmOperations.GetFollowFingerprintMaxScanRows(new D2RUiAutomationConfig()));
+        // Matches the GetFriendsListExpandedEvidence cap: 3 rows for expansion detection
+        // (enough for the visibleRows/markerRows thresholds), not the full fingerprint-scan
+        // limit which would be 8 rows and 16 GDI calls per bounded check.
+        return Enumerable.Range(1, Math.Min(VmOperations.GetFollowFingerprintMaxScanRows(new D2RUiAutomationConfig()), 3));
     }
 
     private static bool IsFriendRowExpandedEvidence(string capture, int row)
