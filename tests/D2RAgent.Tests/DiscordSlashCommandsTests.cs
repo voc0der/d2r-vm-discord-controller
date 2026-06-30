@@ -35,6 +35,18 @@ public sealed class DiscordSlashCommandsTests
         }
     }
 
+    [Fact]
+    public void FollowCommandIncludesBooleanWatchOption()
+    {
+        var d2r = DiscordSlashCommands.Build()
+            .Select(Assert.IsType<SlashCommandProperties>)
+            .Single(command => command.Name.Value == "d2r");
+        var follow = Assert.Single(d2r.Options.Value, option => option.Name == "follow");
+        var watch = Assert.Single(follow.Options!, option => option.Name == "watch");
+
+        Assert.Equal(ApplicationCommandOptionType.Boolean, watch.Type);
+    }
+
     private static void AssertOptionDescriptions(string commandName, ApplicationCommandOptionProperties option)
     {
         AssertDescription($"{commandName} {option.Name}", option.Description);

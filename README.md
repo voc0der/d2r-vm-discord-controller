@@ -58,7 +58,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r play account [character-slot]`
 - `/d2r join-game account [name] [password] [difficulty] [character-slot]`
 - `/d2r create-game account [name] [password] [difficulty] [character-slot]`
-- `/d2r follow [account] [character-slot] [friend-row] [bind] [auto] [delay] [idle-minutes]`
+- `/d2r follow [account] [character-slot] [friend-row] [bind] [auto] [delay] [idle-minutes] [watch]`
 - `/d2r save-exit account`
 - `/d2r create-game-all [name] [password] [difficulty] [character-slot] [watch]`
 - `/d2r join-all [name] [password] [difficulty] [character-slot] [watch]`

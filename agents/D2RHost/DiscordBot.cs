@@ -357,7 +357,15 @@ public sealed class DiscordBot
                 await RunVmCommandAsync(context, singleAccount, "menu_create_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
                 return;
             case "follow":
-                await RunVmCommandAsync(context, singleAccount, "menu_join_friend", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
+                if (context.GetBool("watch") == true)
+                {
+                    await RunWatchedFollowCommandAsync(context, singleAccountKey, singleAccount, BuildMenuArgs(singleAccountKey, singleAccount, null, context));
+                }
+                else
+                {
+                    await RunVmCommandAsync(context, singleAccount, "menu_join_friend", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
+                }
+
                 return;
             case "save-exit":
                 // See the save-exit-all timeout comment above: this is gate-wait headroom, not
@@ -559,6 +567,36 @@ public sealed class DiscordBot
             """;
         File.WriteAllText(scriptPath, script);
         return scriptPath;
+    }
+
+    private async Task RunWatchedFollowCommandAsync(
+        SlashContext context,
+        string accountKey,
+        AccountConfig account,
+        object args)
+    {
+        await context.Command.DeferAsync(ephemeral: true);
+        QueueDiscordWork(context, "menu_join_friend", async () =>
+        {
+            var watchCts = new CancellationTokenSource();
+            var entries = new[] { new KeyValuePair<string, AccountConfig>(accountKey, account) };
+            _ = RunGameAllWatchTickerAsync(context, "follow", accountKey, entries, watchCts.Token);
+
+            try
+            {
+                await RunVmCommandDeferredAsync(
+                    context,
+                    account,
+                    "menu_join_friend",
+                    args,
+                    TimeSpan.FromSeconds(210),
+                    readyFirstIfNotMenuReady: true);
+            }
+            finally
+            {
+                watchCts.Cancel();
+            }
+        });
     }
 
     private async Task RunVmCommandAsync(
