@@ -1595,7 +1595,10 @@ public sealed class VmOperations
         }
 
         var expanded = GetFriendsListExpandedEvidence(input);
-        var accordionAction = ChooseFriendsAccordionAction(openedDrawer, expanded.IsExpanded);
+        var accordionAction = ChooseFriendsAccordionAction(
+            openedDrawer,
+            expanded.IsExpanded,
+            expanded.HasRowEvidence || !expanded.IsReliable);
         if (accordionAction == FriendsAccordionAction.ExpandAfterOpeningDrawer)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion after opening drawer");
@@ -1625,11 +1628,19 @@ public sealed class VmOperations
         return null;
     }
 
-    internal static FriendsAccordionAction ChooseFriendsAccordionAction(bool openedDrawer, bool expandedEvidence)
+    internal static FriendsAccordionAction ChooseFriendsAccordionAction(
+        bool openedDrawer,
+        bool expandedEvidence,
+        bool avoidToggleEvidence)
     {
         if (expandedEvidence)
         {
             return FriendsAccordionAction.SkipExpanded;
+        }
+
+        if (avoidToggleEvidence)
+        {
+            return FriendsAccordionAction.VerifyAfterOpeningDrawer;
         }
 
         if (openedDrawer)
@@ -1650,6 +1661,7 @@ public sealed class VmOperations
         return action switch
         {
             FriendsAccordionAction.SkipExpanded => $"EnsureFriendsListVisibleAsync({context}): verifying already-expanded Friends rows",
+            FriendsAccordionAction.VerifyAfterOpeningDrawer => $"EnsureFriendsListVisibleAsync({context}): verifying Friends rows after opening drawer",
             FriendsAccordionAction.ExpandAfterOpeningDrawer => $"EnsureFriendsListVisibleAsync({context}): verifying Friends rows after accordion click",
             _ => $"EnsureFriendsListVisibleAsync({context}): verifying Friends rows after accordion click"
         };
@@ -1668,15 +1680,16 @@ public sealed class VmOperations
         }, EntryLoopCheckBoundMs);
     }
 
-    private (bool IsExpanded, string Summary) GetFriendsListExpandedEvidence(WindowsInput input)
+    private (bool IsExpanded, bool HasRowEvidence, bool IsReliable, string Summary) GetFriendsListExpandedEvidence(WindowsInput input)
     {
         return TryRunBounded(() =>
         {
             var visibleRows = 0;
             var markerRows = 0;
             var summary = new StringBuilder();
+            var maxRows = GetFollowFingerprintMaxScanRows(_config.Ui);
 
-            for (var row = 1; row <= 3; row++)
+            for (var row = 1; row <= maxRows; row++)
             {
                 var nameRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
                 var nameStats = input.SampleRegion(
@@ -1723,14 +1736,24 @@ public sealed class VmOperations
             summary
                 .Append("visibleRows=").Append(visibleRows)
                 .Append(",markerRows=").Append(markerRows);
-            return (IsFriendsListExpandedByEvidence(visibleRows, markerRows), summary.ToString());
-        }, EntryLoopCheckBoundMs, (false, "timeout"));
+            return (
+                IsFriendsListExpandedByEvidence(visibleRows, markerRows),
+                HasFriendsListRowEvidence(visibleRows, markerRows),
+                true,
+                summary.ToString());
+        }, EntryLoopCheckBoundMs, (false, false, false, "timeout"));
     }
 
     internal static bool IsFriendsListExpandedByEvidence(int visibleRows, int markerRows)
     {
         return visibleRows >= 2
-            || (visibleRows >= 1 && markerRows >= 2);
+            || (visibleRows >= 1 && markerRows >= 2)
+            || markerRows >= 3;
+    }
+
+    internal static bool HasFriendsListRowEvidence(int visibleRows, int markerRows)
+    {
+        return visibleRows >= 1 || markerRows >= 2;
     }
 
     private AgentCommon.UiPoint GetFriendRowMarkerPoint(int row)
@@ -5231,6 +5254,7 @@ public sealed class VmOperations
 
     internal enum FriendsAccordionAction
     {
+        VerifyAfterOpeningDrawer,
         ExpandAfterOpeningDrawer,
         ExpandCollapsed,
         SkipExpanded

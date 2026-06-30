@@ -151,7 +151,7 @@ public sealed class D2RScreenClassifierTests
     [Fact]
     public void CollapsedFriendsDrawerDoesNotLookExpandedAcrossScannedRows()
     {
-        var anyExpandedRow = Enumerable.Range(1, 3)
+        var anyExpandedRow = GetVisibleFriendRows()
             .Any(row => IsFriendRowExpandedEvidence("lobby_click_party_icon.png", row));
 
         Assert.False(anyExpandedRow);
@@ -163,9 +163,9 @@ public sealed class D2RScreenClassifierTests
     [InlineData("lobby_right_click_friend_join_game_available.png", true)]
     public void FriendsListExpandedEvidenceMatchesReferenceCaptures(string capture, bool expected)
     {
-        var visibleRows = Enumerable.Range(1, 3)
+        var visibleRows = GetVisibleFriendRows()
             .Count(row => IsFriendRowExpandedEvidence(capture, row));
-        var markerRows = Enumerable.Range(1, 3)
+        var markerRows = GetVisibleFriendRows()
             .Count(row => IsFriendRowMarkerEvidence(capture, row));
 
         Assert.Equal(expected, VmOperations.IsFriendsListExpandedByEvidence(visibleRows, markerRows));
@@ -450,6 +450,11 @@ public sealed class D2RScreenClassifierTests
     {
         var rowPoint = D2RUiCoordinateCatalog.GetFriendRowPoint(new D2RUiAutomationConfig(), row);
         return new UiPoint(Math.Clamp(rowPoint.X - 0.090, 0, 1), rowPoint.Y);
+    }
+
+    private static IEnumerable<int> GetVisibleFriendRows()
+    {
+        return Enumerable.Range(1, VmOperations.GetFollowFingerprintMaxScanRows(new D2RUiAutomationConfig()));
     }
 
     private static bool IsFriendRowExpandedEvidence(string capture, int row)
