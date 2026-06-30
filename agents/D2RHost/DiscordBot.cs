@@ -311,6 +311,7 @@ public sealed class DiscordBot
                 await StartFollowAutoAsync(
                     context,
                     Math.Max(context.GetInt("delay") ?? 0, 0),
+                    context.GetBool("watch") == true,
                     TimeSpan.FromMinutes(Math.Max(context.GetInt("idle-minutes") ?? FollowAutoDefaultIdleMinutes, 1)));
                 return;
             }
@@ -580,7 +581,7 @@ public sealed class DiscordBot
         {
             var watchCts = new CancellationTokenSource();
             var entries = new[] { new KeyValuePair<string, AccountConfig>(accountKey, account) };
-            _ = RunGameAllWatchTickerAsync(context, "follow", accountKey, entries, watchCts.Token);
+            var watchTask = RunGameAllWatchTickerAsync(context, "follow", accountKey, entries, watchCts.Token);
 
             try
             {
@@ -595,6 +596,7 @@ public sealed class DiscordBot
             finally
             {
                 watchCts.Cancel();
+                await AwaitWatchTickerStopAsync(watchTask, "follow");
             }
         });
     }
@@ -759,9 +761,10 @@ public sealed class DiscordBot
             creator.Value.AgentId);
 
         var watchCts = new CancellationTokenSource();
+        Task? watchTask = null;
         if (watch)
         {
-            _ = RunGameAllWatchTickerAsync(context, "create-game-all", game.GameName, entries, watchCts.Token);
+            watchTask = RunGameAllWatchTickerAsync(context, "create-game-all", game.GameName, entries, watchCts.Token);
         }
 
         _ = Task.Run(async () =>
@@ -891,6 +894,7 @@ public sealed class DiscordBot
             finally
             {
                 watchCts.Cancel();
+                await AwaitWatchTickerStopAsync(watchTask, "create-game-all");
             }
         });
     }
@@ -907,8 +911,21 @@ public sealed class DiscordBot
         KeyValuePair<string, AccountConfig>[] entries,
         CancellationToken cancellationToken)
     {
+        await RunGameAllWatchTickerAsync(context, label, gameName, () => entries, cancellationToken);
+    }
+
+    private async Task RunGameAllWatchTickerAsync(
+        SlashContext context,
+        string label,
+        string gameName,
+        Func<KeyValuePair<string, AccountConfig>[]> getEntries,
+        CancellationToken cancellationToken)
+    {
         var startedUtc = DateTimeOffset.UtcNow;
-        IUserMessage message;
+        var logPath = GetWatchLogPath(gameName, startedUtc);
+        AppendWatchLogTick(logPath, new[] { FormatWatchHeader(label, gameName, startedUtc), "Starting..." });
+
+        IUserMessage? message = null;
         try
         {
             message = await context.Command.Channel.SendMessageAsync(
@@ -917,24 +934,25 @@ public sealed class DiscordBot
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not start {Label}-watch message.", label);
-            return;
         }
-
-        var logPath = GetWatchLogPath(gameName, startedUtc);
 
         while (true)
         {
+            var entries = getEntries();
             var lines = await Task.WhenAll(
                 entries.Select(entry => FormatAccountWatchLineAsync(entry.Key, entry.Value, CancellationToken.None)));
             var content = string.Join("\n", new[] { FormatWatchHeader(label, gameName, startedUtc) }.Concat(lines));
 
-            try
+            if (message is not null)
             {
-                await message.ModifyAsync(properties => properties.Content = content);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Could not update {Label}-watch message.", label);
+                try
+                {
+                    await message.ModifyAsync(properties => properties.Content = content);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Could not update {Label}-watch message.", label);
+                }
             }
 
             AppendWatchLogTick(logPath, lines);
@@ -955,6 +973,23 @@ public sealed class DiscordBot
         }
 
         await SendWatchLogAttachmentAsync(context, gameName, logPath);
+    }
+
+    private async Task AwaitWatchTickerStopAsync(Task? watchTask, string label)
+    {
+        if (watchTask is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await watchTask;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{Label}-watch ticker stopped with an error.", label);
+        }
     }
 
     // The live message only ever shows the latest tick - once a run is done, the operator can't
@@ -1586,9 +1621,10 @@ public sealed class DiscordBot
             entries[0].Value.AgentId);
 
         var watchCts = new CancellationTokenSource();
+        Task? watchTask = null;
         if (watch)
         {
-            _ = RunGameAllWatchTickerAsync(context, "join-all", game.GameName, entries, watchCts.Token);
+            watchTask = RunGameAllWatchTickerAsync(context, "join-all", game.GameName, entries, watchCts.Token);
         }
 
         _ = Task.Run(async () =>
@@ -1637,6 +1673,7 @@ public sealed class DiscordBot
             finally
             {
                 watchCts.Cancel();
+                await AwaitWatchTickerStopAsync(watchTask, "join-all");
             }
         });
     }
@@ -2639,7 +2676,7 @@ public sealed class DiscordBot
             properties => properties.Content = DiscordMessageTruncator.Truncate(followBindMessage));
     }
 
-    private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, TimeSpan idleTimeout)
+    private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout)
     {
         await _followAutoLock.WaitAsync();
         CancellationTokenSource cts;
@@ -2662,10 +2699,11 @@ public sealed class DiscordBot
         }
 
         await context.Command.RespondAsync(
-            $"follow-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay between checks" : "")}. Updates will post in this channel until it's stopped.",
+            $"follow-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay between checks" : "")}. Updates will post in this channel until it's stopped."
+                + (watch ? " Watch diagnostics are enabled." : ""),
             ephemeral: true);
 
-        _ = Task.Run(() => RunFollowAutoLoopAsync(context, delaySeconds, idleTimeout, cts.Token));
+        _ = Task.Run(() => RunFollowAutoLoopAsync(context, delaySeconds, watch, idleTimeout, cts.Token));
     }
 
     private async Task StopFollowAutoAsync(SlashContext context)
@@ -2699,13 +2737,26 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task RunFollowAutoLoopAsync(SlashContext context, int delaySeconds, TimeSpan idleTimeout, CancellationToken cancellationToken)
+    private async Task RunFollowAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, CancellationToken cancellationToken)
     {
         var channel = context.Command.Channel;
         var joined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
         string? lastWaitingReport = null;
         var lastWaitingReportUtc = DateTimeOffset.MinValue;
+        CancellationTokenSource? watchCts = null;
+        Task? watchTask = null;
+        if (watch)
+        {
+            watchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            watchTask = RunGameAllWatchTickerAsync(
+                context,
+                "follow-auto",
+                "follow-auto",
+                () => GetAccountEntriesByConnectivity().Online,
+                watchCts.Token);
+        }
+
         async Task DelayNextFollowCheckAsync()
         {
             await Task.Delay(TimeSpan.FromSeconds(delaySeconds > 0 ? delaySeconds : 15), cancellationToken);
@@ -2827,6 +2878,10 @@ public sealed class DiscordBot
         }
         finally
         {
+            watchCts?.Cancel();
+            await AwaitWatchTickerStopAsync(watchTask, "follow-auto");
+            watchCts?.Dispose();
+
             await _followAutoLock.WaitAsync();
             try
             {

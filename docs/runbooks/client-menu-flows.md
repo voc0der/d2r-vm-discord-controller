@@ -366,7 +366,7 @@ Automation:
 /d2r follow hc1 character-slot:1 friend-row:1
 ```
 
-Pass `watch:true` to post the same live diagnostics ticker and watch log used by `create-game-all` and `join-all` while the follow command runs.
+Pass `watch:true` to post the same live diagnostics ticker and watch log used by `create-game-all` and `join-all`. For `/d2r follow auto:true watch:true`, that ticker stays up for the entire follow-auto run and the log keeps growing across repeated games until follow-auto stops.
 
 Root cause of "3 VMs sat at the lobby and never opened the drawer, seemed confused" (issue #20, item 8): `EnsureLobbyOpenedAsync`'s `LobbyOrGame`-cache branch returns without clicking or checking anything, which is fine for create-game/join-game (their next click is a tab, harmless even if we're not quite where expected) but not for follow, whose very next action is a precise click on the party icon - a stale cache (eg. a prior command actually left the client in-game) means that click lands on whatever's really on screen instead of the friends drawer, and every click after it free-wheels with nothing real to land on. `JoinFriendAsync` now confirms live with `IsAnyLobbyEntryMenuVisible` before spending that click, and retries the same direct character-slot+Lobby navigation `EnsureLobbyOpenedAsync`'s other branches already use (guarded against in-game per the safety section above) if the cache didn't match reality - failing clearly if the Lobby still isn't visible after that, rather than clicking blind into the unknown.
 
