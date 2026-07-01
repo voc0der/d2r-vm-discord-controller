@@ -54,7 +54,7 @@ public static class DiscordSlashCommands
                         Sub("notifications", "Persist Discord notification settings and restart the host",
                             BoolOption("enabled", "Whether to post game session updates"),
                             StringOption("channel-id", "Discord text channel ID for notifications", required: false),
-                            BoolOption("updates-enabled", "Whether to post host/VM self-update notifications", required: false))),
+                            BoolOption("updates-enabled", "Whether to post host availability/update notifications", required: false))),
                     Group("vm", "Operate mapped Hyper-V virtual machines",
                         Sub("status", "Get Hyper-V status for an account VM", Account()),
                         Sub("start", "Start an account VM", Account()),

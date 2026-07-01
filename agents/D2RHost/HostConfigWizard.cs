@@ -36,7 +36,7 @@ public static class HostConfigWizard
             if (config.GuildChannel is not null)
             {
                 config.GameSessionNotificationsEnabled = ConsolePrompt.ReadBool("Post game session notifications", false);
-                config.UpdateNotificationsEnabled = ConsolePrompt.ReadBool("Post host/VM update notifications", true);
+                config.UpdateNotificationsEnabled = ConsolePrompt.ReadBool("Post host availability/update notifications", true);
             }
         }
 

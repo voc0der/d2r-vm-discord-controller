@@ -30,7 +30,7 @@ The host PC does not need Docker or Node. The VM agents connect outbound to the 
 
 The host executable checks the latest GitHub release on startup. If a newer version exists, the host starts an in-place updater, exits, and restarts before it accepts VM-agent connections. After the updated host is running and VM agents authenticate, the host sends each authenticated VM agent a self-update command.
 
-When `guildChannel` is configured and `updateNotificationsEnabled` is true, D2RHost posts Discord notifications when a host update completes and when a VM agent starts its self-update.
+When `guildChannel` is configured and `updateNotificationsEnabled` is true, D2RHost posts Discord notifications when it first comes online, when a host update completes, and when a VM agent starts its self-update.
 
 The VM agent executable can still check for an update when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
 
@@ -89,7 +89,7 @@ For folded commands, `all` defaults to true. Pass `all:false account:<x>` for on
 
 `/d2r restart` respawns `D2RHost`. On startup, the host runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed host update once the command exists in Discord.
 
-`/d2r system sleep`, `/d2r system shutdown`, and `/d2r system restart` run Windows power actions on the D2RHost machine only. They do not send shutdown/restart commands to the VM clients.
+`/d2r system sleep`, `/d2r system shutdown`, and `/d2r system restart` publicly announce the requested host power action in the command channel, then run it on the D2RHost machine only. They do not send shutdown/restart commands to the VM clients.
 
 Menu commands that need D2R running, such as `lobby`, `play`, `join`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
 

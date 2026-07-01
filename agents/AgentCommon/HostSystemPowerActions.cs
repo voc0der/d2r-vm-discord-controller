@@ -33,6 +33,21 @@ public static class HostSystemPowerActions
         };
     }
 
+    public static string FormatDiscordAnnouncement(HostSystemPowerAction action, string requestedBy)
+    {
+        var suffix = string.IsNullOrWhiteSpace(requestedBy)
+            ? ""
+            : $" Requested by {requestedBy.Trim()}.";
+
+        return action switch
+        {
+            HostSystemPowerAction.Sleep => $"D2RHost is going to sleep.{suffix}",
+            HostSystemPowerAction.Shutdown => $"D2RHost is shutting down.{suffix}",
+            HostSystemPowerAction.Restart => $"D2RHost is restarting.{suffix}",
+            _ => throw new InvalidOperationException($"Unsupported system action: {action}")
+        };
+    }
+
     public static ProcessStartInfo CreateShutdownStartInfo(HostSystemPowerAction action)
     {
         var mode = action switch

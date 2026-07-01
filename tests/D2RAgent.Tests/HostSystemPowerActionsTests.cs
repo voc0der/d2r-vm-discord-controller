@@ -31,4 +31,13 @@ public sealed class HostSystemPowerActionsTests
         Assert.Contains("/c", arguments);
         Assert.DoesNotContain("/m", arguments);
     }
+
+    [Theory]
+    [InlineData(HostSystemPowerAction.Sleep, "D2RHost is going to sleep. Requested by alice (123).")]
+    [InlineData(HostSystemPowerAction.Shutdown, "D2RHost is shutting down. Requested by alice (123).")]
+    [InlineData(HostSystemPowerAction.Restart, "D2RHost is restarting. Requested by alice (123).")]
+    public void FormatsDiscordAnnouncementForHostPowerActions(HostSystemPowerAction action, string expected)
+    {
+        Assert.Equal(expected, HostSystemPowerActions.FormatDiscordAnnouncement(action, "alice (123)"));
+    }
 }

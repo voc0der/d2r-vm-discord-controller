@@ -41,6 +41,7 @@ public sealed class DiscordBot
     private string? _activeSessionRepresentativeAgentId;
     private bool _commandsRegistered;
     private bool _discordReady;
+    private bool _availabilityAnnouncementQueued;
     private GameNameTemplate? _gameTemplate;
     private readonly SemaphoreSlim _joinAutoLock = new(1, 1);
     private CancellationTokenSource? _joinAutoCts;
@@ -132,28 +133,38 @@ public sealed class DiscordBot
     {
         _logger.LogInformation("Discord bot logged in as {User}", _client.CurrentUser);
         _discordReady = true;
-        if (_commandsRegistered)
+        if (!_commandsRegistered)
         {
-            await FlushUpdateNotificationsAsync();
+            var commands = DiscordSlashCommands.Build();
+            if (_config.DiscordGuildId is { } guildId)
+            {
+                var guild = _client.GetGuild(guildId)
+                    ?? throw new InvalidOperationException($"Discord guild {guildId} is not visible to the bot.");
+                await guild.BulkOverwriteApplicationCommandAsync(commands);
+                _logger.LogInformation("Registered {Count} guild slash commands in {GuildId}.", commands.Length, guildId);
+            }
+            else
+            {
+                await ((IDiscordClient)_client).BulkOverwriteGlobalApplicationCommand(commands);
+                _logger.LogInformation("Registered {Count} global slash commands.", commands.Length);
+            }
+
+            _commandsRegistered = true;
+        }
+
+        QueueAvailabilityAnnouncementOnce();
+        await FlushUpdateNotificationsAsync();
+    }
+
+    private void QueueAvailabilityAnnouncementOnce()
+    {
+        if (_availabilityAnnouncementQueued)
+        {
             return;
         }
 
-        var commands = DiscordSlashCommands.Build();
-        if (_config.DiscordGuildId is { } guildId)
-        {
-            var guild = _client.GetGuild(guildId)
-                ?? throw new InvalidOperationException($"Discord guild {guildId} is not visible to the bot.");
-            await guild.BulkOverwriteApplicationCommandAsync(commands);
-            _logger.LogInformation("Registered {Count} guild slash commands in {GuildId}.", commands.Length, guildId);
-        }
-        else
-        {
-            await ((IDiscordClient)_client).BulkOverwriteGlobalApplicationCommand(commands);
-            _logger.LogInformation("Registered {Count} global slash commands.", commands.Length);
-        }
-
-        _commandsRegistered = true;
-        await FlushUpdateNotificationsAsync();
+        _availabilityAnnouncementQueued = true;
+        _notifications.Enqueue(FormatAvailabilityAnnouncement());
     }
 
     private void OnDiscordNotificationQueued()
@@ -749,7 +760,23 @@ public sealed class DiscordBot
         await context.Command.RespondAsync(
             $"{HostSystemPowerActions.FormatQueuedMessage(action)} VM clients are not targeted.",
             ephemeral: true);
+        await AnnounceSystemPowerActionAsync(context, action);
         _system.Queue(action);
+    }
+
+    private async Task AnnounceSystemPowerActionAsync(SlashContext context, HostSystemPowerAction action)
+    {
+        try
+        {
+            await context.Command.Channel.SendMessageAsync(
+                DiscordMessageTruncator.Truncate(HostSystemPowerActions.FormatDiscordAnnouncement(
+                    action,
+                    FormatDiscordUser(context.Command.User))));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not announce host system action {Action} in Discord.", action);
+        }
     }
 
     private async Task HandleConfigAsync(SlashContext context)
@@ -3825,6 +3852,11 @@ public sealed class DiscordBot
         return string.Join("\n", new[] { $"Agents: {connected}/{agents.Count} connected" }.Concat(lines));
     }
 
+    private string FormatAvailabilityAnnouncement()
+    {
+        return $"D2RHost is alive and available. Version: {GetHostVersionText()}\n{FormatHealth()}";
+    }
+
     private string FormatAllAccountStatuses()
     {
         var lines = _config.Accounts.Select(pair => FormatAccountStatusLine(pair.Key, pair.Value));
@@ -4221,6 +4253,14 @@ public sealed class DiscordBot
     private static string FormatCommandResult(bool ok, string message)
     {
         return $"{(ok ? "OK" : "Failed")}: {message}";
+    }
+
+    private static string FormatDiscordUser(IUser user)
+    {
+        var username = string.IsNullOrWhiteSpace(user.Username)
+            ? "unknown"
+            : user.Username;
+        return $"{username} ({user.Id})";
     }
 
     private static string FormatActiveGame(ActiveGame game)
