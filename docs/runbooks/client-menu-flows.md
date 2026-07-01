@@ -82,22 +82,22 @@ Use these commands while driving clients:
 /d2r quit all:false account:hc1
 /d2r screenshot hc1
 /d2r remote hc1
-/game set name:<game> password:<password> difficulty:hell
-/game show
-/game clear
+/d2r game set name:<game> password:<password> difficulty:hell
+/d2r game show
+/d2r game clear
 /d2r config show
 /d2r config stagger seconds:20
 /d2r config notifications enabled:true channel-id:1517651040340541472
-/restart
+/d2r restart
 ```
 
-`/game show` is meant to keep the name/password in one place while moving each VM through Join Game or Create Game. `/d2r join` and `/d2r create-game` use stored `/game set` values when command options are omitted.
+`/d2r game show` is meant to keep the name/password in one place while moving each VM through Join Game or Create Game. `/d2r join` and `/d2r create-game` use stored `/d2r game set` values when command options are omitted.
 
 If `lobby`, `play`, `join`, `create-game`, or `follow` is requested while the latest VM status says D2R is stopped or D2R is running with an `Unknown` activity state, `D2RHost` runs `/d2r ready` first and reports that extra step in Discord.
 
 For folded commands, `all` defaults to true; pass `all:false account:<x>` for one account. For all-client commands, set `CLIENT_STAGGER_SECONDS=30` on the host to run client 1, wait 30 seconds, client 2, and so on. If unset, `D2RHost` uses `startAllDelaySeconds` from `d2r-host.config.json`. Offline VM agents are skipped when the command is queued. `/d2r create-game` with `all:true` now starts the creator as soon as the creator is ready; side clients warm up and prepare their Join Game forms in parallel, then submit Join Game after the creator succeeds. `save-exit`/`start`/`quit` with `all:true` now post a single follow-up with a checkmark/no-entry reaction once every queued account finishes, in addition to the existing per-account failure follow-ups (issue #20, item 2).
 
-`/d2r create-game` and `/d2r join` with `all:true` and no `name` (issue #20, items 3-5): if a recent (<1h) `/game set`/prior create/join game exists, `join` reuses it; `create-game` only reuses it when no template is set (it never reuses `/game show` while a template is active - otherwise the number could never advance). If `/d2r template name:<x> password:<y>` has been set this run, `create-game` mints the next number (`netrunner1`, `netrunner2`, ...) and `join` joins whichever number was most recently minted (or `netrunner1` if none yet). With no template and nothing recent, `create-game` falls back to a random name/password and `join` does nothing. The template and its counter are in-memory only and reset when `D2RHost` restarts. Every successful create-game/join all-client flow (however the name was resolved) updates the `/game show` record, so the next plain call sees what's actually running.
+`/d2r create-game` and `/d2r join` with `all:true` and no `name` (issue #20, items 3-5): if a recent (<1h) `/d2r game set`/prior create/join game exists, `join` reuses it; `create-game` only reuses it when no template is set (it never reuses `/d2r game show` while a template is active - otherwise the number could never advance). If `/d2r template name:<x> password:<y>` has been set this run, `create-game` mints the next number (`netrunner1`, `netrunner2`, ...) and `join` joins whichever number was most recently minted (or `netrunner1` if none yet). With no template and nothing recent, `create-game` falls back to a random name/password and `join` does nothing. The template and its counter are in-memory only and reset when `D2RHost` restarts. Every successful create-game/join all-client flow (however the name was resolved) updates the `/d2r game show` record, so the next plain call sees what's actually running.
 
 `/d2r join` with no arguments, or with `auto:true` (issue #20, item 7), needs a template set first and assumes a human - not one of this bot's own VMs - creates each numbered game externally using that same naming (the `delay` flag, default 0, is the wait before each join attempt specifically so a sorceress can teleport to a boss alone before the bots pile in and spike the difficulty). Each cycle: mint the next number, try to join all online accounts; once everyone's in, poll every 15s via the same `lastPartyMemberCount` the heartbeat tracks until the count drops below where it was right after joining; then leave-all and advance to the next number. Runs until `/d2r join auto:false`, an idle timeout, or the template being cleared - all of it posted to the invoking channel directly rather than as interaction follow-ups, since a multi-cycle farming run easily outlives a follow-up token's ~15 minute lifetime. Deliberately does not touch the create/join session message (`_activeSessionMessage`) - an unrelated manual run of either could be using it concurrently.
 
@@ -111,9 +111,9 @@ Two more issue #24 findings from the same real run: (1) **`quit`/`quit-all`/`sto
 
 **Separate bug, same issue #24 report, unrelated to join-auto:** clearing a join/create-game password field to empty failed silently - `WindowsInput.TypeText` no-ops for an empty string, so `SelectAll()` followed by typing nothing left the old password selected but never actually deleted. Fixed with a new `WindowsInput.DeleteSelection()` (sends Delete) called between `SelectAll()` and `TypeText()` in `FillTextFieldAsync`, regardless of whether the new value is empty or not.
 
-Use `/d2r config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/d2r config notifications enabled:true channel-id:<channel>` to post create/join session updates into a Discord channel. Use `/restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
+Use `/d2r config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/d2r config notifications enabled:true channel-id:<channel>` to post create/join session updates into a Discord channel. Use `/d2r restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
 
-`D2RHost` is respawned unattended (self-update, `/restart`), so a console window is rarely the thing watching it. Every start writes Information-level-and-up logs (including Discord.NET's own internal log, e.g. slash command registration outcomes) to `<config directory>/logs/log.0` and rotates the previous two runs down to `log.1`/`log.2`, oldest dropped, via `LogFileRotator.RotateAndPrepare` (`AgentCommon`). A fatal startup exception that would otherwise only hit `Console.Error` on an unattended process also lands in that file.
+`D2RHost` is respawned unattended (self-update, `/d2r restart`), so a console window is rarely the thing watching it. Every start writes Information-level-and-up logs (including Discord.NET's own internal log, e.g. slash command registration outcomes) to `<config directory>/logs/log.0` and rotates the previous two runs down to `log.1`/`log.2`, oldest dropped, via `LogFileRotator.RotateAndPrepare` (`AgentCommon`). A fatal startup exception that would otherwise only hit `Console.Error` on an unattended process also lands in that file.
 
 That logging is what actually found the template/join-auto registration outage (issue #20 follow-up): `DiscordSlashCommands.Build()` runs synchronously inside `DiscordBot.OnReadyAsync`, a Discord.NET gateway event handler, and Discord.Net throws `ArgumentException` from `SlashCommandOptionBuilder.WithDescription` if a subcommand description exceeds 100 characters - both `template`'s and `join-auto`'s original descriptions did. An exception thrown there is swallowed by Discord.Net into a `Gateway: A Ready handler has thrown an unhandled exception` warning with a full stack trace, not surfaced anywhere else, so the entire `BulkOverwriteApplicationCommandAsync` call never ran and the command set silently never updated. Dropping the four alias subcommands earlier in the same investigation (to stay under Discord's separate 25-options-per-command cap) was real but unrelated hygiene - it did not fix this. See the comment on `DiscordSlashCommands.Sub()` for the 100-char constraint and the one on the `d2r` command's option list for the 25-count constraint; both fail registration the same way, with no visible error short of the log file.
 
@@ -280,15 +280,15 @@ Manual path:
 1. Select the intended online character.
 2. Click Lobby.
 3. Click Join Game.
-4. Enter the game name from `/game show`.
-5. Enter the password from `/game show`, if any.
+4. Enter the game name from `/d2r game show`.
+5. Enter the password from `/d2r game show`, if any.
 6. Confirm the difficulty matches the target game.
 7. Click Join Game.
 
 Automation:
 
 ```text
-/game set name:<game> password:<password> difficulty:hell
+/d2r game set name:<game> password:<password> difficulty:hell
 /d2r join all:false account:hc1 character-slot:1
 ```
 
@@ -320,12 +320,12 @@ Manual path:
 6. Pick difficulty.
 7. Review max players and checkboxes.
 8. Click Create Game.
-9. Store the details with `/game set`.
+9. Store the details with `/d2r game set`.
 
 Automation:
 
 ```text
-/game set name:<game> password:<password> difficulty:hell
+/d2r game set name:<game> password:<password> difficulty:hell
 /d2r create-game all:false account:hc1 character-slot:1
 ```
 

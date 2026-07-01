@@ -61,14 +61,31 @@ public sealed class DiscordSlashCommandsTests
     }
 
     [Fact]
-    public void D2RCommandIncludesNestedConfigAndVmGroups()
+    public void D2RCommandIncludesNestedCommandGroups()
     {
         var d2r = GetD2RCommand();
         var config = Assert.Single(d2r.Options.Value, option => option.Name == "config");
+        var game = Assert.Single(d2r.Options.Value, option => option.Name == "game");
+        var system = Assert.Single(d2r.Options.Value, option => option.Name == "system");
         var vm = Assert.Single(d2r.Options.Value, option => option.Name == "vm");
+        var restart = Assert.Single(d2r.Options.Value, option => option.Name == "restart");
 
+        Assert.Equal(ApplicationCommandOptionType.SubCommand, restart.Type);
         Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, config.Type);
         Assert.Contains(config.Options!, option => option.Name == "stagger");
+        Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, game.Type);
+        Assert.Contains(game.Options!, option => option.Name == "set");
+        Assert.Contains(game.Options!, option => option.Name == "show");
+        Assert.Contains(game.Options!, option => option.Name == "clear");
+        Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, system.Type);
+        Assert.Contains(system.Options!, option => option.Name == "sleep");
+        Assert.Contains(system.Options!, option => option.Name == "shutdown");
+        Assert.Contains(system.Options!, option => option.Name == "restart");
+        foreach (var subcommand in system.Options!)
+        {
+            Assert.False(subcommand.Options?.Any() == true, $"/d2r system {subcommand.Name} should not accept client/account options.");
+        }
+
         Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, vm.Type);
         Assert.Contains(vm.Options!, option => option.Name == "reboot");
     }
@@ -82,6 +99,8 @@ public sealed class DiscordSlashCommandsTests
         var commandNames = commands.Select(command => command.Name.Value).ToArray();
 
         Assert.DoesNotContain("config", commandNames);
+        Assert.DoesNotContain("game", commandNames);
+        Assert.DoesNotContain("restart", commandNames);
         Assert.DoesNotContain("vm", commandNames);
 
         var d2r = commands.Single(command => command.Name.Value == "d2r");

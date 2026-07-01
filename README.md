@@ -61,10 +61,13 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r follow [account] [all] [character-slot] [friend-row] [bind] [auto] [delay] [idle-minutes] [watch]`
 - `/d2r save-exit [account] [all]`
 - `/d2r template name [password]`
-- `/restart`
-- `/game set name [password] [difficulty] [notes]`
-- `/game show`
-- `/game clear`
+- `/d2r restart`
+- `/d2r game set name [password] [difficulty] [notes]`
+- `/d2r game show`
+- `/d2r game clear`
+- `/d2r system sleep`
+- `/d2r system shutdown`
+- `/d2r system restart`
 - `/d2r vm status account`
 - `/d2r vm start account`
 - `/d2r vm stop account`
@@ -74,7 +77,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r config stagger seconds`
 - `/d2r config notifications enabled [channel-id]`
 
-`/game set` stores the current game details in SQLite. `join` and `create-game` use those stored values when options are omitted.
+`/d2r game set` stores the current game details in SQLite. `join` and `create-game` use those stored values when options are omitted.
 
 For folded commands, `all` defaults to true. Pass `all:false account:<x>` for one account. All-client commands skip accounts whose VM agent is offline when the command is queued.
 
@@ -82,7 +85,9 @@ For folded commands, `all` defaults to true. Pass `all:false account:<x>` for on
 
 `/d2r start` with `all:true` queues the ready flow for every online account, so cold-booted clients should land on character select instead of merely starting the D2R process.
 
-`/restart` respawns `D2RHost`. On startup, the host runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed host update once the command exists in Discord.
+`/d2r restart` respawns `D2RHost`. On startup, the host runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed host update once the command exists in Discord.
+
+`/d2r system sleep`, `/d2r system shutdown`, and `/d2r system restart` run Windows power actions on the D2RHost machine only. They do not send shutdown/restart commands to the VM clients.
 
 Menu commands that need D2R running, such as `lobby`, `play`, `join`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
 

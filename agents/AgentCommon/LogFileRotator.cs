@@ -3,7 +3,7 @@ namespace AgentCommon;
 public static class LogFileRotator
 {
     // Each process start gets its own log.0, with up to `keep` prior runs preserved as
-    // log.1, log.2, ... - hosts here are respawned unattended (self-update, /restart), so
+    // log.1, log.2, ... - hosts here are respawned unattended (self-update, /d2r restart), so
     // whatever crashed or misbehaved on the last run is otherwise gone with the window
     // that nobody was watching.
     public static string RotateAndPrepare(string logsDir, int keep = 3)

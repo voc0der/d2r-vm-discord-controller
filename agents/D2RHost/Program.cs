@@ -50,6 +50,7 @@ try
     builder.Services.AddSingleton<AppDb>();
     builder.Services.AddSingleton<AgentRegistry>();
     builder.Services.AddSingleton<HyperVOperations>();
+    builder.Services.AddSingleton<HostSystemOperations>();
     builder.Services.AddSingleton<DiscordBot>();
 
     var app = builder.Build();
@@ -108,7 +109,7 @@ try
 }
 catch (Exception ex)
 {
-    // This process is respawned unattended (e.g. via the /restart Discord command),
+    // This process is respawned unattended (e.g. via the /d2r restart Discord command),
     // so blocking on Console.ReadLine() here would hang forever with nobody at the
     // console to answer it.
     Console.Error.WriteLine(ex);

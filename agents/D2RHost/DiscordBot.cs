@@ -24,6 +24,7 @@ public sealed class DiscordBot
     private readonly HostRuntimeOptions _runtime;
     private readonly AgentRegistry _registry;
     private readonly HyperVOperations _hyperV;
+    private readonly HostSystemOperations _system;
     private readonly AppDb _db;
     private readonly ILogger<DiscordBot> _logger;
     private readonly DiscordSocketClient _client;
@@ -57,8 +58,8 @@ public sealed class DiscordBot
     private long _followAutoCurrentRunId;
 
     // join-all's "join the last known game if it's recent" (issue #20, item 5) needs to mean
-    // a game create-game-all/join-all actually acted on, not just whatever /game set last had -
-    // a 3-day-old manual /game set shouldn't be silently (re)joined.
+    // a game create-game-all/join-all actually acted on, not just whatever /d2r game set last had -
+    // a 3-day-old manual /d2r game set shouldn't be silently (re)joined.
     private static readonly TimeSpan ActiveGameFreshness = TimeSpan.FromHours(1);
 
     public DiscordBot(
@@ -66,6 +67,7 @@ public sealed class DiscordBot
         HostRuntimeOptions runtime,
         AgentRegistry registry,
         HyperVOperations hyperV,
+        HostSystemOperations system,
         AppDb db,
         ILogger<DiscordBot> logger)
     {
@@ -73,6 +75,7 @@ public sealed class DiscordBot
         _runtime = runtime;
         _registry = registry;
         _hyperV = hyperV;
+        _system = system;
         _db = db;
         _logger = logger;
         _client = new DiscordSocketClient(new DiscordSocketConfig
@@ -155,6 +158,18 @@ public sealed class DiscordBot
                     else if (context.GroupName == "vm")
                     {
                         await HandleVmAsync(context);
+                    }
+                    else if (context.GroupName == "game")
+                    {
+                        await HandleGameAsync(context);
+                    }
+                    else if (context.GroupName == "system")
+                    {
+                        await HandleSystemAsync(context);
+                    }
+                    else if (context.SubcommandName == "restart")
+                    {
+                        await HandleRestartAsync(context);
                     }
                     else
                     {
@@ -331,7 +346,7 @@ public sealed class DiscordBot
             if (game is null)
             {
                 await context.Command.RespondAsync(
-                    "Nothing to join: no recent game and no template set. Pass name, or set one with /game set or /d2r template.",
+                    "Nothing to join: no recent game and no template set. Pass name, or set one with /d2r game set or /d2r template.",
                     ephemeral: true);
                 return;
             }
@@ -633,6 +648,23 @@ public sealed class DiscordBot
                 await context.Command.RespondAsync(cleared ? "Cleared the stored game." : "No current game was stored.", ephemeral: true);
                 return;
         }
+    }
+
+    private async Task HandleSystemAsync(SlashContext context)
+    {
+        var action = HostSystemPowerActions.ParseAction(context.SubcommandName);
+        if (!OperatingSystem.IsWindows())
+        {
+            await context.Command.RespondAsync(
+                "/d2r system actions require Windows on the D2RHost machine.",
+                ephemeral: true);
+            return;
+        }
+
+        await context.Command.RespondAsync(
+            $"{HostSystemPowerActions.FormatQueuedMessage(action)} VM clients are not targeted.",
+            ephemeral: true);
+        _system.Queue(action);
     }
 
     private async Task HandleConfigAsync(SlashContext context)
@@ -1042,7 +1074,7 @@ public sealed class DiscordBot
                 }
 
                 // So a later plain join-all/create-game-all (no flags) sees what actually just
-                // got created, the same way a manual /game set would - not just whatever was
+                // got created, the same way a manual /d2r game set would - not just whatever was
                 // true before this run started.
                 _db.SetActiveGame(game.GameName, game.Password, game.Difficulty, notes: "create-game-all", context.Command.User.Id.ToString());
 
@@ -2477,7 +2509,7 @@ public sealed class DiscordBot
         var gameName = BlankToNull(context.GetString("name")) ?? stored?.Name;
         if (string.IsNullOrWhiteSpace(gameName))
         {
-            throw new InvalidOperationException("Game name is required. Pass name or set it first with /game set.");
+            throw new InvalidOperationException("Game name is required. Pass name or set it first with /d2r game set.");
         }
 
         return new GameInput(
@@ -2488,7 +2520,7 @@ public sealed class DiscordBot
 
     // create-game-all with no name (issue #20, items 3 and 5), in priority order: explicit flags
     // always win; otherwise a template mints a fresh numbered name every call (it never reuses
-    // /game show's stored value - that's what would stop netrunner1 -> netrunner2 from advancing);
+    // /d2r game show's stored value - that's what would stop netrunner1 -> netrunner2 from advancing);
     // otherwise fall back to today's stored-active-game behavior; otherwise random credentials so
     // the command always works rather than erroring.
     private GameInput ResolveCreateGameAllInput(SlashContext context)

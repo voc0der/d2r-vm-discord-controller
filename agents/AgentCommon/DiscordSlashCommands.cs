@@ -34,6 +34,19 @@ public static class DiscordSlashCommands
                     Sub("follow", "Follow the bound friend, bind a friend, or join by visible row", OptionalAccount(), AllFlag(), CharacterSlot(), FriendRow(), FollowBind(), FollowAutoFlag(), Delay(), IdleMinutes(), Watch()),
                     Sub("save-exit", "Open the in-game menu and click Save and Exit", OptionalAccount(), AllFlag()),
                     Sub("template", "Set the create/join auto-naming template", RequiredGameName(), Password()),
+                    Sub("restart", "Respawn D2RHost so startup self-update can apply"),
+                    Group("game", "Track the current D2R game details",
+                        Sub("set", "Store the current game name/password for clients to join",
+                            RequiredGameName(),
+                            Password(),
+                            Difficulty(),
+                            Notes()),
+                        Sub("show", "Show the stored game details"),
+                        Sub("clear", "Clear the stored game details")),
+                    Group("system", "Power actions on the D2RHost Windows machine",
+                        Sub("sleep", "Sleep the D2RHost Windows machine"),
+                        Sub("shutdown", "Shut down the D2RHost Windows machine"),
+                        Sub("restart", "Restart the D2RHost Windows machine")),
                     Group("config", "Configure the D2R controller",
                         Sub("show", "Show runtime controller config"),
                         Sub("stagger", "Persist all-client stagger seconds and restart the host",
@@ -47,22 +60,6 @@ public static class DiscordSlashCommands
                         Sub("stop", "Stop an account VM", Account()),
                         Sub("reboot", "Restart an account VM", Account()),
                         Sub("snapshot", "Create a Hyper-V checkpoint for an account VM", Account(), SnapshotName())))
-                .Build(),
-            new SlashCommandBuilder()
-                .WithName("game")
-                .WithDescription("Track the current D2R game details")
-                .AddOptions(
-                    Sub("set", "Store the current game name/password for clients to join",
-                        RequiredGameName(),
-                        Password(),
-                        Difficulty(),
-                        Notes()),
-                    Sub("show", "Show the stored game details"),
-                    Sub("clear", "Clear the stored game details"))
-                .Build(),
-            new SlashCommandBuilder()
-                .WithName("restart")
-                .WithDescription("Respawn D2RHost so startup self-update can apply")
                 .Build()
         ];
     }
@@ -121,7 +118,7 @@ public static class DiscordSlashCommands
 
     private static SlashCommandOptionBuilder GameName()
     {
-        return StringOption("name", "Game name; defaults to /game show value", required: false);
+        return StringOption("name", "Game name; defaults to /d2r game show value", required: false);
     }
 
     private static SlashCommandOptionBuilder RequiredGameName()
@@ -131,7 +128,7 @@ public static class DiscordSlashCommands
 
     private static SlashCommandOptionBuilder Password()
     {
-        return StringOption("password", "Game password; defaults to /game show value", required: false);
+        return StringOption("password", "Game password; defaults to /d2r game show value", required: false);
     }
 
     private static SlashCommandOptionBuilder Notes()
@@ -146,7 +143,7 @@ public static class DiscordSlashCommands
 
     private static SlashCommandOptionBuilder Difficulty()
     {
-        return StringOption("difficulty", "Game difficulty; defaults to /game show value or VM UI default", required: false)
+        return StringOption("difficulty", "Game difficulty; defaults to /d2r game show value or VM UI default", required: false)
             .AddChoice("Normal", "normal")
             .AddChoice("Nightmare", "nightmare")
             .AddChoice("Hell", "hell");
