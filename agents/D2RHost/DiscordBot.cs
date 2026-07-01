@@ -12,6 +12,7 @@ public sealed class DiscordBot
     private const string TemplateCreateButtonId = "d2r:template:create-game";
     private const string TemplateJoinButtonId = "d2r:template:join";
     private const string FollowAutoStartButtonId = "d2r:follow:auto-start";
+    private const string FollowAutoStopButtonId = "d2r:follow:auto-stop";
     // 150s left ~0s margin over the agent's own internal retry budget on slower VM
     // hardware (Battle.net launch + splash-skip retries can legitimately take several
     // minutes), so the command was timing out moments before D2R would have reached
@@ -25,10 +26,13 @@ public sealed class DiscordBot
     private readonly AgentRegistry _registry;
     private readonly HyperVOperations _hyperV;
     private readonly HostSystemOperations _system;
+    private readonly DiscordNotificationQueue _notifications;
+    private readonly HostUpdateNotificationStore _hostUpdateNotifications;
     private readonly AppDb _db;
     private readonly ILogger<DiscordBot> _logger;
     private readonly DiscordSocketClient _client;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
+    private readonly SemaphoreSlim _notificationLock = new(1, 1);
     private IUserMessage? _activeSessionMessage;
     private string? _activeSessionGameName;
     private DateTimeOffset? _activeSessionStartedUtc;
@@ -36,6 +40,7 @@ public sealed class DiscordBot
     private int _activeSessionJoined;
     private string? _activeSessionRepresentativeAgentId;
     private bool _commandsRegistered;
+    private bool _discordReady;
     private GameNameTemplate? _gameTemplate;
     private readonly SemaphoreSlim _joinAutoLock = new(1, 1);
     private CancellationTokenSource? _joinAutoCts;
@@ -54,6 +59,12 @@ public sealed class DiscordBot
     private CancellationTokenSource? _followAutoCts;
     private string? _followAutoStopReason;
     private string? _followBoundAccountKey;
+    private IUserMessage? _followAutoMonitorMessage;
+    private DateTimeOffset? _followAutoStartedUtc;
+    private int _followAutoGameNumber;
+    private int _followAutoGamesCompleted;
+    private int _followAutoJoined;
+    private int _followAutoTotal;
     private long _followAutoRunSequence = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private long _followAutoCurrentRunId;
 
@@ -68,6 +79,8 @@ public sealed class DiscordBot
         AgentRegistry registry,
         HyperVOperations hyperV,
         HostSystemOperations system,
+        DiscordNotificationQueue notifications,
+        HostUpdateNotificationStore hostUpdateNotifications,
         AppDb db,
         ILogger<DiscordBot> logger)
     {
@@ -76,6 +89,8 @@ public sealed class DiscordBot
         _registry = registry;
         _hyperV = hyperV;
         _system = system;
+        _notifications = notifications;
+        _hostUpdateNotifications = hostUpdateNotifications;
         _db = db;
         _logger = logger;
         _client = new DiscordSocketClient(new DiscordSocketConfig
@@ -86,6 +101,7 @@ public sealed class DiscordBot
         _client.Ready += OnReadyAsync;
         _client.SlashCommandExecuted += OnSlashCommandAsync;
         _client.ButtonExecuted += OnButtonExecutedAsync;
+        _notifications.MessageQueued += OnDiscordNotificationQueued;
     }
 
     public async Task StartAsync()
@@ -115,8 +131,10 @@ public sealed class DiscordBot
     private async Task OnReadyAsync()
     {
         _logger.LogInformation("Discord bot logged in as {User}", _client.CurrentUser);
+        _discordReady = true;
         if (_commandsRegistered)
         {
+            await FlushUpdateNotificationsAsync();
             return;
         }
 
@@ -135,6 +153,59 @@ public sealed class DiscordBot
         }
 
         _commandsRegistered = true;
+        await FlushUpdateNotificationsAsync();
+    }
+
+    private void OnDiscordNotificationQueued()
+    {
+        if (!_discordReady)
+        {
+            return;
+        }
+
+        _ = Task.Run(FlushUpdateNotificationsAsync);
+    }
+
+    private async Task FlushUpdateNotificationsAsync()
+    {
+        if (!_discordReady || !_config.UpdateNotificationsEnabled)
+        {
+            return;
+        }
+
+        var channel = GetUpdateNotificationChannel();
+        if (channel is null)
+        {
+            return;
+        }
+
+        await _notificationLock.WaitAsync();
+        var runtimeMessages = Array.Empty<string>();
+        var runtimeIndex = 0;
+        try
+        {
+            foreach (var message in _hostUpdateNotifications.ReadPendingMessages())
+            {
+                await channel.SendMessageAsync(DiscordMessageTruncator.Truncate(message));
+            }
+
+            _hostUpdateNotifications.Clear();
+
+            runtimeMessages = _notifications.Drain();
+            for (; runtimeIndex < runtimeMessages.Length; runtimeIndex++)
+            {
+                await channel.SendMessageAsync(DiscordMessageTruncator.Truncate(runtimeMessages[runtimeIndex]));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not send Discord update notification.");
+            _notifications.Requeue(runtimeMessages.Skip(runtimeIndex));
+        }
+        finally
+        {
+            _notificationLock.Release();
+        }
     }
 
     private async Task OnSlashCommandAsync(SocketSlashCommand command)
@@ -231,6 +302,9 @@ public sealed class DiscordBot
                         watch: false,
                         TimeSpan.FromMinutes(FollowAutoDefaultIdleMinutes));
                     return;
+                case FollowAutoStopButtonId:
+                    await StopFollowAutoAsync(SlashContext.FromComponent(component, "follow"));
+                    return;
             }
         }
         catch (Exception ex)
@@ -282,6 +356,17 @@ public sealed class DiscordBot
         return new ComponentBuilder()
             .WithButton("Start Follow", FollowAutoStartButtonId, ButtonStyle.Primary)
             .Build();
+    }
+
+    private static MessageComponent BuildFollowAutoMonitorComponents(bool running)
+    {
+        var builder = new ComponentBuilder();
+        if (running)
+        {
+            builder.WithButton("Stop", FollowAutoStopButtonId, ButtonStyle.Danger);
+        }
+
+        return builder.Build();
     }
 
     private async Task HandleD2RAsync(SlashContext context)
@@ -684,24 +769,28 @@ public sealed class DiscordBot
                 return;
             case "notifications":
                 var enabled = context.GetRequiredBool("enabled");
+                var updatesEnabled = context.GetBool("updates-enabled");
                 var channelText = BlankToNull(context.GetString("channel-id"));
                 if (channelText is not null)
                 {
                     _config.GuildChannel = ParseChannelId(channelText);
                 }
 
-                if (enabled && _config.GuildChannel is null)
+                if ((enabled || updatesEnabled == true) && _config.GuildChannel is null)
                 {
                     await context.Command.RespondAsync("channel-id is required when enabling notifications.", ephemeral: true);
                     return;
                 }
 
                 _config.GameSessionNotificationsEnabled = enabled;
+                if (updatesEnabled is not null)
+                {
+                    _config.UpdateNotificationsEnabled = updatesEnabled.Value;
+                }
+
                 await SaveConfigAndRespawnAsync(
                     context,
-                    enabled
-                        ? $"Enabled game session notifications in channel {_config.GuildChannel}."
-                        : "Disabled game session notifications.");
+                    FormatNotificationConfigSavedMessage());
                 return;
             default:
                 throw new InvalidOperationException($"Unsupported config subcommand: {context.SubcommandName}");
@@ -722,12 +811,30 @@ public sealed class DiscordBot
         var notifications = _config.GameSessionNotificationsEnabled
             ? $"enabled in {_config.GuildChannel?.ToString() ?? "(no channel)"}"
             : "disabled";
+        var updateNotifications = _config.UpdateNotificationsEnabled
+            ? $"enabled in {_config.GuildChannel?.ToString() ?? "(no channel)"}"
+            : "disabled";
         return string.Join("\n", new[]
         {
             $"Config path: {_runtime.ConfigPath}",
             $"All-client stagger: {stagger}s",
-            $"Session notifications: {notifications}"
+            $"Session notifications: {notifications}",
+            $"Update notifications: {updateNotifications}"
         });
+    }
+
+    private string FormatNotificationConfigSavedMessage()
+    {
+        var channel = _config.GuildChannel?.ToString() ?? "(no channel)";
+        return "Updated notification settings: "
+            + $"game sessions {FormatEnabled(_config.GameSessionNotificationsEnabled)}, "
+            + $"updates {FormatEnabled(_config.UpdateNotificationsEnabled)}, "
+            + $"channel {channel}.";
+    }
+
+    private static string FormatEnabled(bool value)
+    {
+        return value ? "enabled" : "disabled";
     }
 
     private async Task SaveConfigAndRespawnAsync(SlashContext context, string message)
@@ -2139,6 +2246,22 @@ public sealed class DiscordBot
         return channel;
     }
 
+    private IMessageChannel? GetUpdateNotificationChannel()
+    {
+        if (!_config.UpdateNotificationsEnabled || _config.GuildChannel is not { } channelId)
+        {
+            return null;
+        }
+
+        var channel = _client.GetChannel(channelId) as IMessageChannel;
+        if (channel is null)
+        {
+            _logger.LogWarning("Update notifications are enabled, but channel {ChannelId} is not visible.", channelId);
+        }
+
+        return channel;
+    }
+
     private async Task<string> FormatGameSessionMessageAsync(string status, string? detail)
     {
         var elapsed = _activeSessionStartedUtc is { } started
@@ -2817,9 +2940,6 @@ public sealed class DiscordBot
 
     // Issue #25: capture a follow-bind fingerprint from one account's selected friend row, then push it
     // (or clear it) to every online account so follow-auto can recognize the same name anywhere.
-    // Deliberately simpler messaging than join-auto's persistent monitor message - plain
-    // progress/outcome posts only, not a live-edited status message. Worth revisiting if this
-    // sees as much use as join-auto did.
     private async Task HandleFollowBindAsync(SlashContext context, bool bindFlag)
     {
         var (online, _) = GetAccountEntriesByConnectivity();
@@ -2956,7 +3076,7 @@ public sealed class DiscordBot
         }
 
         await context.Command.RespondAsync(
-            $"follow-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay between checks" : "")}. Updates will post in this channel until it's stopped."
+            $"follow-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay between checks" : "")}. I posted one live status message in this channel."
                 + (watch ? " Watch diagnostics are enabled." : ""),
             ephemeral: true);
 
@@ -3053,6 +3173,108 @@ public sealed class DiscordBot
         _ = Task.Run(() => SignalFollowAutoStopAgentsAsync(followAutoRunId));
     }
 
+    private async Task StartFollowAutoMonitorAsync(IMessageChannel channel)
+    {
+        _followAutoStartedUtc = DateTimeOffset.UtcNow;
+        _followAutoGameNumber = 0;
+        _followAutoGamesCompleted = 0;
+        _followAutoJoined = 0;
+        _followAutoTotal = 0;
+        try
+        {
+            _followAutoMonitorMessage = await channel.SendMessageAsync(
+                FormatFollowAutoMonitorMessage("Starting follow-auto."),
+                components: BuildFollowAutoMonitorComponents(running: true));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not start follow-auto monitor message.");
+            _followAutoMonitorMessage = null;
+        }
+    }
+
+    private async Task UpdateFollowAutoMonitorAsync(string status, int? joined = null, int? total = null)
+    {
+        if (_followAutoMonitorMessage is null)
+        {
+            return;
+        }
+
+        if (joined is not null)
+        {
+            _followAutoJoined = joined.Value;
+        }
+
+        if (total is not null)
+        {
+            _followAutoTotal = total.Value;
+        }
+
+        try
+        {
+            var content = FormatFollowAutoMonitorMessage(status);
+            await _followAutoMonitorMessage.ModifyAsync(properties =>
+            {
+                properties.Content = content;
+                properties.Components = BuildFollowAutoMonitorComponents(running: true);
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not update follow-auto monitor message.");
+        }
+    }
+
+    private async Task CompleteFollowAutoMonitorAsync(bool ok, string status)
+    {
+        if (_followAutoMonitorMessage is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var content = FormatFollowAutoMonitorMessage(status);
+            await _followAutoMonitorMessage.ModifyAsync(properties =>
+            {
+                properties.Content = content;
+                properties.Components = BuildFollowAutoMonitorComponents(running: false);
+            });
+            await _followAutoMonitorMessage.AddReactionAsync(new Emoji(ok ? "✅" : "⛔"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not complete follow-auto monitor message.");
+        }
+        finally
+        {
+            _followAutoMonitorMessage = null;
+        }
+    }
+
+    private string FormatFollowAutoMonitorMessage(string status)
+    {
+        var elapsed = _followAutoStartedUtc is { } started ? DateTimeOffset.UtcNow - started : TimeSpan.Zero;
+        var title = _followAutoGameNumber > 0
+            ? $"follow-auto monitor - Game #{_followAutoGameNumber}"
+            : "follow-auto monitor";
+        var lines = new List<string>
+        {
+            title,
+            $"Status: {status}",
+            $"Bots in game: {_followAutoJoined}/{_followAutoTotal}",
+            $"Games completed: {_followAutoGamesCompleted}",
+            $"Session elapsed: {FormatElapsed(elapsed)}"
+        };
+
+        if (!string.IsNullOrWhiteSpace(_followBoundAccountKey))
+        {
+            lines.Insert(1, $"Bound friend source: {_followBoundAccountKey}");
+        }
+
+        return string.Join("\n", lines);
+    }
+
     private async Task RunFollowAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, long runId, CancellationToken cancellationToken)
     {
         var channel = context.Command.Channel;
@@ -3072,6 +3294,8 @@ public sealed class DiscordBot
                 () => GetAccountEntriesByConnectivity().Online,
                 watchCts.Token);
         }
+
+        await StartFollowAutoMonitorAsync(channel);
 
         async Task DelayNextFollowCheckAsync(bool afterLeave = false)
         {
@@ -3093,11 +3317,34 @@ public sealed class DiscordBot
                 var pending = online.Where(entry => !joined.Contains(entry.Key)).ToArray();
                 if (pending.Length == 0 && online.Length > 0)
                 {
-                    await SendJoinAutoMessageAsync(channel, "follow-auto: all online accounts have joined the bound friend's game. Watching for someone to leave...");
+                    _followAutoGameNumber++;
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for someone to leave...",
+                        joined: online.Length,
+                        total: online.Length);
                     var baseline = await TryFetchFirstOnlineAccountPlayerCountAsync();
                     await WaitForPlayerCountDropAsync(baseline, cancellationToken);
-                    await SendJoinAutoMessageAsync(channel, "follow-auto: player count dropped - leaving the bound friend's game.");
-                    await LeaveAllJoinAutoAsync(channel, "follow-auto");
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Game #{_followAutoGameNumber}: player count dropped. Leaving the bound friend's game...",
+                        joined: online.Length,
+                        total: online.Length);
+                    var leaveResults = await LeaveAllJoinAutoAsync(channel, "follow-auto", postResult: false);
+                    var leaveFailures = leaveResults.Where(result => !result.Ok).ToArray();
+                    if (leaveFailures.Length > 0)
+                    {
+                        await CompleteFollowAutoMonitorAsync(
+                            ok: false,
+                            $"Game #{_followAutoGameNumber}: leave failed for "
+                                + string.Join("; ", leaveFailures.Select(result => $"{result.AccountKey}: {result.Message}")));
+                        break;
+                    }
+
+                    _followAutoGamesCompleted++;
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Game #{_followAutoGameNumber}: all accounts left. Preparing Game #{_followAutoGameNumber + 1}...",
+                        joined: 0,
+                        total: online.Length);
+
                     joined.Clear();
                     idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                     await DelayNextFollowCheckAsync(afterLeave: true);
@@ -3118,7 +3365,10 @@ public sealed class DiscordBot
                         case FollowAutoCheckOutcome.Joined:
                             anyBound = true;
                             joined.Add(result.AccountKey);
-                            await SendJoinAutoMessageAsync(channel, $"follow-auto: {result.AccountKey} joined the bound friend's game.");
+                            await UpdateFollowAutoMonitorAsync(
+                                $"{result.AccountKey} joined the bound friend's game.",
+                                joined: joined.Count,
+                                total: online.Length);
                             idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                             break;
                         case FollowAutoCheckOutcome.Waiting:
@@ -3142,14 +3392,17 @@ public sealed class DiscordBot
                         if (!string.Equals(waitingReport, lastWaitingReport, StringComparison.Ordinal)
                             || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
                         {
-                            await SendJoinAutoMessageAsync(channel, $"follow-auto waiting: {waitingReport}");
+                            await UpdateFollowAutoMonitorAsync(
+                                $"Waiting: {waitingReport}",
+                                joined: joined.Count,
+                                total: online.Length);
                             lastWaitingReport = waitingReport;
                             lastWaitingReportUtc = DateTimeOffset.UtcNow;
                         }
 
                         if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
                         {
-                            await SendJoinAutoMessageAsync(channel, "follow-auto: idle timeout detected, disabled.");
+                            await CompleteFollowAutoMonitorAsync(ok: false, "Idle timeout detected; follow-auto disabled.");
                             break;
                         }
 
@@ -3162,7 +3415,7 @@ public sealed class DiscordBot
                     var reason = checkFailures.Count > 0
                         ? "follow-auto stopped: no VM reported a usable follow-bind fingerprint. "
                         : "follow-auto stopped: no follow-bind fingerprint is set. ";
-                    await SendJoinAutoMessageAsync(channel, reason + details);
+                    await CompleteFollowAutoMonitorAsync(ok: false, reason + details);
                     break;
                 }
 
@@ -3172,7 +3425,10 @@ public sealed class DiscordBot
                     if (!string.Equals(waitingReport, lastWaitingReport, StringComparison.Ordinal)
                         || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
                     {
-                        await SendJoinAutoMessageAsync(channel, $"follow-auto waiting: {waitingReport}");
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Waiting: {waitingReport}",
+                            joined: joined.Count,
+                            total: online.Length);
                         lastWaitingReport = waitingReport;
                         lastWaitingReportUtc = DateTimeOffset.UtcNow;
                     }
@@ -3180,7 +3436,7 @@ public sealed class DiscordBot
 
                 if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
                 {
-                    await SendJoinAutoMessageAsync(channel, "follow-auto: idle timeout detected, disabled.");
+                    await CompleteFollowAutoMonitorAsync(ok: false, "Idle timeout detected; follow-auto disabled.");
                     break;
                 }
 
@@ -3190,12 +3446,12 @@ public sealed class DiscordBot
         catch (OperationCanceledException)
         {
             var reasonText = _followAutoStopReason is { } reason ? $"follow-auto stopped: {reason}." : "follow-auto stopped.";
-            await SendJoinAutoMessageAsync(channel, reasonText);
+            await CompleteFollowAutoMonitorAsync(ok: true, reasonText);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "follow-auto loop crashed.");
-            await SendJoinAutoMessageAsync(channel, $"follow-auto stopped on an unexpected error: {ex.Message}");
+            await CompleteFollowAutoMonitorAsync(ok: false, $"follow-auto stopped on an unexpected error: {ex.Message}");
         }
         finally
         {
@@ -3453,13 +3709,17 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task LeaveAllJoinAutoAsync(IMessageChannel channel, string label)
+    private async Task<JoinResult[]> LeaveAllJoinAutoAsync(IMessageChannel channel, string label, bool postResult = true)
     {
         var (entries, _) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            await SendJoinAutoMessageAsync(channel, $"{label}: no online accounts to leave with.");
-            return;
+            if (postResult)
+            {
+                await SendJoinAutoMessageAsync(channel, $"{label}: no online accounts to leave with.");
+            }
+
+            return [];
         }
 
         var leaveResults = await Task.WhenAll(entries.Select(async entry =>
@@ -3477,9 +3737,14 @@ public sealed class DiscordBot
         }));
 
         var failed = leaveResults.Where(result => !result.Ok).ToArray();
-        await SendJoinAutoMessageAsync(channel, failed.Length == 0
-            ? $"{label}: all accounts left."
-            : $"{label}: leave failed for " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+        if (postResult)
+        {
+            await SendJoinAutoMessageAsync(channel, failed.Length == 0
+                ? $"{label}: all accounts left."
+                : $"{label}: leave failed for " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+        }
+
+        return leaveResults;
     }
 
     // Polls independently of RunPartyMemberMonitorAsync's own 30s tick - this needs to notice a

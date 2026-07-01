@@ -51,9 +51,10 @@ public static class DiscordSlashCommands
                         Sub("show", "Show runtime controller config"),
                         Sub("stagger", "Persist all-client stagger seconds and restart the host",
                             Seconds("seconds", "Delay between all-client actions, in seconds")),
-                        Sub("notifications", "Persist game session notification settings and restart the host",
+                        Sub("notifications", "Persist Discord notification settings and restart the host",
                             BoolOption("enabled", "Whether to post game session updates"),
-                            StringOption("channel-id", "Discord text channel ID for session updates", required: false))),
+                            StringOption("channel-id", "Discord text channel ID for notifications", required: false),
+                            BoolOption("updates-enabled", "Whether to post host/VM self-update notifications", required: false))),
                     Group("vm", "Operate mapped Hyper-V virtual machines",
                         Sub("status", "Get Hyper-V status for an account VM", Account()),
                         Sub("start", "Start an account VM", Account()),
@@ -267,13 +268,13 @@ public static class DiscordSlashCommands
             .WithRequired(false);
     }
 
-    private static SlashCommandOptionBuilder BoolOption(string name, string description)
+    private static SlashCommandOptionBuilder BoolOption(string name, string description, bool required = true)
     {
         return new SlashCommandOptionBuilder()
             .WithName(name)
             .WithDescription(description)
             .WithType(ApplicationCommandOptionType.Boolean)
-            .WithRequired(true);
+            .WithRequired(required);
     }
 
     private static SlashCommandOptionBuilder StringOption(

@@ -73,6 +73,9 @@ public sealed class DiscordSlashCommandsTests
         Assert.Equal(ApplicationCommandOptionType.SubCommand, restart.Type);
         Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, config.Type);
         Assert.Contains(config.Options!, option => option.Name == "stagger");
+        var notifications = Assert.Single(config.Options!, option => option.Name == "notifications");
+        var updateNotifications = Assert.Single(notifications.Options!, option => option.Name == "updates-enabled");
+        Assert.Equal(ApplicationCommandOptionType.Boolean, updateNotifications.Type);
         Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, game.Type);
         Assert.Contains(game.Options!, option => option.Name == "set");
         Assert.Contains(game.Options!, option => option.Name == "show");

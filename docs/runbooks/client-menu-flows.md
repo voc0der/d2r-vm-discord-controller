@@ -87,7 +87,7 @@ Use these commands while driving clients:
 /d2r game clear
 /d2r config show
 /d2r config stagger seconds:20
-/d2r config notifications enabled:true channel-id:1517651040340541472
+/d2r config notifications enabled:true updates-enabled:true channel-id:1517651040340541472
 /d2r restart
 ```
 
@@ -111,7 +111,7 @@ Two more issue #24 findings from the same real run: (1) **`quit`/`quit-all`/`sto
 
 **Separate bug, same issue #24 report, unrelated to join-auto:** clearing a join/create-game password field to empty failed silently - `WindowsInput.TypeText` no-ops for an empty string, so `SelectAll()` followed by typing nothing left the old password selected but never actually deleted. Fixed with a new `WindowsInput.DeleteSelection()` (sends Delete) called between `SelectAll()` and `TypeText()` in `FillTextFieldAsync`, regardless of whether the new value is empty or not.
 
-Use `/d2r config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/d2r config notifications enabled:true channel-id:<channel>` to post create/join session updates into a Discord channel. Use `/d2r restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
+Use `/d2r config stagger seconds:<seconds>` to persist the all-client stagger delay to `d2r-host.config.json` and respawn the host. Use `/d2r config notifications enabled:true updates-enabled:true channel-id:<channel>` to post create/join session updates and self-update notices into a Discord channel. Use `/d2r restart` to respawn `D2RHost` without changing config; startup self-update runs before the bot reconnects to Discord. Session messages are edited as bots enter the game and get a check/no-entry reaction when the flow completes.
 
 `D2RHost` is respawned unattended (self-update, `/d2r restart`), so a console window is rarely the thing watching it. Every start writes Information-level-and-up logs (including Discord.NET's own internal log, e.g. slash command registration outcomes) to `<config directory>/logs/log.0` and rotates the previous two runs down to `log.1`/`log.2`, oldest dropped, via `LogFileRotator.RotateAndPrepare` (`AgentCommon`). A fatal startup exception that would otherwise only hit `Console.Error` on an unattended process also lands in that file.
 
@@ -460,7 +460,7 @@ Bind/auto/follow first make the friend list idempotently visible: if the drawer 
 
 `/d2r follow auto:true` has every online account scan the visible friend rows (`FriendRowFingerprintMaxScanRows`, default/capped at 8 for the 1366x768 drawer) against the saved fingerprint each cycle, not just row 1 - if a second tracked friend comes online, Battle.net's own online-sort can put them above the bound friend, and a top-row-only check would silently follow the wrong person. The cap avoids scanning lower accordion headers like Recently Played With as if they were friends. The scanner ranks usable rows by fingerprint score and only clicks when the best row is clearly separated from the next-best row; weak or ambiguous scores wait for the next cycle instead of guessing. Since v0.2.137, old 12x4 follow-bind fingerprints are considered too coarse for auto-clicking; re-run `/d2r follow bind:true [friend-row:<n>]` so the agent captures the wider 24x4 name-text strip before starting follow-auto. Selected-row failures and no-click waits include the fingerprint scores in the command result/checkpoint so a watch log can show why a row was or was not clicked.
 
-Deliberately simpler than join-auto's messaging: plain progress/outcome posts in the invoking channel, not a persistent live-edited monitor message. Revisit if this command sees as much real use as join-auto did.
+Follow-auto posts one persistent monitor message in the invoking channel, edited in place for each game cycle. It shows the current `Game #N`, joined-account count, completed-game count, elapsed time, and a Stop button while the loop is active. Normal cycle progress no longer posts repeated per-account/per-game messages; `watch:true` still enables the separate diagnostics ticker/log when deeper troubleshooting is needed.
 
 ## Notes For Future Tuning
 

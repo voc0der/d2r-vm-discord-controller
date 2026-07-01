@@ -11,6 +11,7 @@ public sealed class HostConfig
     public int StartAllDelaySeconds { get; set; } = 20;
     public int? ClientStaggerSeconds { get; set; }
     public bool GameSessionNotificationsEnabled { get; set; }
+    public bool UpdateNotificationsEnabled { get; set; } = true;
     public ulong? GuildChannel { get; set; }
     public string PowerShellPath { get; set; } = "powershell.exe";
     public int PowerShellTimeoutSeconds { get; set; } = 90;

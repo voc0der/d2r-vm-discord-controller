@@ -9,6 +9,7 @@
   ],
   "startAllDelaySeconds": 20,
   "gameSessionNotificationsEnabled": false,
+  "updateNotificationsEnabled": true,
   "guildChannel": null,
   "powerShellPath": "powershell.exe",
   "powerShellTimeoutSeconds": 90,

@@ -7,6 +7,7 @@ var configPath = args.FirstOrDefault()
 
 var logsDir = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(configPath)) ?? ".", "logs");
 var logFilePath = LogFileRotator.RotateAndPrepare(logsDir);
+var updateNotificationPath = HostUpdateNotificationStore.GetPath(configPath);
 
 void LogStartup(string message)
 {
@@ -17,7 +18,7 @@ void LogStartup(string message)
 try
 {
     var hostUpdate = await SelfUpdater.CheckAndStartUpdateAsync(
-        SelfUpdateOptions.D2RHost(args),
+        SelfUpdateOptions.D2RHost(args) with { CompletionMarkerPath = updateNotificationPath },
         requirePrompt: false);
     if (!hostUpdate.Ok)
     {
@@ -47,6 +48,8 @@ try
     builder.Services.AddSingleton(config);
     builder.Services.AddSingleton(new HostRuntimeOptions(configPath, args));
     builder.Services.AddSingleton(agentAutoUpdate);
+    builder.Services.AddSingleton<DiscordNotificationQueue>();
+    builder.Services.AddSingleton<HostUpdateNotificationStore>();
     builder.Services.AddSingleton<AppDb>();
     builder.Services.AddSingleton<AgentRegistry>();
     builder.Services.AddSingleton<HyperVOperations>();

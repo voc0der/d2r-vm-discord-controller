@@ -11,6 +11,7 @@ public sealed class AgentRegistry
 
     private readonly HostConfig _config;
     private readonly AgentAutoUpdateState _autoUpdate;
+    private readonly DiscordNotificationQueue _notifications;
     private readonly AppDb _db;
     private readonly ILogger<AgentRegistry> _logger;
     private readonly ConcurrentDictionary<string, ConnectedAgent> _agents = new(StringComparer.OrdinalIgnoreCase);
@@ -20,11 +21,13 @@ public sealed class AgentRegistry
     public AgentRegistry(
         HostConfig config,
         AgentAutoUpdateState autoUpdate,
+        DiscordNotificationQueue notifications,
         AppDb db,
         ILogger<AgentRegistry> logger)
     {
         _config = config;
         _autoUpdate = autoUpdate;
+        _notifications = notifications;
         _db = db;
         _logger = logger;
     }
@@ -306,6 +309,11 @@ public sealed class AgentRegistry
 
                 if (result.Ok)
                 {
+                    if (TryReadSelfUpdateStarted(result.Data, out var currentVersion, out var latestVersion, out var logPath))
+                    {
+                        _notifications.Enqueue(FormatAgentUpdateMessage(agentId, currentVersion, latestVersion, logPath));
+                    }
+
                     _logger.LogInformation(
                         "Satellite auto-update command completed for {AgentId}: {Message}",
                         agentId,
@@ -324,6 +332,54 @@ public sealed class AgentRegistry
                 _logger.LogWarning(ex, "Satellite auto-update command failed for {AgentId}.", agentId);
             }
         });
+    }
+
+    private static bool TryReadSelfUpdateStarted(
+        JsonElement? data,
+        out string? currentVersion,
+        out string? latestVersion,
+        out string? logPath)
+    {
+        currentVersion = null;
+        latestVersion = null;
+        logPath = null;
+        if (data is not { } root
+            || !root.TryGetProperty("updateStarted", out var started)
+            || started.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+            || !started.GetBoolean())
+        {
+            return false;
+        }
+
+        currentVersion = TryGetString(root, "currentVersion");
+        latestVersion = TryGetString(root, "latestVersion");
+        logPath = TryGetString(root, "logPath");
+        return true;
+    }
+
+    private static string FormatAgentUpdateMessage(
+        string agentId,
+        string? currentVersion,
+        string? latestVersion,
+        string? logPath)
+    {
+        var versions = !string.IsNullOrWhiteSpace(currentVersion)
+            && !string.IsNullOrWhiteSpace(latestVersion)
+                ? $" {currentVersion} -> {latestVersion}"
+                : "";
+        var log = string.IsNullOrWhiteSpace(logPath)
+            ? ""
+            : $"\nLog: `{logPath}`";
+
+        return $"D2R VM Agent update started for `{agentId}`{versions}.{log}";
+    }
+
+    private static string? TryGetString(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
     }
 
     private void UpdateStatus(string agentId, JsonElement root)

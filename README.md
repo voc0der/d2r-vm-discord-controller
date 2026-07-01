@@ -30,6 +30,8 @@ The host PC does not need Docker or Node. The VM agents connect outbound to the 
 
 The host executable checks the latest GitHub release on startup. If a newer version exists, the host starts an in-place updater, exits, and restarts before it accepts VM-agent connections. After the updated host is running and VM agents authenticate, the host sends each authenticated VM agent a self-update command.
 
+When `guildChannel` is configured and `updateNotificationsEnabled` is true, D2RHost posts Discord notifications when a host update completes and when a VM agent starts its self-update.
+
 The VM agent executable can still check for an update when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
 
 When an update is started, the app starts a PowerShell updater, exits, downloads the matching release zip, replaces the files in the exe directory, and restarts the published exe from that release. If the exe name changed, the updater also points the scheduled task at the new exe before starting it.
@@ -75,7 +77,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r vm snapshot account [name]`
 - `/d2r config show`
 - `/d2r config stagger seconds`
-- `/d2r config notifications enabled [channel-id]`
+- `/d2r config notifications enabled [channel-id] [updates-enabled]`
 
 `/d2r game set` stores the current game details in SQLite. `join` and `create-game` use those stored values when options are omitted.
 
@@ -91,7 +93,7 @@ For folded commands, `all` defaults to true. Pass `all:false account:<x>` for on
 
 Menu commands that need D2R running, such as `lobby`, `play`, `join`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
 
-`/d2r follow bind:true account:<x> [friend-row:<n>]` captures whoever is sitting in that account's selected friend row right now (default row 1, no need to type a name - useful from a phone with no keyboard) and distributes that snippet to every online account. `bind:false` clears it everywhere. A plain `/d2r follow` starts auto-following that bound friend; `auto:false` stops it. With `watch:true`, follow-auto writes the same live diagnostics log for the whole run, across multiple games, including the latest match-score checkpoint. Old low-detail follow-bind snippets must be rebound before follow-auto will click rows. Use `all:false account:<x>` to right-click a manually-specified row once.
+`/d2r follow bind:true account:<x> [friend-row:<n>]` captures whoever is sitting in that account's selected friend row right now (default row 1, no need to type a name - useful from a phone with no keyboard) and distributes that snippet to every online account. `bind:false` clears it everywhere. A plain `/d2r follow` starts auto-following that bound friend; `auto:false` stops it. Follow-auto posts one live status message for the run, showing the current game number and a Stop button while it is active. With `watch:true`, follow-auto also writes the diagnostics log for the whole run, across multiple games, including the latest match-score checkpoint. Old low-detail follow-bind snippets must be rebound before follow-auto will click rows. Use `all:false account:<x>` to right-click a manually-specified row once.
 
 ## Host Setup
 

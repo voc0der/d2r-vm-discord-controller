@@ -92,7 +92,7 @@ public static class SelfUpdater
                     LogPath: null);
             }
 
-            var scriptPath = WriteUpdaterScript(options, release, currentExe);
+            var scriptPath = WriteUpdaterScript(options, release, currentExe, currentVersion);
             var logPath = Path.ChangeExtension(scriptPath, ".log");
             StartUpdaterScript(scriptPath);
 
@@ -197,7 +197,8 @@ public static class SelfUpdater
     private static string WriteUpdaterScript(
         SelfUpdateOptions options,
         LatestRelease release,
-        string currentExe)
+        string currentExe,
+        ReleaseVersion currentVersion)
     {
         var installDirectory = Path.GetDirectoryName(currentExe)
             ?? throw new InvalidOperationException("Could not find current exe directory.");
@@ -207,11 +208,15 @@ public static class SelfUpdater
         var logPath = Path.ChangeExtension(scriptPath, ".log");
         var restartArgumentLine = string.Join(" ", options.RestartArgs.Select(WindowsArgumentQuote));
         var restartScheduledTaskName = options.RestartScheduledTaskName ?? "";
+        var completionMarkerPath = options.CompletionMarkerPath ?? "";
         var targetExeName = Path.GetFileName(currentExe);
 
         var script = $$"""
             $ErrorActionPreference = 'Stop'
             $ProgressPreference = 'SilentlyContinue'
+            $appName = {{PsQuote(options.AppName)}}
+            $currentVersion = {{PsQuote(currentVersion.ToString())}}
+            $latestVersion = {{PsQuote(release.Version.ToString())}}
             $parentId = {{Environment.ProcessId}}
             $downloadUrl = {{PsQuote(release.DownloadUrl)}}
             $installDirectory = {{PsQuote(installDirectory)}}
@@ -219,12 +224,33 @@ public static class SelfUpdater
             $targetExeName = {{PsQuote(targetExeName)}}
             $restartArgumentLine = {{PsQuote(restartArgumentLine)}}
             $restartScheduledTaskName = {{PsQuote(restartScheduledTaskName)}}
+            $completionMarkerPath = {{PsQuote(completionMarkerPath)}}
             $logPath = {{PsQuote(logPath)}}
             $zipPath = Join-Path ([System.IO.Path]::GetTempPath()) ('d2rops-update-' + [guid]::NewGuid().ToString('N') + '.zip')
             $extractDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ('d2rops-update-' + [guid]::NewGuid().ToString('N'))
 
             function Write-UpdateLog([string]$message) {
                 Add-Content -Path $logPath -Value ((Get-Date).ToString('o') + ' ' + $message)
+            }
+
+            function Write-CompletionMarker {
+                if ([string]::IsNullOrWhiteSpace($completionMarkerPath)) {
+                    return
+                }
+
+                $markerDirectory = Split-Path -Parent $completionMarkerPath
+                if (-not [string]::IsNullOrWhiteSpace($markerDirectory)) {
+                    New-Item -ItemType Directory -Force -Path $markerDirectory | Out-Null
+                }
+
+                $payload = [ordered]@{
+                    appName = $appName
+                    currentVersion = $currentVersion
+                    latestVersion = $latestVersion
+                    logPath = $logPath
+                    completedUtc = (Get-Date).ToUniversalTime().ToString('o')
+                } | ConvertTo-Json -Compress
+                Add-Content -Path $completionMarkerPath -Value $payload
             }
 
             function Resolve-RestartExe {
@@ -281,6 +307,7 @@ public static class SelfUpdater
 
                 Write-UpdateLog ('Copying files to ' + $installDirectory)
                 Copy-Item -Path (Join-Path $extractDirectory '*') -Destination $installDirectory -Recurse -Force
+                Write-CompletionMarker
 
                 if ($restartScheduledTaskName.Length -gt 0) {
                     $task = Get-ScheduledTask -TaskName $restartScheduledTaskName -ErrorAction SilentlyContinue

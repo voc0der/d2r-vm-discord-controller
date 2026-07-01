@@ -8,6 +8,7 @@ public sealed record SelfUpdateOptions(
     public string Owner { get; init; } = "voc0der";
     public string Repository { get; init; } = "d2r-vm-discord-controller";
     public string? RestartScheduledTaskName { get; init; }
+    public string? CompletionMarkerPath { get; init; }
 
     public static SelfUpdateOptions D2RHost(string[] restartArgs)
     {

@@ -14,6 +14,17 @@ public sealed class SelfUpdateOptionsTests
     }
 
     [Fact]
+    public void HostSelfUpdateCanRecordCompletionMarker()
+    {
+        var options = SelfUpdateOptions.D2RHost([]) with
+        {
+            CompletionMarkerPath = @"C:\D2ROps\pending-update-notifications.jsonl"
+        };
+
+        Assert.Equal(@"C:\D2ROps\pending-update-notifications.jsonl", options.CompletionMarkerPath);
+    }
+
+    [Fact]
     public void AgentSelfUpdateCanRestartScheduledTask()
     {
         var options = SelfUpdateOptions.D2RAgent([]);

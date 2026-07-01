@@ -32,6 +32,12 @@ public static class HostConfigWizard
                 allowEmpty: false);
             config.DiscordGuildId = ConsolePrompt.ReadOptionalUlong("Discord guild ID for instant command registration");
             config.AllowedDiscordUserIds = ConsolePrompt.ReadCsv("Allowed Discord user IDs, comma-separated");
+            config.GuildChannel = ConsolePrompt.ReadOptionalUlong("Discord notification channel ID");
+            if (config.GuildChannel is not null)
+            {
+                config.GameSessionNotificationsEnabled = ConsolePrompt.ReadBool("Post game session notifications", false);
+                config.UpdateNotificationsEnabled = ConsolePrompt.ReadBool("Post host/VM update notifications", true);
+            }
         }
 
         Console.WriteLine();
