@@ -61,7 +61,6 @@ public sealed class DiscordBot
     private const int FollowAutoDefaultCheckSeconds = 5;
     private const int FollowAutoPostLeaveCheckSeconds = 2;
     private static readonly TimeSpan FollowAutoStopActionWindow = TimeSpan.FromMinutes(2);
-    private const int PlayerCountDropPollSeconds = 5;
     private readonly SemaphoreSlim _followAutoLock = new(1, 1);
     private readonly object _followAutoStopActionSync = new();
     private CancellationTokenSource? _followAutoCts;
@@ -2950,7 +2949,7 @@ public sealed class DiscordBot
 
                 await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
                 var baseline = await TryFetchFirstOnlineAccountPlayerCountAsync();
-                await WaitForPlayerCountDropAsync(baseline, cancellationToken);
+                await WaitForPlayerCountDropAsync(baseline, GetJoinAutoPlayerCountDropPollDelay, cancellationToken);
 
                 await SendJoinAutoMessageAsync(channel, $"join-auto: player count dropped - leaving {gameName}.");
                 await UpdateJoinAutoMonitorAsync($"Player count dropped - leaving {gameName}...");
@@ -3667,7 +3666,7 @@ public sealed class DiscordBot
                         joined: online.Length,
                         total: online.Length);
                     var baseline = await TryFetchFirstOnlineAccountPlayerCountAsync();
-                    await WaitForPlayerCountDropAsync(baseline, cancellationToken);
+                    await WaitForPlayerCountDropAsync(baseline, GetFollowAutoPlayerCountDropPollDelay, cancellationToken);
                     await UpdateFollowAutoMonitorAsync(
                         $"Game #{_followAutoGameNumber}: player count dropped. Leaving the bound friend's game...",
                         joined: online.Length,
@@ -4010,7 +4009,11 @@ public sealed class DiscordBot
 
         try
         {
-            var result = await _registry.SendCommandAsync(entries[0].Value.AgentId, "status", args: null, TimeSpan.FromSeconds(6));
+            var result = await _registry.SendCommandAsync(
+                entries[0].Value.AgentId,
+                "status",
+                args: null,
+                TimeSpan.FromSeconds(6));
             if (!result.Ok || result.Data is not { } data)
             {
                 return null;
@@ -4091,15 +4094,20 @@ public sealed class DiscordBot
         return leaveResults;
     }
 
-    // Polls independently of RunPartyMemberMonitorAsync's own 30s tick - this needs to notice a
-    // drop promptly while actively farming, not just whenever the next heartbeat happens to land.
+    // Polls independently of RunPartyMemberMonitorAsync's own tick - this needs to notice a drop
+    // promptly while actively farming, not just whenever the next heartbeat happens to land.
+    // The delay is dynamic: long/unknown game lengths stay gentle, while fast farming sessions
+    // check more often so a one-minute game does not wait on a fifteen-second tail.
     // Only returns once a drop is actually detected; the only other way out is cancellation,
     // which throws OperationCanceledException through Task.Delay and is handled by the caller.
-    private async Task WaitForPlayerCountDropAsync(int? baseline, CancellationToken cancellationToken)
+    private async Task WaitForPlayerCountDropAsync(
+        int? baseline,
+        Func<TimeSpan> pollDelay,
+        CancellationToken cancellationToken)
     {
         while (true)
         {
-            await Task.Delay(TimeSpan.FromSeconds(PlayerCountDropPollSeconds), cancellationToken);
+            await Task.Delay(pollDelay(), cancellationToken);
             var current = await TryFetchFirstOnlineAccountPlayerCountAsync();
             if (current is { } count && baseline is { } known && count < known)
             {
@@ -4113,6 +4121,22 @@ public sealed class DiscordBot
         }
     }
 
+    private TimeSpan GetJoinAutoPlayerCountDropPollDelay()
+    {
+        return PlayerCountDropPollPolicy.GetDelay(
+            _joinAutoStartedUtc,
+            _joinAutoCyclesCompleted + 1,
+            DateTimeOffset.UtcNow);
+    }
+
+    private TimeSpan GetFollowAutoPlayerCountDropPollDelay()
+    {
+        return PlayerCountDropPollPolicy.GetDelay(
+            _followAutoStartedUtc,
+            _followAutoGameNumber,
+            DateTimeOffset.UtcNow);
+    }
+
     private async Task<int?> TryFetchFirstOnlineAccountPlayerCountAsync()
     {
         var (entries, _) = GetAccountEntriesByConnectivity();
@@ -4123,7 +4147,30 @@ public sealed class DiscordBot
 
         try
         {
-            var result = await _registry.SendCommandAsync(entries[0].Value.AgentId, "status", args: null, TimeSpan.FromSeconds(6));
+            var sampleResult = await _registry.SendCommandAsync(
+                entries[0].Value.AgentId,
+                "sample_player_count",
+                args: null,
+                TimeSpan.FromSeconds(15));
+            if (sampleResult.Ok && sampleResult.Data is { } sampleData)
+            {
+                return TryGetInt(sampleData, "playerCount", out var sampledPlayerCount)
+                    ? sampledPlayerCount
+                    : null;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not fetch fresh player count sample; falling back to cached status.");
+        }
+
+        try
+        {
+            var result = await _registry.SendCommandAsync(
+                entries[0].Value.AgentId,
+                "status",
+                args: null,
+                TimeSpan.FromSeconds(6));
             if (!result.Ok || result.Data is not { } data)
             {
                 return null;

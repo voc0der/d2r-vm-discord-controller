@@ -332,6 +332,7 @@ public sealed class VmOperations
             "quit_d2r" => await QuitD2RAsync(cancellationToken),
             "restart_d2r" => await RestartD2RAsync(cancellationToken),
             "screenshot" => await TakeScreenshotAsync(cancellationToken),
+            "sample_player_count" => SamplePlayerCount(),
             "menu_ready" => await ReadyClientAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_lobby" => await GoLobbyAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_play" => await PlayCharacterAsync(MenuCommandArgs.From(request.Args), cancellationToken),
@@ -581,7 +582,7 @@ public sealed class VmOperations
                 await _commandGate.WaitAsync(cancellationToken);
                 try
                 {
-                    SamplePartyMemberCount();
+                    _ = SamplePartyMemberCount();
                 }
                 finally
                 {
@@ -595,11 +596,36 @@ public sealed class VmOperations
         }
     }
 
-    private void SamplePartyMemberCount()
+    private CommandResult SamplePlayerCount()
+    {
+        var otherMembers = SamplePartyMemberCount();
+        if (otherMembers is null)
+        {
+            return CommandResult.Success(
+                "Player count is not available from the current screen.",
+                new
+                {
+                    playerCount = (int?)null,
+                    lastPartyMemberCount = _lastPartyMemberCount,
+                    lastPartyMemberCountUtc = _lastPartyMemberCountUtc
+                });
+        }
+
+        return CommandResult.Success(
+            $"Player count sampled: {otherMembers.Value + 1}.",
+            new
+            {
+                playerCount = otherMembers.Value + 1,
+                lastPartyMemberCount = otherMembers.Value,
+                lastPartyMemberCountUtc = _lastPartyMemberCountUtc
+            });
+    }
+
+    private int? SamplePartyMemberCount()
     {
         if (!_config.PartyMemberCountEnabled || !OperatingSystem.IsWindows() || !IsD2RRunning())
         {
-            return;
+            return null;
         }
 
         // The party portrait row is only meaningful in an actual game - sampling it from the
@@ -607,11 +633,12 @@ public sealed class VmOperations
         var input = new WindowsInput();
         if (DetectVisibleD2RState(input) != VisibleD2RState.InGame)
         {
-            return;
+            return null;
         }
 
         _lastPartyMemberCount = CountOtherPartyMembers(input);
         _lastPartyMemberCountUtc = DateTimeOffset.UtcNow;
+        return _lastPartyMemberCount;
     }
 
     // Scans slots in order and stops at the first miss rather than checking all 8 unconditionally
