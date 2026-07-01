@@ -1918,7 +1918,7 @@ public sealed class DiscordBot
         int staggerSeconds,
         object args)
     {
-        if (!ShouldRunReadyFirst(entry.Value))
+        if (!await ShouldRunReadyFirstLiveAsync(entry.Value))
         {
             return new ReadyResult(entry.Key, true, "Already menu-ready.", RanReady: false);
         }
@@ -2582,7 +2582,7 @@ public sealed class DiscordBot
 
     private async Task<CommandResultInfo?> SendReadyIfNotMenuReadyAsync(AccountConfig account, object args)
     {
-        if (!ShouldRunReadyFirst(account))
+        if (!await ShouldRunReadyFirstLiveAsync(account))
         {
             return null;
         }
@@ -2594,12 +2594,18 @@ public sealed class DiscordBot
                 "menu_ready",
                 args,
                 ReadyCommandTimeout);
-            return result.Ok || ShouldRunReadyFirst(account)
+            return result.Ok || await ShouldRunReadyFirstLiveAsync(account)
                 ? result
                 : ReadySucceededFromCurrentStatus(account, result.Message);
         }
-        catch (Exception ex) when (!ShouldRunReadyFirst(account))
+        catch (Exception ex)
         {
+            var agent = _registry.GetAgent(account.AgentId);
+            if (agent?.Connected != true || await ShouldRunReadyFirstLiveAsync(account))
+            {
+                throw;
+            }
+
             return ReadySucceededFromCurrentStatus(
                 account,
                 FormatExceptionWithAccountStatus(ex, account));
@@ -2631,6 +2637,48 @@ public sealed class DiscordBot
         }
 
         return MenuReadyPolicy.ShouldRunReadyFirstFromStatusJson(agent.Connected, agent.LastStatusJson);
+    }
+
+    private async Task<bool> ShouldRunReadyFirstLiveAsync(
+        AccountConfig account,
+        CancellationToken cancellationToken = default)
+    {
+        var agent = _registry.GetAgent(account.AgentId);
+        if (agent?.Connected != true)
+        {
+            return false;
+        }
+
+        if (await TryGetLiveStatusJsonAsync(account, cancellationToken) is { } statusJson)
+        {
+            return MenuReadyPolicy.ShouldRunReadyFirstFromStatusJson(connected: true, statusJson);
+        }
+
+        return ShouldRunReadyFirst(account);
+    }
+
+    private async Task<string?> TryGetLiveStatusJsonAsync(
+        AccountConfig account,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _registry.SendCommandAsync(
+                account.AgentId,
+                "status",
+                args: null,
+                TimeSpan.FromSeconds(20),
+                cancellationToken);
+
+            return result.Ok && result.Data is { } data
+                ? data.GetRawText()
+                : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Live status preflight failed for {AgentId}; falling back to cached readiness.", account.AgentId);
+            return null;
+        }
     }
 
     private static bool TryGetBoolean(JsonElement root, string propertyName, out bool value)

@@ -1241,6 +1241,24 @@ public sealed class VmOperations
 
         if (!IsAnyLobbyEntryMenuVisible(input))
         {
+            var readyState = DetectReadyScreenStateStable(input);
+            if (readyState is ReadyScreenState.DiabloSplash or ReadyScreenState.ConnectingToBattleNet)
+            {
+                MarkCommandCheckpoint($"FollowAutoCheckAsync: D2R is {readyState}; waiting for ready");
+                return CommandResult.Success(
+                    $"D2R is still at {readyState}; waiting for the next follow-auto cycle.",
+                    new
+                    {
+                        bound = true,
+                        joined = false,
+                        d2rReady = false,
+                        visibleState = readyState.ToString(),
+                        templatePath = templateLoad.Path,
+                        templateExists = templateLoad.Exists,
+                        templateLength = templateLoad.ContentLength
+                    });
+            }
+
             MarkCommandCheckpoint("FollowAutoCheckAsync: lobby not visually confirmed - navigating directly");
             await SelectCharacterAsync(input, args.CharacterSlot, cancellationToken);
             ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
