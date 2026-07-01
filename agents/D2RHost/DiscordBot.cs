@@ -13,6 +13,9 @@ public sealed class DiscordBot
     private const string TemplateJoinButtonId = "d2r:template:join";
     private const string FollowAutoStartButtonId = "d2r:follow:auto-start";
     private const string FollowAutoStopButtonId = "d2r:follow:auto-stop";
+    private const string FollowAutoStopSaveExitButtonId = "d2r:follow:auto-stop:save-exit";
+    private const string FollowAutoStopQuitButtonId = "d2r:follow:auto-stop:quit";
+    private const string FollowAutoStopSleepButtonId = "d2r:follow:auto-stop:sleep";
     private const string GameSessionLeaveButtonId = "d2r:session:leave";
     private const string GameSessionQuitButtonId = "d2r:session:quit";
     // 150s left ~0s margin over the agent's own internal retry budget on slower VM
@@ -57,10 +60,15 @@ public sealed class DiscordBot
     private const int FollowAutoDefaultIdleMinutes = 60;
     private const int FollowAutoDefaultCheckSeconds = 5;
     private const int FollowAutoPostLeaveCheckSeconds = 2;
+    private static readonly TimeSpan FollowAutoStopActionWindow = TimeSpan.FromMinutes(2);
     private const int PlayerCountDropPollSeconds = 5;
     private readonly SemaphoreSlim _followAutoLock = new(1, 1);
+    private readonly object _followAutoStopActionSync = new();
     private CancellationTokenSource? _followAutoCts;
     private string? _followAutoStopReason;
+    private bool _followAutoStopActionsRequested;
+    private CancellationTokenSource? _followAutoStopActionCts;
+    private long _followAutoStopActionPromptId;
     private string? _followBoundAccountKey;
     private IUserMessage? _followAutoMonitorMessage;
     private DateTimeOffset? _followAutoStartedUtc;
@@ -318,6 +326,15 @@ public sealed class DiscordBot
                 case FollowAutoStopButtonId:
                     await StopFollowAutoAsync(SlashContext.FromComponent(component, "follow"));
                     return;
+                case FollowAutoStopSaveExitButtonId:
+                    await HandleFollowAutoStopSaveExitButtonAsync(component);
+                    return;
+                case FollowAutoStopQuitButtonId:
+                    await HandleFollowAutoStopQuitButtonAsync(component);
+                    return;
+                case FollowAutoStopSleepButtonId:
+                    await HandleFollowAutoStopSleepButtonAsync(component);
+                    return;
                 case GameSessionLeaveButtonId:
                     await QueueSaveExitAllAsync(SlashContext.FromComponent(component, "save-exit"));
                     return;
@@ -386,6 +403,15 @@ public sealed class DiscordBot
         }
 
         return builder.Build();
+    }
+
+    private static MessageComponent BuildFollowAutoStopActionComponents()
+    {
+        return new ComponentBuilder()
+            .WithButton("Save and Exit", FollowAutoStopSaveExitButtonId, ButtonStyle.Secondary)
+            .WithButton("Quit", FollowAutoStopQuitButtonId, ButtonStyle.Danger)
+            .WithButton("Sleep", FollowAutoStopSleepButtonId, ButtonStyle.Danger)
+            .Build();
     }
 
     private static MessageComponent BuildGameSessionActionComponents()
@@ -1116,6 +1142,13 @@ public sealed class DiscordBot
         {
             _logger.LogDebug(ex, "Could not update Discord command response after background failure.");
         }
+    }
+
+    private static Task SetInitialCommandResponseAsync(SocketInteraction command, string content, bool ephemeral)
+    {
+        return command.HasResponded
+            ? command.ModifyOriginalResponseAsync(properties => properties.Content = content)
+            : command.RespondAsync(content, ephemeral: ephemeral);
     }
 
     private async Task QueueCreateGameAllAsync(SlashContext context, GameInput game, bool watch)
@@ -2413,7 +2446,8 @@ public sealed class DiscordBot
         var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            await context.Command.RespondAsync(
+            await SetInitialCommandResponseAsync(
+                context.Command,
                 $"No online accounts are available for {label}." + FormatOfflineSkipSuffix(offlineEntries),
                 ephemeral: true);
             return;
@@ -2423,7 +2457,8 @@ public sealed class DiscordBot
         var readyFirstCount = readyFirstIfNotMenuReady
             ? entries.Count(entry => ShouldRunReadyFirst(entry.Value))
             : 0;
-        await context.Command.RespondAsync(
+        await SetInitialCommandResponseAsync(
+            context.Command,
             $"Queued {entries.Length} online {label} command(s) with {staggerSeconds}s stagger."
                 + FormatReadyFirstSuffix(readyFirstCount)
                 + FormatOfflineSkipSuffix(offlineEntries),
@@ -3143,7 +3178,10 @@ public sealed class DiscordBot
     private async Task StopFollowAutoAsync(SlashContext context)
     {
         await context.Command.DeferAsync(ephemeral: true);
-        var cancel = await CancelFollowAutoIfRunningAsync(reason: null);
+        var cancel = await CancelFollowAutoIfRunningAsync(
+            reason: null,
+            showPostStopActions: context.Command is SocketMessageComponent component
+                && string.Equals(component.Data.CustomId, FollowAutoStopButtonId, StringComparison.Ordinal));
         var stopSignals = await SignalFollowAutoStopAgentsAsync(cancel.RunId);
         var stopSummary = stopSignals.Attempted > 0
             ? $" Stop signal reached {stopSignals.Succeeded}/{stopSignals.Attempted} online agent(s) to abort in-flight follow clicks."
@@ -3152,9 +3190,111 @@ public sealed class DiscordBot
             properties.Content = (cancel.WasRunning ? "follow-auto stopped." : "follow-auto is not running.") + stopSummary);
     }
 
+    private async Task HandleFollowAutoStopSaveExitButtonAsync(SocketMessageComponent component)
+    {
+        await component.DeferAsync(ephemeral: true);
+        await ClearFollowAutoStopActionButtonsAsync(component.Message);
+        await QueueSaveExitAllAsync(SlashContext.FromComponent(component, "save-exit"));
+    }
+
+    private async Task HandleFollowAutoStopQuitButtonAsync(SocketMessageComponent component)
+    {
+        await component.DeferAsync(ephemeral: true);
+        await ClearFollowAutoStopActionButtonsAsync(component.Message);
+        await QueueQuitAllAsync(SlashContext.FromComponent(component, "quit"), "follow-auto quit button was pressed");
+    }
+
+    private async Task HandleFollowAutoStopSleepButtonAsync(SocketMessageComponent component)
+    {
+        await component.DeferAsync(ephemeral: true);
+        await ClearFollowAutoStopActionButtonsAsync(component.Message);
+        await RunQuitAllThenSleepAsync(SlashContext.FromComponent(component, "system"));
+    }
+
+    private async Task RunQuitAllThenSleepAsync(SlashContext context)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            await SetInitialCommandResponseAsync(
+                context.Command,
+                "/d2r system sleep requires Windows on the D2RHost machine.",
+                ephemeral: true);
+            return;
+        }
+
+        await CancelJoinAutoIfRunningAsync("follow-auto sleep button was pressed");
+        var followAutoCancel = await CancelFollowAutoIfRunningAsync("follow-auto sleep button was pressed");
+        QueueFollowAutoStopSignal(followAutoCancel.RunId);
+
+        var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
+        if (entries.Length == 0)
+        {
+            await SetInitialCommandResponseAsync(
+                context.Command,
+                "No online accounts are available to quit; putting the D2RHost machine to sleep."
+                    + FormatOfflineSkipSuffix(offlineEntries),
+                ephemeral: true);
+            await AnnounceSystemPowerActionAsync(context, HostSystemPowerAction.Sleep);
+            _system.Queue(HostSystemPowerAction.Sleep);
+            return;
+        }
+
+        var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
+        await SetInitialCommandResponseAsync(
+            context.Command,
+            $"Quitting {entries.Length} online account(s) before host sleep with {staggerSeconds}s stagger."
+                + FormatOfflineSkipSuffix(offlineEntries),
+            ephemeral: true);
+
+        var results = await RunQuitAllForSleepAsync(entries, staggerSeconds);
+        var failures = results.Where(result => !result.Ok).ToArray();
+        if (failures.Length > 0)
+        {
+            await context.Command.ModifyOriginalResponseAsync(properties =>
+                properties.Content = DiscordMessageTruncator.Truncate(
+                    $"Host sleep skipped: quit completed for {results.Length - failures.Length}/{results.Length} account(s). Failed: "
+                        + string.Join("; ", failures.Select(result => $"{result.AccountKey}: {result.Message}"))));
+            return;
+        }
+
+        await context.Command.ModifyOriginalResponseAsync(properties =>
+            properties.Content = $"Quit complete: {results.Length}/{results.Length} account(s) succeeded. Putting the D2RHost machine to sleep.");
+        await AnnounceSystemPowerActionAsync(context, HostSystemPowerAction.Sleep);
+        _system.Queue(HostSystemPowerAction.Sleep);
+    }
+
+    private async Task<AccountCommandRunResult[]> RunQuitAllForSleepAsync(
+        KeyValuePair<string, AccountConfig>[] entries,
+        int staggerSeconds)
+    {
+        var tasks = entries.Select(async (entry, index) =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
+                var result = await _registry.SendCommandAsync(
+                    entry.Value.AgentId,
+                    "quit_d2r",
+                    BuildAccountArgs(entry.Key, entry.Value),
+                    TimeSpan.FromSeconds(210));
+                return new AccountCommandRunResult(entry.Key, result.Ok, result.Message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Quit before host sleep failed for {AccountKey}.", entry.Key);
+                return new AccountCommandRunResult(
+                    entry.Key,
+                    false,
+                    FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value));
+            }
+        });
+
+        return await Task.WhenAll(tasks);
+    }
+
     // Same "if you quit, it should stop auto if its running" precedent as join-auto (issue #24) -
     // wired into the same quit/quit-all call sites as CancelJoinAutoIfRunningAsync.
-    private async Task<FollowAutoCancelResult> CancelFollowAutoIfRunningAsync(string? reason)
+    private async Task<FollowAutoCancelResult> CancelFollowAutoIfRunningAsync(string? reason, bool showPostStopActions = false)
     {
         await _followAutoLock.WaitAsync();
         try
@@ -3162,10 +3302,12 @@ public sealed class DiscordBot
             var runId = _followAutoCurrentRunId;
             if (_followAutoCts is null)
             {
+                SetFollowAutoStopActionsRequested(false);
                 return new FollowAutoCancelResult(false, runId);
             }
 
             _followAutoStopReason = reason;
+            SetFollowAutoStopActionsRequested(showPostStopActions);
             _followAutoCts.Cancel();
             _followAutoCts = null;
             return new FollowAutoCancelResult(true, runId);
@@ -3230,6 +3372,94 @@ public sealed class DiscordBot
         _ = Task.Run(() => SignalFollowAutoStopAgentsAsync(followAutoRunId));
     }
 
+    private void SetFollowAutoStopActionsRequested(bool requested)
+    {
+        lock (_followAutoStopActionSync)
+        {
+            _followAutoStopActionsRequested = requested;
+        }
+    }
+
+    private bool ConsumeFollowAutoStopActionsRequested()
+    {
+        lock (_followAutoStopActionSync)
+        {
+            var requested = _followAutoStopActionsRequested;
+            _followAutoStopActionsRequested = false;
+            return requested;
+        }
+    }
+
+    private void StartFollowAutoStopActionWindow(IUserMessage message)
+    {
+        CancellationTokenSource cts;
+        long promptId;
+        lock (_followAutoStopActionSync)
+        {
+            _followAutoStopActionCts?.Cancel();
+            cts = new CancellationTokenSource();
+            _followAutoStopActionCts = cts;
+            promptId = ++_followAutoStopActionPromptId;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(FollowAutoStopActionWindow, cts.Token);
+                await ClearFollowAutoStopActionButtonsIfCurrentAsync(message, promptId);
+            }
+            catch (OperationCanceledException)
+            {
+                // Button was pressed or a newer prompt replaced this one.
+            }
+        });
+    }
+
+    private async Task ClearFollowAutoStopActionButtonsIfCurrentAsync(IUserMessage message, long promptId)
+    {
+        lock (_followAutoStopActionSync)
+        {
+            if (promptId != _followAutoStopActionPromptId)
+            {
+                return;
+            }
+
+            _followAutoStopActionCts = null;
+            _followAutoStopActionPromptId++;
+        }
+
+        await ClearFollowAutoStopActionButtonsOnMessageAsync(message);
+    }
+
+    private async Task ClearFollowAutoStopActionButtonsAsync(IUserMessage? message)
+    {
+        lock (_followAutoStopActionSync)
+        {
+            _followAutoStopActionCts?.Cancel();
+            _followAutoStopActionCts = null;
+            _followAutoStopActionPromptId++;
+        }
+
+        if (message is not null)
+        {
+            await ClearFollowAutoStopActionButtonsOnMessageAsync(message);
+        }
+    }
+
+    private async Task ClearFollowAutoStopActionButtonsOnMessageAsync(IUserMessage message)
+    {
+        try
+        {
+            await message.ModifyAsync(properties =>
+                properties.Components = BuildFollowAutoMonitorComponents(running: false));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not clear follow-auto post-stop action buttons.");
+        }
+    }
+
     private async Task StartFollowAutoMonitorAsync(IMessageChannel channel)
     {
         _followAutoStartedUtc = DateTimeOffset.UtcNow;
@@ -3284,20 +3514,29 @@ public sealed class DiscordBot
 
     private async Task CompleteFollowAutoMonitorAsync(bool ok, string status)
     {
-        if (_followAutoMonitorMessage is null)
+        var monitorMessage = _followAutoMonitorMessage;
+        if (monitorMessage is null)
         {
             return;
         }
 
+        var showStopActions = ConsumeFollowAutoStopActionsRequested() && ok;
         try
         {
             var content = FormatFollowAutoMonitorMessage(status);
-            await _followAutoMonitorMessage.ModifyAsync(properties =>
+            await monitorMessage.ModifyAsync(properties =>
             {
                 properties.Content = content;
-                properties.Components = BuildFollowAutoMonitorComponents(running: false);
+                properties.Components = showStopActions
+                    ? BuildFollowAutoStopActionComponents()
+                    : BuildFollowAutoMonitorComponents(running: false);
             });
-            await _followAutoMonitorMessage.AddReactionAsync(new Emoji(ok ? "✅" : "⛔"));
+            if (showStopActions)
+            {
+                StartFollowAutoStopActionWindow(monitorMessage);
+            }
+
+            await monitorMessage.AddReactionAsync(new Emoji(ok ? "✅" : "⛔"));
         }
         catch (Exception ex)
         {
@@ -4417,6 +4656,8 @@ public sealed class DiscordBot
     private sealed record ReadyResult(string AccountKey, bool Ok, string Message, bool RanReady);
 
     private sealed record JoinResult(string AccountKey, bool Ok, string Message);
+
+    private sealed record AccountCommandRunResult(string AccountKey, bool Ok, string Message);
 
     private sealed record FollowAutoCancelResult(bool WasRunning, long RunId);
 
