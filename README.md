@@ -85,6 +85,8 @@ For folded commands, `all` defaults to true. Pass `all:false account:<x>` for on
 
 `/d2r create-game` with `all:true` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger. If you do not pass `character-slot`, the host uses each account's optional `characterSlot` value from `d2r-host.config.json`, then falls back to the VM agent's local default.
 
+Join/create session notifications include `Leave` and `Quit` buttons. `Leave` queues save-exit for all online accounts; `Quit` queues D2R quit for all online accounts.
+
 `/d2r start` with `all:true` queues the ready flow for every online account, so cold-booted clients should land on character select instead of merely starting the D2R process.
 
 `/d2r restart` respawns `D2RHost`. On startup, the host runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed host update once the command exists in Discord.

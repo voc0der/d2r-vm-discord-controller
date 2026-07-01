@@ -13,6 +13,8 @@ public sealed class DiscordBot
     private const string TemplateJoinButtonId = "d2r:template:join";
     private const string FollowAutoStartButtonId = "d2r:follow:auto-start";
     private const string FollowAutoStopButtonId = "d2r:follow:auto-stop";
+    private const string GameSessionLeaveButtonId = "d2r:session:leave";
+    private const string GameSessionQuitButtonId = "d2r:session:quit";
     // 150s left ~0s margin over the agent's own internal retry budget on slower VM
     // hardware (Battle.net launch + splash-skip retries can legitimately take several
     // minutes), so the command was timing out moments before D2R would have reached
@@ -316,6 +318,12 @@ public sealed class DiscordBot
                 case FollowAutoStopButtonId:
                     await StopFollowAutoAsync(SlashContext.FromComponent(component, "follow"));
                     return;
+                case GameSessionLeaveButtonId:
+                    await QueueSaveExitAllAsync(SlashContext.FromComponent(component, "save-exit"));
+                    return;
+                case GameSessionQuitButtonId:
+                    await QueueQuitAllAsync(SlashContext.FromComponent(component, "quit"), "game-session quit button was pressed");
+                    return;
             }
         }
         catch (Exception ex)
@@ -378,6 +386,14 @@ public sealed class DiscordBot
         }
 
         return builder.Build();
+    }
+
+    private static MessageComponent BuildGameSessionActionComponents()
+    {
+        return new ComponentBuilder()
+            .WithButton("Leave", GameSessionLeaveButtonId, ButtonStyle.Secondary)
+            .WithButton("Quit", GameSessionQuitButtonId, ButtonStyle.Danger)
+            .Build();
     }
 
     private async Task HandleD2RAsync(SlashContext context)
@@ -507,18 +523,7 @@ public sealed class DiscordBot
 
         if (subcommand == "save-exit-all" || (subcommand == "save-exit" && ShouldRunAll(context)))
         {
-            // menu_save_exit's own automation (Escape, click, wait up to ~12s) is fast - the
-            // budget here almost entirely covers time spent waiting for the agent's command
-            // gate, which a preceding create-game-all/join-all can still be holding for as long
-            // as those commands' own 210s timeout allows. A shorter budget here doesn't make
-            // save-exit faster; it just means the gate frees up, save-exit actually runs and
-            // succeeds, and the result arrives after the host already gave up and discarded the
-            // pending request - reported as a failure even though it worked.
-            await QueueAllCommandsAsync(
-                context,
-                "menu_save_exit",
-                (accountKey, account) => BuildAccountArgs(accountKey, account),
-                TimeSpan.FromSeconds(210));
+            await QueueSaveExitAllAsync(context);
             return;
         }
 
@@ -531,20 +536,7 @@ public sealed class DiscordBot
 
         if (subcommand == "quit-all" || (subcommand == "quit" && ShouldRunAll(context)))
         {
-            // Same gate-wait headroom reasoning as save-exit-all above, not yet applied here
-            // until issue #24: quit_d2r's own work (focus, Alt+F4, 2s settle) is fast, but it
-            // shares _commandGate with whatever a join-auto retry loop (or any other 210s-class
-            // command) is mid-attempt on. A real run showed quit_d2r failing for 2/3 accounts
-            // with "exceeded agent-side timeout of 25s" while join-auto was actively retrying a
-            // join in the background - the gate was always going to free up, just not within 30s.
-            await CancelJoinAutoIfRunningAsync("quit-all was called");
-            var followAutoCancel = await CancelFollowAutoIfRunningAsync("quit-all was called");
-            QueueFollowAutoStopSignal(followAutoCancel.RunId);
-            await QueueAllCommandsAsync(
-                context,
-                "quit_d2r",
-                (accountKey, account) => BuildAccountArgs(accountKey, account),
-                TimeSpan.FromSeconds(210));
+            await QueueQuitAllAsync(context, "quit-all was called");
             return;
         }
 
@@ -690,6 +682,42 @@ public sealed class DiscordBot
 
         return context.HasOption("friend-row")
             || context.HasOption("character-slot");
+    }
+
+    private async Task QueueSaveExitAllAsync(SlashContext context)
+    {
+        // menu_save_exit's own automation (Escape, click, wait up to ~12s) is fast - the
+        // budget here almost entirely covers time spent waiting for the agent's command
+        // gate, which a preceding create-game-all/join-all can still be holding for as long
+        // as those commands' own 210s timeout allows. A shorter budget here doesn't make
+        // save-exit faster; it just means the gate frees up, save-exit actually runs and
+        // succeeds, and the result arrives after the host already gave up and discarded the
+        // pending request - reported as a failure even though it worked.
+        await QueueAllCommandsAsync(
+            context,
+            "menu_save_exit",
+            (accountKey, account) => BuildAccountArgs(accountKey, account),
+            TimeSpan.FromSeconds(210),
+            displayName: "leave");
+    }
+
+    private async Task QueueQuitAllAsync(SlashContext context, string cancelReason)
+    {
+        // Same gate-wait headroom reasoning as save-exit-all above, not yet applied here
+        // until issue #24: quit_d2r's own work (focus, Alt+F4, 2s settle) is fast, but it
+        // shares _commandGate with whatever a join-auto retry loop (or any other 210s-class
+        // command) is mid-attempt on. A real run showed quit_d2r failing for 2/3 accounts
+        // with "exceeded agent-side timeout of 25s" while join-auto was actively retrying a
+        // join in the background - the gate was always going to free up, just not within 30s.
+        await CancelJoinAutoIfRunningAsync(cancelReason);
+        var followAutoCancel = await CancelFollowAutoIfRunningAsync(cancelReason);
+        QueueFollowAutoStopSignal(followAutoCancel.RunId);
+        await QueueAllCommandsAsync(
+            context,
+            "quit_d2r",
+            (accountKey, account) => BuildAccountArgs(accountKey, account),
+            TimeSpan.FromSeconds(210),
+            displayName: "quit");
     }
 
     private async Task HandleVmAsync(SlashContext context)
@@ -2168,7 +2196,9 @@ public sealed class DiscordBot
             _activeSessionExpected = expected;
             _activeSessionJoined = 0;
             _activeSessionRepresentativeAgentId = representativeAgentId;
-            _activeSessionMessage = await channel.SendMessageAsync(await FormatGameSessionMessageAsync(status, detail: null));
+            _activeSessionMessage = await channel.SendMessageAsync(
+                await FormatGameSessionMessageAsync(status, detail: null),
+                components: BuildGameSessionActionComponents());
         }
         catch (Exception ex)
         {
