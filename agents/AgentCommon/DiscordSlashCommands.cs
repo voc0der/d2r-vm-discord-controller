@@ -273,7 +273,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("metric")
-            .WithDescription("Append host and VM RAM/CPU telemetry; defaults to true")
+            .WithDescription("Append host and VM RAM/CPU telemetry; defaults to false")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }

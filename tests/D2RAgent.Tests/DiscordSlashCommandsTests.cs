@@ -173,6 +173,7 @@ public sealed class DiscordSlashCommandsTests
         var metric = Assert.Single(subcommand.Options!, option => option.Name == "metric");
         Assert.Equal(ApplicationCommandOptionType.Boolean, metric.Type);
         Assert.False(metric.IsRequired, $"{path} metric should be optional.");
+        Assert.Contains("defaults to false", metric.Description);
     }
 
     private static SlashCommandProperties GetD2RCommand()

@@ -45,7 +45,7 @@ public sealed class DiscordBot
     private int _activeSessionExpected;
     private int _activeSessionJoined;
     private string? _activeSessionRepresentativeAgentId;
-    private bool _activeSessionMetricsEnabled = true;
+    private bool _activeSessionMetricsEnabled;
     private bool _commandsRegistered;
     private bool _discordReady;
     private bool _availabilityAnnouncementQueued;
@@ -59,7 +59,7 @@ public sealed class DiscordBot
     private int _joinAutoMonitorTotal;
     private int _joinAutoCyclesCompleted;
     private DateTimeOffset? _joinAutoStartedUtc;
-    private bool _joinAutoMetricsEnabled = true;
+    private bool _joinAutoMetricsEnabled;
     private const int FollowAutoDefaultIdleMinutes = 60;
     private const int FollowAutoDefaultCheckSeconds = 5;
     private const int FollowAutoPostLeaveCheckSeconds = 2;
@@ -78,7 +78,7 @@ public sealed class DiscordBot
     private int _followAutoGamesCompleted;
     private int _followAutoJoined;
     private int _followAutoTotal;
-    private bool _followAutoMetricsEnabled = true;
+    private bool _followAutoMetricsEnabled;
     private long _followAutoRunSequence = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private long _followAutoCurrentRunId;
 
@@ -210,7 +210,7 @@ public sealed class DiscordBot
         {
             foreach (var message in _hostUpdateNotifications.ReadPendingMessages())
             {
-                await channel.SendMessageAsync(AppendMetrics(metricsEnabled: true, message));
+                await channel.SendMessageAsync(AppendMetrics(metricsEnabled: false, message));
             }
 
             _hostUpdateNotifications.Clear();
@@ -218,7 +218,7 @@ public sealed class DiscordBot
             runtimeMessages = _notifications.Drain();
             for (; runtimeIndex < runtimeMessages.Length; runtimeIndex++)
             {
-                await channel.SendMessageAsync(AppendMetrics(metricsEnabled: true, runtimeMessages[runtimeIndex]));
+                await channel.SendMessageAsync(AppendMetrics(metricsEnabled: false, runtimeMessages[runtimeIndex]));
             }
         }
         catch (Exception ex)
@@ -291,7 +291,7 @@ public sealed class DiscordBot
         {
             _logger.LogError(ex, "Discord command failed.");
             var content = context is null
-                ? AppendMetrics(metricsEnabled: true, $"Command failed: {ex.Message}")
+                ? AppendMetrics(metricsEnabled: false, $"Command failed: {ex.Message}")
                 : AppendMetrics(context, $"Command failed: {ex.Message}");
             if (command.HasResponded)
             {
@@ -352,7 +352,7 @@ public sealed class DiscordBot
         catch (Exception ex)
         {
             _logger.LogError(ex, "Discord button failed.");
-            var content = AppendMetrics(metricsEnabled: true, $"Button action failed: {ex.Message}");
+            var content = AppendMetrics(metricsEnabled: false, $"Button action failed: {ex.Message}");
             if (component.HasResponded)
             {
                 await component.ModifyOriginalResponseAsync(properties => properties.Content = content);
@@ -5020,7 +5020,7 @@ public sealed class DiscordBot
         public string? GroupName { get; }
         public string SubcommandName { get; }
         public int OptionCount => _options.Count;
-        public bool MetricsEnabled => GetBool("metric") ?? true;
+        public bool MetricsEnabled => GetBool("metric") ?? false;
 
         public static SlashContext From(SocketSlashCommand command)
         {
