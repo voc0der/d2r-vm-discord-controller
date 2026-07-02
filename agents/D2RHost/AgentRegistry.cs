@@ -424,8 +424,31 @@ public sealed class AgentRegistry
             root.GetProperty("message").GetString() ?? "",
             root.TryGetProperty("data", out var data) ? data.Clone() : null);
 
+        if (result.Data is { } resultData && LooksLikeStatusPayload(resultData))
+        {
+            UpdateStatusJson(result.AgentId, resultData.GetRawText());
+        }
+
         _db.InsertCommandHistory(commandId, pending.AgentId, pending.Command, result.Ok, result.Message);
         pending.TrySetResult(result);
+    }
+
+    private static bool LooksLikeStatusPayload(JsonElement data)
+    {
+        return data.ValueKind == JsonValueKind.Object
+            && data.TryGetProperty("machineTelemetry", out _);
+    }
+
+    private void UpdateStatusJson(string agentId, string statusJson)
+    {
+        if (!_agents.TryGetValue(agentId, out var agent))
+        {
+            return;
+        }
+
+        agent.LastSeenAt = DateTimeOffset.UtcNow;
+        agent.LastStatusJson = statusJson;
+        _db.UpsertAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
     }
 
     private static async Task<string?> ReceiveStringAsync(WebSocket socket, CancellationToken cancellationToken)

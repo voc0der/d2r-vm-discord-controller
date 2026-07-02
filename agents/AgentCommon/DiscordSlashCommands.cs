@@ -86,6 +86,7 @@ public static class DiscordSlashCommands
             builder.AddOption(option);
         }
 
+        builder.AddOption(MetricFlag());
         return builder;
     }
 
@@ -264,6 +265,15 @@ public static class DiscordSlashCommands
         return new SlashCommandOptionBuilder()
             .WithName("watch")
             .WithDescription("Post a live-updating diagnostics message (frame/click attempts) while this runs")
+            .WithType(ApplicationCommandOptionType.Boolean)
+            .WithRequired(false);
+    }
+
+    private static SlashCommandOptionBuilder MetricFlag()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("metric")
+            .WithDescription("Append host and VM RAM/CPU telemetry; defaults to true")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }

@@ -57,6 +57,7 @@ public sealed class VmOperations
     private const int PartyFrameSampleBoundMs = 800;
 
     private readonly VmAgentConfig _config;
+    private readonly MachineTelemetrySampler _telemetry = new();
     private readonly SemaphoreSlim _commandGate = new(1, 1);
     private readonly SemaphoreSlim _statusGate = new(1, 1);
     private readonly object _activityLock = new();
@@ -178,6 +179,7 @@ public sealed class VmOperations
         {
             hostName = Environment.MachineName,
             userName = Environment.UserName,
+            machineTelemetry = _telemetry.Sample(),
             statusMode = "detailed",
             statusDegraded = false,
             statusError = (string?)null,
@@ -228,6 +230,7 @@ public sealed class VmOperations
         {
             hostName = Environment.MachineName,
             userName = Environment.UserName,
+            machineTelemetry = _telemetry.Sample(),
             statusMode = "processOnly",
             statusDegraded = true,
             statusError = reason,

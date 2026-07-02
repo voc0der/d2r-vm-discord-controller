@@ -86,11 +86,33 @@ public sealed class DiscordSlashCommandsTests
         Assert.Contains(system.Options!, option => option.Name == "restart");
         foreach (var subcommand in system.Options!)
         {
-            Assert.False(subcommand.Options?.Any() == true, $"/d2r system {subcommand.Name} should not accept client/account options.");
+            var metric = Assert.Single(subcommand.Options!, option => option.Name == "metric");
+            Assert.Equal(ApplicationCommandOptionType.Boolean, metric.Type);
         }
 
         Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, vm.Type);
         Assert.Contains(vm.Options!, option => option.Name == "reboot");
+    }
+
+    [Fact]
+    public void SubcommandsIncludeMetricFlag()
+    {
+        var d2r = GetD2RCommand();
+
+        foreach (var option in d2r.Options.Value)
+        {
+            if (option.Type == ApplicationCommandOptionType.SubCommandGroup)
+            {
+                foreach (var subcommand in option.Options!)
+                {
+                    AssertMetricFlag($"/d2r {option.Name} {subcommand.Name}", subcommand);
+                }
+            }
+            else if (option.Type == ApplicationCommandOptionType.SubCommand)
+            {
+                AssertMetricFlag($"/d2r {option.Name}", option);
+            }
+        }
     }
 
     [Fact]
@@ -144,6 +166,13 @@ public sealed class DiscordSlashCommandsTests
         Assert.True(
             description.Length <= 100,
             $"{path} description is {description.Length} chars, over Discord's 100-char cap: \"{description}\"");
+    }
+
+    private static void AssertMetricFlag(string path, ApplicationCommandOptionProperties subcommand)
+    {
+        var metric = Assert.Single(subcommand.Options!, option => option.Name == "metric");
+        Assert.Equal(ApplicationCommandOptionType.Boolean, metric.Type);
+        Assert.False(metric.IsRequired, $"{path} metric should be optional.");
     }
 
     private static SlashCommandProperties GetD2RCommand()

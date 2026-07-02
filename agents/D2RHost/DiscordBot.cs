@@ -35,6 +35,7 @@ public sealed class DiscordBot
     private readonly HostUpdateNotificationStore _hostUpdateNotifications;
     private readonly AppDb _db;
     private readonly ILogger<DiscordBot> _logger;
+    private readonly MachineTelemetrySampler _hostTelemetry = new();
     private readonly DiscordSocketClient _client;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
     private readonly SemaphoreSlim _notificationLock = new(1, 1);
@@ -44,6 +45,7 @@ public sealed class DiscordBot
     private int _activeSessionExpected;
     private int _activeSessionJoined;
     private string? _activeSessionRepresentativeAgentId;
+    private bool _activeSessionMetricsEnabled = true;
     private bool _commandsRegistered;
     private bool _discordReady;
     private bool _availabilityAnnouncementQueued;
@@ -57,6 +59,7 @@ public sealed class DiscordBot
     private int _joinAutoMonitorTotal;
     private int _joinAutoCyclesCompleted;
     private DateTimeOffset? _joinAutoStartedUtc;
+    private bool _joinAutoMetricsEnabled = true;
     private const int FollowAutoDefaultIdleMinutes = 60;
     private const int FollowAutoDefaultCheckSeconds = 5;
     private const int FollowAutoPostLeaveCheckSeconds = 2;
@@ -75,6 +78,7 @@ public sealed class DiscordBot
     private int _followAutoGamesCompleted;
     private int _followAutoJoined;
     private int _followAutoTotal;
+    private bool _followAutoMetricsEnabled = true;
     private long _followAutoRunSequence = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private long _followAutoCurrentRunId;
 
@@ -206,7 +210,7 @@ public sealed class DiscordBot
         {
             foreach (var message in _hostUpdateNotifications.ReadPendingMessages())
             {
-                await channel.SendMessageAsync(DiscordMessageTruncator.Truncate(message));
+                await channel.SendMessageAsync(AppendMetrics(metricsEnabled: true, message));
             }
 
             _hostUpdateNotifications.Clear();
@@ -214,7 +218,7 @@ public sealed class DiscordBot
             runtimeMessages = _notifications.Drain();
             for (; runtimeIndex < runtimeMessages.Length; runtimeIndex++)
             {
-                await channel.SendMessageAsync(DiscordMessageTruncator.Truncate(runtimeMessages[runtimeIndex]));
+                await channel.SendMessageAsync(AppendMetrics(metricsEnabled: true, runtimeMessages[runtimeIndex]));
             }
         }
         catch (Exception ex)
@@ -236,9 +240,10 @@ public sealed class DiscordBot
             return;
         }
 
+        SlashContext? context = null;
         try
         {
-            var context = SlashContext.From(command);
+            context = SlashContext.From(command);
             switch (command.CommandName)
             {
                 case "d2r":
@@ -285,7 +290,9 @@ public sealed class DiscordBot
         catch (Exception ex)
         {
             _logger.LogError(ex, "Discord command failed.");
-            var content = $"Command failed: {ex.Message}";
+            var content = context is null
+                ? AppendMetrics(metricsEnabled: true, $"Command failed: {ex.Message}")
+                : AppendMetrics(context, $"Command failed: {ex.Message}");
             if (command.HasResponded)
             {
                 await command.ModifyOriginalResponseAsync(properties => properties.Content = content);
@@ -345,7 +352,7 @@ public sealed class DiscordBot
         catch (Exception ex)
         {
             _logger.LogError(ex, "Discord button failed.");
-            var content = $"Button action failed: {ex.Message}";
+            var content = AppendMetrics(metricsEnabled: true, $"Button action failed: {ex.Message}");
             if (component.HasResponded)
             {
                 await component.ModifyOriginalResponseAsync(properties => properties.Content = content);
@@ -369,9 +376,9 @@ public sealed class DiscordBot
         var game = ResolveJoinAllInput(context);
         if (game is null)
         {
-            await component.RespondAsync(
-                "Nothing to join: no recent game and no template set.",
-                ephemeral: true);
+            await RespondWithMetricsAsync(
+                context,
+                "Nothing to join: no recent game and no template set.");
             return;
         }
 
@@ -421,13 +428,197 @@ public sealed class DiscordBot
             .Build();
     }
 
+    private Task RespondWithMetricsAsync(
+        SlashContext context,
+        string content,
+        bool ephemeral = true,
+        MessageComponent? components = null)
+    {
+        return context.Command.RespondAsync(
+            AppendMetrics(context, content),
+            ephemeral: ephemeral,
+            components: components);
+    }
+
+    private Task ModifyOriginalResponseWithMetricsAsync(
+        SlashContext context,
+        string content,
+        Action<MessageProperties>? configure = null)
+    {
+        return context.Command.ModifyOriginalResponseAsync(properties =>
+        {
+            properties.Content = AppendMetrics(context, content);
+            configure?.Invoke(properties);
+        });
+    }
+
+    private async Task<IUserMessage> FollowupWithMetricsAsync(
+        SlashContext context,
+        string content,
+        bool ephemeral = true)
+    {
+        return await context.Command.FollowupAsync(AppendMetrics(context, content), ephemeral: ephemeral);
+    }
+
+    private string AppendMetrics(SlashContext context, string content)
+    {
+        return AppendMetrics(context.MetricsEnabled, content);
+    }
+
+    private string AppendMetrics(bool metricsEnabled, string content)
+    {
+        if (!metricsEnabled)
+        {
+            return DiscordMessageTruncator.Truncate(content);
+        }
+
+        var metrics = FormatMetricsBlock();
+        if (string.IsNullOrWhiteSpace(metrics))
+        {
+            return DiscordMessageTruncator.Truncate(content);
+        }
+
+        var suffix = "\n\n" + metrics;
+        if (suffix.Length >= DiscordMessageTruncator.DiscordContentLimit)
+        {
+            return DiscordMessageTruncator.Truncate(metrics);
+        }
+
+        var body = DiscordMessageTruncator.Truncate(
+            content,
+            DiscordMessageTruncator.DiscordContentLimit - suffix.Length);
+        return body + suffix;
+    }
+
+    private string FormatMetricsBlock()
+    {
+        var hostTelemetry = _hostTelemetry.Sample();
+        var lines = new List<string>
+        {
+            "Metrics:",
+            $"host: RAM {FormatMemoryUsage(hostTelemetry)}, CPU {FormatCpuPercent(hostTelemetry.CpuPercent)}"
+        };
+
+        foreach (var (accountKey, account) in _config.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var name = FormatAccountDisplayName(accountKey, account);
+            var agent = _registry.GetAgent(account.AgentId);
+            if (agent?.Connected != true)
+            {
+                lines.Add($"{name}: offline");
+                continue;
+            }
+
+            lines.Add(TryReadMachineTelemetry(agent.LastStatusJson, out var telemetry)
+                ? $"{name}: RAM {FormatMemoryUsage(telemetry)}, CPU {FormatCpuPercent(telemetry.CpuPercent)}"
+                : $"{name}: telemetry unavailable");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string FormatMemoryUsage(MachineTelemetrySnapshot telemetry)
+    {
+        if (telemetry.MemoryUsedBytes is { } used && telemetry.MemoryTotalBytes is { } total && total > 0)
+        {
+            var percent = Math.Clamp(used * 100.0 / total, 0, 100);
+            return $"{FormatBytes(used)}/{FormatBytes(total)} ({percent:0}%)";
+        }
+
+        if (telemetry.MemoryUsedBytes is { } usedOnly)
+        {
+            return FormatBytes(usedOnly);
+        }
+
+        return "?";
+    }
+
+    private static string FormatCpuPercent(double? value)
+    {
+        return value is { } percent
+            ? $"{Math.Clamp(percent, 0, 100):0}%"
+            : "?";
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        const double kib = 1024;
+        const double mib = kib * 1024;
+        const double gib = mib * 1024;
+
+        if (bytes >= 10 * gib)
+        {
+            return $"{bytes / gib:0.#} GB";
+        }
+
+        if (bytes >= gib)
+        {
+            return $"{bytes / gib:0.##} GB";
+        }
+
+        if (bytes >= mib)
+        {
+            return $"{bytes / mib:0.#} MB";
+        }
+
+        return $"{bytes / kib:0.#} KB";
+    }
+
+    private static bool TryReadMachineTelemetry(string? json, out MachineTelemetrySnapshot telemetry)
+    {
+        telemetry = new MachineTelemetrySnapshot(null, null, null, null);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("machineTelemetry", out var root)
+                || root.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return false;
+            }
+
+            telemetry = new MachineTelemetrySnapshot(
+                MemoryTotalBytes: TryGetNullableInt64(root, "memoryTotalBytes"),
+                MemoryAvailableBytes: TryGetNullableInt64(root, "memoryAvailableBytes"),
+                MemoryUsedBytes: TryGetNullableInt64(root, "memoryUsedBytes"),
+                CpuPercent: TryGetNullableDouble(root, "cpuPercent"));
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static long? TryGetNullableInt64(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt64(out var value)
+                ? value
+                : null;
+    }
+
+    private static double? TryGetNullableDouble(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetDouble(out var value)
+                ? value
+                : null;
+    }
+
     private async Task HandleD2RAsync(SlashContext context)
     {
         var subcommand = context.SubcommandName;
 
         if (subcommand == "health")
         {
-            await context.Command.RespondAsync(FormatHealth(), ephemeral: true);
+            await RespondWithMetricsAsync(context, FormatHealth());
             return;
         }
 
@@ -438,7 +629,7 @@ public sealed class DiscordBot
             var content = accountKey is null
                 ? FormatHealth() + "\n\n" + await FormatAllAccountStatusesLiveAsync(CancellationToken.None)
                 : await FormatAccountStatusLiveAsync(accountKey, CancellationToken.None);
-            await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = content);
+            await ModifyOriginalResponseWithMetricsAsync(context, content);
             return;
         }
 
@@ -482,9 +673,9 @@ public sealed class DiscordBot
             var game = ResolveJoinAllInput(context);
             if (game is null)
             {
-                await context.Command.RespondAsync(
-                    "Nothing to join: no recent game and no template set. Pass name, or set one with /d2r game set or /d2r template.",
-                    ephemeral: true);
+                await RespondWithMetricsAsync(
+                    context,
+                    "Nothing to join: no recent game and no template set. Pass name, or set one with /d2r game set or /d2r template.");
                 return;
             }
 
@@ -518,10 +709,10 @@ public sealed class DiscordBot
                 context.GetRequiredString("name"),
                 BlankToNull(context.GetString("password")));
             var passwordSuffix = _gameTemplate.Password is null ? string.Empty : $"/{_gameTemplate.Password}";
-            await context.Command.RespondAsync(
+            await RespondWithMetricsAsync(
+                context,
                 $"Template set: {_gameTemplate.Name}1{passwordSuffix} is next. "
                     + "/d2r create-game and /d2r join with no name will use it until /d2r template is set again or the host restarts.",
-                ephemeral: true,
                 components: BuildTemplateActionComponents());
             return;
         }
@@ -681,11 +872,11 @@ public sealed class DiscordBot
                 return;
             case "remote":
                 var remoteUrl = _config.Agents[singleAccount.AgentId].RemoteUrl;
-                await context.Command.RespondAsync(
+                await RespondWithMetricsAsync(
+                    context,
                     string.IsNullOrWhiteSpace(remoteUrl)
                         ? $"No remoteUrl is configured for {singleAccountKey} ({singleAccount.AgentId})."
-                        : $"{singleAccountKey} remote link: {remoteUrl}",
-                    ephemeral: true);
+                        : $"{singleAccountKey} remote link: {remoteUrl}");
                 return;
             case "screenshot":
                 await RunScreenshotAsync(context, singleAccount, BuildAccountArgs(singleAccountKey, singleAccount));
@@ -771,7 +962,7 @@ public sealed class DiscordBot
             var result = await _hyperV.HandleCommandAsync(
                 new CommandRequest(Guid.NewGuid().ToString("N"), commandName, args),
                 CancellationToken.None);
-            await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = FormatCommandResult(result.Ok, result.Message));
+            await ModifyOriginalResponseWithMetricsAsync(context, FormatCommandResult(result.Ok, result.Message));
         });
     }
 
@@ -786,15 +977,15 @@ public sealed class DiscordBot
                     context.GetString("difficulty"),
                     BlankToNull(context.GetString("notes")),
                     context.Command.User.Id.ToString());
-                await context.Command.RespondAsync($"Stored current game:\n{FormatActiveGame(game)}", ephemeral: true);
+                await RespondWithMetricsAsync(context, $"Stored current game:\n{FormatActiveGame(game)}");
                 return;
             case "show":
                 var stored = _db.GetActiveGame();
-                await context.Command.RespondAsync(stored is null ? "No current game is stored." : FormatActiveGame(stored), ephemeral: true);
+                await RespondWithMetricsAsync(context, stored is null ? "No current game is stored." : FormatActiveGame(stored));
                 return;
             case "clear":
                 var cleared = _db.ClearActiveGame();
-                await context.Command.RespondAsync(cleared ? "Cleared the stored game." : "No current game was stored.", ephemeral: true);
+                await RespondWithMetricsAsync(context, cleared ? "Cleared the stored game." : "No current game was stored.");
                 return;
         }
     }
@@ -804,15 +995,15 @@ public sealed class DiscordBot
         var action = HostSystemPowerActions.ParseAction(context.SubcommandName);
         if (!OperatingSystem.IsWindows())
         {
-            await context.Command.RespondAsync(
-                "/d2r system actions require Windows on the D2RHost machine.",
-                ephemeral: true);
+            await RespondWithMetricsAsync(
+                context,
+                "/d2r system actions require Windows on the D2RHost machine.");
             return;
         }
 
-        await context.Command.RespondAsync(
-            $"{HostSystemPowerActions.FormatQueuedMessage(action)} VM clients are not targeted.",
-            ephemeral: true);
+        await RespondWithMetricsAsync(
+            context,
+            $"{HostSystemPowerActions.FormatQueuedMessage(action)} VM clients are not targeted.");
         await AnnounceSystemPowerActionAsync(context, action);
         _system.Queue(action);
     }
@@ -822,9 +1013,11 @@ public sealed class DiscordBot
         try
         {
             await context.Command.Channel.SendMessageAsync(
-                DiscordMessageTruncator.Truncate(HostSystemPowerActions.FormatDiscordAnnouncement(
-                    action,
-                    FormatDiscordUser(context.Command.User))));
+                AppendMetrics(
+                    context,
+                    HostSystemPowerActions.FormatDiscordAnnouncement(
+                        action,
+                        FormatDiscordUser(context.Command.User))));
         }
         catch (Exception ex)
         {
@@ -837,7 +1030,7 @@ public sealed class DiscordBot
         switch (context.SubcommandName)
         {
             case "show":
-                await context.Command.RespondAsync(FormatRuntimeConfig(), ephemeral: true);
+                await RespondWithMetricsAsync(context, FormatRuntimeConfig());
                 return;
             case "stagger":
                 var seconds = context.GetRequiredInt("seconds");
@@ -858,7 +1051,7 @@ public sealed class DiscordBot
 
                 if ((enabled || updatesEnabled == true) && _config.GuildChannel is null)
                 {
-                    await context.Command.RespondAsync("channel-id is required when enabling notifications.", ephemeral: true);
+                    await RespondWithMetricsAsync(context, "channel-id is required when enabling notifications.");
                     return;
                 }
 
@@ -879,9 +1072,9 @@ public sealed class DiscordBot
 
     private async Task HandleRestartAsync(SlashContext context)
     {
-        await context.Command.RespondAsync(
-            "Respawning D2RHost. Startup self-update will run before Discord reconnects.",
-            ephemeral: true);
+        await RespondWithMetricsAsync(
+            context,
+            "Respawning D2RHost. Startup self-update will run before Discord reconnects.");
         QueueHostRespawn();
     }
 
@@ -920,9 +1113,9 @@ public sealed class DiscordBot
     private async Task SaveConfigAndRespawnAsync(SlashContext context, string message)
     {
         HostConfigLoader.Save(_runtime.ConfigPath, _config);
-        await context.Command.RespondAsync(
-            $"{message}\nSaved `{_runtime.ConfigPath}`. Respawning host.",
-            ephemeral: true);
+        await RespondWithMetricsAsync(
+            context,
+            $"{message}\nSaved `{_runtime.ConfigPath}`. Respawning host.");
         QueueHostRespawn();
     }
 
@@ -1049,8 +1242,9 @@ public sealed class DiscordBot
             }
             catch (Exception ex)
             {
-                await context.Command.ModifyOriginalResponseAsync(
-                    properties => properties.Content = "This client needed `/d2r ready` before menu automation, but ready did not return: "
+                await ModifyOriginalResponseWithMetricsAsync(
+                    context,
+                    "This client needed `/d2r ready` before menu automation, but ready did not return: "
                         + FormatExceptionWithAccountStatus(ex, account));
                 return;
             }
@@ -1058,8 +1252,9 @@ public sealed class DiscordBot
 
         if (readyResult?.Ok == false)
         {
-            await context.Command.ModifyOriginalResponseAsync(
-                properties => properties.Content = "This client needed `/d2r ready` before menu automation, but ready failed: "
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                "This client needed `/d2r ready` before menu automation, but ready failed: "
                     + readyResult.Message);
             return;
         }
@@ -1071,15 +1266,16 @@ public sealed class DiscordBot
         }
         catch (Exception ex)
         {
-            await context.Command.ModifyOriginalResponseAsync(
-                properties => properties.Content = $"Command `{commandName}` did not return: {FormatExceptionWithAccountStatus(ex, account)}");
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"Command `{commandName}` did not return: {FormatExceptionWithAccountStatus(ex, account)}");
             return;
         }
 
         var prefix = readyResult is null
             ? ""
             : $"Ran `/d2r ready` before menu automation: {FormatCommandResult(readyResult.Ok, readyResult.Message)}\n";
-        await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = prefix + FormatCommandResult(result.Ok, result.Message));
+        await ModifyOriginalResponseWithMetricsAsync(context, prefix + FormatCommandResult(result.Ok, result.Message));
     }
 
     private async Task RunScreenshotAsync(SlashContext context, AccountConfig account, object args)
@@ -1093,19 +1289,23 @@ public sealed class DiscordBot
         var result = await _registry.SendCommandAsync(account.AgentId, "screenshot", args, TimeSpan.FromSeconds(60));
         if (!result.Ok || result.Data is not { } data)
         {
-            await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = FormatCommandResult(result.Ok, result.Message));
+            await ModifyOriginalResponseWithMetricsAsync(context, FormatCommandResult(result.Ok, result.Message));
             return;
         }
 
         if (!TryReadScreenshot(data, out var bytes, out var extension))
         {
-            await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = FormatCommandResult(false, "Screenshot result did not contain image data."));
+            await ModifyOriginalResponseWithMetricsAsync(context, FormatCommandResult(false, "Screenshot result did not contain image data."));
             return;
         }
 
         await using var stream = new MemoryStream(bytes);
-        await context.Command.FollowupWithFileAsync(stream, $"{account.AgentId}-screenshot.{extension}", result.Message, ephemeral: true);
-        await context.Command.ModifyOriginalResponseAsync(properties => properties.Content = "Screenshot attached.");
+        await context.Command.FollowupWithFileAsync(
+            stream,
+            $"{account.AgentId}-screenshot.{extension}",
+            AppendMetrics(context, result.Message),
+            ephemeral: true);
+        await ModifyOriginalResponseWithMetricsAsync(context, "Screenshot attached.");
     }
 
     private void QueueDiscordWork(SlashContext context, string operationName, Func<Task> work)
@@ -1119,22 +1319,22 @@ public sealed class DiscordBot
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Discord command background work failed for {OperationName}.", operationName);
-                await SetCommandResponseSafeAsync(context.Command, $"Command failed: {ex.Message}");
+                await SetCommandResponseSafeAsync(context, $"Command failed: {ex.Message}");
             }
         });
     }
 
-    private async Task SetCommandResponseSafeAsync(SocketInteraction command, string content)
+    private async Task SetCommandResponseSafeAsync(SlashContext context, string content)
     {
         try
         {
-            if (command.HasResponded)
+            if (context.Command.HasResponded)
             {
-                await command.ModifyOriginalResponseAsync(properties => properties.Content = content);
+                await ModifyOriginalResponseWithMetricsAsync(context, content);
             }
             else
             {
-                await command.RespondAsync(content, ephemeral: true);
+                await RespondWithMetricsAsync(context, content);
             }
         }
         catch (Exception ex)
@@ -1143,11 +1343,11 @@ public sealed class DiscordBot
         }
     }
 
-    private static Task SetInitialCommandResponseAsync(SocketInteraction command, string content, bool ephemeral)
+    private Task SetInitialCommandResponseAsync(SlashContext context, string content, bool ephemeral)
     {
-        return command.HasResponded
-            ? command.ModifyOriginalResponseAsync(properties => properties.Content = content)
-            : command.RespondAsync(content, ephemeral: ephemeral);
+        return context.Command.HasResponded
+            ? ModifyOriginalResponseWithMetricsAsync(context, content)
+            : RespondWithMetricsAsync(context, content, ephemeral);
     }
 
     private async Task QueueCreateGameAllAsync(SlashContext context, GameInput game, bool watch)
@@ -1155,9 +1355,9 @@ public sealed class DiscordBot
         var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            await context.Command.RespondAsync(
-                "No online accounts are available for create-game-all." + FormatOfflineSkipSuffix(offlineEntries),
-                ephemeral: true);
+            await RespondWithMetricsAsync(
+                context,
+                "No online accounts are available for create-game-all." + FormatOfflineSkipSuffix(offlineEntries));
             return;
         }
 
@@ -1166,15 +1366,16 @@ public sealed class DiscordBot
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
         var readyFirstCount = entries.Count(entry => ShouldRunReadyFirst(entry.Value));
 
-        await context.Command.RespondAsync(
+        await RespondWithMetricsAsync(
+            context,
             $"Queued create-game-all for {entries.Length} online account(s). {creator.Key} will create {game.GameName}; "
                 + $"{entries.Length} account(s) will warm up with {staggerSeconds}s stagger; "
                 + $"{joiners.Length} joiner(s) will prepare Join Game while {creator.Key} creates."
                 + FormatReadyFirstSuffix(readyFirstCount)
-                + FormatOfflineSkipSuffix(offlineEntries),
-            ephemeral: true);
+                + FormatOfflineSkipSuffix(offlineEntries));
 
         await StartGameSessionAsync(
+            context,
             game.GameName,
             entries.Length,
             $"Queued create-game-all. {creator.Key} will create; {joiners.Length} account(s) will join.",
@@ -1349,7 +1550,7 @@ public sealed class DiscordBot
         try
         {
             message = await context.Command.Channel.SendMessageAsync(
-                FormatWatchHeader(label, gameName, startedUtc) + "\nStarting...");
+                AppendMetrics(context, FormatWatchHeader(label, gameName, startedUtc) + "\nStarting..."));
         }
         catch (Exception ex)
         {
@@ -1367,7 +1568,7 @@ public sealed class DiscordBot
             {
                 try
                 {
-                    await message.ModifyAsync(properties => properties.Content = content);
+                    await message.ModifyAsync(properties => properties.Content = AppendMetrics(context, content));
                 }
                 catch (Exception ex)
                 {
@@ -1454,7 +1655,7 @@ public sealed class DiscordBot
 
         try
         {
-            await context.Command.Channel.SendFileAsync(logPath, $"Full watch log for {gameName}.");
+            await context.Command.Channel.SendFileAsync(logPath, AppendMetrics(context, $"Full watch log for {gameName}."));
         }
         catch (Exception ex)
         {
@@ -2014,9 +2215,9 @@ public sealed class DiscordBot
         var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            await context.Command.RespondAsync(
-                "No online accounts are available for join-all." + FormatOfflineSkipSuffix(offlineEntries),
-                ephemeral: true);
+            await RespondWithMetricsAsync(
+                context,
+                "No online accounts are available for join-all." + FormatOfflineSkipSuffix(offlineEntries));
             return;
         }
 
@@ -2027,14 +2228,15 @@ public sealed class DiscordBot
 
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
         var readyFirstCount = entries.Count(entry => ShouldRunReadyFirst(entry.Value));
-        await context.Command.RespondAsync(
+        await RespondWithMetricsAsync(
+            context,
             $"Queued join-all for {entries.Length} online account(s) into {game.GameName} with {staggerSeconds}s stagger."
                 + " Accounts will prepare Join Game first, then submit."
                 + FormatReadyFirstSuffix(readyFirstCount)
-                + FormatOfflineSkipSuffix(offlineEntries),
-            ephemeral: true);
+                + FormatOfflineSkipSuffix(offlineEntries));
 
         await StartGameSessionAsync(
+            context,
             game.GameName,
             entries.Length,
             $"Queued join-all for {entries.Length} account(s).",
@@ -2212,7 +2414,12 @@ public sealed class DiscordBot
         return string.Join("\n", lines);
     }
 
-    private async Task StartGameSessionAsync(string gameName, int expected, string status, string representativeAgentId)
+    private async Task StartGameSessionAsync(
+        SlashContext context,
+        string gameName,
+        int expected,
+        string status,
+        string representativeAgentId)
     {
         var channel = GetGameSessionChannel();
         if (channel is null)
@@ -2228,8 +2435,9 @@ public sealed class DiscordBot
             _activeSessionExpected = expected;
             _activeSessionJoined = 0;
             _activeSessionRepresentativeAgentId = representativeAgentId;
+            _activeSessionMetricsEnabled = context.MetricsEnabled;
             _activeSessionMessage = await channel.SendMessageAsync(
-                await FormatGameSessionMessageAsync(status, detail: null),
+                AppendMetrics(_activeSessionMetricsEnabled, await FormatGameSessionMessageAsync(status, detail: null)),
                 components: BuildGameSessionActionComponents());
         }
         catch (Exception ex)
@@ -2257,7 +2465,7 @@ public sealed class DiscordBot
                 _activeSessionJoined = joined.Value;
             }
 
-            var content = await FormatGameSessionMessageAsync(status, detail);
+            var content = AppendMetrics(_activeSessionMetricsEnabled, await FormatGameSessionMessageAsync(status, detail));
             await _activeSessionMessage.ModifyAsync(properties => properties.Content = content);
         }
         catch (Exception ex)
@@ -2281,7 +2489,7 @@ public sealed class DiscordBot
             }
 
             _activeSessionJoined++;
-            var content = await FormatGameSessionMessageAsync(status, detail: null);
+            var content = AppendMetrics(_activeSessionMetricsEnabled, await FormatGameSessionMessageAsync(status, detail: null));
             await _activeSessionMessage.ModifyAsync(properties => properties.Content = content);
         }
         catch (Exception ex)
@@ -2305,7 +2513,7 @@ public sealed class DiscordBot
             }
 
             _activeSessionJoined = joined;
-            var content = await FormatGameSessionMessageAsync(status, detail);
+            var content = AppendMetrics(_activeSessionMetricsEnabled, await FormatGameSessionMessageAsync(status, detail));
             await _activeSessionMessage.ModifyAsync(properties => properties.Content = content);
             await _activeSessionMessage.AddReactionAsync(new Emoji(ok ? "✅" : "⛔"));
         }
@@ -2422,7 +2630,7 @@ public sealed class DiscordBot
     {
         try
         {
-            await context.Command.FollowupAsync(message, ephemeral: true);
+            await FollowupWithMetricsAsync(context, message);
         }
         catch (Exception ex)
         {
@@ -2446,7 +2654,7 @@ public sealed class DiscordBot
         if (entries.Length == 0)
         {
             await SetInitialCommandResponseAsync(
-                context.Command,
+                context,
                 $"No online accounts are available for {label}." + FormatOfflineSkipSuffix(offlineEntries),
                 ephemeral: true);
             return;
@@ -2457,7 +2665,7 @@ public sealed class DiscordBot
             ? entries.Count(entry => ShouldRunReadyFirst(entry.Value))
             : 0;
         await SetInitialCommandResponseAsync(
-            context.Command,
+            context,
             $"Queued {entries.Length} online {label} command(s) with {staggerSeconds}s stagger."
                 + FormatReadyFirstSuffix(readyFirstCount)
                 + FormatOfflineSkipSuffix(offlineEntries),
@@ -2550,7 +2758,7 @@ public sealed class DiscordBot
             var message = failed == 0
                 ? $"{label} complete: {total}/{total} succeeded."
                 : $"{label} complete: {total - failed}/{total} succeeded, {failed} failed (see above).";
-            var sent = await context.Command.FollowupAsync(message, ephemeral: false);
+            var sent = await FollowupWithMetricsAsync(context, message, ephemeral: false);
             await sent.AddReactionAsync(new Emoji(failed == 0 ? "✅" : "⛔"));
         }
         catch (Exception ex)
@@ -2848,9 +3056,9 @@ public sealed class DiscordBot
     {
         if (_gameTemplate is null)
         {
-            await context.Command.RespondAsync(
-                "join-auto needs a template first - set one with /d2r template name:<x> password:<y>.",
-                ephemeral: true);
+            await RespondWithMetricsAsync(
+                context,
+                "join-auto needs a template first - set one with /d2r template name:<x> password:<y>.");
             return;
         }
 
@@ -2860,9 +3068,9 @@ public sealed class DiscordBot
         {
             if (_joinAutoCts is not null)
             {
-                await context.Command.RespondAsync(
-                    "join-auto is already running. Use /d2r join-auto stop:true first.",
-                    ephemeral: true);
+                await RespondWithMetricsAsync(
+                    context,
+                    "join-auto is already running. Use /d2r join-auto stop:true first.");
                 return;
             }
 
@@ -2874,11 +3082,12 @@ public sealed class DiscordBot
             _joinAutoLock.Release();
         }
 
-        await context.Command.RespondAsync(
+        await RespondWithMetricsAsync(
+            context,
             $"join-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay before each join attempt" : "")}. Updates will post in this channel until it's stopped.",
             ephemeral: true);
 
-        await StartJoinAutoMonitorAsync(context.Command.Channel);
+        await StartJoinAutoMonitorAsync(context.Command.Channel, context.MetricsEnabled);
 
         _ = Task.Run(() => RunJoinAutoLoopAsync(context, delaySeconds, watch, idleTimeout, cts.Token));
     }
@@ -2886,9 +3095,9 @@ public sealed class DiscordBot
     private async Task StopJoinAutoAsync(SlashContext context)
     {
         var wasRunning = await CancelJoinAutoIfRunningAsync(reason: null);
-        await context.Command.RespondAsync(
-            wasRunning ? "join-auto is stopping." : "join-auto is not running.",
-            ephemeral: true);
+        await RespondWithMetricsAsync(
+            context,
+            wasRunning ? "join-auto is stopping." : "join-auto is not running.");
     }
 
     // issue #24: a manual quit on an account join-auto is managing used to just be retried past
@@ -2928,7 +3137,7 @@ public sealed class DiscordBot
 
                 if (_gameTemplate is not { } template)
                 {
-                    await SendJoinAutoMessageAsync(channel, "join-auto stopped: the template was cleared.");
+                    await SendJoinAutoMessageAsync(channel, "join-auto stopped: the template was cleared.", context.MetricsEnabled);
                     await CompleteJoinAutoMonitorAsync(ok: true, "Stopped: the template was cleared.");
                     break;
                 }
@@ -2939,21 +3148,21 @@ public sealed class DiscordBot
                 var outcome = await TryJoinAutoCycleAsync(channel, context, game, delaySeconds, watch, idleTimeout, cancellationToken);
                 if (outcome == JoinAutoCycleOutcome.IdleTimedOut)
                 {
-                    await SendJoinAutoMessageAsync(channel, "join-auto: idle timeout detected, disabled.");
+                    await SendJoinAutoMessageAsync(channel, "join-auto: idle timeout detected, disabled.", context.MetricsEnabled);
                     await CompleteJoinAutoMonitorAsync(ok: false, $"Idle timeout - gave up joining {gameName} and disabled.");
                     break;
                 }
 
-                await SendJoinAutoMessageAsync(channel, $"join-auto: everyone is in {gameName}. Watching for someone to leave...");
+                await SendJoinAutoMessageAsync(channel, $"join-auto: everyone is in {gameName}. Watching for someone to leave...", context.MetricsEnabled);
                 await UpdateJoinAutoMonitorAsync("Everyone is in - watching for someone to leave.");
 
                 await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
                 var baseline = await TryFetchFirstOnlineAccountPlayerCountAsync();
                 await WaitForPlayerCountDropAsync(baseline, GetJoinAutoPlayerCountDropPollDelay, cancellationToken);
 
-                await SendJoinAutoMessageAsync(channel, $"join-auto: player count dropped - leaving {gameName}.");
+                await SendJoinAutoMessageAsync(channel, $"join-auto: player count dropped - leaving {gameName}.", context.MetricsEnabled);
                 await UpdateJoinAutoMonitorAsync($"Player count dropped - leaving {gameName}...");
-                await LeaveAllJoinAutoAsync(channel, "join-auto");
+                await LeaveAllJoinAutoAsync(channel, "join-auto", metricsEnabled: context.MetricsEnabled);
                 _joinAutoCyclesCompleted++;
                 await UpdateJoinAutoMonitorAsync($"Left {gameName}. Advancing to the next game...", joined: 0);
             }
@@ -2961,13 +3170,13 @@ public sealed class DiscordBot
         catch (OperationCanceledException)
         {
             var reasonText = _joinAutoStopReason is { } reason ? $"join-auto stopped: {reason}." : "join-auto stopped.";
-            await SendJoinAutoMessageAsync(channel, reasonText);
+            await SendJoinAutoMessageAsync(channel, reasonText, context.MetricsEnabled);
             await CompleteJoinAutoMonitorAsync(ok: true, reasonText);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "join-auto loop failed.");
-            await SendJoinAutoMessageAsync(channel, $"join-auto stopped unexpectedly: {ex.Message}");
+            await SendJoinAutoMessageAsync(channel, $"join-auto stopped unexpectedly: {ex.Message}", context.MetricsEnabled);
             await CompleteJoinAutoMonitorAsync(ok: false, $"Stopped unexpectedly: {ex.Message}");
         }
         finally
@@ -3023,7 +3232,10 @@ public sealed class DiscordBot
                 await UpdateJoinAutoMonitorAsync($"No online accounts available (attempt {attempt}).", gameName: game.GameName, joined: 0, total: 0);
                 if (watch)
                 {
-                    await SendJoinAutoMessageAsync(channel, $"join-auto: no online accounts available (attempt {attempt})." + FormatOfflineSkipSuffix(offlineEntries));
+                    await SendJoinAutoMessageAsync(
+                        channel,
+                        $"join-auto: no online accounts available (attempt {attempt})." + FormatOfflineSkipSuffix(offlineEntries),
+                        context.MetricsEnabled);
                 }
             }
             else
@@ -3061,7 +3273,8 @@ public sealed class DiscordBot
                     await SendJoinAutoMessageAsync(
                         channel,
                         $"join-auto: attempt {attempt} to join {game.GameName} failed - "
-                            + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+                            + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")),
+                        context.MetricsEnabled);
                 }
             }
 
@@ -3072,9 +3285,9 @@ public sealed class DiscordBot
         }
     }
 
-    private static Task SendJoinAutoMessageAsync(IMessageChannel channel, string content)
+    private Task SendJoinAutoMessageAsync(IMessageChannel channel, string content, bool metricsEnabled)
     {
-        return channel.SendMessageAsync(DiscordMessageTruncator.Truncate(content));
+        return channel.SendMessageAsync(AppendMetrics(metricsEnabled, content));
     }
 
     // Issue #25: capture a follow-bind fingerprint from one account's selected friend row, then push it
@@ -3106,17 +3319,18 @@ public sealed class DiscordBot
             var stopSummary = stopSignals.Attempted > 0
                 ? $" Follow-auto stop signal reached {stopSignals.Succeeded}/{stopSignals.Attempted} online agent(s)."
                 : "";
-            await context.Command.ModifyOriginalResponseAsync(
-                properties => properties.Content = $"Follow-bind cleared on {cleared}/{online.Length} online accounts.{stopSummary}");
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"Follow-bind cleared on {cleared}/{online.Length} online accounts.{stopSummary}");
             return;
         }
 
         var bindAccountKey = context.GetString("account");
         if (bindAccountKey is null)
         {
-            await context.Command.RespondAsync(
-                "follow bind:true requires account (whose selected friend row to capture from).",
-                ephemeral: true);
+            await RespondWithMetricsAsync(
+                context,
+                "follow bind:true requires account (whose selected friend row to capture from).");
             return;
         }
 
@@ -3131,8 +3345,9 @@ public sealed class DiscordBot
         }
         catch (Exception ex)
         {
-            await context.Command.ModifyOriginalResponseAsync(
-                properties => properties.Content = $"follow bind:true failed to capture from {resolvedAccountKey}: {ex.Message}");
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"follow bind:true failed to capture from {resolvedAccountKey}: {ex.Message}");
             return;
         }
 
@@ -3141,8 +3356,9 @@ public sealed class DiscordBot
             || !data.TryGetProperty("fingerprint", out var fingerprintProperty)
             || fingerprintProperty.GetString() is not { } fingerprint)
         {
-            await context.Command.ModifyOriginalResponseAsync(
-                properties => properties.Content = $"follow bind:true failed to capture from {resolvedAccountKey}: {captureResult.Message}");
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"follow bind:true failed to capture from {resolvedAccountKey}: {captureResult.Message}");
             return;
         }
 
@@ -3181,12 +3397,10 @@ public sealed class DiscordBot
             followBindMessage += $" Template save failures: {string.Join("; ", distributionFailures)}";
         }
 
-        await context.Command.ModifyOriginalResponseAsync(
-            properties =>
-            {
-                properties.Content = DiscordMessageTruncator.Truncate(followBindMessage);
-                properties.Components = BuildFollowBindActionComponents();
-            });
+        await ModifyOriginalResponseWithMetricsAsync(
+            context,
+            followBindMessage,
+            properties => properties.Components = BuildFollowBindActionComponents());
     }
 
     private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout)
@@ -3198,9 +3412,9 @@ public sealed class DiscordBot
         {
             if (_followAutoCts is not null)
             {
-                await context.Command.RespondAsync(
-                    "follow auto:true is already running. Use /d2r follow auto:false first.",
-                    ephemeral: true);
+                await RespondWithMetricsAsync(
+                    context,
+                    "follow auto:true is already running. Use /d2r follow auto:false first.");
                 return;
             }
 
@@ -3214,7 +3428,8 @@ public sealed class DiscordBot
             _followAutoLock.Release();
         }
 
-        await context.Command.RespondAsync(
+        await RespondWithMetricsAsync(
+            context,
             $"follow-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay between checks" : "")}. I posted one live status message in this channel."
                 + (watch ? " Watch diagnostics are enabled." : ""),
             ephemeral: true);
@@ -3233,8 +3448,9 @@ public sealed class DiscordBot
         var stopSummary = stopSignals.Attempted > 0
             ? $" Stop signal reached {stopSignals.Succeeded}/{stopSignals.Attempted} online agent(s) to abort in-flight follow clicks."
             : "";
-        await context.Command.ModifyOriginalResponseAsync(properties =>
-            properties.Content = (cancel.WasRunning ? "follow-auto stopped." : "follow-auto is not running.") + stopSummary);
+        await ModifyOriginalResponseWithMetricsAsync(
+            context,
+            (cancel.WasRunning ? "follow-auto stopped." : "follow-auto is not running.") + stopSummary);
     }
 
     private async Task HandleFollowAutoStopSaveExitButtonAsync(SocketMessageComponent component)
@@ -3263,7 +3479,7 @@ public sealed class DiscordBot
         if (!OperatingSystem.IsWindows())
         {
             await SetInitialCommandResponseAsync(
-                context.Command,
+                context,
                 "/d2r system sleep requires Windows on the D2RHost machine.",
                 ephemeral: true);
             return;
@@ -3277,7 +3493,7 @@ public sealed class DiscordBot
         if (entries.Length == 0)
         {
             await SetInitialCommandResponseAsync(
-                context.Command,
+                context,
                 "No online accounts are available to quit; putting the D2RHost machine to sleep."
                     + FormatOfflineSkipSuffix(offlineEntries),
                 ephemeral: true);
@@ -3288,7 +3504,7 @@ public sealed class DiscordBot
 
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
         await SetInitialCommandResponseAsync(
-            context.Command,
+            context,
             $"Quitting {entries.Length} online account(s) before host sleep with {staggerSeconds}s stagger."
                 + FormatOfflineSkipSuffix(offlineEntries),
             ephemeral: true);
@@ -3297,15 +3513,16 @@ public sealed class DiscordBot
         var failures = results.Where(result => !result.Ok).ToArray();
         if (failures.Length > 0)
         {
-            await context.Command.ModifyOriginalResponseAsync(properties =>
-                properties.Content = DiscordMessageTruncator.Truncate(
-                    $"Host sleep skipped: quit completed for {results.Length - failures.Length}/{results.Length} account(s). Failed: "
-                        + string.Join("; ", failures.Select(result => $"{result.AccountKey}: {result.Message}"))));
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"Host sleep skipped: quit completed for {results.Length - failures.Length}/{results.Length} account(s). Failed: "
+                    + string.Join("; ", failures.Select(result => $"{result.AccountKey}: {result.Message}")));
             return;
         }
 
-        await context.Command.ModifyOriginalResponseAsync(properties =>
-            properties.Content = $"Quit complete: {results.Length}/{results.Length} account(s) succeeded. Putting the D2RHost machine to sleep.");
+        await ModifyOriginalResponseWithMetricsAsync(
+            context,
+            $"Quit complete: {results.Length}/{results.Length} account(s) succeeded. Putting the D2RHost machine to sleep.");
         await AnnounceSystemPowerActionAsync(context, HostSystemPowerAction.Sleep);
         _system.Queue(HostSystemPowerAction.Sleep);
     }
@@ -3507,17 +3724,18 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task StartFollowAutoMonitorAsync(IMessageChannel channel)
+    private async Task StartFollowAutoMonitorAsync(IMessageChannel channel, bool metricsEnabled)
     {
         _followAutoStartedUtc = DateTimeOffset.UtcNow;
         _followAutoGameNumber = 0;
         _followAutoGamesCompleted = 0;
         _followAutoJoined = 0;
         _followAutoTotal = 0;
+        _followAutoMetricsEnabled = metricsEnabled;
         try
         {
             _followAutoMonitorMessage = await channel.SendMessageAsync(
-                FormatFollowAutoMonitorMessage("Starting follow-auto."),
+                AppendMetrics(_followAutoMetricsEnabled, FormatFollowAutoMonitorMessage("Starting follow-auto.")),
                 components: BuildFollowAutoMonitorComponents(running: true));
         }
         catch (Exception ex)
@@ -3549,7 +3767,7 @@ public sealed class DiscordBot
             var content = FormatFollowAutoMonitorMessage(status);
             await _followAutoMonitorMessage.ModifyAsync(properties =>
             {
-                properties.Content = content;
+                properties.Content = AppendMetrics(_followAutoMetricsEnabled, content);
                 properties.Components = BuildFollowAutoMonitorComponents(running: true);
             });
         }
@@ -3573,7 +3791,7 @@ public sealed class DiscordBot
             var content = FormatFollowAutoMonitorMessage(status);
             await monitorMessage.ModifyAsync(properties =>
             {
-                properties.Content = content;
+                properties.Content = AppendMetrics(_followAutoMetricsEnabled, content);
                 properties.Components = showStopActions
                     ? BuildFollowAutoStopActionComponents()
                     : BuildFollowAutoMonitorComponents(running: false);
@@ -3638,7 +3856,7 @@ public sealed class DiscordBot
                 watchCts.Token);
         }
 
-        await StartFollowAutoMonitorAsync(channel);
+        await StartFollowAutoMonitorAsync(channel, context.MetricsEnabled);
 
         async Task DelayNextFollowCheckAsync(bool afterLeave = false)
         {
@@ -3671,7 +3889,11 @@ public sealed class DiscordBot
                         $"Game #{_followAutoGameNumber}: player count dropped. Leaving the bound friend's game...",
                         joined: online.Length,
                         total: online.Length);
-                    var leaveResults = await LeaveAllJoinAutoAsync(channel, "follow-auto", postResult: false);
+                    var leaveResults = await LeaveAllJoinAutoAsync(
+                        channel,
+                        "follow-auto",
+                        postResult: false,
+                        metricsEnabled: _followAutoMetricsEnabled);
                     var leaveFailures = leaveResults.Where(result => !result.Ok).ToArray();
                     if (leaveFailures.Length > 0)
                     {
@@ -3899,16 +4121,18 @@ public sealed class DiscordBot
     // persistent message edited for the entire join-auto run (confirmed with the user), not a
     // fresh one per game the way the other one is per-invocation, since a farming session can
     // advance through many numbered games over hours.
-    private async Task StartJoinAutoMonitorAsync(IMessageChannel channel)
+    private async Task StartJoinAutoMonitorAsync(IMessageChannel channel, bool metricsEnabled)
     {
         _joinAutoMonitorGameName = null;
         _joinAutoMonitorJoined = 0;
         _joinAutoMonitorTotal = 0;
         _joinAutoCyclesCompleted = 0;
         _joinAutoStartedUtc = DateTimeOffset.UtcNow;
+        _joinAutoMetricsEnabled = metricsEnabled;
         try
         {
-            _joinAutoMonitorMessage = await channel.SendMessageAsync(await FormatJoinAutoMonitorMessageAsync("Starting..."));
+            _joinAutoMonitorMessage = await channel.SendMessageAsync(
+                AppendMetrics(_joinAutoMetricsEnabled, await FormatJoinAutoMonitorMessageAsync("Starting...")));
         }
         catch (Exception ex)
         {
@@ -3942,7 +4166,7 @@ public sealed class DiscordBot
         try
         {
             var content = await FormatJoinAutoMonitorMessageAsync(status);
-            await _joinAutoMonitorMessage.ModifyAsync(properties => properties.Content = content);
+            await _joinAutoMonitorMessage.ModifyAsync(properties => properties.Content = AppendMetrics(_joinAutoMetricsEnabled, content));
         }
         catch (Exception ex)
         {
@@ -3960,7 +4184,7 @@ public sealed class DiscordBot
         try
         {
             var content = await FormatJoinAutoMonitorMessageAsync(status);
-            await _joinAutoMonitorMessage.ModifyAsync(properties => properties.Content = content);
+            await _joinAutoMonitorMessage.ModifyAsync(properties => properties.Content = AppendMetrics(_joinAutoMetricsEnabled, content));
             await _joinAutoMonitorMessage.AddReactionAsync(new Emoji(ok ? "✅" : "⛔"));
         }
         catch (Exception ex)
@@ -4056,14 +4280,18 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task<JoinResult[]> LeaveAllJoinAutoAsync(IMessageChannel channel, string label, bool postResult = true)
+    private async Task<JoinResult[]> LeaveAllJoinAutoAsync(
+        IMessageChannel channel,
+        string label,
+        bool postResult = true,
+        bool metricsEnabled = true)
     {
         var (entries, _) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
             if (postResult)
             {
-                await SendJoinAutoMessageAsync(channel, $"{label}: no online accounts to leave with.");
+                await SendJoinAutoMessageAsync(channel, $"{label}: no online accounts to leave with.", metricsEnabled);
             }
 
             return [];
@@ -4088,7 +4316,8 @@ public sealed class DiscordBot
         {
             await SendJoinAutoMessageAsync(channel, failed.Length == 0
                 ? $"{label}: all accounts left."
-                : $"{label}: leave failed for " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")));
+                : $"{label}: leave failed for " + string.Join("; ", failed.Select(result => $"{result.AccountKey}: {result.Message}")),
+                metricsEnabled);
         }
 
         return leaveResults;
@@ -4791,6 +5020,7 @@ public sealed class DiscordBot
         public string? GroupName { get; }
         public string SubcommandName { get; }
         public int OptionCount => _options.Count;
+        public bool MetricsEnabled => GetBool("metric") ?? true;
 
         public static SlashContext From(SocketSlashCommand command)
         {
