@@ -651,6 +651,17 @@ public sealed class DiscordBot
             return;
         }
 
+        if (subcommand == "ready" && context.GetString("account") is null)
+        {
+            await QueueAllCommandsAsync(
+                context,
+                "menu_ready",
+                (accountKey, account) => BuildAccountArgs(accountKey, account),
+                ReadyCommandTimeout,
+                displayName: "ready");
+            return;
+        }
+
         if (subcommand == "join-auto"
             || (subcommand == "join" && (context.OptionCount == 0 || context.GetBool("auto") is not null)))
         {

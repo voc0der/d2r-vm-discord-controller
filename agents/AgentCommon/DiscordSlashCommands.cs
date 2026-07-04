@@ -26,7 +26,7 @@ public static class DiscordSlashCommands
                     Sub("restart-client", "Restart the D2R process for an account", Account()),
                     Sub("screenshot", "Capture the VM's current primary-screen screenshot", Account()),
                     Sub("remote", "Show the configured remote-control URL for an account VM", Account()),
-                    Sub("ready", "Launch D2R, click Battle.net Play if needed, and skip intro screens", Account()),
+                    Sub("ready", "Launch D2R and skip intros for one account, or all online accounts when omitted", OptionalAccount()),
                     Sub("lobby", "Select character and open Lobby", Account(), CharacterSlot()),
                     Sub("play", "Select character and click Play", Account(), CharacterSlot()),
                     Sub("join", "Join a game, or auto-join template games when auto is true", OptionalAccount(), AllFlag(), JoinAutoFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Delay(), IdleMinutes(), JoinAutoWatch()),

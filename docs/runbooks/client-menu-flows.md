@@ -63,7 +63,8 @@ Use these commands while driving clients:
 
 ```text
 /d2r start all:false account:hc1
-/d2r ready hc1
+/d2r ready
+/d2r ready account:hc1
 /d2r lobby hc1 character-slot:1
 /d2r join
 /d2r join name:<game>
@@ -138,7 +139,8 @@ Current implementation:
 
 - `/d2r start all:false account:<account>` sends `launch_d2r` to the VM agent.
 - `/d2r start` queues the ready flow for every online VM agent.
-- `/d2r ready <account>` launches D2R, retries the Battle.net launch command and Battle.net Play while waiting for D2R, then nudges intro/title states until character select is visually detected.
+- `/d2r ready` queues the ready flow for every online VM agent; pass `account:<account>` to warm just one.
+- The ready flow launches D2R, retries the Battle.net launch command and Battle.net Play while waiting for D2R, then nudges intro/title states until character select is visually detected.
 - Before launching D2R, the VM agent shows the desktop to minimize other windows. If Battle.net is already running, the agent restores Battle.net before sending the launch command.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.
 - While D2R is not detected, the ready flow keeps sending the configured launch command every `battleNetExecRetryDelaySeconds` seconds. This handles cold Battle.net starts where the first `--exec` only opens Battle.net.
@@ -234,7 +236,7 @@ Manual path:
 Automation:
 
 ```text
-/d2r ready hc1
+/d2r ready account:hc1
 ```
 
 The ready flow sends the initial D2R launch command, then immediately starts the startup input plan while it keeps nudging Battle.net Play and retrying the launch command at `battleNetExecRetryDelaySeconds`. It does not wait for desktop/focus/status launch plumbing or a trusted D2R process/window/status result before sending intro-safe input, because live runs showed those checks could sit in front of the skip loop while the videos or post-intro splash were already visible. Each startup burst leads with a bounded (one detection cycle, `ReadyStartupDetectionIntervalMs` = 250ms) best-effort foreground/focus attempt on D2R, then sends useful input regardless of whether that succeeded: a click at `ui.introSkipPoint`, default center, and `G` as both a scan-code keypress and a window-targeted message - no other key. **None of the startup bursts (intro, title-skip, splash-continue, fallback) send Escape, Space, or Enter as of v0.2.95.** Before that, the intro burst alone sent Escape (D2R's actual cinematic-skip key, scoped there because the others risked an Escape-then-Enter exit-dialog confirm at an already-reached, misclassified character screen). Once `v0.2.93` fixed the GDI/`dwm.exe` detection stall that made bursts unreliable, every send started actually reaching the client - and `watch-lmrwii244-20260625-205519.log` showed exactly that Escape-then-Enter sequence quitting D2R outright on two VMs (`frame NotRunning` right after a burst). The user confirmed directly in a live VM that `G` alone clears the intro and title sequence just as fast as the old click/Escape/Space/Enter combination, and `G` only ever toggles legacy graphics, so it cannot open or confirm any dialog - removing Escape/Space/Enter from every plan instead of re-scoping again. See `StartupReadyInputPlan.cs`'s four action lists (`IntroActions`/`TitleActions`/`SplashActions`/`BurstActions`) for the exact, current per-burst action sets; `StartupReadyInputPlanTests.cs` asserts none of them ever reintroduce `PressEscapeKey`/`SendWindowEscapeKey`/`PressStartKey`/`SendWindowReadyBurst`. The hot startup classifier checks screen-relative 1366x768 regions every detection cycle so process/window lookup cannot throttle input cadence, and it now adds a bounded window-relative character-screen probe about once per second so a warm but offset/window-relative client is not missed until the full startup plan ends. Seeing only the left-side character-select menu chrome records `CharacterMenu`; that state is enough to proceed, and any further startup nudges for it use the no-Escape burst. If the screen looks like the Connecting to Battle.net modal, the loop still sends the safe splash burst without Escape, because a false positive there otherwise strands the VM at the post-intro splash. A transient exact-name process miss also does not abort ready while startup input is still running; the launch nudge retries if D2R really exited. The loop repeats until online, partial-menu, or offline character select is visually detected. `ui.readyStartupBlindSuccessSeconds` is kept only as a config compatibility field and should remain `0`; blind ready success hides broken input.

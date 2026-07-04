@@ -146,6 +146,17 @@ public sealed class DiscordSlashCommandsTests
         Assert.Equal(ApplicationCommandOptionType.Boolean, auto.Type);
     }
 
+    [Fact]
+    public void ReadyCommandAccountOptionIsOptional()
+    {
+        var d2r = GetD2RCommand();
+        var ready = Assert.Single(d2r.Options.Value, option => option.Name == "ready");
+        var account = Assert.Single(ready.Options!, option => option.Name == "account");
+
+        Assert.Equal(ApplicationCommandOptionType.String, account.Type);
+        Assert.False(account.IsRequired);
+    }
+
     private static void AssertOptionDescriptions(string commandName, ApplicationCommandOptionProperties option)
     {
         AssertDescription($"{commandName} {option.Name}", option.Description);

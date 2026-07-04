@@ -55,7 +55,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r restart-client account`
 - `/d2r screenshot account`
 - `/d2r remote account`
-- `/d2r ready account`
+- `/d2r ready [account]`
 - `/d2r lobby account [character-slot]`
 - `/d2r play account [character-slot]`
 - `/d2r join [account] [all] [auto] [name] [password] [difficulty] [character-slot] [delay] [idle-minutes] [watch]`
@@ -87,7 +87,7 @@ For folded commands, `all` defaults to true. Pass `all:false account:<x>` for on
 
 Join/create session notifications include `Leave` and `Quit` buttons. `Leave` queues save-exit for all online accounts; `Quit` queues D2R quit for all online accounts.
 
-`/d2r start` with `all:true` queues the ready flow for every online account, so cold-booted clients should land on character select instead of merely starting the D2R process.
+`/d2r ready` queues the ready flow for every online account. Pass `account:<x>` to warm one account. `/d2r start` with `all:true` uses the same all-account ready flow, so cold-booted clients should land on character select instead of merely starting the D2R process.
 
 `/d2r restart` respawns `D2RHost`. On startup, the host runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed host update once the command exists in Discord.
 
