@@ -68,6 +68,55 @@ if (!(Test-Path -LiteralPath $ConfigPath)) {
     Write-Warning "Copy vm-agent.config.example.json there and edit it before starting the task."
 }
 
+function Resolve-GamePath([string]$ConfiguredPath, [string]$ProcessName, [string]$DefaultPath) {
+    foreach ($Candidate in @($ConfiguredPath, $DefaultPath)) {
+        if (![string]::IsNullOrWhiteSpace($Candidate) -and (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
+            return (Resolve-Path -LiteralPath $Candidate).Path
+        }
+    }
+
+    $RunningProcess = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($RunningProcess -and $RunningProcess.Path) {
+        return $RunningProcess.Path
+    }
+
+    return $null
+}
+
+function Set-InboundAnyProfileRule([string]$DisplayName, [string]$ProgramPath) {
+    if ([string]::IsNullOrWhiteSpace($ProgramPath)) {
+        Write-Warning "Skipping firewall rule '$DisplayName': could not resolve an executable path. Set the path in $ConfigPath and re-run this script."
+        return
+    }
+
+    $Existing = Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue
+    if ($Existing) {
+        $Existing | Set-NetFirewallRule -Program $ProgramPath -Direction Inbound -Action Allow -Profile Any -Enabled True
+    } else {
+        New-NetFirewallRule -DisplayName $DisplayName -Program $ProgramPath -Direction Inbound -Action Allow -Profile Any -Enabled True | Out-Null
+    }
+
+    Write-Host "Firewall rule '$DisplayName' allows inbound traffic on all network profiles for $ProgramPath."
+}
+
+$ConfiguredBattleNetPath = $null
+$ConfiguredD2RPath = $null
+if (Test-Path -LiteralPath $ConfigPath) {
+    try {
+        $ConfigJson = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+        $ConfiguredBattleNetPath = $ConfigJson.battleNetPath
+        $ConfiguredD2RPath = $ConfigJson.d2rPath
+    } catch {
+        Write-Warning "Could not parse $ConfigPath as JSON; using default game paths for firewall rules."
+    }
+}
+
+$BattleNetPath = Resolve-GamePath $ConfiguredBattleNetPath "Battle.net" "C:\Program Files (x86)\Battle.net\Battle.net.exe"
+$D2RPath = Resolve-GamePath $ConfiguredD2RPath "D2R" "C:\Program Files (x86)\Diablo II Resurrected\D2R.exe"
+
+Set-InboundAnyProfileRule "D2R Ops - Battle.net (all profiles)" $BattleNetPath
+Set-InboundAnyProfileRule "D2R Ops - D2R (all profiles)" $D2RPath
+
 $action = New-ScheduledTaskAction `
     -Execute (Join-Path $InstallDir $ExeName) `
     -Argument "`"$ConfigPath`""

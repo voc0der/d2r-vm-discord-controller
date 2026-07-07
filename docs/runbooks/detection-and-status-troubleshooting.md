@@ -43,6 +43,12 @@ When D2R's "connection interrupted" dialog clears, the client returns to the Joi
 
 If a join/create command times out *during* this recovery with no completed result, that is the same class of hang as #4, not a logic error in the recovery sequence itself - check `lastCommandCheckpoint` (#5) for `ClickMenuEntryButtonUntilEnteredGameAsync: connection interrupted (retry N), waiting for bounce-back menu` or similar to confirm where it actually stopped before assuming the recovery logic is wrong.
 
+## 7. Connection interrupted only on the first join after the host wakes from sleep
+
+If clients reach the lobby/character screen fine (proving Battle.net's own outbound connection is up) but the first join/create attempt after the host machine resumes from sleep hits "Connection Interrupted", and a plain retry a bit later then works, this is not a hang and not a fully-down network - it's Windows re-running Network Location Awareness on each VM's adapter after resume. Until NLA finishes reclassifying the network (Private/Domain vs. Public), the adapter can sit as Public, which applies the stricter Public firewall profile. Plain outbound traffic (login, lobby, chat, game list) isn't affected by that, but D2R's actual game connection is P2P and needs an inbound-capable path, which the transient Public profile can block until NLA settles back to Private - explaining why staggering join attempts across VMs doesn't help (it's a per-VM adapter timer, not related to join order).
+
+Fixed at the deployment level, not in the agent's own detection/retry code: `scripts/install-vm-agent.ps1` creates/updates inbound firewall rules for Battle.net and D2R scoped to `-Profile Any`, so which profile NLA currently has the adapter in stops mattering for this traffic. Re-run the install script if `battleNetPath`/`d2rPath` changes, or if D2R/Battle.net get reinstalled at a different path.
+
 ## Deployment basics (from `scripts/install-vm-agent.ps1`)
 
 The scheduled task is created with `-AtLogOn`, `LogonType Interactive`, `RunLevel Highest`, bound to whichever account ran the install script. If VMs are cloned from a template, re-run the install script per clone as that clone's actual interactive account, or the task's bound user won't match who's actually logged in.

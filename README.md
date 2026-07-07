@@ -193,6 +193,8 @@ Start-ScheduledTask -TaskName "D2R VM Agent"
 
 If the extracted release folder contains only one `.exe`, `install-vm-agent.ps1` can auto-detect it and `-ExePath` is optional.
 
+`install-vm-agent.ps1` also creates (or updates) inbound Windows Firewall rules for Battle.net and D2R scoped to all network profiles, not just Private/Domain. This avoids join failures right after the host wakes from sleep, where Windows briefly reclassifies the network as Public while Network Location Awareness re-identifies it - the first P2P game-join attempt can hit "Connection Interrupted" during that window even though Battle.net login/lobby (plain outbound traffic) already works fine, since the Public firewall profile blocks the inbound side of the game connection. Re-run the script if you change `battleNetPath`/`d2rPath` in the config.
+
 Run the VM agent as a scheduled task at user logon, not as a Windows service. D2R and Battle.net are desktop apps, so the agent needs the logged-in user session for screenshots and input.
 
 The PC can start already logged in with the VM listener loaded. On `/d2r ready`, the agent launches or focuses Battle.net, clicks Play every `ui.readyNudgeMinDelayMs` to `ui.readyNudgeMaxDelayMs` until D2R starts, waits for D2R to expose a focusable window, then keeps nudging intro/title states at the same jittered interval until it visually confirms the character screen by sampling the Play/Lobby button regions. If cold startup is still racing ahead of D2R, raise `d2rStartTimeoutSeconds` or `ui.characterScreenReadyTimeoutSeconds` in `vm-agent.config.json`.
