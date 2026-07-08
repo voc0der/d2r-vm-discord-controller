@@ -158,6 +158,28 @@ internal static class ReferenceCaptureClassifier
         return IsCharacterButtonPairReady(capture) || IsCharacterMenuReady(capture);
     }
 
+    // Mirrors VmOperations.IsGameEntryErrorDialogOpen exactly (same regions/thresholds). Despite
+    // the name, this is a generic OK-dialog widget D2R reuses for more than join/create game
+    // errors - the Battle.net reconnect failures ("Failed to authenticate", "Cannot Connect to
+    // Server") that show up after clicking the character screen's Online tab use the identical
+    // box position and OK button. Confirmed by sampling these exact regions against real
+    // reference captures of both: pixel-for-pixel matches on game_password_doesnt_match.png.
+    public static bool IsGameEntryErrorDialogOpen(string capture)
+    {
+        var okButton = Sample(capture, new UiPoint(0.500, 0.539), 0.14, 0.050);
+        var topBorder = Sample(capture, new UiPoint(0.500, 0.381), 0.32, 0.025);
+        var body = Sample(capture, new UiPoint(0.500, 0.465), 0.32, 0.20);
+        return okButton.AverageLuminance > 45
+            && okButton.LuminanceStdDev > 25
+            && okButton.GreyRatio > 0.35
+            && okButton.DarkRatio < 0.60
+            && topBorder.AverageLuminance > 28
+            && topBorder.GreyRatio > 0.25
+            && topBorder.DarkRatio < 0.75
+            && body.AverageLuminance < 40
+            && body.DarkRatio > 0.70;
+    }
+
     public static bool IsCharacterButtonPairReady(string capture)
     {
         var play = Sample(capture, new UiPoint(0.420, 0.897), 0.13, 0.055);

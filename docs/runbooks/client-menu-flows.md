@@ -200,6 +200,16 @@ References:
 
 ![Character screen but offline](assets/d2r-ui/1366x768/character_screen_but_offline.png)
 
+Clicking Online from the offline character screen shows a modal while D2R tries to reconnect. This can resolve to the online character list, or to one of two failure dialogs if the client's Battle.net session itself is broken (not something D2R-side automation caused):
+
+![Battle.net reconnect connecting](assets/d2r-ui/1366x768/battlenet_reconnect_connecting.png)
+
+![Battle.net reconnect failed to authenticate](assets/d2r-ui/1366x768/battlenet_reconnect_failed_to_authenticate.png)
+
+![Battle.net reconnect cannot connect](assets/d2r-ui/1366x768/battlenet_reconnect_cannot_connect.png)
+
+Both failure dialogs use the same generic OK-dialog widget as the join/create game error dialogs below (`IsGameEntryErrorDialogOpen`/`DismissGameEntryErrorDialogAsync`), so they're dismissed the same way, then the Online tab is clicked again. If the client is still offline when the reconnect timeout elapses, this is treated as the session being unrecoverable by clicking alone - follow-auto closes and relaunches D2R so Battle.net rehooks a fresh session on the next login.
+
 Older references:
 
 ![First intro video](assets/d2r-ui/first_intro_video.jpg)
@@ -223,7 +233,7 @@ Older references:
 Expected state:
 
 - D2R has finished intro videos.
-- Online mode is selected. If D2R lands on the offline character screen, click the Online tab until the online character list appears.
+- Online mode is selected. If D2R lands on the offline character screen, click the Online tab until the online character list appears, dismissing any "Failed to authenticate"/"Cannot Connect to Server" dialog along the way. If it still won't come back online, follow-auto restarts D2R rather than retrying the click forever.
 - Character list is visible.
 - Play and Lobby buttons are visible.
 

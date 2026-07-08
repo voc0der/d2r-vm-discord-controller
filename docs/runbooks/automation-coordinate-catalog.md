@@ -40,7 +40,7 @@ The implementation source of truth is `D2RUiCoordinateCatalog` in `agents/AgentC
 | Join Nightmare option | `JoinDifficultyNightmareOption` | `0.844,0.255` | `1153,196` | Click | `1366x768/lobby_join_game_screen_difficulty_dropdown.png` | Nightmare. |
 | Join Hell option | `JoinDifficultyHellOption` | `0.844,0.290` | `1153,223` | Click | `1366x768/lobby_join_game_screen_difficulty_dropdown.png` | Hell. |
 | Final Join Game button | `JoinGameButton` | `0.765,0.622` | `1045,478` | Click/sample | `1366x768/snippets/join_game_button_text.png` | Submit join form. |
-| Game-entry error OK | `GameEntryErrorDialogOkButton` | `0.500,0.539` | `683,414` | Click/sample | `game_and_password_dont_match.jpg` | Dismisses password/game unavailable dialogs. |
+| Game-entry error OK | `GameEntryErrorDialogOkButton` | `0.500,0.539` | `683,414` | Click/sample | `game_and_password_dont_match.jpg` | Dismisses password/game unavailable dialogs. Same generic OK-dialog widget also covers the Battle.net reconnect failures - see `battlenet_reconnect_failed_to_authenticate.png`/`battlenet_reconnect_cannot_connect.png`; `IsGameEntryErrorDialogOpen`/`DismissGameEntryErrorDialogAsync` are reused as-is for both. |
 | Lobby Create Game tab | `CreateGameTab` | `0.673,0.071` | `919,55` | Click/sample | `1366x768/snippets/lobby_create_game_tab_text.png` | Active tab and click target. |
 | Create Game name field | `CreateGameNameField` | `0.766,0.160` | `1046,123` | Click/type | `1366x768/lobby_create_game_screen.png` | Game name input. |
 | Create Game password field | `CreatePasswordField` | `0.766,0.224` | `1046,172` | Click/type | `1366x768/lobby_create_game_screen.png` | Password input. |
@@ -75,7 +75,7 @@ Snippet crops are detector assets, not always click targets. The click center ab
 | `character_play_button_text.png` | `char_screen_act1-5.png`, `char_screen_not_selected.png` | `545,683-624,699` | Play `574,689` |
 | `character_lobby_button_text.png` | `char_screen_act1-5.png`, `char_screen_not_selected.png` | `749,683-838,700` | Lobby `799,689` |
 | `character_online_tab_text.png` | `char_screen_act1-5.png`, `char_screen_not_selected.png` | `1132,31-1210,48` | Online `1161,38` |
-| `character_offline_tab_text.png` | `character_screen_but_offline.png` | `1255,31-1334,49` | Offline is a detector only; recovery clicks Online. |
+| `character_offline_tab_text.png` | `character_screen_but_offline.png` | `1255,31-1334,49` | Offline is a detector only; recovery clicks Online. If that reconnect attempt surfaces the "Failed to authenticate"/"Cannot Connect to Server" OK dialog (`battlenet_reconnect_failed_to_authenticate.png`/`battlenet_reconnect_cannot_connect.png`), it is dismissed and the Online tab is clicked again; if the client still isn't online when the reconnect timeout elapses, follow-auto closes and relaunches D2R so Battle.net can hand it a fresh session. |
 | `character_offline_empty_panel.png` | `character_screen_but_offline.png` | `1070,133-1340,579` | Detector only. |
 | `lobby_create_game_tab_text.png` | Create/friends lobby captures | `846,49-961,66` | Create Game tab `919,55` |
 | `lobby_join_game_tab_text.png` | Join lobby captures | `973,49-1085,66` | Join Game tab `1046,55` |

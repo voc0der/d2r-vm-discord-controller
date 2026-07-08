@@ -514,5 +514,34 @@ mechanism works on a live VM. That needs a real run.
 - **Error dialog captures (`cant_join_hell.png`, `game_exists_name.png`,
   `game_password_doesnt_match.png`) classify as `Unknown`** in this state machine, which is
   correct, not a gap - they're recognized by a separate dedicated detector
-  (`IsGameEntryErrorDialogOpen`) used only inside the join/create game-entry flow, not part of
-  `DetectVisibleD2RState`/`DetectReadyScreenState`.
+  (`IsGameEntryErrorDialogOpen`), not part of `DetectVisibleD2RState`/`DetectReadyScreenState`.
+  Originally written only for the join/create game-entry flow, but it turns out to be a fully
+  generic OK-dialog widget: the Battle.net reconnect failures ("Failed to authenticate. Please
+  try again.", "Cannot Connect to Server" - `battlenet_reconnect_failed_to_authenticate.png`,
+  `battlenet_reconnect_cannot_connect.png`) that appear after clicking Online from the offline
+  character screen use the identical box position and OK button, confirmed pixel-for-pixel
+  against real captures of both, so `IsGameEntryErrorDialogOpen`/`DismissGameEntryErrorDialogAsync`
+  are reused there as-is rather than adding a parallel detector.
+- **A broken Battle.net session on one VM stalled follow-auto for the rest of the idle window,
+  not just one cycle.** Symptom: `hc1: Could not visually confirm the Lobby during a follow-auto
+  check`, classifier breakdown showing `offline=T`, for the entire follow-auto session (bots on
+  other VMs kept playing normally). Root cause was two compounding gaps: (1)
+  `EnsureLobbyOpenedAsync` - the function every menu command, including the follow-auto check,
+  calls to get to the lobby - never checked `IsCharacterScreenOffline` at all, so it blind-clicked
+  the character slot and Lobby button on a screen that was never going to respond, and the
+  resulting generic "lobby not visible" failure gave no hint that Battle.net, not D2R automation,
+  was the actual problem; (2) even where the offline reconnect *was* wired up
+  (`EnsureOnlineCharacterScreenAsync`, used by `menu_play`/create-game/join-game/save-exit), its
+  retry loop only ever checked `IsCharacterScreenReady`/`IsCharacterScreenOffline` and re-clicked
+  the Online tab - it never checked for the failure dialog above, so once Battle.net responded
+  with "Failed to authenticate" instead of a session, the modal sat there absorbing every
+  subsequent Online tab click for the rest of the reconnect timeout, and the loop returned failure
+  having never actually retried. Fixed by (1) giving `EnsureLobbyOpenedAsync` the same offline
+  check and reconnect attempt every other menu command already had, and (2) dismissing the
+  dialog inside `EnsureOnlineCharacterScreenAsync`'s loop before the next Online tab click. Even
+  with both fixed, a genuinely wedged client-side session can keep failing every reconnect
+  attempt - the observed case needed a full game restart before Battle.net would hand it a working
+  session again - so follow-auto specifically (not the other menu commands, which surface this as
+  an ordinary failure instead of restarting a user's game out from under them) now closes and
+  relaunches D2R when the reconnect attempt is exhausted, then waits for the next follow-auto
+  cycle to find it back online.

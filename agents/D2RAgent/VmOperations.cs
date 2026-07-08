@@ -12,6 +12,10 @@ public sealed class VmOperations
     private const int MaxD2RStartTimeoutSeconds = 40;
     private const int MaxReadyStartupSkipSeconds = 45;
     private const int MaxCharacterScreenReconnectSeconds = 45;
+    // Killing/relaunching D2R over a broken Battle.net session already costs ~45s of reconnect
+    // attempts plus launch overhead, so this cooldown is mostly a backstop against a pathological
+    // case (a session that keeps coming back broken) turning into a tight restart loop.
+    private const int BrokenSessionRestartCooldownSeconds = 60;
     // Per-VM config can be stale on already-provisioned satellites (it predates this
     // floor and won't pick up a new default just because the code changed). These
     // are hard floors applied on top of the configured/clamped values rather than
@@ -66,6 +70,7 @@ public sealed class VmOperations
     private DateTimeOffset? _characterScreenIdleSinceUtc;
     private DateTimeOffset? _lastLobbyOrGameInteractionUtc;
     private DateTimeOffset? _lastObservedD2RStartUtc;
+    private DateTimeOffset? _lastBrokenSessionRestartUtc;
     private string? _lastActivityReason;
     private LastInputActionSnapshot? _lastInputAction;
     private string? _lastObservedFrame;
@@ -479,6 +484,28 @@ public sealed class VmOperations
         KillD2R();
         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         return await LaunchD2RAsync(cancellationToken);
+    }
+
+    // A stuck-offline character screen that won't reconnect via the Online tab means the
+    // client's Battle.net session itself is wedged - no client-side click fixes that, only a
+    // full close + relaunch does, so Battle.net can hand it a fresh session on the next login.
+    // Returns false (no restart attempted) if the last one was too recent, so a session that
+    // keeps coming back broken doesn't turn into a tight kill/relaunch loop.
+    private async Task<bool> RecoverFromBrokenBattleNetSessionAsync(CancellationToken cancellationToken)
+    {
+        lock (_activityLock)
+        {
+            if (_lastBrokenSessionRestartUtc is { } last
+                && DateTimeOffset.UtcNow - last < TimeSpan.FromSeconds(BrokenSessionRestartCooldownSeconds))
+            {
+                return false;
+            }
+
+            _lastBrokenSessionRestartUtc = DateTimeOffset.UtcNow;
+        }
+
+        await RestartD2RAsync(cancellationToken);
+        return true;
     }
 
     public async Task RunIdleMonitorAsync(Action<string>? log, CancellationToken cancellationToken)
@@ -1255,6 +1282,32 @@ public sealed class VmOperations
                     joined = false,
                     d2rReady = false,
                     d2rRunning = false,
+                    templatePath = templateLoad.Path,
+                    templateExists = templateLoad.Exists,
+                    templateLength = templateLoad.ContentLength
+                });
+        }
+
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
+        // An offline character screen that won't reconnect via the Online tab needs more than
+        // another click - the client's Battle.net session is wedged, and only a close + relaunch
+        // rehooks a fresh one. Handled here rather than inside EnsureLobbyOpenedAsync because a
+        // follow-auto session is unattended and long-running (tolerates a "Waiting" cycle while
+        // D2R comes back up); other menu commands surface the same offline condition as a
+        // failure instead so an interactive caller isn't surprised by their game being restarted.
+        if (IsCharacterScreenOffline(input) && !await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
+        {
+            MarkCommandCheckpoint("FollowAutoCheckAsync: offline character screen did not reconnect; recovering with a D2R restart");
+            var restarted = await RecoverFromBrokenBattleNetSessionAsync(cancellationToken);
+            return CommandResult.Success(
+                restarted
+                    ? "D2R's Battle.net session was stuck offline and the Online tab did not reconnect; restarted D2R to force a fresh session. Waiting for the next follow-auto cycle."
+                    : "D2R's Battle.net session is still stuck offline after a recent restart; waiting before trying again.",
+                new
+                {
+                    bound = true,
+                    joined = false,
+                    d2rReady = false,
                     templatePath = templateLoad.Path,
                     templateExists = templateLoad.Exists,
                     templateLength = templateLoad.ContentLength
@@ -2633,7 +2686,17 @@ public sealed class VmOperations
                 return true;
             }
 
-            if (IsCharacterScreenOffline(input))
+            // A broken Battle.net session surfaces here as "Failed to authenticate" or "Cannot
+            // Connect to Server" over the Online tab click - the same generic OK-dialog widget
+            // as the join/create game error dialogs (identical box position and OK button,
+            // confirmed against reference captures). Left undismissed it blocks every further
+            // Online tab click for the rest of this loop, so the retry below never actually
+            // retries - it just spins against a dialog nobody is closing.
+            if (IsGameEntryErrorDialogOpen(input))
+            {
+                await DismissGameEntryErrorDialogAsync(input, cancellationToken);
+            }
+            else if (IsCharacterScreenOffline(input))
             {
                 ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CharacterOnlineTab));
             }
@@ -3466,6 +3529,18 @@ public sealed class VmOperations
         {
             MarkLobbyOrGameInteraction("Confirmed Lobby visually before menu automation.");
             return null;
+        }
+
+        // Previously unchecked here: a cold/stale cache landing on the offline character screen
+        // fell straight through to the blind character-slot-then-Lobby click below, which clicks
+        // real UI elements on a screen that isn't actually ready yet and surfaces as a confusing
+        // "lobby not visible" failure with no mention of Battle.net being offline.
+        if (IsCharacterScreenOffline(input)
+            && !await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
+        {
+            return CommandResult.Failure(
+                $"D2R is at the offline character screen, and the Online tab did not reconnect within {GetCharacterScreenReconnectSeconds()}s.{FormatInputDiagnosticsSuffix()}",
+                await CollectStatusAsync(cancellationToken));
         }
 
         if (activity.State == D2RActivityState.CharacterScreenIdle)

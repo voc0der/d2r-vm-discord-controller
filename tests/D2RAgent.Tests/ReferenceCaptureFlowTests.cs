@@ -213,4 +213,25 @@ public sealed class ReferenceCaptureFlowTests
     {
         Assert.Equal(expected, ReferenceCaptureClassifier.ClassifyReady(capture));
     }
+
+    // A client-side broken Battle.net session (not a game-entry error) surfaces "Failed to
+    // authenticate. Please try again." or "Cannot Connect to Server" after clicking the offline
+    // character screen's Online tab - through the exact same generic OK-dialog widget as the
+    // join/create game errors below, not a different one. This pins that both new failure
+    // dialogs are recognized by the existing detector, that the transient "Connecting to
+    // Battle.net" dialog (no OK button rendered yet) is correctly NOT mistaken for a failure,
+    // and that the plain offline character screen with no dialog up at all doesn't false-positive.
+    [Theory]
+    [InlineData("battlenet_reconnect_failed_to_authenticate.png", true)]
+    [InlineData("battlenet_reconnect_cannot_connect.png", true)]
+    [InlineData("battlenet_reconnect_connecting.png", false)]
+    [InlineData("character_screen_but_offline.png", false)]
+    [InlineData("char_screen_act1.png", false)]
+    [InlineData("game_password_doesnt_match.png", true)]
+    [InlineData("cant_join_hell.png", true)]
+    [InlineData("game_exists_name.png", true)]
+    public void GameEntryErrorDialogDetectorAlsoCoversBattleNetReconnectFailures(string capture, bool expectedOpen)
+    {
+        Assert.Equal(expectedOpen, ReferenceCaptureClassifier.IsGameEntryErrorDialogOpen(capture));
+    }
 }
