@@ -913,7 +913,8 @@ public sealed class DiscordBot
 
     private async Task QueueSaveExitAllAsync(SlashContext context)
     {
-        // menu_save_exit's own automation (Escape, click, wait up to ~12s) is fast - the
+        // menu_save_exit's own automation (up to 3 rounds of Escape, click, wait up to ~12s,
+        // retried while the in-game HUD stays visible) tops out around 40s - the
         // budget here almost entirely covers time spent waiting for the agent's command
         // gate, which a preceding create-game-all/join-all can still be holding for as long
         // as those commands' own 210s timeout allows. A shorter budget here doesn't make

@@ -32,6 +32,9 @@ public sealed class VmOperations
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
     private const int FastMenuDelayMs = 150;
+    // Three rounds cover the worst blind-Escape case: a lagged first attempt whose menu opened
+    // after the click needs one round to toggle the menu back closed and a third to land clean.
+    private const int SaveExitMaxAttempts = 3;
     private const int EntryPollIntervalMs = 200;
     private const int LobbyPollIntervalMs = 250;
     // ComputeVisibleStateClassifierBreakdown/ComputeReadyScreenClassifierBreakdown are ~25-35
@@ -1963,12 +1966,47 @@ public sealed class VmOperations
     private async Task<CommandResult> SaveAndExitAsync(CancellationToken cancellationToken)
     {
         var input = FocusD2R();
-        input.PressEscape();
-        _ = input.SendWindowEscapeKey(GetD2RProcessNames());
-        await DelayStepAsync(cancellationToken);
-        ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.SaveAndExitButton));
-        var postExitState = await WaitForPostSaveExitMenuAsync(input, cancellationToken);
-        return CommandResult.Success($"Save and Exit flow completed; {postExitState}.", await CollectStatusAsync(cancellationToken));
+        var lastPostExitState = "post-exit menu state was not visually confirmed";
+        for (var attempt = 1; attempt <= SaveExitMaxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            MarkCommandCheckpoint($"SaveAndExitAsync: attempt {attempt}/{SaveExitMaxAttempts}");
+            input.PressEscape();
+            _ = input.SendWindowEscapeKey(GetD2RProcessNames());
+            await DelayStepAsync(cancellationToken);
+            ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.SaveAndExitButton));
+            var (confirmed, postExitState) = await WaitForPostSaveExitMenuAsync(input, cancellationToken);
+            lastPostExitState = postExitState;
+            if (confirmed)
+            {
+                var attemptNote = attempt > 1 ? $" on attempt {attempt}" : "";
+                return CommandResult.Success(
+                    $"Save and Exit flow completed{attemptNote}; {postExitState}.",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
+            // Only a visible in-game HUD justifies another Escape+click round. Anything else
+            // (loading screen after a slow exit, disconnect prompt) gains nothing from more
+            // Escape presses, so keep the old unconfirmed-success behavior for those.
+            if (!IsInGameReady(input))
+            {
+                MarkD2RActivityUnknown("Save and Exit completed, but the post-exit menu state was not detected.");
+                return CommandResult.Success(
+                    $"Save and Exit flow completed; {postExitState}.",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
+            // Retrying blind is safe even when the previous Escape actually opened the menu
+            // and only the click missed: the next Escape closes it, that click lands in the
+            // world, and the attempt after that opens and clicks cleanly - it converges
+            // within the attempt budget either way.
+            MarkLobbyOrGameInteraction($"Save and Exit attempt {attempt} left D2R still in a game; retrying.");
+        }
+
+        MarkLobbyOrGameInteraction("Save and Exit failed; the in-game HUD is still visible.");
+        return CommandResult.Failure(
+            $"Save and Exit did not leave the game after {SaveExitMaxAttempts} attempts; the in-game HUD is still visible ({lastPostExitState}).{FormatInputDiagnosticsSuffix()}",
+            await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<CommandResult?> EnsureCharacterScreenReadyForMenuAsync(
@@ -3558,7 +3596,7 @@ public sealed class VmOperations
         return null;
     }
 
-    private async Task<string> WaitForPostSaveExitMenuAsync(
+    private async Task<(bool Confirmed, string Description)> WaitForPostSaveExitMenuAsync(
         WindowsInput input,
         CancellationToken cancellationToken)
     {
@@ -3575,19 +3613,20 @@ public sealed class VmOperations
             if (IsAnyLobbyEntryMenuVisible(input))
             {
                 MarkLobbyOrGameInteraction("Save and Exit returned to the lobby.");
-                return "returned to the lobby";
+                return (true, "returned to the lobby");
             }
 
             if (IsCharacterScreenReady(input) || IsCharacterScreenOffline(input))
             {
                 MarkCharacterScreenIdle("Save and Exit returned to the character screen.");
-                return "returned to the character screen";
+                return (true, "returned to the character screen");
             }
 
             if (DateTimeOffset.UtcNow >= deadline)
             {
-                MarkD2RActivityUnknown("Save and Exit completed, but the post-exit menu state was not detected.");
-                return "post-exit menu state was not visually confirmed";
+                // Activity marking is left to the caller: only it knows whether the HUD is
+                // still visible (retry) or the screen is genuinely unrecognized (unknown).
+                return (false, "post-exit menu state was not visually confirmed");
             }
 
             await Task.Delay(EntryPollIntervalMs, cancellationToken);
