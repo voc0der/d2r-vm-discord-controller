@@ -1972,7 +1972,7 @@ public sealed class VmOperations
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): opening friends drawer");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.LobbyPartyIcon));
             openedDrawer = true;
-            await DelayLongAsync(cancellationToken);
+            await PollForConditionAsync(() => TryDetectFriendsDrawerOpen(input) == true, cancellationToken);
         }
         else if (drawerOpen == true)
         {
@@ -1999,13 +1999,13 @@ public sealed class VmOperations
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion after opening drawer");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
-            await DelayLongAsync(cancellationToken);
+            await PollForConditionAsync(() => GetFriendsListExpandedEvidence(input).IsExpanded, cancellationToken);
         }
         else if (accordionAction == FriendsAccordionAction.ExpandCollapsed)
         {
             MarkCommandCheckpoint($"EnsureFriendsListVisibleAsync({context}): expanding Friends accordion");
             ClickD2RStatefulToggle(input, GetUiPoint(D2RUiCoordinateTarget.FriendsAccordionHeader));
-            await DelayLongAsync(cancellationToken);
+            await PollForConditionAsync(() => GetFriendsListExpandedEvidence(input).IsExpanded, cancellationToken);
         }
         else
         {
@@ -5381,6 +5381,32 @@ public sealed class VmOperations
     private Task DelayLongAsync(CancellationToken cancellationToken)
     {
         return Task.Delay(Math.Max(_config.Ui.LongDelayMs, 100), cancellationToken);
+    }
+
+    // After a menu toggle with an observable result (the friends drawer opening, the accordion
+    // expanding), wait for that result to actually appear instead of sleeping a flat
+    // DelayLongAsync regardless of how fast the UI responded. Capped at the same LongDelayMs
+    // budget the fixed sleep used, so a slow VM still gets the full time - this can only ever
+    // finish earlier, never later. Same "poll for evidence, capped" shape as
+    // WaitForPostSaveExitMenuAsync; the condition is bounded so a hung GDI sample can't stall it.
+    private async Task PollForConditionAsync(Func<bool> condition, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(Math.Max(_config.Ui.LongDelayMs, 100));
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (TryRunBounded(condition, EntryLoopCheckBoundMs, fallback: false))
+            {
+                return;
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return;
+            }
+
+            await Task.Delay(EntryPollIntervalMs, cancellationToken);
+        }
     }
 
     private Task DelayReadyNudgeAsync(CancellationToken cancellationToken)
