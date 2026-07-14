@@ -1660,15 +1660,25 @@ public sealed class VmOperations
         }
 
         ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
-        if (!await WaitForStrictFollowAutoEntryAsync(input, cancellationToken))
-        {
-            return CommandResult.Failure(
-                $"Found the bound friend at row {matchedRow} and clicked Join Game, but strict in-game HUD confirmation did not appear after the join flow reported success. {scoreSummary}",
-                await CollectStatusAsync(cancellationToken));
-        }
 
+        // ClickFriendJoinOptionUntilEnteredGameAsync already confirmed entry through
+        // WaitForGameEntryAsync, which samples the strict HUD globes FIRST and only accepts a
+        // broad in-game frame after a grace period. Re-running a second, globes-only strict gate
+        // here just re-litigates that same decision with no fallback: when entry was legitimately
+        // confirmed via the broad frame (a dark load area, or the legacy/modern-graphics HUD
+        // difference), the gate fails even though the client is in and playing - and the old
+        // failure return then called CollectStatusAsync, which stalled for the entire game
+        // (2m35s captured in watch-follow-auto-20260714-182232.log, the bot in-game the whole
+        // time, only unblocked when the leader left). Trust the entry the join flow already
+        // confirmed; keep the strict check only as a brief best-effort signal for the log, never
+        // as a gate and never on the heavy CollectStatusAsync path.
+        var strictlyConfirmed = await WaitForStrictFollowAutoEntryAsync(input, cancellationToken);
         MarkLobbyOrGameInteraction("Joined bound friend's game via follow-auto.");
-        return CommandResult.Success("Joined the bound friend's game.", new { bound = true, joined = true, fingerprintScores = scoreSummary });
+        return CommandResult.Success(
+            strictlyConfirmed
+                ? "Joined the bound friend's game."
+                : "Joined the bound friend's game (entry confirmed by the join flow; strict HUD globes were not separately confirmed).",
+            new { bound = true, joined = true, strictlyConfirmed, fingerprintScores = scoreSummary });
     }
 
     internal static bool CanAutoClickFollowFingerprint(FriendFingerprint template)
