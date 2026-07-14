@@ -820,6 +820,24 @@ public sealed class VmOperations
         }
 
         var input = new WindowsInput();
+
+        // menu_ready is frequently run defensively right before another menu command - notably
+        // the follow-auto rejoin, which fires it immediately after the client left its last
+        // game. When the client is already back at the lobby (confirmed operationally within
+        // 1-2s of Save and Exit) or still in a game, there is nothing to launch or skip. Running
+        // the startup plan below anyway is pure dead time: it pumps toward the CHARACTER screen
+        // and only recognizes "already at the lobby/in game" AFTER the whole plan finishes (see
+        // the ready.LastState check further down). Detect those states up front and return
+        // immediately so a rejoin can start right away instead of waiting the plan out.
+        if (TryRunBounded(() => IsInGameReady(input), InGameHudSampleBoundMs, fallback: false)
+            || IsAnyLobbyEntryMenuVisible(input))
+        {
+            MarkLobbyOrGameInteraction("Ready flow short-circuited: client already at the lobby or in a game.");
+            return CommandResult.Success(
+                "D2R is already at the lobby or in a game; ready flow skipped.",
+                await CollectStatusAsync(cancellationToken));
+        }
+
         var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken, keepLaunchAlive: true, followAutoRunId: followAutoRunId);
         if (!ready.Ready)
         {
@@ -3820,6 +3838,15 @@ public sealed class VmOperations
             12);
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(timeoutSeconds);
 
+        // The leave is done the moment the in-game HUD is gone. Positively re-identifying the
+        // exact post-exit menu can lag (the client returns to the lobby with the friends drawer
+        // still covering the Join/Create tabs, or sits a beat on a black exit transition), and
+        // waiting the full timeout for that match is what left a client that was ready to rejoin
+        // in ~1-2s idling for the whole window. So also treat "no longer in a game" as done.
+        // Require two consecutive HUD-gone reads so a single frame of exit-animation flicker
+        // can't fire it early; a genuinely missed Save and Exit click keeps the HUD up, so
+        // IsInGameReady stays true, this never trips, and the caller's retry path is preserved.
+        var consecutiveHudGone = 0;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -3834,6 +3861,15 @@ public sealed class VmOperations
             {
                 MarkCharacterScreenIdle("Save and Exit returned to the character screen.");
                 return (true, "returned to the character screen");
+            }
+
+            consecutiveHudGone = TryRunBounded(() => IsInGameReady(input), InGameHudSampleBoundMs, fallback: true)
+                ? 0
+                : consecutiveHudGone + 1;
+            if (consecutiveHudGone >= 2)
+            {
+                MarkD2RActivityUnknown("Save and Exit left the game; the specific post-exit menu was not yet identified.");
+                return (true, "left the game");
             }
 
             if (DateTimeOffset.UtcNow >= deadline)
