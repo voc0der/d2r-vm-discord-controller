@@ -81,13 +81,16 @@ public sealed class FollowAutoPulsePolicyTests
     }
 
     // "Couldn't check" (loading screen, sample failure, incomparable template) is not evidence
-    // of absence: fall back to count-drop semantics and reset the streak.
+    // of absence: fall back to count-drop semantics. With round-robin vantages it must not
+    // erase another vantage's evidence either, so the missing streak is preserved - a VM stuck
+    // outside the game taking its turn between the flagging scan and the confirming scan can't
+    // restart the confirmation.
     [Theory]
     [InlineData(4, 5, FollowAutoPulseAction.Leave)]
     [InlineData(5, 5, FollowAutoPulseAction.Wait)]
     [InlineData(null, 5, FollowAutoPulseAction.Wait)]
     [InlineData(5, null, FollowAutoPulseAction.Wait)]
-    public void UnverifiableLeaderFallsBackToCountDrop(int? playerCount, int? baseline, FollowAutoPulseAction expected)
+    public void UnverifiableLeaderFallsBackToCountDropAndPreservesTheStreak(int? playerCount, int? baseline, FollowAutoPulseAction expected)
     {
         var decision = FollowAutoPulsePolicy.Decide(
             leaderBound: true,
@@ -97,7 +100,39 @@ public sealed class FollowAutoPulsePolicyTests
             priorLeaderMissingStreak: 1);
 
         Assert.Equal(expected, decision.Action);
-        Assert.Equal(0, decision.LeaderMissingStreak);
+        Assert.Equal(1, decision.LeaderMissingStreak);
+    }
+
+    [Fact]
+    public void FlagThenBlindVantageThenConfirmStillLeaves()
+    {
+        // hc2 flags the leader missing, hc3 is stuck in a loading screen on its turn, hc4's
+        // scan confirms - the blind turn must not have reset the streak.
+        var flagged = FollowAutoPulsePolicy.Decide(true, false, 5, 5, 0);
+        Assert.Equal(FollowAutoPulseAction.ConfirmLeaderGone, flagged.Action);
+
+        var blind = FollowAutoPulsePolicy.Decide(true, null, null, 5, flagged.LeaderMissingStreak);
+        Assert.Equal(FollowAutoPulseAction.Wait, blind.Action);
+        Assert.Equal(flagged.LeaderMissingStreak, blind.LeaderMissingStreak);
+
+        var confirmed = FollowAutoPulsePolicy.Decide(true, false, 5, 5, blind.LeaderMissingStreak);
+        Assert.Equal(FollowAutoPulseAction.Leave, confirmed.Action);
+    }
+
+    // The rotated delay divides the base poll interval by the online vantage count (each VM
+    // keeps its original per-VM cadence; the fleet samples N times faster), floored so the
+    // host<->agent chatter stays sane, and degenerates to the base delay for a single VM.
+    [Theory]
+    [InlineData(15, 4, 3.75)]
+    [InlineData(6, 4, 1.5)]
+    [InlineData(6, 8, 1.0)] // 0.75s divided, floored to MinRotatedPollSeconds
+    [InlineData(15, 1, 15.0)]
+    [InlineData(15, 0, 15.0)]
+    public void RotatedPollDelayDividesByVantageCountWithAFloor(int baseSeconds, int vantages, double expectedSeconds)
+    {
+        var delay = FollowAutoPulsePolicy.GetRotatedPollDelay(TimeSpan.FromSeconds(baseSeconds), vantages);
+
+        Assert.Equal(expectedSeconds, delay.TotalSeconds, 9);
     }
 
     [Theory]

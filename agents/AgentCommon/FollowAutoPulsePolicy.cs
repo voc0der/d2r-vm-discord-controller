@@ -29,15 +29,39 @@ public sealed record FollowAutoPulseDecision(FollowAutoPulseAction Action, int L
 // same game because the bound friend was still in it). When a leader fingerprint is bound, the
 // leave signal becomes "the leader's name is no longer in the party bar", and count drops while
 // the leader is verified present just move the baseline.
+//
+// Pulses round-robin across every online account: each VM is still probed at the original
+// PlayerCountDropPollPolicy cadence, but with N vantages taking turns the fleet notices a
+// change N times sooner, and the scan that confirms a flagged absence naturally comes from a
+// different VM's screen than the one that flagged it.
 public static class FollowAutoPulsePolicy
 {
     // Two consecutive missing samples before leaving: absorbs a one-pulse transient without
-    // adding meaningful latency (the confirm resample runs after ConfirmResampleDelaySeconds,
-    // not a full poll interval). Loading screens don't need this allowance at all - they fail
-    // the in-game check and arrive here as LeaderPresent=null, which resets the streak.
+    // adding meaningful latency (the confirm scan runs after ConfirmResampleDelaySeconds or
+    // the rotated poll delay, whichever is shorter). Loading screens don't consume this
+    // allowance - they fail the in-game check and arrive here as LeaderPresent=null.
     public const int LeaderGoneConfirmationSamples = 2;
 
     public const int ConfirmResampleDelaySeconds = 2;
+
+    // Floor for the divided rotation delay: below this the extra host<->agent chatter buys
+    // nothing (an agent-side scan plus round-trip already costs a meaningful fraction of it).
+    public const int MinRotatedPollSeconds = 1;
+
+    // The base PlayerCountDropPollPolicy delay is how often one vantage can reasonably be
+    // probed; dividing it by the online vantage count keeps that per-VM cadence while the
+    // rotation multiplies the fleet-wide sampling rate.
+    public static TimeSpan GetRotatedPollDelay(TimeSpan baseDelay, int vantageCount)
+    {
+        if (vantageCount <= 1)
+        {
+            return baseDelay;
+        }
+
+        var divided = TimeSpan.FromTicks(baseDelay.Ticks / vantageCount);
+        var floor = TimeSpan.FromSeconds(MinRotatedPollSeconds);
+        return divided >= floor ? divided : floor;
+    }
 
     public static FollowAutoPulseDecision Decide(
         bool leaderBound,
@@ -61,12 +85,15 @@ public static class FollowAutoPulsePolicy
 
         // No leader bound, or this pulse could not check (not visibly in a game, sample
         // failure, or an incomparable template): fall back to the original count-drop
-        // semantics rather than never leaving. The streak resets because "couldn't check" is
-        // not evidence of absence.
+        // semantics rather than never leaving. "Couldn't check" is not evidence of absence,
+        // but with rotating vantages it must not erase another vantage's evidence either - one
+        // VM sitting in a loading screen (or stuck outside the game) takes its turn between
+        // the flagging scan and the confirming scan, so a bound leader's missing streak is
+        // preserved across unverifiable pulses and only an actual sighting resets it.
         return new FollowAutoPulseDecision(
             playerCount is { } count && baseline is { } known && count < known
                 ? FollowAutoPulseAction.Leave
                 : FollowAutoPulseAction.Wait,
-            0);
+            leaderBound ? priorLeaderMissingStreak : 0);
     }
 }

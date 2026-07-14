@@ -4025,7 +4025,7 @@ public sealed class DiscordBot
                 if (pending.Length == 0 && online.Length > 0)
                 {
                     _followAutoGameNumber++;
-                    var initialPulse = await TryFetchFirstOnlineAccountFollowPulseAsync();
+                    var initialPulse = await TryFetchFollowPulseAsync(rotation: 0);
                     await UpdateFollowAutoMonitorAsync(
                         initialPulse.LeaderBound
                             ? $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for the bound leader to leave..."
@@ -4498,24 +4498,29 @@ public sealed class DiscordBot
         }
     }
 
-    // Issue #25 follow-up (bind-in-game): follow-auto's in-game wait. Each pulse reads player
-    // count AND leader presence from the first online account, and FollowAutoPulsePolicy turns
-    // that into stay/rebaseline/confirm/leave - see that class for the decision table and why
-    // count drops stop mattering while the bound leader is verified present. Returns a short
-    // human-readable reason for the monitor message. Join-auto keeps using
-    // WaitForPlayerCountDropAsync above: its games are the accounts' own private games, where
-    // "someone left" really does mean the game is over.
+    // Issue #25 follow-up (bind-in-game): follow-auto's in-game wait. Pulses round-robin
+    // across every online account - the rotated delay divides the base poll interval by the
+    // vantage count, so each VM is still probed at the original cadence while the fleet as a
+    // whole notices a change that much sooner, and a flagged leader absence gets confirmed by
+    // the NEXT vantage in the rotation rather than the same screen twice.
+    // FollowAutoPulsePolicy turns each sample into stay/rebaseline/confirm/leave - see that
+    // class for the decision table and why count drops stop mattering while the bound leader
+    // is verified present. Returns a short human-readable reason for the monitor message.
+    // Join-auto keeps using WaitForPlayerCountDropAsync above: its games are the accounts' own
+    // private games, where "someone left" really does mean the game is over.
     private async Task<string> WaitForFollowAutoGameEndAsync(
         int? baseline,
         Func<TimeSpan> pollDelay,
         CancellationToken cancellationToken)
     {
         var leaderMissingStreak = 0;
-        var nextDelay = pollDelay();
+        var rotation = 0;
+        string? flaggedBy = null;
+        var nextDelay = GetRotatedFollowPollDelay(pollDelay);
         while (true)
         {
             await Task.Delay(nextDelay, cancellationToken);
-            var sample = await TryFetchFirstOnlineAccountFollowPulseAsync();
+            var sample = await TryFetchFollowPulseAsync(rotation++);
             var decision = FollowAutoPulsePolicy.Decide(
                 sample.LeaderBound,
                 sample.LeaderPresent,
@@ -4526,22 +4531,39 @@ public sealed class DiscordBot
             switch (decision.Action)
             {
                 case FollowAutoPulseAction.Leave:
-                    return sample is { LeaderBound: true, LeaderPresent: false }
-                        ? "the bound leader left the game"
-                        : "player count dropped";
+                    if (sample is not { LeaderBound: true, LeaderPresent: false })
+                    {
+                        return "player count dropped";
+                    }
+
+                    return flaggedBy is { } flagger
+                        && sample.AccountKey is { } confirmer
+                        && !string.Equals(flagger, confirmer, StringComparison.OrdinalIgnoreCase)
+                        ? $"the bound leader left the game ({flagger} flagged it, {confirmer} confirmed)"
+                        : "the bound leader left the game";
                 case FollowAutoPulseAction.RebaselineAndWait:
                     baseline = sample.PlayerCount ?? baseline;
+                    flaggedBy = null;
                     break;
                 case FollowAutoPulseAction.ConfirmLeaderGone:
-                    nextDelay = TimeSpan.FromSeconds(FollowAutoPulsePolicy.ConfirmResampleDelaySeconds);
+                    flaggedBy ??= sample.AccountKey;
+                    var rotated = GetRotatedFollowPollDelay(pollDelay);
+                    var confirm = TimeSpan.FromSeconds(FollowAutoPulsePolicy.ConfirmResampleDelaySeconds);
+                    nextDelay = rotated < confirm ? rotated : confirm;
                     continue;
                 default:
                     baseline ??= sample.PlayerCount;
                     break;
             }
 
-            nextDelay = pollDelay();
+            nextDelay = GetRotatedFollowPollDelay(pollDelay);
         }
+    }
+
+    private TimeSpan GetRotatedFollowPollDelay(Func<TimeSpan> pollDelay)
+    {
+        var (online, _) = GetAccountEntriesByConnectivity();
+        return FollowAutoPulsePolicy.GetRotatedPollDelay(pollDelay(), online.Length);
     }
 
     private TimeSpan GetJoinAutoPlayerCountDropPollDelay()
@@ -4562,27 +4584,29 @@ public sealed class DiscordBot
 
     private async Task<int?> TryFetchFirstOnlineAccountPlayerCountAsync()
     {
-        return (await TryFetchFirstOnlineAccountFollowPulseAsync()).PlayerCount;
+        return (await TryFetchFollowPulseAsync(rotation: 0)).PlayerCount;
     }
 
-    private sealed record FollowPulseSample(int? PlayerCount, bool LeaderBound, bool? LeaderPresent);
+    private sealed record FollowPulseSample(int? PlayerCount, bool LeaderBound, bool? LeaderPresent, string? AccountKey);
 
-    // LeaderPresent stays null whenever it wasn't actually verified (no fresh sample, no leader
-    // bound, or the agent couldn't check) - the cached-status fallback can only ever supply a
-    // count, and pretending it said anything about the leader would turn "couldn't check" into
-    // a leave trigger.
-    private async Task<FollowPulseSample> TryFetchFirstOnlineAccountFollowPulseAsync()
+    // Samples the (rotation % online-count)th online account, so consecutive pulses take turns
+    // across the fleet. LeaderPresent stays null whenever it wasn't actually verified (no fresh
+    // sample, no leader bound, or the agent couldn't check) - the cached-status fallback can
+    // only ever supply a count, and pretending it said anything about the leader would turn
+    // "couldn't check" into a leave trigger.
+    private async Task<FollowPulseSample> TryFetchFollowPulseAsync(int rotation)
     {
         var (entries, _) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            return new FollowPulseSample(null, false, null);
+            return new FollowPulseSample(null, false, null, null);
         }
 
+        var (accountKey, account) = entries[rotation % entries.Length];
         try
         {
             var sampleResult = await _registry.SendCommandAsync(
-                entries[0].Value.AgentId,
+                account.AgentId,
                 "sample_player_count",
                 args: null,
                 TimeSpan.FromSeconds(15));
@@ -4591,35 +4615,37 @@ public sealed class DiscordBot
                 return new FollowPulseSample(
                     TryGetInt(sampleData, "playerCount", out var sampledPlayerCount) ? sampledPlayerCount : null,
                     TryGetBoolean(sampleData, "leaderBound", out var leaderBound) && leaderBound,
-                    TryGetBoolean(sampleData, "leaderPresent", out var leaderPresent) ? leaderPresent : null);
+                    TryGetBoolean(sampleData, "leaderPresent", out var leaderPresent) ? leaderPresent : null,
+                    accountKey);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Could not fetch fresh player count sample; falling back to cached status.");
+            _logger.LogDebug(ex, "Could not fetch fresh player count sample from {AccountKey}; falling back to cached status.", accountKey);
         }
 
         try
         {
             var result = await _registry.SendCommandAsync(
-                entries[0].Value.AgentId,
+                account.AgentId,
                 "status",
                 args: null,
                 TimeSpan.FromSeconds(6));
             if (!result.Ok || result.Data is not { } data)
             {
-                return new FollowPulseSample(null, false, null);
+                return new FollowPulseSample(null, false, null, accountKey);
             }
 
             using var document = JsonDocument.Parse(data.GetRawText());
             return new FollowPulseSample(
                 TryGetInt(document.RootElement, "lastPartyMemberCount", out var otherMembers) ? otherMembers + 1 : null,
                 LeaderBound: false,
-                LeaderPresent: null);
+                LeaderPresent: null,
+                accountKey);
         }
         catch (Exception)
         {
-            return new FollowPulseSample(null, false, null);
+            return new FollowPulseSample(null, false, null, accountKey);
         }
     }
 

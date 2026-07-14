@@ -124,10 +124,14 @@ bound, whether that player's name is visible in the party bar:
 
 `leaderPresent` is `null` (not `false`) whenever the check could not actually run - no leader
 bound, not visibly in a game, or the capture failed - so the host can distinguish "leader is
-definitely gone" from "this pulse couldn't check". Follow-auto's host-side loop feeds these
+definitely gone" from "this pulse couldn't check". Follow-auto's host-side loop round-robins the
+pulse across every online account, dividing the base poll interval by the vantage count (each VM
+keeps its original per-VM cadence; the fleet notices changes that much sooner), and feeds the
 fields through `FollowAutoPulsePolicy`: while the leader is verified present, player-count drops
-only move the baseline; the leave trigger is the leader's name disappearing on two consecutive
-samples (with a quick confirm resample between them).
+only move the baseline; the leave trigger is the leader's name missing on two consecutive
+informative scans - the confirming scan normally comes from the next VM in the rotation, and an
+unverifiable pulse in between (a vantage mid-loading-screen) neither confirms nor resets the
+flag.
 
 After `menu_play`, `menu_join_game`, `menu_create_game`, and `menu_join_friend`, the VM agent can wait and press `G` to switch to legacy graphics. This is controlled by `ui.toggleLegacyGraphicsAfterEnteringGame` and `ui.legacyGraphicsToggleDelaySeconds` in `vm-agent.config.json`.
 
