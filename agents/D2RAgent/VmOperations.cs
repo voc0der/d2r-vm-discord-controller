@@ -3863,13 +3863,28 @@ public sealed class VmOperations
                 return (true, "returned to the character screen");
             }
 
-            consecutiveHudGone = TryRunBounded(() => IsInGameReady(input), InGameHudSampleBoundMs, fallback: true)
-                ? 0
-                : consecutiveHudGone + 1;
-            if (consecutiveHudGone >= 2)
+            // Distinguish "sampled and the HUD is present" from "couldn't sample in time". Every
+            // save-exit on a busy host runs under GDI contention (the status watcher polls the
+            // same regions every ~2s), so a bounded IsInGameReady that can't grab a slot or finish
+            // within the bound used to fall back to "in game" and reset the counter - which starved
+            // this early return, leaving the loop to always run to the 12s deadline even when the
+            // client returned to the lobby in a second or two. Treat a failed sample as no
+            // information: leave the counter alone so only a real HUD-present read resets it. A
+            // genuinely missed Save and Exit click keeps the HUD up, so any read that does complete
+            // sees it and this never trips, preserving the caller's retry path.
+            var hudPresent = TryRunBounded<bool?>(() => IsInGameReady(input), InGameHudSampleBoundMs, fallback: null);
+            if (hudPresent == true)
             {
-                MarkD2RActivityUnknown("Save and Exit left the game; the specific post-exit menu was not yet identified.");
-                return (true, "left the game");
+                consecutiveHudGone = 0;
+            }
+            else if (hudPresent == false)
+            {
+                consecutiveHudGone++;
+                if (consecutiveHudGone >= 2)
+                {
+                    MarkD2RActivityUnknown("Save and Exit left the game; the specific post-exit menu was not yet identified.");
+                    return (true, "left the game");
+                }
             }
 
             if (DateTimeOffset.UtcNow >= deadline)
