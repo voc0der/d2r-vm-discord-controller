@@ -125,13 +125,16 @@ bound, whether that player's name is visible in the party bar:
 `leaderPresent` is `null` (not `false`) whenever the check could not actually run - no leader
 bound, not visibly in a game, or the capture failed - so the host can distinguish "leader is
 definitely gone" from "this pulse couldn't check". Follow-auto's host-side loop round-robins the
-pulse across every online account, dividing the base poll interval by the vantage count (each VM
-keeps its original per-VM cadence; the fleet notices changes that much sooner), and feeds the
-fields through `FollowAutoPulsePolicy`: while the leader is verified present, player-count drops
-only move the baseline; the leave trigger is the leader's name missing on two consecutive
-informative scans - the confirming scan normally comes from the next VM in the rotation, and an
-unverifiable pulse in between (a vantage mid-loading-screen) neither confirms nor resets the
-flag.
+pulse across every online account on a divided heartbeat (`FollowAutoPulsePolicy.GetHeartbeat`
+halves the shared count-drop cadence, then divides by the online vantage count and floors at 1s),
+so the fleet notices a change several times faster than any one VM could. `FollowAutoPulsePolicy`
+classifies each sample: leader present -> rebaseline; player-count drop with no leader signal ->
+leave; leader missing -> raise a flag. A flag does not leave on its own - the host immediately
+forces a leader check on a *different* online VM, and only leaves if that independent vantage also
+can't see the leader (the leave reason names both accounts). A second VM that still sees the
+leader clears the flag as a transient; if no other VM can get a clean read at that instant, the
+loop keeps waiting rather than leaving on one screen's word. With only a single VM online there is
+no independent screen, so that lone vantage falls back to requiring two back-to-back misses.
 
 After `menu_play`, `menu_join_game`, `menu_create_game`, and `menu_join_friend`, the VM agent can wait and press `G` to switch to legacy graphics. This is controlled by `ui.toggleLegacyGraphicsAfterEnteringGame` and `ui.legacyGraphicsToggleDelaySeconds` in `vm-agent.config.json`.
 

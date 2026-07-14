@@ -2,22 +2,22 @@ namespace AgentCommon;
 
 public enum FollowAutoPulseAction
 {
-    // Keep polling; nothing indicates the current game is over.
+    // Keep polling; nothing on this sample indicates the current game is over.
     Wait,
 
     // Leader verified in the game: keep polling and move the player-count baseline to the
     // current count, so joins/leaves by strangers stop looking like a leave trigger later.
     RebaselineAndWait,
 
-    // Leader missing on this sample but not yet confirmed - resample quickly before acting,
-    // because a single miss can be a transient (something briefly drawn over the name band).
-    ConfirmLeaderGone,
+    // This vantage cannot see the bound leader. The host forces an immediate second opinion
+    // from a different VM before acting (see WaitForFollowAutoGameEndAsync) - one screen's
+    // word is not enough to leave on.
+    LeaderMissingHere,
 
-    // The current game is over for us: tell all accounts to leave.
-    Leave
+    // No leader signal available (none bound, or this pulse couldn't check) and the player
+    // count dropped below the baseline: fall back to the original count-drop leave trigger.
+    CountDropLeave
 }
-
-public sealed record FollowAutoPulseDecision(FollowAutoPulseAction Action, int LeaderMissingStreak);
 
 // Issue #25 follow-up (bind-in-game): decides what one follow-auto in-game pulse means. Split
 // out of the DiscordBot loop for the same reason as PlayerCountDropPollPolicy - the decision
@@ -30,70 +30,57 @@ public sealed record FollowAutoPulseDecision(FollowAutoPulseAction Action, int L
 // leave signal becomes "the leader's name is no longer in the party bar", and count drops while
 // the leader is verified present just move the baseline.
 //
-// Pulses round-robin across every online account: each VM is still probed at the original
-// PlayerCountDropPollPolicy cadence, but with N vantages taking turns the fleet notices a
-// change N times sooner, and the scan that confirms a flagged absence naturally comes from a
-// different VM's screen than the one that flagged it.
+// Pulses round-robin across every online account: each VM is probed on a divided heartbeat, so
+// the fleet notices a change several times faster than any one VM could. When a VM flags the
+// leader missing, the host does not wait for the next scheduled pulse to confirm - it forces an
+// immediate check on a *different* VM, and only leaves if that independent vantage agrees. This
+// class covers the per-sample classification and the heartbeat math; the two-vantage
+// confirmation itself lives in the host because it makes live agent calls.
 public static class FollowAutoPulsePolicy
 {
-    // Two consecutive missing samples before leaving: absorbs a one-pulse transient without
-    // adding meaningful latency (the confirm scan runs after ConfirmResampleDelaySeconds or
-    // the rotated poll delay, whichever is shorter). Loading screens don't consume this
-    // allowance - they fail the in-game check and arrive here as LeaderPresent=null.
+    // Floor for the divided heartbeat: below this the extra host<->agent chatter buys nothing
+    // (an agent-side scan plus round-trip already costs a meaningful fraction of a second).
+    public const int MinHeartbeatSeconds = 1;
+
+    // Follow-auto polls at a fraction of the shared count-drop cadence because leaving promptly
+    // when the leader goes matters more here than sparing the VMs a screen grab. The base
+    // PlayerCountDropPollPolicy delay (6-15s) is meant for one vantage watching a private game;
+    // dividing it speeds every VM up, and dividing again by the vantage count keeps each VM's
+    // own load roughly constant while the fleet-wide sample rate multiplies. Bump the divisor
+    // down toward 1 to make it gentler, up to make it more aggressive.
+    public const int HeartbeatSpeedupDivisor = 2;
+
+    // Single-vantage fallback only. With two or more VMs online a flagged absence is confirmed
+    // instantly by a different VM, so this streak never applies; with exactly one VM there is no
+    // independent screen to ask, so the lone vantage must miss the leader on two back-to-back
+    // scans (SingleVantageRescanSeconds apart) before leaving.
     public const int LeaderGoneConfirmationSamples = 2;
 
-    public const int ConfirmResampleDelaySeconds = 2;
+    public const int SingleVantageRescanSeconds = 1;
 
-    // Floor for the divided rotation delay: below this the extra host<->agent chatter buys
-    // nothing (an agent-side scan plus round-trip already costs a meaningful fraction of it).
-    public const int MinRotatedPollSeconds = 1;
-
-    // The base PlayerCountDropPollPolicy delay is how often one vantage can reasonably be
-    // probed; dividing it by the online vantage count keeps that per-VM cadence while the
-    // rotation multiplies the fleet-wide sampling rate.
-    public static TimeSpan GetRotatedPollDelay(TimeSpan baseDelay, int vantageCount)
+    public static TimeSpan GetHeartbeat(TimeSpan baseDelay, int vantageCount)
     {
-        if (vantageCount <= 1)
-        {
-            return baseDelay;
-        }
-
-        var divided = TimeSpan.FromTicks(baseDelay.Ticks / vantageCount);
-        var floor = TimeSpan.FromSeconds(MinRotatedPollSeconds);
-        return divided >= floor ? divided : floor;
+        var faster = TimeSpan.FromTicks(baseDelay.Ticks / HeartbeatSpeedupDivisor);
+        var perVantage = vantageCount > 1
+            ? TimeSpan.FromTicks(faster.Ticks / vantageCount)
+            : faster;
+        var floor = TimeSpan.FromSeconds(MinHeartbeatSeconds);
+        return perVantage < floor ? floor : perVantage;
     }
 
-    public static FollowAutoPulseDecision Decide(
-        bool leaderBound,
-        bool? leaderPresent,
-        int? playerCount,
-        int? baseline,
-        int priorLeaderMissingStreak)
+    // Interprets a single pulse. Note LeaderMissingHere is a *flag*, not a leave: the host must
+    // get an independent VM to agree before ending the game. A bound-but-unverifiable pulse
+    // (leaderPresent == null: loading screen, capture failure, incomparable template) is not
+    // evidence of absence, so it falls through to count-drop semantics rather than flagging.
+    public static FollowAutoPulseAction Classify(bool leaderBound, bool? leaderPresent, int? playerCount, int? baseline)
     {
         if (leaderBound && leaderPresent is { } present)
         {
-            if (present)
-            {
-                return new FollowAutoPulseDecision(FollowAutoPulseAction.RebaselineAndWait, 0);
-            }
-
-            var streak = priorLeaderMissingStreak + 1;
-            return new FollowAutoPulseDecision(
-                streak >= LeaderGoneConfirmationSamples ? FollowAutoPulseAction.Leave : FollowAutoPulseAction.ConfirmLeaderGone,
-                streak);
+            return present ? FollowAutoPulseAction.RebaselineAndWait : FollowAutoPulseAction.LeaderMissingHere;
         }
 
-        // No leader bound, or this pulse could not check (not visibly in a game, sample
-        // failure, or an incomparable template): fall back to the original count-drop
-        // semantics rather than never leaving. "Couldn't check" is not evidence of absence,
-        // but with rotating vantages it must not erase another vantage's evidence either - one
-        // VM sitting in a loading screen (or stuck outside the game) takes its turn between
-        // the flagging scan and the confirming scan, so a bound leader's missing streak is
-        // preserved across unverifiable pulses and only an actual sighting resets it.
-        return new FollowAutoPulseDecision(
-            playerCount is { } count && baseline is { } known && count < known
-                ? FollowAutoPulseAction.Leave
-                : FollowAutoPulseAction.Wait,
-            leaderBound ? priorLeaderMissingStreak : 0);
+        return playerCount is { } count && baseline is { } known && count < known
+            ? FollowAutoPulseAction.CountDropLeave
+            : FollowAutoPulseAction.Wait;
     }
 }

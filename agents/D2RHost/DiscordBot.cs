@@ -3539,9 +3539,63 @@ public sealed class DiscordBot
             }
         }
 
+        // Patch the "bound a bot instead of yourself" hole. The operator's own character is the
+        // one name visible from EVERY bot's party bar; a bot's own name never renders on its own
+        // screen (D2R omits you from your own party bar). So the freshly distributed name is
+        // checked against every other in-game account: if any of them reports it NOT visible,
+        // that account is the character we actually captured - a bot, counted at the wrong slot
+        // because the vantage's own character shifts the visible list. Refuse the bind instead
+        // of silently following a bot. Accounts that can't check right now (mid-loading, not in
+        // a game) return null and neither confirm nor disqualify - only an explicit "I'm in a
+        // game and I don't see this name" disqualifies.
+        var seenByOthers = new List<string>();
+        var missingFromOthers = new List<string>();
+        foreach (var (accountKey, account) in online)
+        {
+            if (string.Equals(accountKey, vantageKey, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var check = await TryFetchFollowPulseForAsync(accountKey, account);
+            if (check.LeaderPresent == true)
+            {
+                seenByOthers.Add(accountKey);
+            }
+            else if (check.LeaderPresent == false)
+            {
+                missingFromOthers.Add(accountKey);
+            }
+        }
+
+        if (missingFromOthers.Count > 0)
+        {
+            foreach (var (accountKey, account) in online)
+            {
+                try
+                {
+                    await _registry.SendCommandAsync(account.AgentId, "follow_clear_leader_template", new { }, TimeSpan.FromSeconds(15));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "follow_clear_leader_template (bind rollback) failed for {AccountKey}.", accountKey);
+                }
+            }
+
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"Position {partyPosition} on {vantageKey} captured a name that {string.Join(", ", missingFromOthers)} can't see in its own party bar - which means it's {missingFromOthers[0]}'s own character (a bot), not you.{glyphSummary} Bind cleared, nothing changed. "
+                + $"From {vantageKey}'s screen your own character isn't listed, so every member after that slot shifts up one - pick the position where you actually see your character, or run `/d2r screenshot {vantageKey}` to read the party bar first.");
+            return;
+        }
+
+        var verifiedSuffix = seenByOthers.Count > 0
+            ? $" Verified visible from {seenByOthers.Count} other account(s), so this is a player everyone shares rather than a bot."
+            : "";
+
         var message =
-            $"Captured the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s) and distributed it to {distributed}/{online.Length} online accounts.{glyphSummary} "
-            + $"Follow-auto now stays while this player is in the game and leaves when they leave. Verify the visible portrait on {vantageKey}; D2R omits that account's own character and can sort the party bar differently than join order.";
+            $"Captured the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s) and distributed it to {distributed}/{online.Length} online accounts.{glyphSummary}{verifiedSuffix} "
+            + "Follow-auto now stays while this player is in the game and leaves when they leave.";
         if (distributionFailures.Count > 0)
         {
             message += $" Template save failures: {string.Join("; ", distributionFailures)}";
@@ -4514,38 +4568,21 @@ public sealed class DiscordBot
         Func<TimeSpan> pollDelay,
         CancellationToken cancellationToken)
     {
-        var leaderMissingStreak = 0;
+        var singleVantageMissStreak = 0;
         var rotation = 0;
-        string? flaggedBy = null;
         var lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
-        var nextDelay = GetRotatedFollowPollDelay(pollDelay);
+        var nextDelay = GetFollowHeartbeat(pollDelay);
         while (true)
         {
             await Task.Delay(nextDelay, cancellationToken);
             var sample = await TryFetchFollowPulseAsync(rotation++);
-            var decision = FollowAutoPulsePolicy.Decide(
-                sample.LeaderBound,
-                sample.LeaderPresent,
-                sample.PlayerCount,
-                baseline,
-                leaderMissingStreak);
-            leaderMissingStreak = decision.LeaderMissingStreak;
-            switch (decision.Action)
+            switch (FollowAutoPulsePolicy.Classify(sample.LeaderBound, sample.LeaderPresent, sample.PlayerCount, baseline))
             {
-                case FollowAutoPulseAction.Leave:
-                    if (sample is not { LeaderBound: true, LeaderPresent: false })
-                    {
-                        return "player count dropped";
-                    }
-
-                    return flaggedBy is { } flagger
-                        && sample.AccountKey is { } confirmer
-                        && !string.Equals(flagger, confirmer, StringComparison.OrdinalIgnoreCase)
-                        ? $"the bound leader left the game ({flagger} flagged it, {confirmer} confirmed)"
-                        : "the bound leader left the game";
+                case FollowAutoPulseAction.CountDropLeave:
+                    return "player count dropped";
                 case FollowAutoPulseAction.RebaselineAndWait:
                     baseline = sample.PlayerCount ?? baseline;
-                    flaggedBy = null;
+                    singleVantageMissStreak = 0;
                     if (DateTimeOffset.UtcNow - lastLeaderVisibleReportUtc >= TimeSpan.FromSeconds(30))
                     {
                         lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
@@ -4554,27 +4591,88 @@ public sealed class DiscordBot
                     }
 
                     break;
-                case FollowAutoPulseAction.ConfirmLeaderGone:
-                    flaggedBy ??= sample.AccountKey;
-                    await UpdateFollowAutoMonitorAsync(
-                        $"Game #{_followAutoGameNumber}: bound leader not visible; confirming before leaving.{FormatBoundLeaderWatchDetail(sample)}");
-                    var rotated = GetRotatedFollowPollDelay(pollDelay);
-                    var confirm = TimeSpan.FromSeconds(FollowAutoPulsePolicy.ConfirmResampleDelaySeconds);
-                    nextDelay = rotated < confirm ? rotated : confirm;
-                    continue;
+                case FollowAutoPulseAction.LeaderMissingHere:
+                    var (online, _) = GetAccountEntriesByConnectivity();
+                    if (online.Length > 1)
+                    {
+                        singleVantageMissStreak = 0;
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: {sample.AccountKey} lost sight of the bound leader; asking another VM to confirm.{FormatBoundLeaderWatchDetail(sample)}");
+                        var (agreed, confirmer) = await ConfirmLeaderGoneFromAnotherVantageAsync(sample.AccountKey);
+                        if (agreed == true)
+                        {
+                            return sample.AccountKey is { } flagger && confirmer is { } confirmedBy
+                                ? $"the bound leader left the game ({flagger} flagged it, {confirmedBy} confirmed)"
+                                : "the bound leader left the game";
+                        }
+
+                        if (agreed == false)
+                        {
+                            // A different VM still sees the leader, so the first VM's miss was
+                            // a transient (name briefly occluded), not a real departure.
+                            baseline = sample.PlayerCount ?? baseline;
+                        }
+
+                        // agreed == null: no other vantage could get a clean read this instant
+                        // (all mid-loading). Don't leave on one screen's word - the next
+                        // heartbeat pulse tries again.
+                    }
+                    else
+                    {
+                        // Only one VM online: no independent screen to confirm with, so require
+                        // the lone vantage to miss the leader on two back-to-back scans.
+                        if (++singleVantageMissStreak >= FollowAutoPulsePolicy.LeaderGoneConfirmationSamples)
+                        {
+                            return "the bound leader left the game";
+                        }
+
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: bound leader not visible; re-checking before leaving.{FormatBoundLeaderWatchDetail(sample)}");
+                        nextDelay = TimeSpan.FromSeconds(FollowAutoPulsePolicy.SingleVantageRescanSeconds);
+                        continue;
+                    }
+
+                    break;
                 default:
                     baseline ??= sample.PlayerCount;
                     break;
             }
 
-            nextDelay = GetRotatedFollowPollDelay(pollDelay);
+            nextDelay = GetFollowHeartbeat(pollDelay);
         }
     }
 
-    private TimeSpan GetRotatedFollowPollDelay(Func<TimeSpan> pollDelay)
+    private TimeSpan GetFollowHeartbeat(Func<TimeSpan> pollDelay)
     {
         var (online, _) = GetAccountEntriesByConnectivity();
-        return FollowAutoPulsePolicy.GetRotatedPollDelay(pollDelay(), online.Length);
+        return FollowAutoPulsePolicy.GetHeartbeat(pollDelay(), online.Length);
+    }
+
+    // Forces an immediate leader check on each online account OTHER than the one that just
+    // flagged the leader missing, stopping at the first that gives an informative answer.
+    // Returns (true, key) if that independent VM also can't see the leader -> leave now;
+    // (false, key) if it still sees the leader -> the flag was a transient, stay; (null, null)
+    // if no other vantage could get a clean read right now -> caller keeps waiting rather than
+    // leaving on one screen's word. This is the "if bot 1 says gone, force another VM to check,
+    // and only then all leave" behaviour, run inline instead of waiting for the next pulse.
+    private async Task<(bool? Agreed, string? ByAccount)> ConfirmLeaderGoneFromAnotherVantageAsync(string? flaggerKey)
+    {
+        var (online, _) = GetAccountEntriesByConnectivity();
+        foreach (var (accountKey, account) in online)
+        {
+            if (string.Equals(accountKey, flaggerKey, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var sample = await TryFetchFollowPulseForAsync(accountKey, account);
+            if (sample.LeaderBound && sample.LeaderPresent is { } present)
+            {
+                return (!present, accountKey);
+            }
+        }
+
+        return (null, null);
     }
 
     private TimeSpan GetJoinAutoPlayerCountDropPollDelay()
@@ -4645,6 +4743,11 @@ public sealed class DiscordBot
         }
 
         var (accountKey, account) = entries[rotation % entries.Length];
+        return await TryFetchFollowPulseForAsync(accountKey, account);
+    }
+
+    private async Task<FollowPulseSample> TryFetchFollowPulseForAsync(string accountKey, AccountConfig account)
+    {
         try
         {
             var sampleResult = await _registry.SendCommandAsync(

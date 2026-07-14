@@ -208,8 +208,28 @@ glyph rendering (binding `Skeleton` would match a `Skeleton1` in the window that
 `Skeleton` prefix). Harmless for the intended use (the operator binds their own character), just
 don't bind a name that is a prefix of another party regular's.
 
+**Bind verification (host-side, patches "bound a bot by mistake").** Position is counted from the
+vantage's screen, which omits the vantage's own character - so a mis-count easily lands on a bot
+instead of the operator (observed live: position 3 from hc1 captured a 54x10px/179-bit name, a
+dead ringer for the bot `Position` at 54x11/178, not the operator's `Netrunner` at 65x8/217). The
+operator is the one name visible from *every* bot's party bar, because a bot's own name never
+renders on its own screen. So after distributing a freshly bound template the host samples leader
+presence on every other online account: if any in-game account reports it absent
+(`leaderPresent == false`), that account is the character actually captured, the bind is rolled
+back everywhere, and the offending account is named. Accounts that can't check (`leaderPresent ==
+null`: mid-loading, not in a game) neither confirm nor disqualify.
+
+**Forced two-vantage leave confirmation (host-side).** The pulse round-robins across VMs on a
+divided heartbeat, but a single VM losing sight of the leader does not leave on its own word - the
+host immediately forces a leader check on a different VM and only leaves if that independent
+vantage also can't see the leader. A second VM that still sees the leader clears the flag as a
+transient. Only when exactly one VM is online does it fall back to two back-to-back misses.
+
 Live consumers: `VmOperations.FollowBindInGameCapture` (bind), `VmOperations.SampleLeaderPresence`
-inside `sample_player_count` (the follow-auto pulse), decided host-side by `FollowAutoPulsePolicy`.
+inside `sample_player_count` (the follow-auto pulse); classified per-sample by
+`FollowAutoPulsePolicy.Classify` and orchestrated by `DiscordBot.WaitForFollowAutoGameEndAsync` /
+`ConfirmLeaderGoneFromAnotherVantageAsync`, with the bind verification in
+`HandleFollowBindInGameAsync`.
 
 ## Lobby / game entry menu
 
