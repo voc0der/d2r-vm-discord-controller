@@ -60,6 +60,40 @@ internal static class FullCaptureRegionSampler
             EnumerateGridPixels(image, centerX, centerY, regionWidth, regionHeight, grid, width, height));
     }
 
+    // Mirrors WindowsInput.CapturePixelRegion (issue #25 bind-in-game) the same way the methods
+    // above mirror SampleRegion/SamplePartyFrameRatio: identical ComputeCaptureRect math, then
+    // every native pixel of the rect in row-major RGB order rather than a sparse sample grid.
+    public static WindowsInput.CapturedPixelRegion CapturePixelRegion(
+        string fileName,
+        UiPoint center,
+        double widthRatio,
+        double heightRatio)
+    {
+        var image = LoadCached(fileName);
+        var rect = WindowsInput.ComputeCaptureRect(
+            center.X * image.Width,
+            center.Y * image.Height,
+            Math.Max(image.Width * widthRatio, 1),
+            Math.Max(image.Height * heightRatio, 1),
+            image.Width,
+            image.Height);
+
+        var rgb = new byte[rect.Width * rect.Height * 3];
+        var index = 0;
+        for (var y = 0; y < rect.Height; y++)
+        {
+            for (var x = 0; x < rect.Width; x++)
+            {
+                var pixel = image[rect.Left + x, rect.Top + y];
+                rgb[index++] = pixel.R;
+                rgb[index++] = pixel.G;
+                rgb[index++] = pixel.B;
+            }
+        }
+
+        return new WindowsInput.CapturedPixelRegion(rect.Width, rect.Height, rgb);
+    }
+
     private static IEnumerable<(byte Red, byte Green, byte Blue)> EnumerateGridPixels(
         Image<Rgba32> image,
         double centerX,

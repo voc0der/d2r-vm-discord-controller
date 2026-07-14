@@ -72,7 +72,15 @@ menu_submit_join_game
 menu_join_game
 menu_create_game
 menu_join_friend
+menu_follow_bind
+menu_follow_bind_game
+menu_follow_auto_check
 menu_save_exit
+follow_set_template
+follow_clear_template
+follow_set_leader_template
+follow_clear_leader_template
+follow_stop_auto
 sample_player_count
 self_update
 quit_d2r
@@ -84,11 +92,42 @@ Game-oriented menu commands accept optional args such as:
 {
   "characterSlot": 1,
   "friendRow": 1,
+  "partyPosition": 3,
   "gameName": "baal-001",
   "password": "pw",
   "difficulty": "hell"
 }
 ```
+
+`menu_follow_bind` captures a friends-drawer name fingerprint from the selected `friendRow`;
+`menu_follow_bind_game` captures an in-game party-bar name mask from the visible portrait at
+`partyPosition` (1-8, counted left to right on the vantage account's screen). Both reply with a
+`fingerprint` string that the host distributes to every online agent via `follow_set_template` /
+`follow_set_leader_template` (`{ "fingerprint": "..." }`); the agents persist them next to the
+executable as `follow-template.txt` and `leader-template.txt`. `follow_clear_template` removes
+both files (a full unbind); `follow_clear_leader_template` removes only the leader mask.
+
+`sample_player_count` replies with the current in-game player count plus, when a leader mask is
+bound, whether that player's name is visible in the party bar:
+
+```json
+{
+  "playerCount": 5,
+  "lastPartyMemberCount": 4,
+  "lastPartyMemberCountUtc": "...",
+  "leaderBound": true,
+  "leaderPresent": true,
+  "leaderSlot": 2,
+  "leaderScore": 0.832
+}
+```
+
+`leaderPresent` is `null` (not `false`) whenever the check could not actually run - no leader
+bound, not visibly in a game, or the capture failed - so the host can distinguish "leader is
+definitely gone" from "this pulse couldn't check". Follow-auto's host-side loop feeds these
+fields through `FollowAutoPulsePolicy`: while the leader is verified present, player-count drops
+only move the baseline; the leave trigger is the leader's name disappearing on two consecutive
+samples (with a quick confirm resample between them).
 
 After `menu_play`, `menu_join_game`, `menu_create_game`, and `menu_join_friend`, the VM agent can wait and press `G` to switch to legacy graphics. This is controlled by `ui.toggleLegacyGraphicsAfterEnteringGame` and `ui.legacyGraphicsToggleDelaySeconds` in `vm-agent.config.json`.
 

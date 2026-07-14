@@ -60,7 +60,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r play account [character-slot]`
 - `/d2r join [account] [all] [auto] [name] [password] [difficulty] [character-slot] [delay] [idle-minutes] [watch]`
 - `/d2r create-game [account] [all] [name] [password] [difficulty] [character-slot] [watch]`
-- `/d2r follow [account] [all] [character-slot] [friend-row] [bind] [auto] [delay] [idle-minutes] [watch]`
+- `/d2r follow [account] [all] [character-slot] [friend-row] [bind] [bind-in-game] [auto] [delay] [idle-minutes] [watch]`
 - `/d2r save-exit [account] [all]`
 - `/d2r template name [password]`
 - `/d2r restart`
@@ -95,7 +95,9 @@ Join/create session notifications include `Leave` and `Quit` buttons. `Leave` qu
 
 Menu commands that need D2R running, such as `lobby`, `play`, `join`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
 
-`/d2r follow bind:true account:<x> [friend-row:<n>]` captures whoever is sitting in that account's selected friend row right now (default row 1, no need to type a name - useful from a phone with no keyboard) and distributes that snippet to every online account. `bind:false` clears it everywhere. A plain `/d2r follow` starts auto-following that bound friend; `auto:false` stops it. Follow-auto posts one live status message for the run, showing the current game number and a Stop button while it is active. When the Stop button ends follow-auto, that message offers `Save and Exit`, `Quit`, and `Sleep` shortcuts for two minutes; `Sleep` quits all online clients successfully before putting the host to sleep. With `watch:true`, follow-auto also writes the diagnostics log for the whole run, across multiple games, including the latest match-score checkpoint. Old low-detail follow-bind snippets must be rebound before follow-auto will click rows. Use `all:false account:<x>` to right-click a manually-specified row once.
+`/d2r follow bind:true account:<x> [friend-row:<n>]` captures whoever is sitting in that account's selected friend row right now (default row 1, no need to type a name - useful from a phone with no keyboard) and distributes that snippet to every online account. `bind:false` clears it everywhere, including any in-game leader bind. A plain `/d2r follow` starts auto-following that bound friend; `auto:false` stops it.
+
+`/d2r follow bind-in-game:<1-8> [account:<x>]` additionally fingerprints the in-game party-bar name at that position, counted left to right across the portraits visible on the vantage account's screen (default vantage: the first online account, the same account the follow-auto pulse samples from). A character never shows in its own party bar, so count only the other members you see from that vantage; the bar sorts alphabetically, so check the current order rather than assuming join order. Bind it to your own character from inside a game with your bots. Once set, follow-auto leaves a game when *that player* is gone instead of whenever the player count drops - in public games a stranger leaving no longer makes every bot leave and immediately rejoin. `bind-in-game:0` clears it and restores the count-drop behavior. Follow-auto posts one live status message for the run, showing the current game number and a Stop button while it is active. When the Stop button ends follow-auto, that message offers `Save and Exit`, `Quit`, and `Sleep` shortcuts for two minutes; `Sleep` quits all online clients successfully before putting the host to sleep. With `watch:true`, follow-auto also writes the diagnostics log for the whole run, across multiple games, including the latest match-score checkpoint. Old low-detail follow-bind snippets must be rebound before follow-auto will click rows. Use `all:false account:<x>` to right-click a manually-specified row once.
 
 ## Host Setup
 

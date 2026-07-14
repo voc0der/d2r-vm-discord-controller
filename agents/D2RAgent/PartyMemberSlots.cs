@@ -51,4 +51,36 @@ internal static class PartyMemberSlots
         var centerY = (SlotTop + (EdgeHeight / 2)) / ReferenceHeight;
         return new UiPoint(centerX, centerY);
     }
+
+    // D2R draws each member's character name in near-white text centered under their portrait
+    // (measured +-1px of the portrait center across every named slot in
+    // party_members_1..3.png). The name sits on one of two baselines: y 81-90 normally, or
+    // y 93-103 when it would collide with the neighbor's name to the left ("Position" drops a
+    // line in party_members_3.png while "Netrunner" and "Skeleton" stay up). The band below
+    // covers both baselines plus margin, and stops at y 106 exactly because that's where the
+    // game's chat log starts rendering ("[Game] ... left our world" measured at y 106-117 in
+    // party_members_2.png) - chat text is the same near-white as name text, so letting the band
+    // reach it would leak chat glyphs into every captured mask.
+    //
+    // The band spans the full 72px slot pitch rather than the 58px portrait width because long
+    // names overhang the portrait ("Netrunner" measured 65px wide).
+    private const double NameBandTop = 78.0;
+    private const double NameBandHeight = 28.0;
+
+    public static double NameBandWidthRatio => SlotPitch / ReferenceWidth;
+
+    public static double NameBandHeightRatio => NameBandHeight / ReferenceHeight;
+
+    public static UiPoint GetSlotNameBandCenter(int slotIndexOneBased)
+    {
+        if (slotIndexOneBased < 1 || slotIndexOneBased > MaxSlots)
+        {
+            throw new ArgumentOutOfRangeException(nameof(slotIndexOneBased), slotIndexOneBased, $"Must be between 1 and {MaxSlots}.");
+        }
+
+        var left = SlotLeft + ((slotIndexOneBased - 1) * SlotPitch);
+        var centerX = (left + (SlotWidth / 2)) / ReferenceWidth;
+        var centerY = (NameBandTop + (NameBandHeight / 2)) / ReferenceHeight;
+        return new UiPoint(centerX, centerY);
+    }
 }

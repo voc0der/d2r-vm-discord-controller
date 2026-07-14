@@ -780,6 +780,7 @@ public sealed class DiscordBot
         if (subcommand == "follow"
             && (context.GetBool("bind") is not null
                 || context.GetBool("auto") is not null
+                || context.GetInt("bind-in-game") is not null
                 || !IsManualFollowRequest(context)))
         {
             if (context.GetBool("auto") is { } autoFlag)
@@ -801,6 +802,12 @@ public sealed class DiscordBot
             if (context.GetBool("bind") is { } bindFlag)
             {
                 await HandleFollowBindAsync(context, bindFlag);
+                return;
+            }
+
+            if (context.GetInt("bind-in-game") is { } partyPosition)
+            {
+                await HandleFollowBindInGameAsync(context, partyPosition);
                 return;
             }
 
@@ -2971,6 +2978,7 @@ public sealed class DiscordBot
             difficulty = game?.Difficulty,
             characterSlot = context.GetInt("character-slot") ?? account.CharacterSlot,
             friendRow = context.GetInt("friend-row"),
+            partyPosition = context.GetInt("bind-in-game"),
             followAutoRunId
         };
     }
@@ -3333,7 +3341,7 @@ public sealed class DiscordBot
                 : "";
             await ModifyOriginalResponseWithMetricsAsync(
                 context,
-                $"Follow-bind cleared on {cleared}/{online.Length} online accounts.{stopSummary}");
+                $"Follow-bind cleared on {cleared}/{online.Length} online accounts (including any in-game leader bind).{stopSummary}");
             return;
         }
 
@@ -3413,6 +3421,132 @@ public sealed class DiscordBot
             context,
             followBindMessage,
             properties => properties.Components = BuildFollowBindActionComponents());
+    }
+
+    // Issue #25 follow-up ("bind-in-game"): capture the party-bar name at a visible position
+    // from one account's in-game vantage and push the glyph mask to every online account.
+    // Once distributed, the follow-auto pulse leaves games when THIS player is gone instead of
+    // whenever the public-game player count wobbles. Position 0 clears the leader bind (the
+    // friend bind stays; follow-auto falls back to count-drop behavior).
+    private async Task HandleFollowBindInGameAsync(SlashContext context, int partyPosition)
+    {
+        var (online, _) = GetAccountEntriesByConnectivity();
+
+        if (partyPosition == 0)
+        {
+            await context.Command.DeferAsync(ephemeral: true);
+            var cleared = 0;
+            foreach (var (accountKey, account) in online)
+            {
+                try
+                {
+                    await _registry.SendCommandAsync(account.AgentId, "follow_clear_leader_template", new { }, TimeSpan.FromSeconds(15));
+                    cleared++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "follow_clear_leader_template failed for {AccountKey}.", accountKey);
+                }
+            }
+
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"Leader bind cleared on {cleared}/{online.Length} online accounts. Follow-auto will leave on player-count drops again.");
+            return;
+        }
+
+        // The vantage defaults to the first online account because that is exactly the account
+        // the follow-auto pulse samples from (TryFetchFirstOnlineAccountFollowPulseAsync) -
+        // binding from the same viewpoint that will later do the checking. The position is
+        // counted left-to-right across the portraits visible on THAT account's screen (a
+        // character never appears in its own party bar).
+        string vantageKey;
+        AccountConfig vantageAccount;
+        if (context.GetString("account") is { } requestedAccountKey)
+        {
+            (vantageKey, vantageAccount) = RequireAccount(requestedAccountKey);
+        }
+        else if (online.Length > 0)
+        {
+            (vantageKey, vantageAccount) = (online[0].Key, online[0].Value);
+        }
+        else
+        {
+            await RespondWithMetricsAsync(
+                context,
+                "follow bind-in-game needs at least one online account (or an explicit account) to capture from.");
+            return;
+        }
+
+        await context.Command.DeferAsync(ephemeral: true);
+
+        CommandResultInfo captureResult;
+        try
+        {
+            captureResult = await _registry.SendCommandAsync(
+                vantageAccount.AgentId,
+                "menu_follow_bind_game",
+                BuildMenuArgs(vantageKey, vantageAccount, null, context),
+                TimeSpan.FromSeconds(60));
+        }
+        catch (Exception ex)
+        {
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"follow bind-in-game failed to capture from {vantageKey}: {ex.Message}");
+            return;
+        }
+
+        if (!captureResult.Ok
+            || captureResult.Data is not { } data
+            || !data.TryGetProperty("fingerprint", out var fingerprintProperty)
+            || fingerprintProperty.GetString() is not { } fingerprint)
+        {
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"follow bind-in-game failed to capture from {vantageKey}: {captureResult.Message}");
+            return;
+        }
+
+        var visibleMembers = TryGetInt(data, "visibleMembers", out var visible) ? visible : partyPosition;
+        var glyphSummary = TryGetInt(data, "glyphWidth", out var glyphWidth)
+            && TryGetInt(data, "glyphHeight", out var glyphHeight)
+            && TryGetInt(data, "glyphBits", out var glyphBits)
+            ? $" Name box {glyphWidth}x{glyphHeight}px, {glyphBits} text pixels."
+            : "";
+
+        var distributed = 0;
+        var distributionFailures = new List<string>();
+        foreach (var (accountKey, account) in online)
+        {
+            try
+            {
+                var result = await _registry.SendCommandAsync(account.AgentId, "follow_set_leader_template", new { fingerprint }, TimeSpan.FromSeconds(15));
+                if (result.Ok)
+                {
+                    distributed++;
+                }
+                else
+                {
+                    distributionFailures.Add($"{accountKey}: {result.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "follow_set_leader_template failed for {AccountKey}.", accountKey);
+                distributionFailures.Add($"{accountKey}: {ex.Message}");
+            }
+        }
+
+        var message =
+            $"Captured the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s) and distributed it to {distributed}/{online.Length} online accounts.{glyphSummary} "
+            + "Follow-auto now stays while this player is in the game and leaves when they leave.";
+        if (distributionFailures.Count > 0)
+        {
+            message += $" Template save failures: {string.Join("; ", distributionFailures)}";
+        }
+
+        await ModifyOriginalResponseWithMetricsAsync(context, message);
     }
 
     private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout)
@@ -3891,14 +4025,16 @@ public sealed class DiscordBot
                 if (pending.Length == 0 && online.Length > 0)
                 {
                     _followAutoGameNumber++;
+                    var initialPulse = await TryFetchFirstOnlineAccountFollowPulseAsync();
                     await UpdateFollowAutoMonitorAsync(
-                        $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for someone to leave...",
+                        initialPulse.LeaderBound
+                            ? $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for the bound leader to leave..."
+                            : $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for someone to leave...",
                         joined: online.Length,
                         total: online.Length);
-                    var baseline = await TryFetchFirstOnlineAccountPlayerCountAsync();
-                    await WaitForPlayerCountDropAsync(baseline, GetFollowAutoPlayerCountDropPollDelay, cancellationToken);
+                    var endReason = await WaitForFollowAutoGameEndAsync(initialPulse.PlayerCount, GetFollowAutoPlayerCountDropPollDelay, cancellationToken);
                     await UpdateFollowAutoMonitorAsync(
-                        $"Game #{_followAutoGameNumber}: player count dropped. Leaving the bound friend's game...",
+                        $"Game #{_followAutoGameNumber}: {endReason}. Leaving the bound friend's game...",
                         joined: online.Length,
                         total: online.Length);
                     var leaveResults = await LeaveAllJoinAutoAsync(
@@ -4362,6 +4498,52 @@ public sealed class DiscordBot
         }
     }
 
+    // Issue #25 follow-up (bind-in-game): follow-auto's in-game wait. Each pulse reads player
+    // count AND leader presence from the first online account, and FollowAutoPulsePolicy turns
+    // that into stay/rebaseline/confirm/leave - see that class for the decision table and why
+    // count drops stop mattering while the bound leader is verified present. Returns a short
+    // human-readable reason for the monitor message. Join-auto keeps using
+    // WaitForPlayerCountDropAsync above: its games are the accounts' own private games, where
+    // "someone left" really does mean the game is over.
+    private async Task<string> WaitForFollowAutoGameEndAsync(
+        int? baseline,
+        Func<TimeSpan> pollDelay,
+        CancellationToken cancellationToken)
+    {
+        var leaderMissingStreak = 0;
+        var nextDelay = pollDelay();
+        while (true)
+        {
+            await Task.Delay(nextDelay, cancellationToken);
+            var sample = await TryFetchFirstOnlineAccountFollowPulseAsync();
+            var decision = FollowAutoPulsePolicy.Decide(
+                sample.LeaderBound,
+                sample.LeaderPresent,
+                sample.PlayerCount,
+                baseline,
+                leaderMissingStreak);
+            leaderMissingStreak = decision.LeaderMissingStreak;
+            switch (decision.Action)
+            {
+                case FollowAutoPulseAction.Leave:
+                    return sample is { LeaderBound: true, LeaderPresent: false }
+                        ? "the bound leader left the game"
+                        : "player count dropped";
+                case FollowAutoPulseAction.RebaselineAndWait:
+                    baseline = sample.PlayerCount ?? baseline;
+                    break;
+                case FollowAutoPulseAction.ConfirmLeaderGone:
+                    nextDelay = TimeSpan.FromSeconds(FollowAutoPulsePolicy.ConfirmResampleDelaySeconds);
+                    continue;
+                default:
+                    baseline ??= sample.PlayerCount;
+                    break;
+            }
+
+            nextDelay = pollDelay();
+        }
+    }
+
     private TimeSpan GetJoinAutoPlayerCountDropPollDelay()
     {
         return PlayerCountDropPollPolicy.GetDelay(
@@ -4380,10 +4562,21 @@ public sealed class DiscordBot
 
     private async Task<int?> TryFetchFirstOnlineAccountPlayerCountAsync()
     {
+        return (await TryFetchFirstOnlineAccountFollowPulseAsync()).PlayerCount;
+    }
+
+    private sealed record FollowPulseSample(int? PlayerCount, bool LeaderBound, bool? LeaderPresent);
+
+    // LeaderPresent stays null whenever it wasn't actually verified (no fresh sample, no leader
+    // bound, or the agent couldn't check) - the cached-status fallback can only ever supply a
+    // count, and pretending it said anything about the leader would turn "couldn't check" into
+    // a leave trigger.
+    private async Task<FollowPulseSample> TryFetchFirstOnlineAccountFollowPulseAsync()
+    {
         var (entries, _) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            return null;
+            return new FollowPulseSample(null, false, null);
         }
 
         try
@@ -4395,9 +4588,10 @@ public sealed class DiscordBot
                 TimeSpan.FromSeconds(15));
             if (sampleResult.Ok && sampleResult.Data is { } sampleData)
             {
-                return TryGetInt(sampleData, "playerCount", out var sampledPlayerCount)
-                    ? sampledPlayerCount
-                    : null;
+                return new FollowPulseSample(
+                    TryGetInt(sampleData, "playerCount", out var sampledPlayerCount) ? sampledPlayerCount : null,
+                    TryGetBoolean(sampleData, "leaderBound", out var leaderBound) && leaderBound,
+                    TryGetBoolean(sampleData, "leaderPresent", out var leaderPresent) ? leaderPresent : null);
             }
         }
         catch (Exception ex)
@@ -4414,15 +4608,18 @@ public sealed class DiscordBot
                 TimeSpan.FromSeconds(6));
             if (!result.Ok || result.Data is not { } data)
             {
-                return null;
+                return new FollowPulseSample(null, false, null);
             }
 
             using var document = JsonDocument.Parse(data.GetRawText());
-            return TryGetInt(document.RootElement, "lastPartyMemberCount", out var otherMembers) ? otherMembers + 1 : null;
+            return new FollowPulseSample(
+                TryGetInt(document.RootElement, "lastPartyMemberCount", out var otherMembers) ? otherMembers + 1 : null,
+                LeaderBound: false,
+                LeaderPresent: null);
         }
         catch (Exception)
         {
-            return null;
+            return new FollowPulseSample(null, false, null);
         }
     }
 

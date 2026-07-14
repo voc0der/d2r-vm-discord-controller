@@ -31,7 +31,7 @@ public static class DiscordSlashCommands
                     Sub("play", "Select character and click Play", Account(), CharacterSlot()),
                     Sub("join", "Join a game, or auto-join template games when auto is true", OptionalAccount(), AllFlag(), JoinAutoFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Delay(), IdleMinutes(), JoinAutoWatch()),
                     Sub("create-game", "Create one game, or create and join across all accounts", OptionalAccount(), AllFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
-                    Sub("follow", "Follow the bound friend, bind a friend, or join by visible row", OptionalAccount(), AllFlag(), CharacterSlot(), FriendRow(), FollowBind(), FollowAutoFlag(), Delay(), IdleMinutes(), Watch()),
+                    Sub("follow", "Follow the bound friend, bind a friend, or join by visible row", OptionalAccount(), AllFlag(), CharacterSlot(), FriendRow(), FollowBind(), FollowBindInGame(), FollowAutoFlag(), Delay(), IdleMinutes(), Watch()),
                     Sub("save-exit", "Open the in-game menu and click Save and Exit", OptionalAccount(), AllFlag()),
                     Sub("template", "Set the create/join auto-naming template", RequiredGameName(), Password()),
                     Sub("restart", "Respawn D2RHost so startup self-update can apply"),
@@ -231,6 +231,17 @@ public static class DiscordSlashCommands
             .WithDescription("Capture (true) or clear (false) the friend to auto-follow from selected friend-row")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
+    }
+
+    private static SlashCommandOptionBuilder FollowBindInGame()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("bind-in-game")
+            .WithDescription("Fingerprint the party-bar name at this position (1-8) as the leader; 0 clears it")
+            .WithType(ApplicationCommandOptionType.Integer)
+            .WithRequired(false)
+            .WithMinValue(0)
+            .WithMaxValue(8);
     }
 
     private static SlashCommandOptionBuilder FollowAutoFlag()

@@ -157,6 +157,60 @@ Live consumer: `VmOperations.RunPartyMemberMonitorAsync` (see client-menu-flows.
 section for the background-loop/config/Discord-surfacing details) - the classifier and geometry
 above are what it's built on, not a standalone diagnostic.
 
+## Party-bar name fingerprint (follow bind-in-game)
+
+Issue #25 follow-up. `/d2r follow bind-in-game:<n>` captures the character name D2R draws under
+the Nth visible party portrait as a binary glyph mask (`PartyNameFingerprint`), so follow-auto
+can verify a specific player (the operator) is still in the game instead of leaving whenever a
+public game's player count wobbles. Same reference screenshots as the party member count above;
+`PartyNameFingerprintReferenceTests.cs` re-derives every number below from them end to end.
+
+**Geometry** (1366x768, all measured): names are drawn centered on the portrait's center x
+(219 + 72 per slot, +-1px across every named slot) in near-white text, on one of two baselines:
+
+- Upper baseline y 81-90 - the normal case (`Netrunner` in all three populated references,
+  `Skeleton` in `party_members_3.png`).
+- Lower baseline y 93-103 - used when the name would collide with its left neighbor's
+  (`Position` in `party_members_3.png`, `Skeleton` in `party_members_2.png`). The staggered
+  rendering also uses visibly thinner strokes (same word measured 156 vs 190 text pixels).
+
+The capture band per slot is the full 72px pitch wide (long names overhang the 58px portrait:
+`Netrunner` measured 65px) and spans y 78-106, covering both baselines. It stops at y 106
+exactly because the game chat log starts there (`[Game] Position left our world.` measured at
+y 106-117 in `party_members_2.png`) in the same near-white as name text.
+
+**Why not FriendFingerprint's raw-RGB comparison:** the friends drawer draws names on a fixed
+dark panel; the party bar draws them over the live game world, so the background behind the same
+name changes every game. Measured across references, the same name over different backgrounds/
+slots/baselines scored 32.8 average RGB difference - already past FriendFingerprint's 30.6 match
+cutoff. Only the glyph pixels are stable.
+
+**Classifier** (`PartyNameFingerprint.IsNameTextColor`): luminance > 120, `|R-G| < 35`,
+`|G-B| < 55`. Name text measured (245,244,243) everywhere; the 120 floor (not higher) absorbs
+the dimmer antialiasing of the staggered rendering. Every empty band across all four references
+measured exactly 0 matching pixels.
+
+**Matching:** bind crops the band mask to its glyph bounding box (rejected below 24 bits); a
+probe slides that template over a freshly captured band mask and takes the best Dice overlap
+(band bits outside the window don't count, so stray bright pixels elsewhere in the band can't
+sink a match; extra bright pixels inside it lower the score, which fails toward the conservative
+count-drop fallback). Match threshold 0.65, calibrated:
+
+| Pair | Score |
+| --- | --- |
+| Same name, same slot, different capture (`Netrunner`) | 1.000 |
+| Same name, different slot + baseline + stroke weight + background (`Skeleton`) | 0.762-0.832 |
+| Best different-name confusion (`Skeleton` template over `Netrunner` band) | 0.551 |
+| Departed player probed anywhere (`Position` vs `party_members_2.png`) | 0.520 max |
+
+Known gap: a template can match a strictly-longer name that contains it verbatim at the same
+glyph rendering (binding `Skeleton` would match a `Skeleton1` in the window that covers the
+`Skeleton` prefix). Harmless for the intended use (the operator binds their own character), just
+don't bind a name that is a prefix of another party regular's.
+
+Live consumers: `VmOperations.FollowBindInGameCapture` (bind), `VmOperations.SampleLeaderPresence`
+inside `sample_player_count` (the follow-auto pulse), decided host-side by `FollowAutoPulsePolicy`.
+
 ## Lobby / game entry menu
 
 | Function | Regions | Threshold |

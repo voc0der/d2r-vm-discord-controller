@@ -603,6 +603,89 @@ internal sealed class WindowsInput
         }
     }
 
+    public readonly record struct CapturedPixelRegion(int Width, int Height, byte[] Rgb);
+
+    // Party-name fingerprints (issue #25 bind-in-game) need every native pixel of the band, not
+    // a sparse sample grid: the glyph masks are compared shape-to-shape, and grid cell centers
+    // that land on exact .5 offsets (which an integer-aligned band produces for every row) get
+    // mangled by Math.Round's banker's rounding into skipped/duplicated rows. Reading the
+    // BitBlt'd rect verbatim sidesteps that entirely and stays faithful to what is on screen.
+    // Same scaffolding and DWM-avoidance reasoning as CaptureFingerprintGrid below.
+    public CapturedPixelRegion CapturePixelRegion(UiPoint center, double widthRatio, double heightRatio)
+    {
+        EnsureWindows();
+        var screenWidth = GetSystemMetrics(SmCxScreen);
+        var screenHeight = GetSystemMetrics(SmCyScreen);
+        var bounds = GetCoordinateBounds(coordinateProcessNames: null, restoreWindow: false);
+        var centerX = bounds.Left + (center.X * bounds.Width);
+        var centerY = bounds.Top + (center.Y * bounds.Height);
+        var regionWidth = Math.Max(bounds.Width * widthRatio, 1);
+        var regionHeight = Math.Max(bounds.Height * heightRatio, 1);
+
+        var captureRect = ComputeCaptureRect(centerX, centerY, regionWidth, regionHeight, screenWidth, screenHeight);
+
+        var screenDc = GetDC(IntPtr.Zero);
+        if (screenDc == IntPtr.Zero)
+        {
+            throw new InvalidOperationException($"GetDC failed. LastError={Marshal.GetLastWin32Error()}");
+        }
+
+        try
+        {
+            var memoryDc = CreateCompatibleDC(screenDc);
+            if (memoryDc == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"CreateCompatibleDC failed. LastError={Marshal.GetLastWin32Error()}");
+            }
+
+            try
+            {
+                var bitmap = CreateCompatibleBitmap(screenDc, captureRect.Width, captureRect.Height);
+                if (bitmap == IntPtr.Zero)
+                {
+                    throw new InvalidOperationException($"CreateCompatibleBitmap failed. LastError={Marshal.GetLastWin32Error()}");
+                }
+
+                var previousBitmap = SelectObject(memoryDc, bitmap);
+                try
+                {
+                    if (!BitBlt(memoryDc, 0, 0, captureRect.Width, captureRect.Height, screenDc, captureRect.Left, captureRect.Top, SrcCopy))
+                    {
+                        throw new InvalidOperationException($"BitBlt failed. LastError={Marshal.GetLastWin32Error()}");
+                    }
+
+                    var rgb = new byte[captureRect.Width * captureRect.Height * 3];
+                    var index = 0;
+                    for (var y = 0; y < captureRect.Height; y++)
+                    {
+                        for (var x = 0; x < captureRect.Width; x++)
+                        {
+                            var color = GetPixel(memoryDc, x, y);
+                            rgb[index++] = (byte)(color & 0x000000FF);
+                            rgb[index++] = (byte)((color & 0x0000FF00) >> 8);
+                            rgb[index++] = (byte)((color & 0x00FF0000) >> 16);
+                        }
+                    }
+
+                    return new CapturedPixelRegion(captureRect.Width, captureRect.Height, rgb);
+                }
+                finally
+                {
+                    SelectObject(memoryDc, previousBitmap);
+                    DeleteObject(bitmap);
+                }
+            }
+            finally
+            {
+                DeleteDC(memoryDc);
+            }
+        }
+        finally
+        {
+            ReleaseDC(IntPtr.Zero, screenDc);
+        }
+    }
+
     // Follow-bind/follow-auto fingerprints need a wide-short grid (a name-text strip), not the
     // square grid SampleRegion's classifiers use - shares the exact same BitBlt-into-a-local-
     // bitmap scaffolding as CaptureGridPixels (same DWM-avoidance reasoning) but with independent

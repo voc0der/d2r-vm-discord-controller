@@ -317,6 +317,16 @@ public sealed class VmOperations
             return FollowClearTemplate();
         }
 
+        if (string.Equals(request.Command, "follow_set_leader_template", StringComparison.OrdinalIgnoreCase))
+        {
+            return FollowSetLeaderTemplate(MenuCommandArgs.From(request.Args));
+        }
+
+        if (string.Equals(request.Command, "follow_clear_leader_template", StringComparison.OrdinalIgnoreCase))
+        {
+            return FollowClearLeaderTemplate();
+        }
+
         if (string.Equals(request.Command, "follow_stop_auto", StringComparison.OrdinalIgnoreCase))
         {
             return FollowStopAuto(MenuCommandArgs.From(request.Args));
@@ -353,6 +363,7 @@ public sealed class VmOperations
             "menu_create_game" => await CreateGameAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_join_friend" => await JoinFriendAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_follow_bind" => await FollowBindCaptureAsync(MenuCommandArgs.From(request.Args), cancellationToken),
+            "menu_follow_bind_game" => FollowBindInGameCapture(MenuCommandArgs.From(request.Args)),
             "menu_follow_auto_check" => await FollowAutoCheckAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_save_exit" => await SaveAndExitAsync(cancellationToken),
             _ => CommandResult.Failure($"Unsupported VM command: {request.Command}")
@@ -631,6 +642,7 @@ public sealed class VmOperations
 
     private CommandResult SamplePlayerCount()
     {
+        var leaderTemplate = LoadLeaderTemplate();
         var otherMembers = SamplePartyMemberCount();
         if (otherMembers is null)
         {
@@ -640,18 +652,97 @@ public sealed class VmOperations
                 {
                     playerCount = (int?)null,
                     lastPartyMemberCount = _lastPartyMemberCount,
-                    lastPartyMemberCountUtc = _lastPartyMemberCountUtc
+                    lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
+                    leaderBound = leaderTemplate is not null,
+                    leaderPresent = (bool?)null
                 });
         }
 
+        var (leaderPresent, leaderSlot, leaderScore) = SampleLeaderPresence(leaderTemplate, otherMembers.Value);
         return CommandResult.Success(
             $"Player count sampled: {otherMembers.Value + 1}.",
             new
             {
                 playerCount = otherMembers.Value + 1,
                 lastPartyMemberCount = otherMembers.Value,
-                lastPartyMemberCountUtc = _lastPartyMemberCountUtc
+                lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
+                leaderBound = leaderTemplate is not null,
+                leaderPresent,
+                leaderSlot,
+                leaderScore = Math.Round(leaderScore, 3)
             });
+    }
+
+    // Issue #25 follow-up (bind-in-game): scans the visible party-bar name bands for the bound
+    // leader's glyph mask. Present is null (not false) when no leader is bound or the screen
+    // could not be sampled, so the Host can tell "leader is definitely gone" apart from "this
+    // pulse simply couldn't check" - the two must not both look like a leave trigger. Zero
+    // visible portraits while in-game IS a definite absence: whoever we were following is not
+    // in this game's party anymore.
+    private (bool? Present, int? Slot, double BestScore) SampleLeaderPresence(PartyNameFingerprint? template, int visibleMembers)
+    {
+        if (template is null || !OperatingSystem.IsWindows())
+        {
+            return (null, null, 0.0);
+        }
+
+        if (visibleMembers <= 0)
+        {
+            return (false, null, 0.0);
+        }
+
+        // NaN marks a band that could not actually be compared - the capture timed out/failed,
+        // or the stored template doesn't fit inside the captured band (a template bound at a
+        // different game resolution than this vantage runs). Those must NOT count as evidence
+        // of absence: a config mismatch reading as "leader gone" would mass-leave every game.
+        // If no band was comparable at all, Present is null so the Host falls back to
+        // count-drop semantics.
+        var input = new WindowsInput();
+        var best = 0.0;
+        int? bestSlot = null;
+        var comparableBands = 0;
+        for (var slot = 1; slot <= Math.Min(visibleMembers, PartyMemberSlots.MaxSlots); slot++)
+        {
+            var slotToSample = slot;
+            var score = TryRunBounded(
+                () =>
+                {
+                    var band = input.CapturePixelRegion(
+                        PartyMemberSlots.GetSlotNameBandCenter(slotToSample),
+                        PartyMemberSlots.NameBandWidthRatio,
+                        PartyMemberSlots.NameBandHeightRatio);
+                    var mask = PartyNameFingerprint.FromPixels(band.Rgb, band.Width, band.Height);
+                    return mask is null || template.Width > mask.Width || template.Height > mask.Height
+                        ? double.NaN
+                        : template.BestScoreIn(mask);
+                },
+                PartyFrameSampleBoundMs,
+                double.NaN);
+            if (double.IsNaN(score))
+            {
+                continue;
+            }
+
+            comparableBands++;
+            if (score > best)
+            {
+                best = score;
+                bestSlot = slot;
+            }
+
+            if (best >= PartyNameFingerprint.MatchThreshold)
+            {
+                break;
+            }
+        }
+
+        if (comparableBands == 0)
+        {
+            return (null, null, 0.0);
+        }
+
+        var present = best >= PartyNameFingerprint.MatchThreshold;
+        return (present, present ? bestSlot : null, best);
     }
 
     private int? SamplePartyMemberCount()
@@ -1165,7 +1256,120 @@ public sealed class VmOperations
             File.Delete(FollowTemplatePath);
         }
 
+        // A leader fingerprint only ever augments a follow-bind (it is follow-auto's in-game
+        // "is the bound player still here" signal), so a full unbind clears it too rather than
+        // leaving a stale leader mask to silently apply to the next, different bind.
+        if (File.Exists(LeaderTemplatePath))
+        {
+            File.Delete(LeaderTemplatePath);
+        }
+
         return CommandResult.Success("Follow-bind fingerprint cleared.");
+    }
+
+    // Issue #25 follow-up ("bind-in-game"): the party-bar name mask of the operator's own
+    // character, captured via menu_follow_bind_game from one VM's vantage and distributed
+    // host-side to every agent the same way follow-template.txt is. Same bypass-the-gate file
+    // I/O reasoning as FollowSetTemplate above.
+    private const string LeaderTemplateFileName = "leader-template.txt";
+
+    private static string LeaderTemplatePath => Path.Combine(AppContext.BaseDirectory, LeaderTemplateFileName);
+
+    private static PartyNameFingerprint? LoadLeaderTemplate()
+    {
+        try
+        {
+            return File.Exists(LeaderTemplatePath)
+                ? PartyNameFingerprint.FromBase64(File.ReadAllText(LeaderTemplatePath).Trim())
+                : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static CommandResult FollowSetLeaderTemplate(MenuCommandArgs args)
+    {
+        var fingerprint = args.Fingerprint?.Trim();
+        if (string.IsNullOrWhiteSpace(fingerprint) || PartyNameFingerprint.FromBase64(fingerprint) is null)
+        {
+            return CommandResult.Failure("follow_set_leader_template requires a valid party-name fingerprint.");
+        }
+
+        File.WriteAllText(LeaderTemplatePath, fingerprint);
+        return CommandResult.Success(
+            "Leader party-name fingerprint saved.",
+            new { templatePath = LeaderTemplatePath, templateLength = fingerprint.Length });
+    }
+
+    private static CommandResult FollowClearLeaderTemplate()
+    {
+        if (File.Exists(LeaderTemplatePath))
+        {
+            File.Delete(LeaderTemplatePath);
+        }
+
+        return CommandResult.Success("Leader party-name fingerprint cleared.");
+    }
+
+    // Issue #25 follow-up: capture the party-bar name mask at the requested visible position
+    // (1-8, counted left to right; the vantage character itself never appears in its own party
+    // bar). This must run from inside an actual game - unlike FollowBindCaptureAsync there is no
+    // navigation to do, because the party bar only exists in-game; the operator lines the game
+    // up first (typically their own bot game where the member layout is known) and tells us
+    // which position is theirs. Like the friend-row bind, this has no way to know WHO it is
+    // capturing, only where to look, so the result echoes enough diagnostics (visible member
+    // count, glyph box size) for the operator to sanity-check the capture.
+    private CommandResult FollowBindInGameCapture(MenuCommandArgs args)
+    {
+        if (args.PartyPosition is not { } position || position < 1 || position > PartyMemberSlots.MaxSlots)
+        {
+            return CommandResult.Failure($"menu_follow_bind_game requires partyPosition between 1 and {PartyMemberSlots.MaxSlots}.");
+        }
+
+        if (!IsD2RRunning())
+        {
+            return CommandResult.Failure("D2R is not running, so there is no party bar to capture from.");
+        }
+
+        var input = FocusD2R();
+        if (DetectVisibleD2RState(input) != VisibleD2RState.InGame)
+        {
+            return CommandResult.Failure("The vantage account is not visibly in a game; bind-in-game reads the in-game party bar.");
+        }
+
+        var visibleMembers = CountOtherPartyMembers(input);
+        if (position > visibleMembers)
+        {
+            return CommandResult.Failure(
+                $"Only {visibleMembers} party member portrait(s) are visible; position {position} has nobody to capture.");
+        }
+
+        var band = input.CapturePixelRegion(
+            PartyMemberSlots.GetSlotNameBandCenter(position),
+            PartyMemberSlots.NameBandWidthRatio,
+            PartyMemberSlots.NameBandHeightRatio);
+        var template = PartyNameFingerprint.FromPixels(band.Rgb, band.Width, band.Height)?.CropToGlyphBox();
+        if (template is null)
+        {
+            return CommandResult.Failure(
+                $"No name text was found under party position {position}. The name band may be obscured; try again with the party bar unobstructed.");
+        }
+
+        MarkCommandCheckpoint(
+            $"FollowBindInGameCapture: captured position {position}/{visibleMembers}, glyph box {template.Width}x{template.Height}, {template.BitCount} text pixels");
+        return CommandResult.Success(
+            $"Captured the party-bar name at position {position} of {visibleMembers} visible member(s).",
+            new
+            {
+                fingerprint = template.ToBase64(),
+                partyPosition = position,
+                visibleMembers,
+                glyphWidth = template.Width,
+                glyphHeight = template.Height,
+                glyphBits = template.BitCount
+            });
     }
 
     private CommandResult FollowStopAuto(MenuCommandArgs args)

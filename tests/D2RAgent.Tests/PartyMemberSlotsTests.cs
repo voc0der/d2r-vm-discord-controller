@@ -71,4 +71,49 @@ public sealed class PartyMemberSlotsTests
         // Should not throw - 8 is in range.
         PartyMemberSlots.GetSlotTopEdgeCenter(PartyMemberSlots.MaxSlots);
     }
+
+    // Name-band geometry (issue #25 bind-in-game), measured from party_members_1..3.png: names
+    // center on the portrait center (x 219 + 72 per slot, +-1px across every named slot) and
+    // render on y 81-90 or, staggered, y 93-103.
+    [Fact]
+    public void NameBandCentersOnThePortraitCenterAndCoversBothBaselines()
+    {
+        var center = PartyMemberSlots.GetSlotNameBandCenter(1);
+
+        Assert.Equal(219.0 / 1366.0, center.X, Tolerance);
+        Assert.Equal(92.0 / 768.0, center.Y, Tolerance);
+        Assert.Equal(72.0 / 1366.0, PartyMemberSlots.NameBandWidthRatio, Tolerance);
+        Assert.Equal(28.0 / 768.0, PartyMemberSlots.NameBandHeightRatio, Tolerance);
+    }
+
+    // The game's chat log starts at y 106 (measured in party_members_2.png, where a "[Game] ..."
+    // line renders in the same near-white as name text). The band must end exactly there or
+    // chat glyphs leak into every captured mask.
+    [Fact]
+    public void NameBandStopsExactlyWhereTheChatLogStarts()
+    {
+        var bandBottom = PartyMemberSlots.GetSlotNameBandCenter(1).Y + (PartyMemberSlots.NameBandHeightRatio / 2);
+
+        Assert.Equal(106.0 / 768.0, bandBottom, Tolerance);
+    }
+
+    [Fact]
+    public void NameBandsTileTheFullSlotPitchWithoutOverlap()
+    {
+        for (var slot = 1; slot < PartyMemberSlots.MaxSlots; slot++)
+        {
+            var current = PartyMemberSlots.GetSlotNameBandCenter(slot);
+            var next = PartyMemberSlots.GetSlotNameBandCenter(slot + 1);
+            Assert.Equal(PartyMemberSlots.NameBandWidthRatio, next.X - current.X, Tolerance);
+            Assert.Equal(current.Y, next.Y, Tolerance);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(9)]
+    public void OutOfRangeNameBandSlotIndexThrows(int slotIndex)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => PartyMemberSlots.GetSlotNameBandCenter(slotIndex));
+    }
 }

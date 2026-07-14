@@ -6,6 +6,7 @@ internal sealed class MenuCommandArgs
 {
     public int? CharacterSlot { get; set; }
     public int? FriendRow { get; set; }
+    public int? PartyPosition { get; set; }
     public string? GameName { get; set; }
     public string? Password { get; set; }
     public string? Difficulty { get; set; }
@@ -22,6 +23,7 @@ internal sealed class MenuCommandArgs
 
         args.CharacterSlot = TryGetInt(element, "characterSlot");
         args.FriendRow = TryGetInt(element, "friendRow");
+        args.PartyPosition = TryGetInt(element, "partyPosition");
         args.GameName = TryGetString(element, "gameName");
         args.Password = TryGetString(element, "password");
         args.Difficulty = TryGetString(element, "difficulty");

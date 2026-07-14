@@ -48,6 +48,20 @@ public sealed class DiscordSlashCommandsTests
     }
 
     [Fact]
+    public void FollowCommandIncludesBindInGamePositionOption()
+    {
+        var d2r = DiscordSlashCommands.Build()
+            .Select(Assert.IsType<SlashCommandProperties>)
+            .Single(command => command.Name.Value == "d2r");
+        var follow = Assert.Single(d2r.Options.Value, option => option.Name == "follow");
+        var bindInGame = Assert.Single(follow.Options!, option => option.Name == "bind-in-game");
+
+        Assert.Equal(ApplicationCommandOptionType.Integer, bindInGame.Type);
+        Assert.Equal(0, bindInGame.MinValue);
+        Assert.Equal(8, bindInGame.MaxValue);
+    }
+
+    [Fact]
     public void FoldedCommandsExposeAllFlagOnD2R()
     {
         var d2r = GetD2RCommand();

@@ -66,6 +66,18 @@ Friend rows use the same X as `FriendRowStart` and step by `FriendRowHeight`, de
 | 3 | `0.180,0.278` | `246,214` |
 | 4 | `0.180,0.327` | `246,251` |
 
+Party portrait slots and their name bands (issue #25 bind-in-game) step by a 72px pitch from
+slot 1; both are sample regions, never click targets. The name band covers both name baselines
+(y 81-90 normal, y 93-103 when staggered under a colliding neighbor) and ends at y 106 where the
+chat log starts - see pixel-classifier-catalog.md's "Party-bar name fingerprint" section for the
+measurements:
+
+| Party slot | Portrait top-edge strip center | Name band (left,top-right,bottom) |
+| --- | --- | --- |
+| 1 | `219,29` | `183,78-255,106` |
+| 2 | `291,29` | `255,78-327,106` |
+| N (1-8) | `219 + (N-1)*72, 29` | left = `183 + (N-1)*72`, same y span |
+
 ## Snippet Source Crops
 
 Snippet crops are detector assets, not always click targets. The click center above should land inside or near the crop when that crop is also clickable.
