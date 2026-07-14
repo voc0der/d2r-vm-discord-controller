@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 using AgentCommon;
@@ -3540,7 +3541,7 @@ public sealed class DiscordBot
 
         var message =
             $"Captured the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s) and distributed it to {distributed}/{online.Length} online accounts.{glyphSummary} "
-            + "Follow-auto now stays while this player is in the game and leaves when they leave.";
+            + $"Follow-auto now stays while this player is in the game and leaves when they leave. Verify the visible portrait on {vantageKey}; D2R omits that account's own character and can sort the party bar differently than join order.";
         if (distributionFailures.Count > 0)
         {
             message += $" Template save failures: {string.Join("; ", distributionFailures)}";
@@ -4028,7 +4029,7 @@ public sealed class DiscordBot
                     var initialPulse = await TryFetchFollowPulseAsync(rotation: 0);
                     await UpdateFollowAutoMonitorAsync(
                         initialPulse.LeaderBound
-                            ? $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for the bound leader to leave..."
+                            ? $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(initialPulse)}"
                             : $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for someone to leave...",
                         joined: online.Length,
                         total: online.Length);
@@ -4516,6 +4517,7 @@ public sealed class DiscordBot
         var leaderMissingStreak = 0;
         var rotation = 0;
         string? flaggedBy = null;
+        var lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
         var nextDelay = GetRotatedFollowPollDelay(pollDelay);
         while (true)
         {
@@ -4544,9 +4546,18 @@ public sealed class DiscordBot
                 case FollowAutoPulseAction.RebaselineAndWait:
                     baseline = sample.PlayerCount ?? baseline;
                     flaggedBy = null;
+                    if (DateTimeOffset.UtcNow - lastLeaderVisibleReportUtc >= TimeSpan.FromSeconds(30))
+                    {
+                        lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(sample)}");
+                    }
+
                     break;
                 case FollowAutoPulseAction.ConfirmLeaderGone:
                     flaggedBy ??= sample.AccountKey;
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Game #{_followAutoGameNumber}: bound leader not visible; confirming before leaving.{FormatBoundLeaderWatchDetail(sample)}");
                     var rotated = GetRotatedFollowPollDelay(pollDelay);
                     var confirm = TimeSpan.FromSeconds(FollowAutoPulsePolicy.ConfirmResampleDelaySeconds);
                     nextDelay = rotated < confirm ? rotated : confirm;
@@ -4587,7 +4598,38 @@ public sealed class DiscordBot
         return (await TryFetchFollowPulseAsync(rotation: 0)).PlayerCount;
     }
 
-    private sealed record FollowPulseSample(int? PlayerCount, bool LeaderBound, bool? LeaderPresent, string? AccountKey);
+    private sealed record FollowPulseSample(
+        int? PlayerCount,
+        bool LeaderBound,
+        bool? LeaderPresent,
+        int? LeaderSlot,
+        double? LeaderScore,
+        string? AccountKey);
+
+    private static string FormatBoundLeaderWatchDetail(FollowPulseSample sample)
+    {
+        if (!sample.LeaderBound)
+        {
+            return "";
+        }
+
+        var account = string.IsNullOrWhiteSpace(sample.AccountKey)
+            ? ""
+            : $" on {sample.AccountKey}";
+        var slot = sample.LeaderSlot is { } leaderSlot
+            ? $" slot {leaderSlot}"
+            : "";
+        var score = sample.LeaderScore is { } leaderScore
+            ? $" score {leaderScore.ToString("0.000", CultureInfo.InvariantCulture)}"
+            : "";
+
+        return sample.LeaderPresent switch
+        {
+            true => $" Bound leader currently visible{account}{slot}{score}.",
+            false => $" Bound leader not visible{account}{score}.",
+            _ => $" Bound leader check unavailable{account}."
+        };
+    }
 
     // Samples the (rotation % online-count)th online account, so consecutive pulses take turns
     // across the fleet. LeaderPresent stays null whenever it wasn't actually verified (no fresh
@@ -4599,7 +4641,7 @@ public sealed class DiscordBot
         var (entries, _) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            return new FollowPulseSample(null, false, null, null);
+            return new FollowPulseSample(null, false, null, null, null, null);
         }
 
         var (accountKey, account) = entries[rotation % entries.Length];
@@ -4616,6 +4658,8 @@ public sealed class DiscordBot
                     TryGetInt(sampleData, "playerCount", out var sampledPlayerCount) ? sampledPlayerCount : null,
                     TryGetBoolean(sampleData, "leaderBound", out var leaderBound) && leaderBound,
                     TryGetBoolean(sampleData, "leaderPresent", out var leaderPresent) ? leaderPresent : null,
+                    TryGetInt(sampleData, "leaderSlot", out var leaderSlot) ? leaderSlot : null,
+                    TryGetNullableDouble(sampleData, "leaderScore"),
                     accountKey);
             }
         }
@@ -4633,7 +4677,7 @@ public sealed class DiscordBot
                 TimeSpan.FromSeconds(6));
             if (!result.Ok || result.Data is not { } data)
             {
-                return new FollowPulseSample(null, false, null, accountKey);
+                return new FollowPulseSample(null, false, null, null, null, accountKey);
             }
 
             using var document = JsonDocument.Parse(data.GetRawText());
@@ -4641,11 +4685,13 @@ public sealed class DiscordBot
                 TryGetInt(document.RootElement, "lastPartyMemberCount", out var otherMembers) ? otherMembers + 1 : null,
                 LeaderBound: false,
                 LeaderPresent: null,
+                LeaderSlot: null,
+                LeaderScore: null,
                 accountKey);
         }
         catch (Exception)
         {
-            return new FollowPulseSample(null, false, null, accountKey);
+            return new FollowPulseSample(null, false, null, null, null, accountKey);
         }
     }
 
