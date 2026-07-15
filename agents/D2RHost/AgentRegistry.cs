@@ -18,6 +18,10 @@ public sealed class AgentRegistry
     private readonly ConcurrentDictionary<string, PendingCommand> _pending = new();
     private readonly ConcurrentDictionary<string, byte> _autoUpdateAttempts = new(StringComparer.OrdinalIgnoreCase);
 
+    // Raised on the websocket receive loop after an agent authenticates or drops; handlers
+    // must hand off to a background task rather than block the agent's socket.
+    public event Action? ConnectivityChanged;
+
     public AgentRegistry(
         HostConfig config,
         AgentAutoUpdateState autoUpdate,
@@ -126,6 +130,7 @@ public sealed class AgentRegistry
             {
                 _db.UpsertAgentStatus(removed.Id, removed.Kind, connected: false, removed.LastStatusJson ?? "{}");
                 _logger.LogWarning("Agent disconnected: {AgentId}", agentId);
+                ConnectivityChanged?.Invoke();
             }
         }
     }
@@ -273,6 +278,7 @@ public sealed class AgentRegistry
         _agents[hello.AgentId] = connected;
         _db.UpsertAgentStatus(connected.Id, connected.Kind, connected: true, "{}");
         _logger.LogInformation("Agent authenticated: {AgentId}", hello.AgentId);
+        ConnectivityChanged?.Invoke();
     }
 
     private void QueueSelfUpdateAfterAuthentication(string agentId, string? version)

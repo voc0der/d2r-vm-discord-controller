@@ -19,6 +19,8 @@ public sealed class DiscordBot
     private const string FollowAutoStopSleepButtonId = "d2r:follow:auto-stop:sleep";
     private const string GameSessionLeaveButtonId = "d2r:session:leave";
     private const string GameSessionQuitButtonId = "d2r:session:quit";
+    private const string StartupFollowButtonId = "d2r:startup:follow";
+    private const string StartupReadyButtonId = "d2r:startup:ready";
     // 150s left ~0s margin over the agent's own internal retry budget on slower VM
     // hardware (Battle.net launch + splash-skip retries can legitimately take several
     // minutes), so the command was timing out moments before D2R would have reached
@@ -49,7 +51,11 @@ public sealed class DiscordBot
     private bool _activeSessionMetricsEnabled;
     private bool _commandsRegistered;
     private bool _discordReady;
-    private bool _availabilityAnnouncementQueued;
+    private bool _startupMessageTaskStarted;
+    private readonly SemaphoreSlim _startupMessageLock = new(1, 1);
+    private IUserMessage? _startupMessage;
+    private bool _startupFollowUsed;
+    private bool _startupReadyUsed;
     private GameNameTemplate? _gameTemplate;
     private readonly SemaphoreSlim _joinAutoLock = new(1, 1);
     private CancellationTokenSource? _joinAutoCts;
@@ -125,6 +131,7 @@ public sealed class DiscordBot
         _client.SlashCommandExecuted += OnSlashCommandAsync;
         _client.ButtonExecuted += OnButtonExecutedAsync;
         _notifications.MessageQueued += OnDiscordNotificationQueued;
+        _registry.ConnectivityChanged += OnAgentConnectivityChanged;
     }
 
     public async Task StartAsync()
@@ -174,19 +181,102 @@ public sealed class DiscordBot
             _commandsRegistered = true;
         }
 
-        QueueAvailabilityAnnouncementOnce();
+        PostStartupMessageOnce();
         await FlushUpdateNotificationsAsync();
     }
 
-    private void QueueAvailabilityAnnouncementOnce()
+    private void PostStartupMessageOnce()
     {
-        if (_availabilityAnnouncementQueued)
+        if (_startupMessageTaskStarted)
         {
             return;
         }
 
-        _availabilityAnnouncementQueued = true;
-        _notifications.Enqueue(FormatAvailabilityAnnouncement());
+        _startupMessageTaskStarted = true;
+        _ = Task.Run(PostStartupMessageAsync);
+    }
+
+    // The startup announcement used to be a one-shot string pushed through the notification
+    // queue. That had two failure modes: the agent count was frozen at whatever happened to be
+    // connected the instant Discord came up (agents are still restarting after an update, so
+    // "2/4" never became "4/4"), and if the channel wasn't visible yet on the first flush the
+    // message sat in the queue until some unrelated notification triggered another flush -
+    // which never happens on a no-update start, so nothing was posted at all. Post it as a
+    // tracked message instead: retry until the channel resolves, then keep the content live
+    // from registry connectivity events.
+    private async Task PostStartupMessageAsync()
+    {
+        if (!_config.UpdateNotificationsEnabled || _config.GuildChannel is null)
+        {
+            return;
+        }
+
+        for (var attempt = 1; attempt <= 24; attempt++)
+        {
+            try
+            {
+                if (GetUpdateNotificationChannel() is { } channel)
+                {
+                    var message = await channel.SendMessageAsync(
+                        AppendMetrics(metricsEnabled: false, FormatAvailabilityAnnouncement()),
+                        components: BuildStartupActionComponents());
+                    await _startupMessageLock.WaitAsync();
+                    _startupMessage = message;
+                    _startupMessageLock.Release();
+
+                    // Agents that connected while the send was in flight raised their events
+                    // before _startupMessage existed; reconcile once now.
+                    await RefreshStartupMessageAsync();
+
+                    // The channel is definitely visible now, so re-drain anything (host
+                    // update-complete marker, early agent notifications) a failed earlier
+                    // flush left behind.
+                    await FlushUpdateNotificationsAsync();
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not send the startup availability message (attempt {Attempt}).", attempt);
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(5));
+        }
+
+        _logger.LogWarning("Gave up posting the startup availability message; the channel never became available.");
+    }
+
+    private void OnAgentConnectivityChanged()
+    {
+        _ = Task.Run(RefreshStartupMessageAsync);
+    }
+
+    private async Task RefreshStartupMessageAsync()
+    {
+        await _startupMessageLock.WaitAsync();
+        try
+        {
+            if (_startupMessage is not { } message)
+            {
+                return;
+            }
+
+            var content = AppendMetrics(metricsEnabled: false, FormatAvailabilityAnnouncement());
+            var components = BuildStartupActionComponents();
+            await message.ModifyAsync(properties =>
+            {
+                properties.Content = content;
+                properties.Components = components;
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not refresh the startup availability message.");
+        }
+        finally
+        {
+            _startupMessageLock.Release();
+        }
     }
 
     private void OnDiscordNotificationQueued()
@@ -356,6 +446,12 @@ public sealed class DiscordBot
                 case GameSessionQuitButtonId:
                     await QueueQuitAllAsync(SlashContext.FromComponent(component, "quit"), "game-session quit button was pressed");
                     return;
+                case StartupFollowButtonId:
+                    await HandleStartupFollowButtonAsync(component);
+                    return;
+                case StartupReadyButtonId:
+                    await HandleStartupReadyButtonAsync(component);
+                    return;
             }
         }
         catch (Exception ex)
@@ -400,6 +496,78 @@ public sealed class DiscordBot
             .WithButton("Create Game", TemplateCreateButtonId, ButtonStyle.Primary)
             .WithButton("Join", TemplateJoinButtonId, ButtonStyle.Secondary)
             .Build();
+    }
+
+    private MessageComponent BuildStartupActionComponents()
+    {
+        var builder = new ComponentBuilder();
+        if (!_startupFollowUsed)
+        {
+            builder.WithButton("Follow", StartupFollowButtonId, ButtonStyle.Primary);
+        }
+
+        if (!_startupReadyUsed)
+        {
+            builder.WithButton("Ready", StartupReadyButtonId, ButtonStyle.Secondary);
+        }
+
+        return builder.Build();
+    }
+
+    private async Task HandleStartupFollowButtonAsync(SocketMessageComponent component)
+    {
+        _startupFollowUsed = true;
+        await RemoveClickedStartupButtonAsync(component);
+        await StartFollowAutoAsync(
+            SlashContext.FromComponent(component, "follow"),
+            delaySeconds: 0,
+            watch: false,
+            TimeSpan.FromMinutes(FollowAutoDefaultIdleMinutes));
+    }
+
+    private async Task HandleStartupReadyButtonAsync(SocketMessageComponent component)
+    {
+        _startupReadyUsed = true;
+        await RemoveClickedStartupButtonAsync(component);
+        await QueueAllCommandsAsync(
+            SlashContext.FromComponent(component, "ready"),
+            "menu_ready",
+            (accountKey, account) => BuildAccountArgs(accountKey, account),
+            ReadyCommandTimeout,
+            displayName: "ready");
+    }
+
+    private async Task RemoveClickedStartupButtonAsync(SocketMessageComponent component)
+    {
+        if (_startupMessage is { } current && component.Message.Id == current.Id)
+        {
+            await RefreshStartupMessageAsync();
+            return;
+        }
+
+        // The click landed on a startup message from a previous host process (its custom IDs
+        // still route here); this process's used-flags don't describe that message, so strip
+        // just the clicked button from whatever it currently shows.
+        try
+        {
+            var builder = new ComponentBuilder();
+            foreach (var row in component.Message.Components.OfType<ActionRowComponent>())
+            {
+                foreach (var button in row.Components.OfType<ButtonComponent>())
+                {
+                    if (!string.Equals(button.CustomId, component.Data.CustomId, StringComparison.Ordinal))
+                    {
+                        builder.WithButton(button.ToBuilder());
+                    }
+                }
+            }
+
+            await component.Message.ModifyAsync(properties => properties.Components = builder.Build());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not remove the clicked startup button.");
+        }
     }
 
     private static MessageComponent BuildFollowBindActionComponents()
