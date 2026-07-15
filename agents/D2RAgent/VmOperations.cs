@@ -2583,7 +2583,7 @@ public sealed class VmOperations
             return VisibleD2RState.InGame;
         }
 
-        RecordClassifierBreakdown(TryRunBounded(() => ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid), ClassifierBreakdownBoundMs, ""));
+        RecordClassifierBreakdown(TryRunBounded(() => ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid, abandonWhenCommandActive: true), ClassifierBreakdownBoundMs, ""));
         return VisibleD2RState.Unknown;
     }
 
@@ -2594,24 +2594,46 @@ public sealed class VmOperations
     // for the lobby/in-game checks at all. Recording a compact pass/fail per sub-check
     // whenever the result is Unknown means a live `watch` can show *why* nothing matched
     // instead of just "Unknown", without needing a screenshot first.
-    private string ComputeVisibleStateClassifierBreakdown(WindowsInput input, int sampleGrid)
+    // The classifier breakdown is ~20 sequential GDI region samples feeding only the status line's
+    // diagnostic hud F(...) text - it drives no decision (DetectVisibleD2RState returns Unknown
+    // whether or not it runs). watch-follow-auto-20260715-133238.log: an already-running detailed
+    // status collection that reached this breakdown during a save-exit held GDI for ~15s, and every
+    // bounded IsInGameReady sample in WaitForPostSaveExitMenuAsync timed out against it, so the leave
+    // sat at its full deadline even though the client had returned to the lobby in ~2s. When the
+    // caller opts in (only the live-status path does; the menu_ready diagnostic paths own the command
+    // gate themselves and must not bail), abandon the breakdown the instant a UI command takes the
+    // gate - the partial diagnostic is worthless next to unblocking that command's own screen reads.
+    private void AbandonBreakdownIfCommandActive(bool enabled)
+    {
+        if (enabled && _commandGate.CurrentCount == 0)
+        {
+            throw new OperationCanceledException(
+                "A UI command needs the display; abandoning the diagnostic classifier breakdown.");
+        }
+    }
+
+    private string ComputeVisibleStateClassifierBreakdown(WindowsInput input, int sampleGrid, bool abandonWhenCommandActive = false)
     {
         try
         {
+            AbandonBreakdownIfCommandActive(abandonWhenCommandActive);
             var logo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.290), widthRatio: 0.45, heightRatio: 0.22, windowRelative: false, sampleGrid: sampleGrid);
             var prompt = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.600), widthRatio: 0.32, heightRatio: 0.055, windowRelative: false, sampleGrid: sampleGrid);
             var splash = IsDiabloSplashScreen(input, sampleGrid);
             var connecting = splash && IsConnectingToBattleNetDialog(input, sampleGrid);
+            AbandonBreakdownIfCommandActive(abandonWhenCommandActive);
             var emptyPanel = SampleD2RRegion(input, new AgentCommon.UiPoint(0.895, 0.455), widthRatio: 0.17, heightRatio: 0.66, windowRelative: false, sampleGrid: sampleGrid);
             var offline = IsCharacterScreenOffline(input, sampleGrid: sampleGrid);
             var play = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.CharacterPlayButton), widthRatio: 0.13, heightRatio: 0.055, windowRelative: false, sampleGrid: sampleGrid);
             var charMenuLogo = SampleD2RRegion(input, new AgentCommon.UiPoint(0.105, 0.170), widthRatio: 0.13, heightRatio: 0.16, windowRelative: false, sampleGrid: sampleGrid);
+            AbandonBreakdownIfCommandActive(abandonWhenCommandActive);
             var charButtons = IsCharacterButtonPairReady(input, windowRelative: false, sampleGrid);
             var charMenu = IsCharacterMenuReady(input, windowRelative: false, sampleGrid);
             var inGameScreenEvidence = SampleInGameHudEvidence(input, windowRelative: false);
             var inGameWindowEvidence = SampleInGameHudEvidence(input, windowRelative: true);
             var inGameScreen = IsInGameHudEvidenceReady(inGameScreenEvidence);
             var inGameWindow = IsInGameHudEvidenceReady(inGameWindowEvidence);
+            AbandonBreakdownIfCommandActive(abandonWhenCommandActive);
             var joinTab = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab), widthRatio: 0.10, heightRatio: 0.045, windowRelative: false, sampleGrid: sampleGrid);
             var tabReady = IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.CreateGameTab))
                 || IsLobbyTabReady(input, GetUiPoint(D2RUiCoordinateTarget.JoinGameTab));
