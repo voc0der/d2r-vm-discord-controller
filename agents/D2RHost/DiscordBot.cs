@@ -83,6 +83,14 @@ public sealed class DiscordBot
     private long _followAutoRunSequence = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private long _followAutoCurrentRunId;
 
+    // Multi-alt bind-in-game: the serialized nametag fingerprint this follow-auto run locked
+    // onto, decided by the first pulse of the run that verifiably sees one of the bound
+    // nametags (rolodex order breaks score ties). Content-keyed, never index-keyed - see
+    // FollowLeaderMatch. Ordinal is display-only. Reset when a run starts and when the bind
+    // list changes, so the next run re-resolves against whatever alt the operator is on.
+    private string? _followAutoLockedNametag;
+    private int? _followAutoLockedNametagOrdinal;
+
     // join-all's "join the last known game if it's recent" (issue #20, item 5) needs to mean
     // a game create-game-all/join-all actually acted on, not just whatever /d2r game set last had -
     // a 3-day-old manual /d2r game set shouldn't be silently (re)joined.
@@ -3427,8 +3435,10 @@ public sealed class DiscordBot
     // Issue #25 follow-up ("bind-in-game"): capture the party-bar name at a visible position
     // from one account's in-game vantage and push the glyph mask to every online account.
     // Once distributed, the follow-auto pulse leaves games when THIS player is gone instead of
-    // whenever the public-game player count wobbles. Position 0 clears the leader bind (the
-    // friend bind stays; follow-auto falls back to count-drop behavior).
+    // whenever the public-game player count wobbles. Repeat per alt: each bind APPENDS a
+    // nametag, and each follow-auto run locks onto whichever bound nametag it spots first
+    // (rolodex order on ties). Position 0 clears every bound nametag (the friend bind stays;
+    // follow-auto falls back to count-drop behavior).
     private async Task HandleFollowBindInGameAsync(SlashContext context, int partyPosition)
     {
         var (online, _) = GetAccountEntriesByConnectivity();
@@ -3450,9 +3460,11 @@ public sealed class DiscordBot
                 }
             }
 
+            _followAutoLockedNametag = null;
+            _followAutoLockedNametagOrdinal = null;
             await ModifyOriginalResponseWithMetricsAsync(
                 context,
-                $"Leader bind cleared on {cleared}/{online.Length} online accounts. Follow-auto will leave on player-count drops again.");
+                $"All bound nametags cleared on {cleared}/{online.Length} online accounts. Follow-auto will leave on player-count drops again.");
             return;
         }
 
@@ -3517,15 +3529,22 @@ public sealed class DiscordBot
             : "";
 
         var distributed = 0;
+        var boundNametagCount = (int?)null;
         var distributionFailures = new List<string>();
         foreach (var (accountKey, account) in online)
         {
             try
             {
-                var result = await _registry.SendCommandAsync(account.AgentId, "follow_set_leader_template", new { fingerprint }, TimeSpan.FromSeconds(15));
+                var result = await _registry.SendCommandAsync(account.AgentId, "follow_set_leader_template", new { fingerprint, append = true }, TimeSpan.FromSeconds(15));
                 if (result.Ok)
                 {
                     distributed++;
+                    if (result.Data is { } setData
+                        && TryGetInt(setData, "templateCount", out var count)
+                        && (boundNametagCount is null || string.Equals(accountKey, vantageKey, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        boundNametagCount = count;
+                    }
                 }
                 else
                 {
@@ -3557,12 +3576,16 @@ public sealed class DiscordBot
                 continue;
             }
 
-            var check = await TryFetchFollowPulseForAsync(accountKey, account);
-            if (check.LeaderPresent == true)
+            // Verification is keyed to the FRESH nametag specifically (passed as the active
+            // fingerprint so the agent's scan short-circuits on it): another bound alt being
+            // visible or absent says nothing about whether this capture grabbed a bot.
+            var check = await TryFetchFollowPulseForAsync(accountKey, account, fingerprint);
+            var freshMatch = check.Matches.FirstOrDefault(match => string.Equals(match.Fingerprint, fingerprint, StringComparison.Ordinal));
+            if (freshMatch?.Present == true)
             {
                 seenByOthers.Add(accountKey);
             }
-            else if (check.LeaderPresent == false)
+            else if (freshMatch?.Present == false)
             {
                 missingFromOthers.Add(accountKey);
             }
@@ -3570,21 +3593,23 @@ public sealed class DiscordBot
 
         if (missingFromOthers.Count > 0)
         {
+            // Roll back only the fresh capture - the operator's other bound alt nametags must
+            // survive a single bad bind.
             foreach (var (accountKey, account) in online)
             {
                 try
                 {
-                    await _registry.SendCommandAsync(account.AgentId, "follow_clear_leader_template", new { }, TimeSpan.FromSeconds(15));
+                    await _registry.SendCommandAsync(account.AgentId, "follow_remove_leader_template", new { fingerprint }, TimeSpan.FromSeconds(15));
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogDebug(ex, "follow_clear_leader_template (bind rollback) failed for {AccountKey}.", accountKey);
+                    _logger.LogDebug(ex, "follow_remove_leader_template (bind rollback) failed for {AccountKey}.", accountKey);
                 }
             }
 
             await ModifyOriginalResponseWithMetricsAsync(
                 context,
-                $"Position {partyPosition} on {vantageKey} captured a name that {string.Join(", ", missingFromOthers)} can't see in its own party bar - which means it's {missingFromOthers[0]}'s own character (a bot), not you.{glyphSummary} Bind cleared, nothing changed. "
+                $"Position {partyPosition} on {vantageKey} captured a name that {string.Join(", ", missingFromOthers)} can't see in its own party bar - which means it's {missingFromOthers[0]}'s own character (a bot), not you.{glyphSummary} That nametag was removed everywhere; any previously bound nametags are untouched. "
                 + $"From {vantageKey}'s screen your own character isn't listed, so every member after that slot shifts up one - pick the position where you actually see your character, or run `/d2r screenshot {vantageKey}` to read the party bar first.");
             return;
         }
@@ -3593,9 +3618,17 @@ public sealed class DiscordBot
             ? $" Verified visible from {seenByOthers.Count} other account(s), so this is a player everyone shares rather than a bot."
             : "";
 
+        // The bind list changed, so a running follow-auto re-resolves which alt it is
+        // following - most likely onto this fresh capture, since the operator just bound the
+        // alt they are playing.
+        _followAutoLockedNametag = null;
+        _followAutoLockedNametagOrdinal = null;
+
+        var rolodexSuffix = boundNametagCount is { } totalBound && totalBound > 1
+            ? $" {totalBound} nametags are now bound; each follow-auto run locks onto whichever one it spots first."
+            : " Follow-auto now stays while this player is in the game and leaves when they leave.";
         var message =
-            $"Captured the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s) and distributed it to {distributed}/{online.Length} online accounts.{glyphSummary}{verifiedSuffix} "
-            + "Follow-auto now stays while this player is in the game and leaves when they leave.";
+            $"Captured the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s) and distributed it to {distributed}/{online.Length} online accounts.{glyphSummary}{verifiedSuffix}{rolodexSuffix}";
         if (distributionFailures.Count > 0)
         {
             message += $" Template save failures: {string.Join("; ", distributionFailures)}";
@@ -3623,6 +3656,8 @@ public sealed class DiscordBot
             _followAutoCts = cts;
             runId = ++_followAutoRunSequence;
             _followAutoCurrentRunId = runId;
+            _followAutoLockedNametag = null;
+            _followAutoLockedNametagOrdinal = null;
         }
         finally
         {
@@ -4083,7 +4118,8 @@ public sealed class DiscordBot
                 if (pending.Length == 0 && online.Length > 0)
                 {
                     _followAutoGameNumber++;
-                    var initialPulse = await TryFetchFollowPulseAsync(rotation: 0);
+                    var initialPulse = await TryFetchFollowPulseAsync(rotation: 0, _followAutoLockedNametag);
+                    await TryLockNametagFromSampleAsync(initialPulse);
                     await UpdateFollowAutoMonitorAsync(
                         initialPulse.LeaderBound
                             ? $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(initialPulse)}"
@@ -4578,8 +4614,15 @@ public sealed class DiscordBot
         while (true)
         {
             await Task.Delay(nextDelay, cancellationToken);
-            var sample = await TryFetchFollowPulseAsync(rotation++);
-            switch (FollowAutoPulsePolicy.Classify(sample.LeaderBound, sample.LeaderPresent, sample.PlayerCount, baseline))
+            var sample = await TryFetchFollowPulseAsync(rotation++, _followAutoLockedNametag);
+            await TryLockNametagFromSampleAsync(sample);
+
+            // Only the session-locked nametag can drive the leave decision. Before a lock
+            // exists (first game, nothing spotted yet), presence reads null and Classify falls
+            // back to count-drop semantics - none of the bound alt nametags may trigger a leave
+            // until one of them has actually been SEEN in this run.
+            var (lockedPresent, _, _) = GetLockedNametagPresence(sample);
+            switch (FollowAutoPulsePolicy.Classify(sample.LeaderBound, lockedPresent, sample.PlayerCount, baseline))
             {
                 case FollowAutoPulseAction.CountDropLeave:
                     return "player count dropped";
@@ -4668,14 +4711,70 @@ public sealed class DiscordBot
                 continue;
             }
 
-            var sample = await TryFetchFollowPulseForAsync(accountKey, account);
-            if (sample.LeaderBound && sample.LeaderPresent is { } present)
+            // The confirming vantage must answer about the SAME nametag the flagger missed -
+            // the session-locked one - not about any other bound alt that might coincidentally
+            // be visible.
+            var sample = await TryFetchFollowPulseForAsync(accountKey, account, _followAutoLockedNametag);
+            var (present, _, _) = GetLockedNametagPresence(sample);
+            if (sample.LeaderBound && present is { } confirmed)
             {
-                return (!present, accountKey);
+                return (!confirmed, accountKey);
             }
         }
 
         return (null, null);
+    }
+
+    // Multi-alt bind-in-game: resolves which bound nametag this run is following. The first
+    // pulse that verifiably sees one locks it in for the whole run - the operator's alt for
+    // the session - and later pulses only ever consult that entry. Highest score wins when a
+    // pulse somehow sees several (prefix-squatting names, multiboxing); bind order breaks ties.
+    private async Task TryLockNametagFromSampleAsync(FollowPulseSample sample)
+    {
+        if (_followAutoLockedNametag is not null || sample.Matches.Count == 0)
+        {
+            return;
+        }
+
+        var signals = sample.Matches
+            .Select(match => new FollowAutoPulsePolicy.LeaderNametagSignal(match.Present, match.Score ?? 0.0))
+            .ToArray();
+        if (FollowAutoPulsePolicy.PickNametagLockIndex(signals) is not { } index)
+        {
+            return;
+        }
+
+        var match = sample.Matches[index];
+        _followAutoLockedNametag = match.Fingerprint;
+        _followAutoLockedNametagOrdinal = index + 1;
+
+        var seenFrom = string.IsNullOrWhiteSpace(sample.AccountKey) ? "" : $" from {sample.AccountKey}";
+        var slotText = match.Slot is { } slot ? $" slot {slot}" : "";
+        var scoreText = match.Score is { } score
+            ? $", score {score.ToString("0.000", CultureInfo.InvariantCulture)}"
+            : "";
+        await UpdateFollowAutoMonitorAsync(
+            $"Game #{_followAutoGameNumber}: locked onto bound nametag #{index + 1} of {sample.Matches.Count} (seen{seenFrom}{slotText}{scoreText}). Following it for the rest of this run.");
+    }
+
+    private (bool? Present, int? Slot, double? Score) GetLockedNametagPresence(FollowPulseSample sample)
+    {
+        if (_followAutoLockedNametag is null)
+        {
+            return (null, null, null);
+        }
+
+        foreach (var match in sample.Matches)
+        {
+            if (string.Equals(match.Fingerprint, _followAutoLockedNametag, StringComparison.Ordinal))
+            {
+                return (match.Present, match.Slot, match.Score);
+            }
+        }
+
+        // This agent's stored list doesn't contain the locked nametag (it was offline during
+        // the bind): no information, never evidence of absence.
+        return (null, null, null);
     }
 
     private TimeSpan GetJoinAutoPlayerCountDropPollDelay()
@@ -4699,15 +4798,21 @@ public sealed class DiscordBot
         return (await TryFetchFollowPulseAsync(rotation: 0)).PlayerCount;
     }
 
+    // One bound nametag's reading in a pulse, keyed by the serialized fingerprint itself so
+    // the host can lock onto a nametag by content - agents whose stored lists diverged
+    // (offline during a bind) can never be asked about the wrong list index.
+    private sealed record FollowLeaderMatch(string Fingerprint, bool? Present, int? Slot, double? Score);
+
     private sealed record FollowPulseSample(
         int? PlayerCount,
         bool LeaderBound,
         bool? LeaderPresent,
         int? LeaderSlot,
         double? LeaderScore,
-        string? AccountKey);
+        string? AccountKey,
+        IReadOnlyList<FollowLeaderMatch> Matches);
 
-    private static string FormatBoundLeaderWatchDetail(FollowPulseSample sample)
+    private string FormatBoundLeaderWatchDetail(FollowPulseSample sample)
     {
         if (!sample.LeaderBound)
         {
@@ -4717,18 +4822,26 @@ public sealed class DiscordBot
         var account = string.IsNullOrWhiteSpace(sample.AccountKey)
             ? ""
             : $" on {sample.AccountKey}";
-        var slot = sample.LeaderSlot is { } leaderSlot
-            ? $" slot {leaderSlot}"
-            : "";
-        var score = sample.LeaderScore is { } leaderScore
-            ? $" score {leaderScore.ToString("0.000", CultureInfo.InvariantCulture)}"
+
+        if (_followAutoLockedNametag is null)
+        {
+            return sample.Matches.Count > 0
+                ? $" {sample.Matches.Count} bound nametag(s); waiting to spot one before locking on{account}."
+                : $" Bound nametag check unavailable{account}.";
+        }
+
+        var (present, slot, score) = GetLockedNametagPresence(sample);
+        var ordinal = _followAutoLockedNametagOrdinal is { } lockedOrdinal ? $" #{lockedOrdinal}" : "";
+        var slotText = slot is { } presentSlot ? $" slot {presentSlot}" : "";
+        var scoreText = score is { } matchScore
+            ? $" score {matchScore.ToString("0.000", CultureInfo.InvariantCulture)}"
             : "";
 
-        return sample.LeaderPresent switch
+        return present switch
         {
-            true => $" Bound leader currently visible{account}{slot}{score}.",
-            false => $" Bound leader not visible{account}{score}.",
-            _ => $" Bound leader check unavailable{account}."
+            true => $" Locked nametag{ordinal} currently visible{account}{slotText}{scoreText}.",
+            false => $" Locked nametag{ordinal} not visible{account}{scoreText}.",
+            _ => $" Locked nametag{ordinal} check unavailable{account}."
         };
     }
 
@@ -4737,26 +4850,26 @@ public sealed class DiscordBot
     // sample, no leader bound, or the agent couldn't check) - the cached-status fallback can
     // only ever supply a count, and pretending it said anything about the leader would turn
     // "couldn't check" into a leave trigger.
-    private async Task<FollowPulseSample> TryFetchFollowPulseAsync(int rotation)
+    private async Task<FollowPulseSample> TryFetchFollowPulseAsync(int rotation, string? activeFingerprint = null)
     {
         var (entries, _) = GetAccountEntriesByConnectivity();
         if (entries.Length == 0)
         {
-            return new FollowPulseSample(null, false, null, null, null, null);
+            return new FollowPulseSample(null, false, null, null, null, null, Array.Empty<FollowLeaderMatch>());
         }
 
         var (accountKey, account) = entries[rotation % entries.Length];
-        return await TryFetchFollowPulseForAsync(accountKey, account);
+        return await TryFetchFollowPulseForAsync(accountKey, account, activeFingerprint);
     }
 
-    private async Task<FollowPulseSample> TryFetchFollowPulseForAsync(string accountKey, AccountConfig account)
+    private async Task<FollowPulseSample> TryFetchFollowPulseForAsync(string accountKey, AccountConfig account, string? activeFingerprint = null)
     {
         try
         {
             var sampleResult = await _registry.SendCommandAsync(
                 account.AgentId,
                 "sample_player_count",
-                args: null,
+                args: activeFingerprint is null ? null : new { fingerprint = activeFingerprint },
                 TimeSpan.FromSeconds(15));
             if (sampleResult.Ok && sampleResult.Data is { } sampleData)
             {
@@ -4766,7 +4879,8 @@ public sealed class DiscordBot
                     TryGetBoolean(sampleData, "leaderPresent", out var leaderPresent) ? leaderPresent : null,
                     TryGetInt(sampleData, "leaderSlot", out var leaderSlot) ? leaderSlot : null,
                     TryGetNullableDouble(sampleData, "leaderScore"),
-                    accountKey);
+                    accountKey,
+                    ParseLeaderMatches(sampleData));
             }
         }
         catch (Exception ex)
@@ -4783,7 +4897,7 @@ public sealed class DiscordBot
                 TimeSpan.FromSeconds(6));
             if (!result.Ok || result.Data is not { } data)
             {
-                return new FollowPulseSample(null, false, null, null, null, accountKey);
+                return new FollowPulseSample(null, false, null, null, null, accountKey, Array.Empty<FollowLeaderMatch>());
             }
 
             using var document = JsonDocument.Parse(data.GetRawText());
@@ -4793,12 +4907,40 @@ public sealed class DiscordBot
                 LeaderPresent: null,
                 LeaderSlot: null,
                 LeaderScore: null,
-                accountKey);
+                accountKey,
+                Array.Empty<FollowLeaderMatch>());
         }
         catch (Exception)
         {
-            return new FollowPulseSample(null, false, null, null, null, accountKey);
+            return new FollowPulseSample(null, false, null, null, null, accountKey, Array.Empty<FollowLeaderMatch>());
         }
+    }
+
+    private static IReadOnlyList<FollowLeaderMatch> ParseLeaderMatches(JsonElement data)
+    {
+        if (!data.TryGetProperty("leaderMatches", out var matches) || matches.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<FollowLeaderMatch>();
+        }
+
+        var result = new List<FollowLeaderMatch>();
+        foreach (var element in matches.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.Object
+                || !element.TryGetProperty("fingerprint", out var fingerprintProperty)
+                || fingerprintProperty.GetString() is not { Length: > 0 } fingerprint)
+            {
+                continue;
+            }
+
+            result.Add(new FollowLeaderMatch(
+                fingerprint,
+                TryGetBoolean(element, "present", out var present) ? present : null,
+                TryGetInt(element, "slot", out var slot) ? slot : null,
+                TryGetNullableDouble(element, "score")));
+        }
+
+        return result;
     }
 
     private (string AccountKey, AccountConfig Account) RequireAccount(string accountKey)

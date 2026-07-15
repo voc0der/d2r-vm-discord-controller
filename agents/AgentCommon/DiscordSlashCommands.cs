@@ -237,7 +237,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("bind-in-game")
-            .WithDescription("Fingerprint the party-bar name at this position (1-8) as the leader; 0 clears it")
+            .WithDescription("Bind the party-bar name at position 1-8 as a leader nametag (repeat per alt); 0 clears all")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(0)

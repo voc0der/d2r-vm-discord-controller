@@ -208,16 +208,27 @@ glyph rendering (binding `Skeleton` would match a `Skeleton1` in the window that
 `Skeleton` prefix). Harmless for the intended use (the operator binds their own character), just
 don't bind a name that is a prefix of another party regular's.
 
+**Multi-alt nametag rolodex.** `leader-template.txt` holds one serialized nametag per line, in
+bind order - the operator binds each alt they play once. Every pulse captures each visible slot
+band once (one BitBlt per slot, shared) and scores *all* stored nametags against it in pure CPU,
+so extra bound alts cost no additional screen time. Each follow-auto run locks onto the first
+nametag it verifiably sees (`FollowAutoPulsePolicy.PickNametagLockIndex`: highest score wins,
+bind order breaks ties) and only that entry can drive a leave for the rest of the run; the lock
+is keyed by fingerprint content, never list index, so agents whose lists diverged (offline
+during a bind) can't be misread. Before a lock exists no nametag can trigger a leave, so playing
+an unbound alt degrades safely to count-drop behavior.
+
 **Bind verification (host-side, patches "bound a bot by mistake").** Position is counted from the
 vantage's screen, which omits the vantage's own character - so a mis-count easily lands on a bot
 instead of the operator (observed live: position 3 from hc1 captured a 54x10px/179-bit name, a
 dead ringer for the bot `Position` at 54x11/178, not the operator's `Netrunner` at 65x8/217). The
 operator is the one name visible from *every* bot's party bar, because a bot's own name never
-renders on its own screen. So after distributing a freshly bound template the host samples leader
-presence on every other online account: if any in-game account reports it absent
-(`leaderPresent == false`), that account is the character actually captured, the bind is rolled
-back everywhere, and the offending account is named. Accounts that can't check (`leaderPresent ==
-null`: mid-loading, not in a game) neither confirm nor disqualify.
+renders on its own screen. So after distributing a freshly bound template the host samples that
+specific nametag on every other online account: if any in-game account reports it absent
+(`present == false` in its `leaderMatches` entry), that account is the character actually
+captured, that one nametag is removed everywhere (`follow_remove_leader_template` - other bound
+alts survive), and the offending account is named. Accounts that can't check (`present == null`:
+mid-loading, not in a game) neither confirm nor disqualify.
 
 **Forced two-vantage leave confirmation (host-side).** The pulse round-robins across VMs on a
 divided heartbeat, but a single VM losing sight of the leader does not leave on its own word - the
@@ -225,9 +236,10 @@ host immediately forces a leader check on a different VM and only leaves if that
 vantage also can't see the leader. A second VM that still sees the leader clears the flag as a
 transient. Only when exactly one VM is online does it fall back to two back-to-back misses.
 
-Live consumers: `VmOperations.FollowBindInGameCapture` (bind), `VmOperations.SampleLeaderPresence`
+Live consumers: `VmOperations.FollowBindInGameCapture` (bind), `VmOperations.SampleLeaderMatches`
 inside `sample_player_count` (the follow-auto pulse); classified per-sample by
-`FollowAutoPulsePolicy.Classify` and orchestrated by `DiscordBot.WaitForFollowAutoGameEndAsync` /
+`FollowAutoPulsePolicy.Classify` against the run's locked nametag and orchestrated by
+`DiscordBot.WaitForFollowAutoGameEndAsync` / `TryLockNametagFromSampleAsync` /
 `ConfirmLeaderGoneFromAnotherVantageAsync`, with the bind verification in
 `HandleFollowBindInGameAsync`.
 

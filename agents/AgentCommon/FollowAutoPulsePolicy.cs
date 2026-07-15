@@ -83,4 +83,29 @@ public static class FollowAutoPulsePolicy
             ? FollowAutoPulseAction.CountDropLeave
             : FollowAutoPulseAction.Wait;
     }
+
+    // One bound nametag's reading from a single pulse: whether that nametag was verifiably seen
+    // (null = this pulse couldn't check it) and the best match score it reached.
+    public readonly record struct LeaderNametagSignal(bool? Present, double Score);
+
+    // Multi-alt bind-in-game: the operator can bind one nametag per alt, and the first game of a
+    // follow-auto run decides which alt is actually being followed. Picks the verifiably-present
+    // nametag with the highest match score; ties keep the earliest bind (rolodex order). Returns
+    // null when nothing is verifiably present so the caller keeps waiting (count-drop semantics)
+    // instead of locking onto a guess - a nametag must be SEEN before it can drive a leave.
+    public static int? PickNametagLockIndex(IReadOnlyList<LeaderNametagSignal> signals)
+    {
+        int? bestIndex = null;
+        var bestScore = double.MinValue;
+        for (var i = 0; i < signals.Count; i++)
+        {
+            if (signals[i].Present == true && signals[i].Score > bestScore)
+            {
+                bestIndex = i;
+                bestScore = signals[i].Score;
+            }
+        }
+
+        return bestIndex;
+    }
 }

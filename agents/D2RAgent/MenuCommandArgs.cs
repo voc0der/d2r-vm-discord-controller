@@ -11,6 +11,7 @@ internal sealed class MenuCommandArgs
     public string? Password { get; set; }
     public string? Difficulty { get; set; }
     public string? Fingerprint { get; set; }
+    public bool? Append { get; set; }
     public long? FollowAutoRunId { get; set; }
 
     public static MenuCommandArgs From(JsonElement element)
@@ -28,8 +29,24 @@ internal sealed class MenuCommandArgs
         args.Password = TryGetString(element, "password");
         args.Difficulty = TryGetString(element, "difficulty");
         args.Fingerprint = TryGetString(element, "fingerprint");
+        args.Append = TryGetBool(element, "append");
         args.FollowAutoRunId = TryGetLong(element, "followAutoRunId");
         return args;
+    }
+
+    private static bool? TryGetBool(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null
+        };
     }
 
     private static string? TryGetString(JsonElement element, string propertyName)

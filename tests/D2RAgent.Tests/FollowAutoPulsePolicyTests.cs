@@ -80,4 +80,54 @@ public sealed class FollowAutoPulsePolicyTests
             FollowAutoPulsePolicy.GetHeartbeat(TimeSpan.FromSeconds(1), 8).TotalSeconds,
             9);
     }
+
+    // Multi-alt rolodex lock: a nametag must be verifiably SEEN before it can drive anything.
+    // Neither "absent" nor "couldn't check" is lockable, so an operator playing an unbound alt
+    // leaves follow-auto safely on count-drop semantics all session.
+    [Fact]
+    public void NoLockWhenNothingIsVerifiablyPresent()
+    {
+        Assert.Null(FollowAutoPulsePolicy.PickNametagLockIndex(Array.Empty<FollowAutoPulsePolicy.LeaderNametagSignal>()));
+        Assert.Null(FollowAutoPulsePolicy.PickNametagLockIndex(new[]
+        {
+            new FollowAutoPulsePolicy.LeaderNametagSignal(false, 0.4),
+            new FollowAutoPulsePolicy.LeaderNametagSignal(null, 0.9)
+        }));
+    }
+
+    [Fact]
+    public void LockPicksTheOnlyPresentNametag()
+    {
+        Assert.Equal(1, FollowAutoPulsePolicy.PickNametagLockIndex(new[]
+        {
+            new FollowAutoPulsePolicy.LeaderNametagSignal(false, 0.5),
+            new FollowAutoPulsePolicy.LeaderNametagSignal(true, 0.7),
+            new FollowAutoPulsePolicy.LeaderNametagSignal(null, 0.0)
+        }));
+    }
+
+    // Several present at once (prefix-squatting names, multiboxing): the strongest match wins,
+    // not the first - a longer name containing a shorter bound one verbatim scores lower than
+    // the exact name does against itself.
+    [Fact]
+    public void LockPrefersTheHighestScoreAmongPresentNametags()
+    {
+        Assert.Equal(2, FollowAutoPulsePolicy.PickNametagLockIndex(new[]
+        {
+            new FollowAutoPulsePolicy.LeaderNametagSignal(true, 0.70),
+            new FollowAutoPulsePolicy.LeaderNametagSignal(false, 0.99),
+            new FollowAutoPulsePolicy.LeaderNametagSignal(true, 0.85)
+        }));
+    }
+
+    // Ties keep the earliest bind - the rolodex order the operator built.
+    [Fact]
+    public void LockBreaksScoreTiesByBindOrder()
+    {
+        Assert.Equal(0, FollowAutoPulsePolicy.PickNametagLockIndex(new[]
+        {
+            new FollowAutoPulsePolicy.LeaderNametagSignal(true, 0.8),
+            new FollowAutoPulsePolicy.LeaderNametagSignal(true, 0.8)
+        }));
+    }
 }

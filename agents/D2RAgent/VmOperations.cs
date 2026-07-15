@@ -330,6 +330,11 @@ public sealed class VmOperations
             return FollowSetLeaderTemplate(MenuCommandArgs.From(request.Args));
         }
 
+        if (string.Equals(request.Command, "follow_remove_leader_template", StringComparison.OrdinalIgnoreCase))
+        {
+            return FollowRemoveLeaderTemplate(MenuCommandArgs.From(request.Args));
+        }
+
         if (string.Equals(request.Command, "follow_clear_leader_template", StringComparison.OrdinalIgnoreCase))
         {
             return FollowClearLeaderTemplate();
@@ -361,7 +366,7 @@ public sealed class VmOperations
             "quit_d2r" => await QuitD2RAsync(cancellationToken),
             "restart_d2r" => await RestartD2RAsync(cancellationToken),
             "screenshot" => await TakeScreenshotAsync(cancellationToken),
-            "sample_player_count" => SamplePlayerCount(),
+            "sample_player_count" => SamplePlayerCount(MenuCommandArgs.From(request.Args)),
             "menu_ready" => await ReadyClientAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_lobby" => await GoLobbyAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_play" => await PlayCharacterAsync(MenuCommandArgs.From(request.Args), cancellationToken),
@@ -648,9 +653,9 @@ public sealed class VmOperations
         }
     }
 
-    private CommandResult SamplePlayerCount()
+    private CommandResult SamplePlayerCount(MenuCommandArgs args)
     {
-        var leaderTemplate = LoadLeaderTemplate();
+        var templates = LoadLeaderTemplates();
         var otherMembers = SamplePartyMemberCount();
         if (otherMembers is null)
         {
@@ -661,12 +666,29 @@ public sealed class VmOperations
                     playerCount = (int?)null,
                     lastPartyMemberCount = _lastPartyMemberCount,
                     lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
-                    leaderBound = leaderTemplate is not null,
-                    leaderPresent = (bool?)null
+                    leaderBound = templates.Count > 0,
+                    leaderPresent = (bool?)null,
+                    leaderMatches = templates
+                        .Select(entry => new { fingerprint = entry.Serialized, present = (bool?)null, slot = (int?)null, score = 0.0 })
+                        .ToArray()
                 });
         }
 
-        var (leaderPresent, leaderSlot, leaderScore) = SampleLeaderPresence(leaderTemplate, otherMembers.Value);
+        var matches = SampleLeaderMatches(templates, otherMembers.Value, args.Fingerprint?.Trim());
+
+        // Aggregate for display and older hosts: any nametag verifiably present wins; "all
+        // sampled and all absent" is a definite false; anything else (some or all unverifiable)
+        // stays null so it can never read as a leave trigger.
+        var aggregatePresent = matches.Any(match => match.Present == true)
+            ? true
+            : matches.Count > 0 && matches.All(match => match.Present == false)
+                ? false
+                : (bool?)null;
+        var bestMatch = matches
+            .Where(match => match.Present == true)
+            .OrderByDescending(match => match.BestScore)
+            .FirstOrDefault();
+
         return CommandResult.Success(
             $"Player count sampled: {otherMembers.Value + 1}.",
             new
@@ -674,83 +696,127 @@ public sealed class VmOperations
                 playerCount = otherMembers.Value + 1,
                 lastPartyMemberCount = otherMembers.Value,
                 lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
-                leaderBound = leaderTemplate is not null,
-                leaderPresent,
-                leaderSlot,
-                leaderScore = Math.Round(leaderScore, 3)
+                leaderBound = templates.Count > 0,
+                leaderPresent = aggregatePresent,
+                leaderSlot = bestMatch?.Slot,
+                leaderScore = Math.Round(bestMatch?.BestScore ?? matches.Select(match => match.BestScore).DefaultIfEmpty(0.0).Max(), 3),
+                leaderMatches = matches
+                    .Select(match => new
+                    {
+                        fingerprint = match.Serialized,
+                        present = match.Present,
+                        slot = match.Slot,
+                        score = Math.Round(match.BestScore, 3)
+                    })
+                    .ToArray()
             });
     }
 
-    // Issue #25 follow-up (bind-in-game): scans the visible party-bar name bands for the bound
-    // leader's glyph mask. Present is null (not false) when no leader is bound or the screen
-    // could not be sampled, so the Host can tell "leader is definitely gone" apart from "this
-    // pulse simply couldn't check" - the two must not both look like a leave trigger. Zero
-    // visible portraits while in-game IS a definite absence: whoever we were following is not
-    // in this game's party anymore.
-    private (bool? Present, int? Slot, double BestScore) SampleLeaderPresence(PartyNameFingerprint? template, int visibleMembers)
+    private sealed record LeaderMatchSample(string Serialized, bool? Present, int? Slot, double BestScore);
+
+    // Issue #25 follow-up (bind-in-game), multi-alt version: scans the visible party-bar name
+    // bands once and scores EVERY bound nametag against each captured band - the BitBlt per
+    // slot is the expensive part and is shared, while each extra template costs only a CPU
+    // Dice slide (~100k ops), so binding many alts adds no screen time. Per-template rules
+    // mirror the old single-template scan: Present is null (not false) when that template
+    // never got a comparable band (capture timeout, or a template bound at a different game
+    // resolution than this vantage runs - a config mismatch must not read as "leader gone" and
+    // mass-leave every game), and zero visible portraits while in-game is a definite absence
+    // for every template. activeFingerprint is the host's session-locked nametag: once locked,
+    // only that entry drives any decision, so the scan stops as soon as it is found.
+    private IReadOnlyList<LeaderMatchSample> SampleLeaderMatches(
+        IReadOnlyList<(string Serialized, PartyNameFingerprint Template)> templates,
+        int visibleMembers,
+        string? activeFingerprint)
     {
-        if (template is null || !OperatingSystem.IsWindows())
+        if (templates.Count == 0 || !OperatingSystem.IsWindows())
         {
-            return (null, null, 0.0);
+            return templates
+                .Select(entry => new LeaderMatchSample(entry.Serialized, null, null, 0.0))
+                .ToArray();
         }
 
         if (visibleMembers <= 0)
         {
-            return (false, null, 0.0);
+            return templates
+                .Select(entry => new LeaderMatchSample(entry.Serialized, false, null, 0.0))
+                .ToArray();
         }
 
-        // NaN marks a band that could not actually be compared - the capture timed out/failed,
-        // or the stored template doesn't fit inside the captured band (a template bound at a
-        // different game resolution than this vantage runs). Those must NOT count as evidence
-        // of absence: a config mismatch reading as "leader gone" would mass-leave every game.
-        // If no band was comparable at all, Present is null so the Host falls back to
-        // count-drop semantics.
+        var activeIndex = -1;
+        for (var i = 0; i < templates.Count; i++)
+        {
+            if (string.Equals(templates[i].Serialized, activeFingerprint, StringComparison.Ordinal))
+            {
+                activeIndex = i;
+                break;
+            }
+        }
+
         var input = new WindowsInput();
-        var best = 0.0;
-        int? bestSlot = null;
-        var comparableBands = 0;
+        var best = new double[templates.Count];
+        var bestSlot = new int?[templates.Count];
+        var comparable = new int[templates.Count];
         for (var slot = 1; slot <= Math.Min(visibleMembers, PartyMemberSlots.MaxSlots); slot++)
         {
             var slotToSample = slot;
-            var score = TryRunBounded(
+            var mask = TryRunBounded<PartyNameFingerprint?>(
                 () =>
                 {
                     var band = input.CapturePixelRegion(
                         PartyMemberSlots.GetSlotNameBandCenter(slotToSample),
                         PartyMemberSlots.NameBandWidthRatio,
                         PartyMemberSlots.NameBandHeightRatio);
-                    var mask = PartyNameFingerprint.FromPixels(band.Rgb, band.Width, band.Height);
-                    return mask is null || template.Width > mask.Width || template.Height > mask.Height
-                        ? double.NaN
-                        : template.BestScoreIn(mask);
+                    return PartyNameFingerprint.FromPixels(band.Rgb, band.Width, band.Height);
                 },
                 PartyFrameSampleBoundMs,
-                double.NaN);
-            if (double.IsNaN(score))
+                fallback: null);
+            if (mask is null)
             {
                 continue;
             }
 
-            comparableBands++;
-            if (score > best)
+            var allMatched = true;
+            for (var i = 0; i < templates.Count; i++)
             {
-                best = score;
-                bestSlot = slot;
+                var template = templates[i].Template;
+                if (template.Width > mask.Width || template.Height > mask.Height)
+                {
+                    allMatched = false;
+                    continue;
+                }
+
+                comparable[i]++;
+                var score = template.BestScoreIn(mask);
+                if (score > best[i])
+                {
+                    best[i] = score;
+                    bestSlot[i] = slot;
+                }
+
+                allMatched &= best[i] >= PartyNameFingerprint.MatchThreshold;
             }
 
-            if (best >= PartyNameFingerprint.MatchThreshold)
+            if (allMatched || (activeIndex >= 0 && best[activeIndex] >= PartyNameFingerprint.MatchThreshold))
             {
                 break;
             }
         }
 
-        if (comparableBands == 0)
+        var results = new LeaderMatchSample[templates.Count];
+        for (var i = 0; i < templates.Count; i++)
         {
-            return (null, null, 0.0);
+            if (comparable[i] == 0)
+            {
+                results[i] = new LeaderMatchSample(templates[i].Serialized, null, null, 0.0);
+                continue;
+            }
+
+            var present = best[i] >= PartyNameFingerprint.MatchThreshold;
+            results[i] = new LeaderMatchSample(templates[i].Serialized, present, present ? bestSlot[i] : null, best[i]);
         }
 
-        var present = best >= PartyNameFingerprint.MatchThreshold;
-        return (present, present ? bestSlot : null, best);
+        return results;
     }
 
     private int? SamplePartyMemberCount()
@@ -1301,32 +1367,83 @@ public sealed class VmOperations
 
     private static string LeaderTemplatePath => Path.Combine(AppContext.BaseDirectory, LeaderTemplateFileName);
 
-    private static PartyNameFingerprint? LoadLeaderTemplate()
+    // Multi-alt bind-in-game: the file holds one serialized nametag per line, in bind order
+    // (that order is the rolodex order the host locks by). A pre-multi single-line file is a
+    // one-entry list. Each entry is returned alongside its serialized form so callers can key
+    // results by content - the host locks onto a nametag by its serialized string, never by a
+    // list index, so agents whose lists diverged (offline during a bind) stay unambiguous.
+    private static IReadOnlyList<(string Serialized, PartyNameFingerprint Template)> LoadLeaderTemplates()
     {
         try
         {
-            return File.Exists(LeaderTemplatePath)
-                ? PartyNameFingerprint.FromBase64(File.ReadAllText(LeaderTemplatePath).Trim())
-                : null;
+            if (!File.Exists(LeaderTemplatePath))
+            {
+                return Array.Empty<(string, PartyNameFingerprint)>();
+            }
+
+            return PartyNameFingerprintList.Normalize(File.ReadAllText(LeaderTemplatePath))
+                .Select(serialized => (serialized, PartyNameFingerprint.FromBase64(serialized)!))
+                .ToArray();
         }
         catch (Exception)
         {
-            return null;
+            return Array.Empty<(string, PartyNameFingerprint)>();
         }
     }
 
     private static CommandResult FollowSetLeaderTemplate(MenuCommandArgs args)
     {
-        var fingerprint = args.Fingerprint?.Trim();
-        if (string.IsNullOrWhiteSpace(fingerprint) || PartyNameFingerprint.FromBase64(fingerprint) is null)
+        var incoming = PartyNameFingerprintList.Normalize(args.Fingerprint);
+        if (incoming.Count == 0)
         {
-            return CommandResult.Failure("follow_set_leader_template requires a valid party-name fingerprint.");
+            return CommandResult.Failure("follow_set_leader_template requires at least one valid party-name fingerprint.");
         }
 
-        File.WriteAllText(LeaderTemplatePath, fingerprint);
+        IReadOnlyList<string> list = incoming;
+        if (args.Append == true)
+        {
+            list = PartyNameFingerprintList.Normalize(
+                File.Exists(LeaderTemplatePath) ? File.ReadAllText(LeaderTemplatePath) : null);
+            foreach (var fingerprint in incoming)
+            {
+                list = PartyNameFingerprintList.Append(list, fingerprint);
+            }
+        }
+
+        File.WriteAllText(LeaderTemplatePath, PartyNameFingerprintList.Serialize(list));
         return CommandResult.Success(
-            "Leader party-name fingerprint saved.",
-            new { templatePath = LeaderTemplatePath, templateLength = fingerprint.Length });
+            args.Append == true ? "Leader nametag appended." : "Leader nametag list saved.",
+            new { templatePath = LeaderTemplatePath, templateCount = list.Count });
+    }
+
+    // Bind rollback path: removes exactly one nametag (by serialized content) and leaves every
+    // other bound alt untouched - a bad capture must not nuke the operator's whole rolodex.
+    private static CommandResult FollowRemoveLeaderTemplate(MenuCommandArgs args)
+    {
+        var fingerprint = args.Fingerprint?.Trim();
+        if (string.IsNullOrWhiteSpace(fingerprint))
+        {
+            return CommandResult.Failure("follow_remove_leader_template requires the fingerprint to remove.");
+        }
+
+        var list = PartyNameFingerprintList.Normalize(
+            File.Exists(LeaderTemplatePath) ? File.ReadAllText(LeaderTemplatePath) : null);
+        var remaining = PartyNameFingerprintList.Remove(list, fingerprint);
+        if (remaining.Count == 0)
+        {
+            if (File.Exists(LeaderTemplatePath))
+            {
+                File.Delete(LeaderTemplatePath);
+            }
+        }
+        else
+        {
+            File.WriteAllText(LeaderTemplatePath, PartyNameFingerprintList.Serialize(remaining));
+        }
+
+        return CommandResult.Success(
+            "Leader nametag removed.",
+            new { templateCount = remaining.Count });
     }
 
     private static CommandResult FollowClearLeaderTemplate()
@@ -1336,7 +1453,7 @@ public sealed class VmOperations
             File.Delete(LeaderTemplatePath);
         }
 
-        return CommandResult.Success("Leader party-name fingerprint cleared.");
+        return CommandResult.Success("Leader nametags cleared.");
     }
 
     // Issue #25 follow-up: capture the party-bar name mask at the requested visible position
