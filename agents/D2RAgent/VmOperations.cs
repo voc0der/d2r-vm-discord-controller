@@ -48,13 +48,16 @@ public sealed class VmOperations
     // Task.Run work while Windows/GDI is still unwinding the previous sample.
     private const int InGameHudSampleBoundMs = 1000;
     private const int InGameHudSampleThrottleMs = 1000;
-    // WaitForPostSaveExitMenuAsync's HUD sample needs far more headroom than the 1s general bound:
+    // WaitForPostSaveExitMenuAsync's HUD sample needs more headroom than the 1s general bound:
     // during the save-exit transition the D2R window is redrawing and a HUD-region BitBlt can take
-    // 1-3s, so a 1s bound returned "couldn't sample" (null) on every iteration and the leave ran to
-    // its full deadline even though the caller's own unbounded IsInGameReady read HUD-gone the moment
-    // it was asked (watch-follow-auto-20260715-145732.log). 4s lets a slow transition read actually
-    // complete while still capping a genuinely hung GDI sample.
-    private const int PostSaveExitHudSampleBoundMs = 4000;
+    // 1-3s, so a 1s bound returned "couldn't sample" (null) on every iteration and the counter never
+    // advanced (watch-follow-auto-20260715-145732.log). But 4s made each iteration so slow the loop
+    // could not accumulate two gone reads before the deadline (watch-follow-auto-20260715-151530.log),
+    // so 2.5s is the compromise: enough for a transition read to complete, tight enough to keep the
+    // loop iterating. The sibling positive checks are bounded too so one slow GDI pass can't freeze
+    // an iteration for seconds.
+    private const int PostSaveExitHudSampleBoundMs = 2500;
+    private const int PostSaveExitPositiveCheckBoundMs = 1200;
     // These sibling entry-loop checks all use the same pixel-sampling path, so bound them at
     // their definitions instead of trying to guard every current and future call site.
     private const int EntryLoopCheckBoundMs = 1500;
@@ -3875,18 +3878,25 @@ public sealed class VmOperations
         // Require two consecutive HUD-gone reads so a single frame of exit-animation flicker
         // can't fire it early; a genuinely missed Save and Exit click keeps the HUD up, so
         // IsInGameReady stays true, this never trips, and the caller's retry path is preserved.
+        // These positive re-identification checks are unbounded GDI samples that measured ~4s
+        // combined during the exit transition (watch-follow-auto-20260715-151530.log: one loop
+        // iteration froze the checkpoint for ~6-8s), which starved the loop of iterations so it
+        // could not accumulate two gone reads before the deadline. Bound them - a timeout just
+        // means "not confirmed this pass", so the loop tries again next iteration; it never falsely
+        // reports the lobby/character screen.
+        var startedUtc = DateTimeOffset.UtcNow;
         var consecutiveHudGone = 0;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (IsAnyLobbyEntryMenuVisible(input))
+            if (TryRunBounded(() => IsAnyLobbyEntryMenuVisible(input), PostSaveExitPositiveCheckBoundMs))
             {
                 MarkLobbyOrGameInteraction("Save and Exit returned to the lobby.");
                 return (true, "returned to the lobby");
             }
 
-            if (IsCharacterScreenReady(input) || IsCharacterScreenOffline(input))
+            if (TryRunBounded(() => IsCharacterScreenReady(input) || IsCharacterScreenOffline(input), PostSaveExitPositiveCheckBoundMs))
             {
                 MarkCharacterScreenIdle("Save and Exit returned to the character screen.");
                 return (true, "returned to the character screen");
@@ -3896,10 +3906,8 @@ public sealed class VmOperations
             // failed sample as no information: leave the counter alone so only a real HUD-present read
             // resets it. A genuinely missed Save and Exit click keeps the HUD up, so any read that
             // does complete sees it and this never trips, preserving the caller's retry path. The
-            // bound is PostSaveExitHudSampleBoundMs (4s), not the 1s general bound, because the 1s
-            // bound timed out on every transition read (null) and the counter never advanced. The
-            // per-iteration checkpoint makes the read visible in a live `watch` so this loop stops
-            // being a black box during a leave.
+            // per-iteration checkpoint carries the elapsed seconds so a live `watch` shows the exact
+            // present->gone timeline instead of a frozen "gone x1".
             var hudPresent = TryRunBounded<bool?>(() => IsInGameReady(input), PostSaveExitHudSampleBoundMs, fallback: null);
             if (hudPresent == true)
             {
@@ -3910,8 +3918,9 @@ public sealed class VmOperations
                 consecutiveHudGone++;
             }
 
+            var elapsed = (DateTimeOffset.UtcNow - startedUtc).TotalSeconds;
             MarkCommandCheckpoint(
-                $"WaitForPostSaveExitMenuAsync: post-exit HUD {(hudPresent == true ? "present" : hudPresent == false ? $"gone x{consecutiveHudGone}" : "unsampled")}");
+                $"WaitForPostSaveExitMenuAsync: post-exit HUD {(hudPresent == true ? "present" : hudPresent == false ? $"gone x{consecutiveHudGone}" : "unsampled")} @{elapsed:0.0}s");
 
             if (hudPresent == false && consecutiveHudGone >= 2)
             {
