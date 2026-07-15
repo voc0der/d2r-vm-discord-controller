@@ -54,10 +54,8 @@ public sealed class VmOperations
     // advanced (watch-follow-auto-20260715-145732.log). But 4s made each iteration so slow the loop
     // could not accumulate two gone reads before the deadline (watch-follow-auto-20260715-151530.log),
     // so 2.5s is the compromise: enough for a transition read to complete, tight enough to keep the
-    // loop iterating. The sibling positive checks are bounded too so one slow GDI pass can't freeze
-    // an iteration for seconds.
+    // loop iterating fast (the loop polls only the HUD now, so nothing else slows an iteration).
     private const int PostSaveExitHudSampleBoundMs = 2500;
-    private const int PostSaveExitPositiveCheckBoundMs = 1200;
     // These sibling entry-loop checks all use the same pixel-sampling path, so bound them at
     // their definitions instead of trying to guard every current and future call site.
     private const int EntryLoopCheckBoundMs = 1500;
@@ -3878,36 +3876,22 @@ public sealed class VmOperations
         // Require two consecutive HUD-gone reads so a single frame of exit-animation flicker
         // can't fire it early; a genuinely missed Save and Exit click keeps the HUD up, so
         // IsInGameReady stays true, this never trips, and the caller's retry path is preserved.
-        // These positive re-identification checks are unbounded GDI samples that measured ~4s
-        // combined during the exit transition (watch-follow-auto-20260715-151530.log: one loop
-        // iteration froze the checkpoint for ~6-8s), which starved the loop of iterations so it
-        // could not accumulate two gone reads before the deadline. Bound them - a timeout just
-        // means "not confirmed this pass", so the loop tries again next iteration; it never falsely
-        // reports the lobby/character screen.
+        // Poll ONLY the in-game HUD here. watch-follow-auto-20260715-161810.log's elapsed stamps
+        // proved the leave is done ~1s after the click (present @0.9s -> gone x1 @1.0s, never present
+        // again), but the two positive re-identification checks (lobby / character screen) that used
+        // to run first never fired during the transition and, even bounded, burned ~2.4s per
+        // iteration timing out - exactly in the gone x1 -> gone x2 window - so confirmation slipped to
+        // @4-8s. They are also redundant: a stably-gone HUD already covers "at the lobby / character
+        // screen", and IsInGameReady reads gone (not a false present) once out of the game, so the
+        // 2-consecutive-gone rule plus the rejoin path's own IsInGameReady guard keep this safe
+        // without them. Treat a failed sample as no information (leave the counter alone); the
+        // elapsed-stamped checkpoint keeps the present->gone timeline visible in a live `watch`.
         var startedUtc = DateTimeOffset.UtcNow;
         var consecutiveHudGone = 0;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (TryRunBounded(() => IsAnyLobbyEntryMenuVisible(input), PostSaveExitPositiveCheckBoundMs))
-            {
-                MarkLobbyOrGameInteraction("Save and Exit returned to the lobby.");
-                return (true, "returned to the lobby");
-            }
-
-            if (TryRunBounded(() => IsCharacterScreenReady(input) || IsCharacterScreenOffline(input), PostSaveExitPositiveCheckBoundMs))
-            {
-                MarkCharacterScreenIdle("Save and Exit returned to the character screen.");
-                return (true, "returned to the character screen");
-            }
-
-            // Distinguish "sampled and the HUD is present" from "couldn't sample in time". Treat a
-            // failed sample as no information: leave the counter alone so only a real HUD-present read
-            // resets it. A genuinely missed Save and Exit click keeps the HUD up, so any read that
-            // does complete sees it and this never trips, preserving the caller's retry path. The
-            // per-iteration checkpoint carries the elapsed seconds so a live `watch` shows the exact
-            // present->gone timeline instead of a frozen "gone x1".
             var hudPresent = TryRunBounded<bool?>(() => IsInGameReady(input), PostSaveExitHudSampleBoundMs, fallback: null);
             if (hudPresent == true)
             {
