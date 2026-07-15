@@ -4061,11 +4061,14 @@ public sealed class DiscordBot
 
         async Task DelayNextFollowCheckAsync(bool afterLeave = false)
         {
-            var seconds = delaySeconds > 0
-                ? delaySeconds
-                : afterLeave
-                    ? FollowAutoPostLeaveCheckSeconds
-                    : FollowAutoDefaultCheckSeconds;
+            // The rejoin after a leave must not inherit a configured pulse-pacing delay: that delay
+            // paces how often idle leader-presence checks run, not how fast the fleet rejoins once
+            // everyone has left. The short post-leave settle exists exactly to make the rejoin
+            // prompt, so always use it after a leave - previously a custom delaySeconds overrode it
+            // and stalled every rejoin by that whole interval.
+            var seconds = afterLeave
+                ? FollowAutoPostLeaveCheckSeconds
+                : (delaySeconds > 0 ? delaySeconds : FollowAutoDefaultCheckSeconds);
             await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
         }
 
