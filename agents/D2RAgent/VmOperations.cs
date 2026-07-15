@@ -48,6 +48,13 @@ public sealed class VmOperations
     // Task.Run work while Windows/GDI is still unwinding the previous sample.
     private const int InGameHudSampleBoundMs = 1000;
     private const int InGameHudSampleThrottleMs = 1000;
+    // WaitForPostSaveExitMenuAsync's HUD sample needs far more headroom than the 1s general bound:
+    // during the save-exit transition the D2R window is redrawing and a HUD-region BitBlt can take
+    // 1-3s, so a 1s bound returned "couldn't sample" (null) on every iteration and the leave ran to
+    // its full deadline even though the caller's own unbounded IsInGameReady read HUD-gone the moment
+    // it was asked (watch-follow-auto-20260715-145732.log). 4s lets a slow transition read actually
+    // complete while still capping a genuinely hung GDI sample.
+    private const int PostSaveExitHudSampleBoundMs = 4000;
     // These sibling entry-loop checks all use the same pixel-sampling path, so bound them at
     // their definitions instead of trying to guard every current and future call site.
     private const int EntryLoopCheckBoundMs = 1500;
@@ -3885,16 +3892,15 @@ public sealed class VmOperations
                 return (true, "returned to the character screen");
             }
 
-            // Distinguish "sampled and the HUD is present" from "couldn't sample in time". Every
-            // save-exit on a busy host runs under GDI contention (the status watcher polls the
-            // same regions every ~2s), so a bounded IsInGameReady that can't grab a slot or finish
-            // within the bound used to fall back to "in game" and reset the counter - which starved
-            // this early return, leaving the loop to always run to the 12s deadline even when the
-            // client returned to the lobby in a second or two. Treat a failed sample as no
-            // information: leave the counter alone so only a real HUD-present read resets it. A
-            // genuinely missed Save and Exit click keeps the HUD up, so any read that does complete
-            // sees it and this never trips, preserving the caller's retry path.
-            var hudPresent = TryRunBounded<bool?>(() => IsInGameReady(input), InGameHudSampleBoundMs, fallback: null);
+            // Distinguish "sampled and the HUD is present" from "couldn't sample in time". Treat a
+            // failed sample as no information: leave the counter alone so only a real HUD-present read
+            // resets it. A genuinely missed Save and Exit click keeps the HUD up, so any read that
+            // does complete sees it and this never trips, preserving the caller's retry path. The
+            // bound is PostSaveExitHudSampleBoundMs (4s), not the 1s general bound, because the 1s
+            // bound timed out on every transition read (null) and the counter never advanced. The
+            // per-iteration checkpoint makes the read visible in a live `watch` so this loop stops
+            // being a black box during a leave.
+            var hudPresent = TryRunBounded<bool?>(() => IsInGameReady(input), PostSaveExitHudSampleBoundMs, fallback: null);
             if (hudPresent == true)
             {
                 consecutiveHudGone = 0;
@@ -3902,11 +3908,15 @@ public sealed class VmOperations
             else if (hudPresent == false)
             {
                 consecutiveHudGone++;
-                if (consecutiveHudGone >= 2)
-                {
-                    MarkD2RActivityUnknown("Save and Exit left the game; the specific post-exit menu was not yet identified.");
-                    return (true, "left the game");
-                }
+            }
+
+            MarkCommandCheckpoint(
+                $"WaitForPostSaveExitMenuAsync: post-exit HUD {(hudPresent == true ? "present" : hudPresent == false ? $"gone x{consecutiveHudGone}" : "unsampled")}");
+
+            if (hudPresent == false && consecutiveHudGone >= 2)
+            {
+                MarkD2RActivityUnknown("Save and Exit left the game; the specific post-exit menu was not yet identified.");
+                return (true, "left the game");
             }
 
             if (DateTimeOffset.UtcNow >= deadline)
