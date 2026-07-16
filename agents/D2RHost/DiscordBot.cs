@@ -56,6 +56,11 @@ public sealed class DiscordBot
     private IUserMessage? _startupMessage;
     private bool _startupFollowUsed;
     private bool _startupReadyUsed;
+    private string _startupIntro = DefaultStartupIntro;
+    private int _startupPostInProgress;
+    private const string DefaultStartupIntro = "D2RHost is alive and available.";
+    private static readonly TimeSpan HostSleepPulseInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan HostSleepGapThreshold = TimeSpan.FromMinutes(3);
     private GameNameTemplate? _gameTemplate;
     private readonly SemaphoreSlim _joinAutoLock = new(1, 1);
     private CancellationTokenSource? _joinAutoCts;
@@ -144,6 +149,70 @@ public sealed class DiscordBot
 
         await _client.LoginAsync(TokenType.Bot, _config.DiscordToken);
         await _client.StartAsync();
+        _ = Task.Run(RunHostWakeMonitorAsync);
+    }
+
+    // A pulse that takes minutes longer than requested means the process was suspended - the
+    // host machine slept (e.g. the sleep button after quit-all) and woke back up. Discord.NET
+    // reconnects the gateway on its own, but the channel deserves a fresh intro: the pre-sleep
+    // startup message describes a world that no longer exists.
+    private async Task RunHostWakeMonitorAsync()
+    {
+        var lastPulse = DateTimeOffset.UtcNow;
+        while (true)
+        {
+            await Task.Delay(HostSleepPulseInterval);
+            var now = DateTimeOffset.UtcNow;
+            var gap = now - lastPulse;
+            lastPulse = now;
+            if (gap - HostSleepPulseInterval < HostSleepGapThreshold)
+            {
+                continue;
+            }
+
+            _logger.LogInformation("Host wake detected: pulse gap of {Gap}.", gap);
+            try
+            {
+                await HandleHostWakeAsync(gap);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not post the wake-up startup message.");
+            }
+        }
+    }
+
+    private async Task HandleHostWakeAsync(TimeSpan gap)
+    {
+        var minutes = Math.Max(1, (int)Math.Round(gap.TotalMinutes));
+        IUserMessage? previous;
+        await _startupMessageLock.WaitAsync();
+        try
+        {
+            previous = _startupMessage;
+            _startupMessage = null;
+            _startupFollowUsed = false;
+            _startupReadyUsed = false;
+            _startupIntro = $"D2RHost woke up from sleep (~{minutes}m).";
+        }
+        finally
+        {
+            _startupMessageLock.Release();
+        }
+
+        if (previous is not null)
+        {
+            try
+            {
+                await previous.ModifyAsync(properties => properties.Components = new ComponentBuilder().Build());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not clear buttons on the pre-sleep startup message.");
+            }
+        }
+
+        await PostStartupMessageAsync();
     }
 
     public async Task StopAsync()
@@ -211,39 +280,51 @@ public sealed class DiscordBot
             return;
         }
 
-        for (var attempt = 1; attempt <= 24; attempt++)
+        if (Interlocked.CompareExchange(ref _startupPostInProgress, 1, 0) != 0)
         {
-            try
-            {
-                if (GetUpdateNotificationChannel() is { } channel)
-                {
-                    var message = await channel.SendMessageAsync(
-                        AppendMetrics(metricsEnabled: false, FormatAvailabilityAnnouncement()),
-                        components: BuildStartupActionComponents());
-                    await _startupMessageLock.WaitAsync();
-                    _startupMessage = message;
-                    _startupMessageLock.Release();
-
-                    // Agents that connected while the send was in flight raised their events
-                    // before _startupMessage existed; reconcile once now.
-                    await RefreshStartupMessageAsync();
-
-                    // The channel is definitely visible now, so re-drain anything (host
-                    // update-complete marker, early agent notifications) a failed earlier
-                    // flush left behind.
-                    await FlushUpdateNotificationsAsync();
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not send the startup availability message (attempt {Attempt}).", attempt);
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(5));
+            return;
         }
 
-        _logger.LogWarning("Gave up posting the startup availability message; the channel never became available.");
+        try
+        {
+            for (var attempt = 1; attempt <= 24; attempt++)
+            {
+                try
+                {
+                    if (GetUpdateNotificationChannel() is { } channel)
+                    {
+                        var message = await channel.SendMessageAsync(
+                            AppendMetrics(metricsEnabled: false, FormatStartupMessageContent()),
+                            components: BuildStartupActionComponents());
+                        await _startupMessageLock.WaitAsync();
+                        _startupMessage = message;
+                        _startupMessageLock.Release();
+
+                        // Agents that connected while the send was in flight raised their events
+                        // before _startupMessage existed; reconcile once now.
+                        await RefreshStartupMessageAsync();
+
+                        // The channel is definitely visible now, so re-drain anything (host
+                        // update-complete marker, early agent notifications) a failed earlier
+                        // flush left behind.
+                        await FlushUpdateNotificationsAsync();
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not send the startup availability message (attempt {Attempt}).", attempt);
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(5));
+            }
+
+            _logger.LogWarning("Gave up posting the startup availability message; the channel never became available.");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _startupPostInProgress, 0);
+        }
     }
 
     private void OnAgentConnectivityChanged()
@@ -261,7 +342,7 @@ public sealed class DiscordBot
                 return;
             }
 
-            var content = AppendMetrics(metricsEnabled: false, FormatAvailabilityAnnouncement());
+            var content = AppendMetrics(metricsEnabled: false, FormatStartupMessageContent());
             var components = BuildStartupActionComponents();
             await message.ModifyAsync(properties =>
             {
@@ -339,6 +420,8 @@ public sealed class DiscordBot
             return;
         }
 
+        RetireStartupButtons();
+
         SlashContext? context = null;
         try
         {
@@ -409,6 +492,11 @@ public sealed class DiscordBot
         {
             await component.RespondAsync("Not authorized for this controller.", ephemeral: true);
             return;
+        }
+
+        if (component.Data.CustomId is not (StartupFollowButtonId or StartupReadyButtonId))
+        {
+            RetireStartupButtons();
         }
 
         try
@@ -516,8 +604,7 @@ public sealed class DiscordBot
 
     private async Task HandleStartupFollowButtonAsync(SocketMessageComponent component)
     {
-        _startupFollowUsed = true;
-        await RemoveClickedStartupButtonAsync(component);
+        await ClearStartupButtonsAsync(component);
         await StartFollowAutoAsync(
             SlashContext.FromComponent(component, "follow"),
             delaySeconds: 0,
@@ -527,8 +614,7 @@ public sealed class DiscordBot
 
     private async Task HandleStartupReadyButtonAsync(SocketMessageComponent component)
     {
-        _startupReadyUsed = true;
-        await RemoveClickedStartupButtonAsync(component);
+        await ClearStartupButtonsAsync(component);
         await QueueAllCommandsAsync(
             SlashContext.FromComponent(component, "ready"),
             "menu_ready",
@@ -537,37 +623,42 @@ public sealed class DiscordBot
             displayName: "ready");
     }
 
-    private async Task RemoveClickedStartupButtonAsync(SocketMessageComponent component)
+    // Clicking either quick-start button retires both: they describe a "just booted, nothing
+    // touched yet" state, and either action ends that state.
+    private async Task ClearStartupButtonsAsync(SocketMessageComponent component)
     {
+        _startupFollowUsed = true;
+        _startupReadyUsed = true;
         if (_startupMessage is { } current && component.Message.Id == current.Id)
         {
             await RefreshStartupMessageAsync();
             return;
         }
 
-        // The click landed on a startup message from a previous host process (its custom IDs
-        // still route here); this process's used-flags don't describe that message, so strip
-        // just the clicked button from whatever it currently shows.
+        // The click landed on a startup message from a previous host process or from before a
+        // sleep (its custom IDs still route here); strip that message's buttons in place.
         try
         {
-            var builder = new ComponentBuilder();
-            foreach (var row in component.Message.Components.OfType<ActionRowComponent>())
-            {
-                foreach (var button in row.Components.OfType<ButtonComponent>())
-                {
-                    if (!string.Equals(button.CustomId, component.Data.CustomId, StringComparison.Ordinal))
-                    {
-                        builder.WithButton(button.ToBuilder());
-                    }
-                }
-            }
-
-            await component.Message.ModifyAsync(properties => properties.Components = builder.Build());
+            await component.Message.ModifyAsync(properties => properties.Components = new ComponentBuilder().Build());
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not remove the clicked startup button.");
+            _logger.LogWarning(ex, "Could not remove the startup buttons from the clicked message.");
         }
+    }
+
+    // Any other instruction to the bot makes the quick-start buttons stale too - retire them
+    // without blocking the command that triggered it.
+    private void RetireStartupButtons()
+    {
+        if (_startupFollowUsed && _startupReadyUsed)
+        {
+            return;
+        }
+
+        _startupFollowUsed = true;
+        _startupReadyUsed = true;
+        _ = Task.Run(RefreshStartupMessageAsync);
     }
 
     private static MessageComponent BuildFollowBindActionComponents()
@@ -5142,9 +5233,9 @@ public sealed class DiscordBot
         return string.Join("\n", new[] { $"Agents: {connected}/{agents.Count} connected" }.Concat(lines));
     }
 
-    private string FormatAvailabilityAnnouncement()
+    private string FormatStartupMessageContent()
     {
-        return $"D2RHost is alive and available. Version: {GetHostVersionText()}\n{FormatHealth()}";
+        return $"{_startupIntro} Version: {GetHostVersionText()}\n{FormatHealth()}";
     }
 
     private string FormatAllAccountStatuses()
