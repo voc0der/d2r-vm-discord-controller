@@ -21,6 +21,18 @@ public sealed class DiscordBot
     private const string GameSessionQuitButtonId = "d2r:session:quit";
     private const string StartupFollowButtonId = "d2r:startup:follow";
     private const string StartupReadyButtonId = "d2r:startup:ready";
+    private const string StartupQuitButtonId = "d2r:startup:quit";
+    private const string StartupSleepButtonId = "d2r:startup:sleep";
+
+    [Flags]
+    private enum QuickActions
+    {
+        None = 0,
+        Follow = 1,
+        Ready = 2,
+        Quit = 4,
+        Sleep = 8
+    }
     // 150s left ~0s margin over the agent's own internal retry budget on slower VM
     // hardware (Battle.net launch + splash-skip retries can legitimately take several
     // minutes), so the command was timing out moments before D2R would have reached
@@ -55,11 +67,10 @@ public sealed class DiscordBot
     private readonly SemaphoreSlim _startupMessageLock = new(1, 1);
     private IUserMessage? _startupMessage;
     // Quick-start buttons live on exactly one message at a time (the startup message on
-    // boot/wake, or the newest leave/quit completion follow-up). All three fields are
+    // boot/wake, or the newest ready/leave/quit completion follow-up). Both fields are
     // guarded by _startupMessageLock.
     private IUserMessage? _quickButtonsMessage;
-    private bool _quickFollowOffered = true;
-    private bool _quickReadyOffered = true;
+    private QuickActions _quickActionsOffered = QuickActions.Follow | QuickActions.Ready;
     private string _startupIntro = DefaultStartupIntro;
     private int _startupPostInProgress;
     private const string DefaultStartupIntro = "D2RHost is alive and available.";
@@ -198,8 +209,7 @@ public sealed class DiscordBot
             previousHolder = _quickButtonsMessage;
             _startupMessage = null;
             _quickButtonsMessage = null;
-            _quickFollowOffered = true;
-            _quickReadyOffered = true;
+            _quickActionsOffered = QuickActions.Follow | QuickActions.Ready;
             _startupIntro = $"D2RHost woke up from sleep (~{minutes}m).";
         }
         finally
@@ -313,10 +323,10 @@ public sealed class DiscordBot
                     {
                         var message = await channel.SendMessageAsync(
                             AppendMetrics(metricsEnabled: false, FormatStartupMessageContent()),
-                            components: BuildQuickStartComponents(_quickFollowOffered, _quickReadyOffered));
+                            components: BuildQuickStartComponents(_quickActionsOffered));
                         await _startupMessageLock.WaitAsync();
                         _startupMessage = message;
-                        _quickButtonsMessage = _quickFollowOffered || _quickReadyOffered ? message : null;
+                        _quickButtonsMessage = _quickActionsOffered != QuickActions.None ? message : null;
                         _startupMessageLock.Release();
 
                         // Agents that connected while the send was in flight raised their events
@@ -363,7 +373,7 @@ public sealed class DiscordBot
 
             var content = AppendMetrics(metricsEnabled: false, FormatStartupMessageContent());
             var components = _quickButtonsMessage is { } holder && holder.Id == message.Id
-                ? BuildQuickStartComponents(_quickFollowOffered, _quickReadyOffered)
+                ? BuildQuickStartComponents(_quickActionsOffered)
                 : new ComponentBuilder().Build();
             await message.ModifyAsync(properties =>
             {
@@ -515,7 +525,8 @@ public sealed class DiscordBot
             return;
         }
 
-        if (component.Data.CustomId is not (StartupFollowButtonId or StartupReadyButtonId))
+        if (component.Data.CustomId is not (StartupFollowButtonId or StartupReadyButtonId
+            or StartupQuitButtonId or StartupSleepButtonId))
         {
             RetireQuickButtons();
         }
@@ -560,6 +571,12 @@ public sealed class DiscordBot
                     return;
                 case StartupReadyButtonId:
                     await HandleStartupReadyButtonAsync(component);
+                    return;
+                case StartupQuitButtonId:
+                    await HandleStartupQuitButtonAsync(component);
+                    return;
+                case StartupSleepButtonId:
+                    await HandleStartupSleepButtonAsync(component);
                     return;
             }
         }
@@ -607,17 +624,27 @@ public sealed class DiscordBot
             .Build();
     }
 
-    private static MessageComponent BuildQuickStartComponents(bool offerFollow, bool offerReady)
+    private static MessageComponent BuildQuickStartComponents(QuickActions actions)
     {
         var builder = new ComponentBuilder();
-        if (offerFollow)
+        if (actions.HasFlag(QuickActions.Follow))
         {
             builder.WithButton("Follow", StartupFollowButtonId, ButtonStyle.Primary);
         }
 
-        if (offerReady)
+        if (actions.HasFlag(QuickActions.Ready))
         {
             builder.WithButton("Ready", StartupReadyButtonId, ButtonStyle.Secondary);
+        }
+
+        if (actions.HasFlag(QuickActions.Quit))
+        {
+            builder.WithButton("Quit", StartupQuitButtonId, ButtonStyle.Danger);
+        }
+
+        if (actions.HasFlag(QuickActions.Sleep))
+        {
+            builder.WithButton("Sleep", StartupSleepButtonId, ButtonStyle.Danger);
         }
 
         return builder.Build();
@@ -636,12 +663,19 @@ public sealed class DiscordBot
     private async Task HandleStartupReadyButtonAsync(SocketMessageComponent component)
     {
         await ClearQuickStartButtonsAsync(component);
-        await QueueAllCommandsAsync(
-            SlashContext.FromComponent(component, "ready"),
-            "menu_ready",
-            (accountKey, account) => BuildAccountArgs(accountKey, account),
-            ReadyCommandTimeout,
-            displayName: "ready");
+        await QueueReadyAllAsync(SlashContext.FromComponent(component, "ready"));
+    }
+
+    private async Task HandleStartupQuitButtonAsync(SocketMessageComponent component)
+    {
+        await ClearQuickStartButtonsAsync(component);
+        await QueueQuitAllAsync(SlashContext.FromComponent(component, "quit"), "quick-start quit button was pressed");
+    }
+
+    private async Task HandleStartupSleepButtonAsync(SocketMessageComponent component)
+    {
+        await ClearQuickStartButtonsAsync(component);
+        await RunQuitAllThenSleepAsync(SlashContext.FromComponent(component, "system"));
     }
 
     // Clicking either quick-start button retires both: they describe an "idle, nothing touched
@@ -671,7 +705,7 @@ public sealed class DiscordBot
     // without blocking the command that triggered it.
     private void RetireQuickButtons()
     {
-        if (_quickButtonsMessage is null && !_quickFollowOffered && !_quickReadyOffered)
+        if (_quickButtonsMessage is null && _quickActionsOffered == QuickActions.None)
         {
             return;
         }
@@ -686,8 +720,7 @@ public sealed class DiscordBot
         await _startupMessageLock.WaitAsync();
         try
         {
-            _quickFollowOffered = false;
-            _quickReadyOffered = false;
+            _quickActionsOffered = QuickActions.None;
             holder = _quickButtonsMessage;
             _quickButtonsMessage = null;
             holderIsStartupMessage = holder is not null && _startupMessage is { } startup && holder.Id == startup.Id;
@@ -961,12 +994,7 @@ public sealed class DiscordBot
 
         if (subcommand == "start-all" || (subcommand == "start" && ShouldRunAll(context)))
         {
-            await QueueAllCommandsAsync(
-                context,
-                "menu_ready",
-                (accountKey, account) => BuildAccountArgs(accountKey, account),
-                ReadyCommandTimeout,
-                displayName: "ready");
+            await QueueReadyAllAsync(context);
             return;
         }
 
@@ -979,12 +1007,7 @@ public sealed class DiscordBot
 
         if (subcommand == "ready" && context.GetString("account") is null)
         {
-            await QueueAllCommandsAsync(
-                context,
-                "menu_ready",
-                (accountKey, account) => BuildAccountArgs(accountKey, account),
-                ReadyCommandTimeout,
-                displayName: "ready");
+            await QueueReadyAllAsync(context);
             return;
         }
 
@@ -1262,7 +1285,21 @@ public sealed class DiscordBot
             (accountKey, account) => BuildAccountArgs(accountKey, account),
             TimeSpan.FromSeconds(210),
             displayName: "leave",
-            offerFollowOnCompletion: true);
+            offerOnCompletion: QuickActions.Follow);
+    }
+
+    private async Task QueueReadyAllAsync(SlashContext context)
+    {
+        // Once everyone is warmed to the character screen the natural next moves are to start
+        // following or to wind down, so the completion follow-up offers Follow/Quit/Sleep
+        // (not Ready again).
+        await QueueAllCommandsAsync(
+            context,
+            "menu_ready",
+            (accountKey, account) => BuildAccountArgs(accountKey, account),
+            ReadyCommandTimeout,
+            displayName: "ready",
+            offerOnCompletion: QuickActions.Follow | QuickActions.Quit | QuickActions.Sleep);
     }
 
     private async Task QueueQuitAllAsync(SlashContext context, string cancelReason)
@@ -1284,8 +1321,7 @@ public sealed class DiscordBot
             (accountKey, account) => BuildAccountArgs(accountKey, account),
             TimeSpan.FromSeconds(210),
             displayName: "quit",
-            offerFollowOnCompletion: true,
-            offerReadyOnCompletion: true);
+            offerOnCompletion: QuickActions.Follow | QuickActions.Ready);
     }
 
     private async Task HandleVmAsync(SlashContext context)
@@ -3000,8 +3036,7 @@ public sealed class DiscordBot
         bool watch = false,
         string? watchLabel = null,
         string? watchName = null,
-        bool offerFollowOnCompletion = false,
-        bool offerReadyOnCompletion = false)
+        QuickActions offerOnCompletion = QuickActions.None)
     {
         var label = displayName ?? commandName;
         var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
@@ -3096,8 +3131,7 @@ public sealed class DiscordBot
                             label,
                             entries.Length,
                             tracker.FailedCount,
-                            offerFollowOnCompletion,
-                            offerReadyOnCompletion);
+                            offerOnCompletion);
                     }
                 }
             });
@@ -3116,22 +3150,21 @@ public sealed class DiscordBot
         string label,
         int total,
         int failed,
-        bool offerFollow = false,
-        bool offerReady = false)
+        QuickActions offer = QuickActions.None)
     {
         try
         {
             var message = failed == 0
                 ? $"{label} complete: {total}/{total} succeeded."
                 : $"{label} complete: {total - failed}/{total} succeeded, {failed} failed (see above).";
-            var components = offerFollow || offerReady
-                ? BuildQuickStartComponents(offerFollow, offerReady)
+            var components = offer != QuickActions.None
+                ? BuildQuickStartComponents(offer)
                 : null;
             var sent = await FollowupWithMetricsAsync(context, message, ephemeral: false, components);
             await sent.AddReactionAsync(new Emoji(failed == 0 ? "✅" : "⛔"));
             if (components is not null)
             {
-                await AdoptQuickButtonsHolderAsync(sent, offerFollow, offerReady);
+                await AdoptQuickButtonsHolderAsync(sent, offer);
             }
         }
         catch (Exception ex)
@@ -3142,7 +3175,7 @@ public sealed class DiscordBot
 
     // Makes a freshly sent message the one-and-only quick-start button holder, stripping the
     // buttons off whichever message held them before.
-    private async Task AdoptQuickButtonsHolderAsync(IUserMessage message, bool offerFollow, bool offerReady)
+    private async Task AdoptQuickButtonsHolderAsync(IUserMessage message, QuickActions offer)
     {
         IUserMessage? previousHolder;
         bool previousIsStartupMessage;
@@ -3151,8 +3184,7 @@ public sealed class DiscordBot
         {
             previousHolder = _quickButtonsMessage;
             _quickButtonsMessage = message;
-            _quickFollowOffered = offerFollow;
-            _quickReadyOffered = offerReady;
+            _quickActionsOffered = offer;
             previousIsStartupMessage = previousHolder is not null
                 && _startupMessage is { } startup
                 && previousHolder.Id == startup.Id;
