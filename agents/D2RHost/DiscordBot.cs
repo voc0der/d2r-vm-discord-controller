@@ -67,11 +67,13 @@ public sealed class DiscordBot
     private bool _startupMessageTaskStarted;
     private readonly SemaphoreSlim _startupMessageLock = new(1, 1);
     private IUserMessage? _startupMessage;
+    private const QuickActions BootQuickActions = QuickActions.Follow | QuickActions.Ready | QuickActions.Sleep;
+
     // Quick-start buttons live on exactly one message at a time (the startup message on
     // boot/wake, or the newest ready/leave/quit completion follow-up). Both fields are
     // guarded by _startupMessageLock.
     private IUserMessage? _quickButtonsMessage;
-    private QuickActions _quickActionsOffered = QuickActions.Follow | QuickActions.Ready;
+    private QuickActions _quickActionsOffered = BootQuickActions;
     private string _startupIntro = DefaultStartupIntro;
     private int _startupPostInProgress;
     private const string DefaultStartupIntro = "D2RHost is alive and available.";
@@ -210,7 +212,7 @@ public sealed class DiscordBot
             previousHolder = _quickButtonsMessage;
             _startupMessage = null;
             _quickButtonsMessage = null;
-            _quickActionsOffered = QuickActions.Follow | QuickActions.Ready;
+            _quickActionsOffered = BootQuickActions;
             _startupIntro = $"D2RHost woke up from sleep (~{minutes}m).";
         }
         finally
