@@ -205,6 +205,38 @@ internal static class D2RScreenClassifier
             : entryButtonReady && formPanelReady;
     }
 
+    // The game-load screens (load_screen_phase_1/2.png) and the post-intro loading splash
+    // (loading_splash_after_intro_videos.png) draw artwork only inside a centered panel
+    // (roughly x 0.30-0.71, y 0.25-0.75 at 1366x768); everything outside it is a literal
+    // black fill. These regions all sit well clear of that panel, and every one of them must
+    // read near-black for the stuck-load-screen watchdog to consider quitting the client.
+    // The bottom-center region doubles as the in-game guard: it overlaps the HUD/action bar,
+    // which reads bright on every in-game reference capture (dark ratio 0.28-0.90, never
+    // >= 0.98) - even the dimmed modern-graphics Save and Exit captures and the night-time
+    // party_glitch captures fail here, so a live game can never satisfy the full set.
+    public static readonly LoadScreenSurroundRegion[] LoadScreenSurroundRegions =
+    [
+        new(0.10, 0.10, 0.14, 0.12),
+        new(0.90, 0.10, 0.14, 0.12),
+        new(0.10, 0.90, 0.14, 0.12),
+        new(0.50, 0.08, 0.24, 0.10),
+        new(0.50, 0.92, 0.24, 0.10)
+    ];
+
+    // Calibrated against every full-page reference capture (see StuckLoadScreenSurroundTests):
+    // the black fill reads lum 0.0/dark 1.00 exactly; the closest non-load screens are the
+    // modern Save and Exit pause (top-left lum 9.7-9.9 but top-right/bottom-center well over)
+    // and the post-intro flame splash (bottom-center dark 0.96). Samples > 0 matters on the
+    // live path: a TryRunBounded timeout fallback never sampled anything, and "couldn't read
+    // the screen" must not count as "screen is black" (the v0.2.93 DWM stall would otherwise
+    // look exactly like a stuck load screen and get healthy clients killed).
+    public static bool IsLoadScreenSurroundRegion(ScreenRegionStats stats)
+    {
+        return stats.Samples > 0
+            && stats.AverageLuminance < 10
+            && stats.DarkRatio >= 0.98;
+    }
+
     private static bool IsCharacterMenuButtonRegion(ScreenRegionStats stats)
     {
         return stats.AverageLuminance > 40
@@ -212,3 +244,9 @@ internal static class D2RScreenClassifier
             && stats.DarkRatio < 0.65;
     }
 }
+
+internal readonly record struct LoadScreenSurroundRegion(
+    double CenterX,
+    double CenterY,
+    double WidthRatio,
+    double HeightRatio);

@@ -70,6 +70,10 @@ public sealed class VmOperations
     // but there are up to 8 of them per tick, so still bound each individually rather than
     // relying on the tick interval alone to cap worst-case cost.
     private const int PartyFrameSampleBoundMs = 800;
+    // Five small surround-region captures; runs at most once per idle-monitor tick and only
+    // while the screen has already been unrecognizable past the stuck threshold. The fallback
+    // is false ("not confirmed"), so a timeout can only delay the quit, never cause one.
+    private const int StuckLoadScreenSampleBoundMs = 2500;
 
     private readonly VmAgentConfig _config;
     private readonly MachineTelemetrySampler _telemetry = new();
@@ -86,6 +90,11 @@ public sealed class VmOperations
     private LastInputActionSnapshot? _lastInputAction;
     private string? _lastObservedFrame;
     private DateTimeOffset? _lastObservedFrameUtc;
+    // Start of the current run of consecutive Unknown frame observations, fed by
+    // RecordObservedFrame (any recognized frame clears it) and by the stuck-load-screen
+    // watchdog's own per-tick live look. Null whenever the last observation was recognizable
+    // or D2R isn't running.
+    private DateTimeOffset? _unknownFrameSinceUtc;
     private string? _lastClassifierBreakdown;
     private DateTimeOffset? _lastClassifierBreakdownUtc;
     private string? _lastHudEvidence;
@@ -210,6 +219,7 @@ public sealed class VmOperations
             lastInputAction = _lastInputAction,
             lastObservedFrame = _lastObservedFrame,
             lastObservedFrameUtc = _lastObservedFrameUtc,
+            unknownFrameSinceUtc = _unknownFrameSinceUtc,
             lastClassifierBreakdown = _lastClassifierBreakdown,
             lastClassifierBreakdownUtc = _lastClassifierBreakdownUtc,
             lastHudEvidence = _lastHudEvidence,
@@ -258,6 +268,7 @@ public sealed class VmOperations
             lastInputAction = _lastInputAction,
             lastObservedFrame = _lastObservedFrame,
             lastObservedFrameUtc = _lastObservedFrameUtc,
+            unknownFrameSinceUtc = _unknownFrameSinceUtc,
             lastClassifierBreakdown = _lastClassifierBreakdown,
             lastClassifierBreakdownUtc = _lastClassifierBreakdownUtc,
             lastHudEvidence = _lastHudEvidence,
@@ -547,6 +558,7 @@ public sealed class VmOperations
                 try
                 {
                     await QuitIfCharacterScreenIdleAsync(log ?? (_ => { }), cancellationToken);
+                    await QuitIfStuckLoadScreenAsync(log ?? (_ => { }), cancellationToken);
                 }
                 finally
                 {
@@ -610,6 +622,101 @@ public sealed class VmOperations
         {
             log($"Idle quit failed: {result.Message}");
         }
+    }
+
+    // A client that crashes or freezes on the game-load screen never resolves on its own: the
+    // load screen classifies Unknown by design (black surround, artwork nowhere near any
+    // sampled menu region - see pixel-classifier-catalog.md), so every follow-auto cycle and
+    // menu command just keeps failing its pixel checks forever while the fleet stalls waiting
+    // for the bot to land in the game. Observed live: a VM wedged at load_screen_phase_2 for
+    // 5+ minutes during a follow-auto run until a human noticed. Once the client is quit, the
+    // existing machinery recovers on its own - the host's next follow-auto cycle runs
+    // menu_ready, which relaunches and re-readies the client.
+    //
+    // Two guards keep this from ever killing a live game (Hardcore makes a wrong quit
+    // expensive): the quit needs a continuous multi-minute streak of Unknown observations
+    // (any recognized frame resets it), and then a fresh confirmation that every
+    // LoadScreenSurroundRegion actually reads near-black with real pixel data - degraded
+    // sampling (the v0.2.93 DWM stall class) returns bounded fallbacks, which fail that
+    // confirmation instead of passing it.
+    private async Task QuitIfStuckLoadScreenAsync(Action<string> log, CancellationToken cancellationToken)
+    {
+        if (!_config.StuckLoadScreenQuitEnabled || !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        if (!IsD2RRunning())
+        {
+            _unknownFrameSinceUtc = null;
+            return;
+        }
+
+        // Live look every tick: keeps the streak advancing between commands (an otherwise idle
+        // agent would never observe frames at all) and resets it via RecordObservedFrame the
+        // moment anything recognizable is on screen.
+        var visibleState = DetectVisibleD2RState(d2rRunning: true);
+        if (visibleState != VisibleD2RState.Unknown)
+        {
+            return;
+        }
+
+        var timeout = TimeSpan.FromMinutes(Math.Max(_config.StuckLoadScreenQuitMinutes, 1));
+        if (_unknownFrameSinceUtc is not { } unknownSince
+            || DateTimeOffset.UtcNow - unknownSince < timeout)
+        {
+            return;
+        }
+
+        var stuckFor = DateTimeOffset.UtcNow - unknownSince;
+        var input = new WindowsInput();
+        if (!IsStuckLoadScreenConfirmed(input))
+        {
+            log($"D2R has shown an unrecognizable screen for {stuckFor.TotalMinutes:N0}m, but the load-screen black surround was not confirmed; leaving it alone.");
+            return;
+        }
+
+        MarkCommandCheckpoint($"stuck-load-screen watchdog: black-surround screen for {stuckFor.TotalMinutes:N0}m; quitting D2R");
+        log($"D2R appears stuck on the game-load screen ({stuckFor.TotalMinutes:N0} minute(s) of Unknown frames, black surround confirmed); quitting so the next ready cycle can relaunch it.");
+        var quit = await QuitD2RAsync(cancellationToken);
+        if (!quit.Ok)
+        {
+            log($"Stuck-load-screen quit: {quit.Message}");
+        }
+
+        await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+        if (IsD2RRunning())
+        {
+            // A frozen client ignores Alt+F4 - that's the expected case here, not a surprise.
+            log("D2R is still running after Alt+F4; killing the process.");
+            KillD2R();
+        }
+
+        _unknownFrameSinceUtc = null;
+    }
+
+    private bool IsStuckLoadScreenConfirmed(WindowsInput input)
+    {
+        return TryRunBounded(
+            () =>
+            {
+                foreach (var region in D2RScreenClassifier.LoadScreenSurroundRegions)
+                {
+                    var stats = input.SampleRegion(
+                        new AgentCommon.UiPoint(region.CenterX, region.CenterY),
+                        region.WidthRatio,
+                        region.HeightRatio,
+                        MenuSampleGrid);
+                    if (!D2RScreenClassifier.IsLoadScreenSurroundRegion(stats))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            },
+            StuckLoadScreenSampleBoundMs,
+            fallback: false);
     }
 
     internal void ReconcileActivityFromLiveSnapshot(ActivitySnapshot liveActivity)
@@ -2555,6 +2662,10 @@ public sealed class VmOperations
             _lastObservedD2RStartUtc = null;
             _lastActivityReason = null;
         }
+
+        // Every path through here means the process is gone or was just killed/relaunched -
+        // a fresh client always gets a fresh stuck-load-screen grace period.
+        _unknownFrameSinceUtc = null;
     }
 
     private void RefreshD2RProcessActivity(bool d2rRunning)
@@ -3809,6 +3920,20 @@ public sealed class VmOperations
     {
         _lastObservedFrame = frame;
         _lastObservedFrameUtc = DateTimeOffset.UtcNow;
+
+        // "Unknown" is the same literal for both VisibleD2RState and ReadyScreenState, so every
+        // live classification that resolves nothing extends the unknown streak, and any
+        // recognizable frame (including NotRunning - nothing to watchdog without a process)
+        // clears it. The stuck-load-screen watchdog only acts on this after its own fresh
+        // confirmation, so a single stray Unknown here can never cause a quit by itself.
+        if (frame == nameof(VisibleD2RState.Unknown))
+        {
+            _unknownFrameSinceUtc ??= _lastObservedFrameUtc;
+        }
+        else
+        {
+            _unknownFrameSinceUtc = null;
+        }
     }
 
     private void RecordClassifierBreakdown(string breakdown)

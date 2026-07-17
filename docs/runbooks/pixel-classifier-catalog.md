@@ -108,6 +108,38 @@ the same lobby/in-game ordering, with two narrow differences called out inline:
 The live detector short-circuits in that order so the normal modern-HUD success path only has to
 sample the action bar and modern globes; diagnostics still sample and print every HUD region.
 
+## Stuck load screen (watchdog confirmation)
+
+| Function | Regions | Threshold |
+| --- | --- | --- |
+| `IsLoadScreenSurroundRegion` (all five `LoadScreenSurroundRegions` must pass) | `0.10,0.10`, `0.90,0.10`, `0.10,0.90` (each `0.14x0.12`), `0.50,0.08` and `0.50,0.92` (each `0.24x0.10`) | `Samples > 0 && AverageLuminance < 10 && DarkRatio >= 0.98` |
+
+Not part of the visible-state decision tree. This is the final confirmation step of
+`QuitIfStuckLoadScreenAsync` (the stuck-load-screen watchdog on the idle-monitor tick): a client
+that crashes/freezes on the game-load screen classifies `Unknown` forever (correct - see the
+gotcha below), so after `StuckLoadScreenQuitMinutes` (default 4) of continuous `Unknown` frames
+the watchdog takes one fresh look at these five regions, and only if every one reads near-black
+does it Alt+F4 (then kill, if frozen) the client so the next host ready cycle can relaunch it.
+
+The load screens draw artwork only in a centered panel (x 0.30-0.71, y 0.25-0.75); all five
+regions sit in the literal black fill outside it (measured lum 0.0 / dark 1.00). Calibration
+margins, pinned by `StuckLoadScreenSurroundTests` against every full-page capture:
+
+- **In-game can never confirm** (the Hardcore-safety requirement): the bottom-center region
+  overlaps the HUD/action bar, which reads dark 0.28-0.90 on every in-game capture - even the
+  dimmed modern Save and Exit pause (top-left slips under lum 10, but top-right/bottom-center
+  reject) and the night-time `party_glitch_*` scenes (two-region rejects) fail.
+- **Closest reject in the suite:** `post_intro_splash_screen.png`'s press-any-key band
+  (bottom-center dark 0.96 vs the 0.98 floor). If the threshold is ever loosened, that test row
+  fails first.
+- **Black cinematic frames confirm** (`intro_one_*`, `intro_three_*`) - intentional: a healthy
+  intro clears in seconds under the ready loop's skip bursts, so minutes of `Unknown` there is
+  the same wedge with the same correct recovery.
+- **`Samples > 0` is load-bearing on the live path:** a `TryRunBounded` timeout fallback never
+  sampled pixels, and degraded sampling (the dwm.exe stall class above) must read as "not
+  confirmed" rather than "black", or the watchdog would kill healthy clients exactly when
+  detection is at its worst.
+
 ## Party member count
 
 issue #20, item 6. D2R draws one gold-framed portrait icon per OTHER party member (not counting
@@ -561,7 +593,11 @@ mechanism works on a live VM. That needs a real run.
   laggy part." No pixel threshold can shorten this; it's client-side asset loading, not a
   network wait and not a detection blind spot. If `/d2r status` shows `Unknown` for a
   stretch right after intro-skip input starts working, this is the leading suspect before
-  assuming the classifier missed something.
+  assuming the classifier missed something. The *wedged* variant of this - a client that
+  crashes/freezes on one of these screens and shows `Unknown` forever (observed live: a VM
+  stuck at `load_screen_phase_2` for 5+ minutes during a follow-auto run) - is now handled by
+  the stuck-load-screen watchdog (see its own section above): sustained `Unknown` plus a
+  confirmed black surround quits the client so the next ready cycle relaunches it.
 - **The last two frames of the "Diablo II" title burning in during the intro
   (`intro_three_phase2.png`, `intro_three_phase3.png`) classify as `DiabloSplash`,** not
   `Unknown`. Visually they're flame letters on black, same as the real splash - there's no
