@@ -1331,14 +1331,16 @@ public sealed class DiscordBot
         var followAutoCancel = await CancelFollowAutoIfRunningAsync(cancelReason);
         QueueFollowAutoStopSignal(followAutoCancel.RunId);
         // After a quit the clients are cold, so the completion follow-up re-offers both
-        // Ready (relaunch) and Follow.
+        // Ready (relaunch) and Follow - plus Sleep, since winding the host machine down is
+        // the other natural next step once every client is closed (its quit-all leg is a
+        // fast no-op at that point).
         await QueueAllCommandsAsync(
             context,
             "quit_d2r",
             (accountKey, account) => BuildAccountArgs(accountKey, account),
             TimeSpan.FromSeconds(210),
             displayName: "quit",
-            offerOnCompletion: QuickActions.Follow | QuickActions.Ready);
+            offerOnCompletion: QuickActions.Follow | QuickActions.Ready | QuickActions.Sleep);
     }
 
     private async Task HandleVmAsync(SlashContext context)
