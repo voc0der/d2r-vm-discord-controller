@@ -191,22 +191,22 @@ the dimmer antialiasing of the staggered rendering. Every empty band across all 
 measured exactly 0 matching pixels.
 
 **Matching:** bind crops the band mask to its glyph bounding box (rejected below 24 bits); a
-probe slides that template over a freshly captured band mask and takes the best Dice overlap
-(band bits outside the window don't count, so stray bright pixels elsewhere in the band can't
-sink a match; extra bright pixels inside it lower the score, which fails toward the conservative
-count-drop fallback). Match threshold 0.65, calibrated:
+probe slides that template over a freshly captured band mask and takes the best whole-name Dice
+overlap. Every candidate-band glyph pixel stays in the denominator, including pixels outside
+the aligned template window. This prevents a short name from matching a similarly shaped piece
+of a longer name (`Glitch` used to score 0.659 against `Position` when outside-window pixels were
+ignored). Match threshold 0.65, calibrated:
 
 | Pair | Score |
 | --- | --- |
 | Same name, same slot, different capture (`Netrunner`) | 1.000 |
-| Same name, different slot + baseline + stroke weight + background (`Skeleton`) | 0.762-0.832 |
-| Best different-name confusion (`Skeleton` template over `Netrunner` band) | 0.551 |
-| Departed player probed anywhere (`Position` vs `party_members_2.png`) | 0.520 max |
+| Same name, different slot + baseline + stroke weight + background (`Skeleton`) | 0.757 |
+| Best different-name confusion (`Glitch` template over `Position` band) | 0.551 |
+| Departed player probed anywhere (`Position` vs `party_members_2.png`) | 0.485 max |
 
-Known gap: a template can match a strictly-longer name that contains it verbatim at the same
-glyph rendering (binding `Skeleton` would match a `Skeleton1` in the window that covers the
-`Skeleton` prefix). Harmless for the intended use (the operator binds their own character), just
-don't bind a name that is a prefix of another party regular's.
+The added `party_glitch_*` captures exercise the former false-positive topology directly:
+`Glitch` scores 1.000 while present and no more than 0.551 against any remaining name after it
+leaves.
 
 **Multi-alt nametag rolodex.** `leader-template.txt` holds one serialized nametag per line, in
 bind order - the operator binds each alt they play once. Every pulse captures each visible slot

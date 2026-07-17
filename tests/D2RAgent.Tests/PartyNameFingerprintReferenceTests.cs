@@ -14,7 +14,7 @@ namespace D2RAgent.Tests;
 // - "Skeleton" sits in slot 2 of party_members_2 on the staggered LOWER name baseline rendered
 //   with thinner strokes, and in slot 3 of party_members_3 on the upper baseline rendered bold -
 //   the same name at a different slot, different baseline, different stroke weight, and a
-//   different scene background (worst measured same-name score, 0.762);
+//   different scene background (worst measured same-name score, 0.757);
 // - "Position" is present in party_members_3 but absent from party_members_2 (the chat line in
 //   that capture literally reads "Position left our world"), which is exactly the leader-left
 //   scenario the follow-auto pulse needs to detect.
@@ -106,8 +106,9 @@ public sealed class PartyNameFingerprintReferenceTests
     }
 
     // Documents the calibration margin MatchThreshold (0.65) rests on so a future threshold or
-    // classifier change that erodes it fails loudly: worst same-name pair measured 0.762, best
-    // different-name pair 0.551.
+    // classifier change that erodes it fails loudly: in this original reference set the worst
+    // same-name pair measures 0.757 and the best different-name pair measures 0.526. The Glitch
+    // regression captures add the fleet-wide different-name ceiling of 0.551.
     [Fact]
     public void ThresholdKeepsAMarginToBothFailureDirections()
     {

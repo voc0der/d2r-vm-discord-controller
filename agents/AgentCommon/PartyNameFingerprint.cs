@@ -18,10 +18,10 @@ namespace AgentCommon;
 // assumption.
 public sealed record PartyNameFingerprint(int Width, int Height, byte[] PackedBits)
 {
-    // Reference-capture calibration across party_members_1..3.png (same math as
-    // PartyNameFingerprintReferenceTests): worst same-name score 0.762 (the same name rendered
-    // thin on the lower baseline vs bold on the upper), best different-name score 0.551, empty
-    // bands 0.0. 0.65 sits roughly midway with ~0.1 margin to both failure directions.
+    // Reference-capture calibration across party_members_1..3.png and party_glitch_*.png (same
+    // math as the fingerprint reference tests): worst same-name score 0.757 (the same name
+    // rendered thin on the lower baseline vs bold on the upper), best different-name score
+    // 0.551, empty bands 0.0. 0.65 sits roughly midway with ~0.1 margin both ways.
     public const double MatchThreshold = 0.65;
 
     // The shortest legal D2R character name (2 chars) still renders well above this many glyph
@@ -136,12 +136,13 @@ public sealed record PartyNameFingerprint(int Width, int Height, byte[] PackedBi
         return new PartyNameFingerprint(croppedWidth, croppedHeight, packed);
     }
 
-    // Slides this template over every position inside the band mask and returns the best Dice
-    // overlap (2*intersection / (template bits + band bits inside the window)). Band bits
-    // outside the current window don't count against the score, so a stray bright pixel
-    // elsewhere in the band can't sink an otherwise clean match; extra bright pixels inside the
-    // window do lower it, which is the conservative direction (a missed match makes follow-auto
-    // fall back to player-count behavior, not act on a wrong name).
+    // Slides this template over every position inside the band mask and returns the best
+    // whole-name Dice overlap (2*intersection / (template bits + every candidate-band bit)).
+    // Counting every candidate glyph pixel is important: when only the aligned window was in
+    // the denominator, a short name could match a similarly-shaped fragment of a longer,
+    // unrelated name. Glitch vs Position measured 0.659 with that partial-window score - just
+    // over the 0.65 threshold - on three VMs after Glitch had left. Whole-name scoring lowers
+    // that false match to 0.551 while the calibrated same-name floor remains 0.757.
     public double BestScoreIn(PartyNameFingerprint band)
     {
         if (band.Width < Width || band.Height < Height)
@@ -150,18 +151,18 @@ public sealed record PartyNameFingerprint(int Width, int Height, byte[] PackedBi
         }
 
         var templateBits = BitCount;
-        if (templateBits == 0)
+        var bandBits = band.BitCount;
+        if (templateBits == 0 || bandBits == 0)
         {
             return 0.0;
         }
 
-        var best = 0.0;
+        var bestIntersection = 0;
         for (var offsetY = 0; offsetY <= band.Height - Height; offsetY++)
         {
             for (var offsetX = 0; offsetX <= band.Width - Width; offsetX++)
             {
                 var intersection = 0;
-                var windowBits = 0;
                 for (var y = 0; y < Height; y++)
                 {
                     for (var x = 0; x < Width; x++)
@@ -171,7 +172,6 @@ public sealed record PartyNameFingerprint(int Width, int Height, byte[] PackedBi
                             continue;
                         }
 
-                        windowBits++;
                         if (GetBit(x, y))
                         {
                             intersection++;
@@ -179,15 +179,11 @@ public sealed record PartyNameFingerprint(int Width, int Height, byte[] PackedBi
                     }
                 }
 
-                var denominator = templateBits + windowBits;
-                if (denominator > 0)
-                {
-                    best = Math.Max(best, 2.0 * intersection / denominator);
-                }
+                bestIntersection = Math.Max(bestIntersection, intersection);
             }
         }
 
-        return best;
+        return 2.0 * bestIntersection / (templateBits + bandBits);
     }
 
     public static bool IsMatch(PartyNameFingerprint? template, PartyNameFingerprint? band)

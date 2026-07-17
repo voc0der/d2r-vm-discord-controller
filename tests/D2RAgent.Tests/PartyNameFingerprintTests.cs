@@ -141,6 +141,17 @@ public sealed class PartyNameFingerprintTests
     }
 
     [Fact]
+    public void ExtraGlyphPixelsOutsideTheAlignedWindowLowerTheScore()
+    {
+        var template = BuildMask(6, 4, (x, _) => x < 3);
+        var longerName = BuildMask(20, 4, (x, _) => x is >= 7 and < 10 || x == 19);
+
+        // The aligned glyph contributes all 12 intersections, but the four pixels in the
+        // longer candidate's unmatched suffix still count: Dice = 24 / (12 + 16).
+        Assert.Equal(2.0 * 12 / (12 + 16), template.BestScoreIn(longerName), 9);
+    }
+
+    [Fact]
     public void IsMatchHandlesNullsAndThreshold()
     {
         var mask = BuildMask(6, 4, (_, _) => true);
