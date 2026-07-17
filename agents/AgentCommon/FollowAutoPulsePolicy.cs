@@ -101,6 +101,29 @@ public static class FollowAutoPulsePolicy
         return baseline is { } known && known >= count ? baseline : count;
     }
 
+    // Cross-VM confirmation: the flagger already missed the leader, and these are every OTHER
+    // vantage's answers about the same locked nametag. Any explicit "gone" wins - that is the
+    // two-independent-screens agreement a leave requires - and a conflicting "still present"
+    // from a third screen must not veto it: a vantage whose scene cross-matches the template
+    // (or whose stored list diverged) would otherwise block every leave forever. "Present" is
+    // only the answer when nobody verified absence; all-null means nobody could check, and a
+    // null (mid-load, missing entry) never counts as gone.
+    public static bool? CombineLeaderConfirmations(IReadOnlyList<bool?> answers)
+    {
+        var sawPresent = false;
+        foreach (var answer in answers)
+        {
+            if (answer == false)
+            {
+                return false;
+            }
+
+            sawPresent |= answer == true;
+        }
+
+        return sawPresent ? true : null;
+    }
+
     // One bound nametag's reading from a single pulse: whether that nametag was verifiably seen
     // (null = this pulse couldn't check it) and the best match score it reached.
     public readonly record struct LeaderNametagSignal(bool? Present, double Score);

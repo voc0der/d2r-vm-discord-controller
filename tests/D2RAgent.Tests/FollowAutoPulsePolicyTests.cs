@@ -149,4 +149,29 @@ public sealed class FollowAutoPulsePolicyTests
         Assert.Equal(5, FollowAutoPulsePolicy.RaiseCountBaseline(5, null));
         Assert.Null(FollowAutoPulsePolicy.RaiseCountBaseline(null, null));
     }
+
+    // Cross-VM confirmation: an independent "gone" is the two-screen agreement a leave
+    // requires, and a third screen's "still present" (cross-matching template, diverged list)
+    // must not veto it - a single such VM used to starve every leave for a whole session.
+    [Fact]
+    public void ConfirmationPrefersAnyVerifiedAbsence()
+    {
+        Assert.False(FollowAutoPulsePolicy.CombineLeaderConfirmations(new bool?[] { true, false, null }));
+        Assert.False(FollowAutoPulsePolicy.CombineLeaderConfirmations(new bool?[] { false }));
+    }
+
+    [Fact]
+    public void ConfirmationReadsPresentOnlyWhenNobodyVerifiedAbsence()
+    {
+        Assert.True(FollowAutoPulsePolicy.CombineLeaderConfirmations(new bool?[] { null, true }));
+    }
+
+    // All-null (mid-load, missing entries, old agents) stays "couldn't check" - never evidence
+    // of absence, never evidence of presence.
+    [Fact]
+    public void ConfirmationStaysUnknownWhenNobodyCouldCheck()
+    {
+        Assert.Null(FollowAutoPulsePolicy.CombineLeaderConfirmations(new bool?[] { null, null }));
+        Assert.Null(FollowAutoPulsePolicy.CombineLeaderConfirmations(Array.Empty<bool?>()));
+    }
 }

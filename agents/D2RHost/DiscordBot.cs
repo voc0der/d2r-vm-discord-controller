@@ -5125,9 +5125,8 @@ public sealed class DiscordBot
                     if (online.Length > 1)
                     {
                         singleVantageMissStreak = 0;
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Game #{_followAutoGameNumber}: {sample.AccountKey} lost sight of the bound leader; asking another VM to confirm.{FormatBoundLeaderWatchDetail(sample)}");
-                        var (agreed, confirmer) = await ConfirmLeaderGoneFromAnotherVantageAsync(sample.AccountKey);
+                        var flaggerName = sample.AccountKey ?? "a VM";
+                        var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(sample.AccountKey);
                         if (agreed == true)
                         {
                             return sample.AccountKey is { } flagger && confirmer is { } confirmedBy
@@ -5137,14 +5136,23 @@ public sealed class DiscordBot
 
                         if (agreed == false)
                         {
-                            // A different VM still sees the leader, so the first VM's miss was
-                            // a transient (name briefly occluded), not a real departure.
+                            // A different VM still sees the leader (and no VM verified absence),
+                            // so the flagger's miss reads as a transient - name briefly occluded
+                            // or a per-vantage render difference, not a departure.
                             baseline = sample.PlayerCount ?? baseline;
+                            await UpdateFollowAutoMonitorAsync(
+                                $"Game #{_followAutoGameNumber}: {flaggerName} lost sight of the bound leader, but {confirmer} still sees it - treating the miss as transient. {confirmDetail}{FormatBoundLeaderWatchDetail(sample)}");
                         }
-
-                        // agreed == null: no other vantage could get a clean read this instant
-                        // (all mid-loading). Don't leave on one screen's word - the next
-                        // heartbeat pulse tries again.
+                        else
+                        {
+                            // agreed == null: no other vantage could get a clean read this
+                            // instant. Don't leave on one screen's word - the next heartbeat
+                            // pulse tries again - but say WHY on the monitor: a fleet that can
+                            // never confirm (diverged lists, old agent builds) used to cycle
+                            // here invisibly for entire sessions.
+                            await UpdateFollowAutoMonitorAsync(
+                                $"Game #{_followAutoGameNumber}: {flaggerName} lost sight of the bound leader and no other VM could verify it either way; staying until a vantage gets a clean read. {confirmDetail}{FormatBoundLeaderWatchDetail(sample)}");
+                        }
                     }
                     else
                     {
@@ -5177,16 +5185,26 @@ public sealed class DiscordBot
         return FollowAutoPulsePolicy.GetHeartbeat(pollDelay(), online.Length);
     }
 
-    // Forces an immediate leader check on each online account OTHER than the one that just
-    // flagged the leader missing, stopping at the first that gives an informative answer.
-    // Returns (true, key) if that independent VM also can't see the leader -> leave now;
-    // (false, key) if it still sees the leader -> the flag was a transient, stay; (null, null)
-    // if no other vantage could get a clean read right now -> caller keeps waiting rather than
-    // leaving on one screen's word. This is the "if bot 1 says gone, force another VM to check,
-    // and only then all leave" behaviour, run inline instead of waiting for the next pulse.
-    private async Task<(bool? Agreed, string? ByAccount)> ConfirmLeaderGoneFromAnotherVantageAsync(string? flaggerKey)
+    // Forces an immediate leader check on EVERY online account other than the one that just
+    // flagged the leader missing. All answers are collected (not just the first informative
+    // one) and combined via FollowAutoPulsePolicy.CombineLeaderConfirmations: any independent
+    // "gone" agrees with the flagger and wins - stopping at the first answer let a single VM
+    // whose list diverged (answers null forever) or whose scene cross-matches the template
+    // (answers present forever) sit in front of the queue and starve every leave, which is
+    // exactly how watch-follow-auto-20260717-115637.log deadlocked for a whole session.
+    // Returns (true, key) leave now; (false, key) still visible somewhere and nobody verified
+    // absence -> transient; (null, null) nobody could check. Detail names every account's
+    // answer for the monitor, so a stuck confirmation is readable instead of a silent cycle.
+    // Side effect: an account whose scan works but whose stored list is missing the locked
+    // nametag (offline during that bind, or an older overwrite-style agent) gets the locked
+    // fingerprint re-sent, so list divergence heals mid-run instead of muting that VM forever.
+    private async Task<(bool? Agreed, string? ByAccount, string Detail)> ConfirmLeaderGoneFromAnotherVantageAsync(string? flaggerKey)
     {
         var (online, _) = GetAccountEntriesByConnectivity();
+        var answers = new List<bool?>();
+        string? goneBy = null;
+        string? presentBy = null;
+        var details = new List<string>();
         foreach (var (accountKey, account) in online)
         {
             if (string.Equals(accountKey, flaggerKey, StringComparison.OrdinalIgnoreCase))
@@ -5198,14 +5216,64 @@ public sealed class DiscordBot
             // the session-locked one - not about any other bound alt that might coincidentally
             // be visible.
             var sample = await TryFetchFollowPulseForAsync(accountKey, account, _followAutoLockedNametag);
-            var (present, _, _) = GetLockedNametagPresence(sample);
-            if (sample.LeaderBound && present is { } confirmed)
+            var lockedEntry = _followAutoLockedNametag is { } locked
+                ? sample.Matches.FirstOrDefault(match => string.Equals(match.Fingerprint, locked, StringComparison.Ordinal))
+                : null;
+            var present = sample.LeaderBound ? lockedEntry?.Present : null;
+            answers.Add(present);
+
+            if (present == false)
             {
-                return (!confirmed, accountKey);
+                goneBy ??= accountKey;
+                details.Add($"{accountKey}: gone (score {FormatScore(lockedEntry?.Score)})");
+            }
+            else if (present == true)
+            {
+                presentBy ??= accountKey;
+                var slotText = lockedEntry?.Slot is { } slot ? $" slot {slot}" : "";
+                details.Add($"{accountKey}: still visible{slotText} (score {FormatScore(lockedEntry?.Score)})");
+            }
+            else if (lockedEntry is not null)
+            {
+                details.Add($"{accountKey}: couldn't score it this instant");
+            }
+            else if (sample.Matches.Count > 0 && _followAutoLockedNametag is { } missingNametag)
+            {
+                // The scan works but this agent's stored list lacks the locked nametag - it
+                // can never confirm anything until the list is repaired, so repair it now.
+                details.Add($"{accountKey}: locked nametag missing from its bound list, re-sent");
+                try
+                {
+                    await _registry.SendCommandAsync(
+                        account.AgentId,
+                        "follow_set_leader_template",
+                        new { fingerprint = missingNametag, append = true },
+                        TimeSpan.FromSeconds(15));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Locked nametag re-send failed for {AccountKey}.", accountKey);
+                }
+            }
+            else
+            {
+                details.Add($"{accountKey}: no nametag data (old agent build, or the sample failed)");
             }
         }
 
-        return (null, null);
+        var combined = FollowAutoPulsePolicy.CombineLeaderConfirmations(answers);
+        var detail = details.Count > 0 ? $"Confirm answers - {string.Join("; ", details)}." : "";
+        return combined switch
+        {
+            false => (true, goneBy, detail),
+            true => (false, presentBy, detail),
+            _ => (null, null, detail)
+        };
+    }
+
+    private static string FormatScore(double? score)
+    {
+        return score is { } value ? value.ToString("0.000", CultureInfo.InvariantCulture) : "n/a";
     }
 
     // Multi-alt bind-in-game: resolves which bound nametag this run is following. The first
