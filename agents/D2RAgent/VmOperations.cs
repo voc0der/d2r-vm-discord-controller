@@ -1500,6 +1500,38 @@ public sealed class VmOperations
                 $"No name text was found under party position {position}. The name band may be obscured; try again with the party bar unobstructed.");
         }
 
+        // The captured template must be unique among the names it will later be scanned
+        // against: if it also clears the match threshold on ANOTHER visible member's band
+        // right now (a short name contained in a longer one, or two visually similar names),
+        // runtime pulses can keep reading the leader "present" off that other player after
+        // the real leader leaves - follow-auto then never leaves. Bind time is the only
+        // moment both names are known side by side, so measure it here and let the host warn.
+        var ambiguousSlots = new List<int>();
+        for (var slot = 1; slot <= Math.Min(visibleMembers, PartyMemberSlots.MaxSlots); slot++)
+        {
+            if (slot == position)
+            {
+                continue;
+            }
+
+            var otherBand = input.CapturePixelRegion(
+                PartyMemberSlots.GetSlotNameBandCenter(slot),
+                PartyMemberSlots.NameBandWidthRatio,
+                PartyMemberSlots.NameBandHeightRatio);
+            var otherMask = PartyNameFingerprint.FromPixels(otherBand.Rgb, otherBand.Width, otherBand.Height);
+            if (otherMask is null
+                || template.Width > otherMask.Width
+                || template.Height > otherMask.Height)
+            {
+                continue;
+            }
+
+            if (template.BestScoreIn(otherMask) >= PartyNameFingerprint.MatchThreshold)
+            {
+                ambiguousSlots.Add(slot);
+            }
+        }
+
         MarkCommandCheckpoint(
             $"FollowBindInGameCapture: captured position {position}/{visibleMembers}, glyph box {template.Width}x{template.Height}, {template.BitCount} text pixels");
         return CommandResult.Success(
@@ -1511,7 +1543,8 @@ public sealed class VmOperations
                 visibleMembers,
                 glyphWidth = template.Width,
                 glyphHeight = template.Height,
-                glyphBits = template.BitCount
+                glyphBits = template.BitCount,
+                ambiguousSlots = ambiguousSlots.ToArray()
             });
     }
 

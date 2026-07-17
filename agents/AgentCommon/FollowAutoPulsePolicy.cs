@@ -84,6 +84,23 @@ public static class FollowAutoPulsePolicy
             : FollowAutoPulseAction.Wait;
     }
 
+    // Count-drop semantics compare against the highest player count actually observed, not just
+    // the first seed: the seed pulse races the party still forming right after the last join
+    // (and its cached-status fallback can serve a count from the PREVIOUS game), and a baseline
+    // stuck below the real in-game count makes the leader's eventual departure read as "no
+    // drop" forever - watch-follow-auto-20260717-105143.log sat for 90s+ on exactly that. Only
+    // a verified-present leader may ever move the baseline DOWN (RebaselineAndWait); with no
+    // leader signal the baseline only rises.
+    public static int? RaiseCountBaseline(int? baseline, int? playerCount)
+    {
+        if (playerCount is not { } count)
+        {
+            return baseline;
+        }
+
+        return baseline is { } known && known >= count ? baseline : count;
+    }
+
     // One bound nametag's reading from a single pulse: whether that nametag was verifiably seen
     // (null = this pulse couldn't check it) and the best match score it reached.
     public readonly record struct LeaderNametagSignal(bool? Present, double Score);

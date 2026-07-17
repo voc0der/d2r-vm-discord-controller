@@ -4047,7 +4047,9 @@ public sealed class DiscordBot
 
         var verifiedSuffix = seenByOthers.Count > 0
             ? $" Verified visible from {seenByOthers.Count} other account(s), so this is a player everyone shares rather than a bot."
-            : "";
+            : " WARNING: no other account could cross-check this capture right now (not in a game, or mid-load), so a"
+                + " wrong-position capture of a bot's name would go unnoticed. If follow-auto later stays in a game"
+                + " after you leave, re-run this bind while the bots are in your game.";
 
         // The bind list changed, so a running follow-auto re-resolves which alt it is
         // following - most likely onto this fresh capture, since the operator just bound the
@@ -4055,11 +4057,32 @@ public sealed class DiscordBot
         _followAutoLockedNametag = null;
         _followAutoLockedNametagOrdinal = null;
 
+        // The vantage measured the fresh template against every OTHER visible name band at
+        // capture time. A cross-match there means runtime pulses can keep reading this name
+        // "present" off a different player after the real leader leaves - the "follow-auto
+        // never leaves" failure - so pass the agent's finding on to the operator verbatim.
+        var ambiguitySuffix = "";
+        if (data.TryGetProperty("ambiguousSlots", out var ambiguousProperty)
+            && ambiguousProperty.ValueKind == JsonValueKind.Array)
+        {
+            var ambiguousSlots = ambiguousProperty.EnumerateArray()
+                .Where(element => element.ValueKind == JsonValueKind.Number)
+                .Select(element => element.GetInt32())
+                .ToArray();
+            if (ambiguousSlots.Length > 0)
+            {
+                ambiguitySuffix =
+                    $" WARNING: this name also matches the name under portrait slot {string.Join(", ", ambiguousSlots)}"
+                        + " on the vantage's party bar - follow-auto may keep seeing the leader as present off that"
+                        + " player after the real leader leaves. A more distinctive character name binds reliably.";
+            }
+        }
+
         var rolodexSuffix = boundNametagCount is { } totalBound && totalBound > 1
             ? $" {totalBound} nametags are now bound; each follow-auto run locks onto whichever one it spots first."
             : " Follow-auto now stays while this player is in the game and leaves when they leave.";
         var message =
-            $"Captured the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s) and distributed it to {distributed}/{online.Length} online accounts.{glyphSummary}{verifiedSuffix}{rolodexSuffix}";
+            $"Captured the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s) and distributed it to {distributed}/{online.Length} online accounts.{glyphSummary}{verifiedSuffix}{ambiguitySuffix}{rolodexSuffix}";
         if (distributionFailures.Count > 0)
         {
             message += $" Template save failures: {string.Join("; ", distributionFailures)}";
@@ -5028,10 +5051,10 @@ public sealed class DiscordBot
                 return;
             }
 
-            if (baseline is null)
-            {
-                baseline = current;
-            }
+            // Track the highest count observed, not just the first seed - the seed can race
+            // players still joining/partying (or a cached pre-join count) and a low baseline
+            // would make the real departure invisible. See FollowAutoPulsePolicy.RaiseCountBaseline.
+            baseline = FollowAutoPulsePolicy.RaiseCountBaseline(baseline, current);
         }
     }
 
@@ -5052,6 +5075,7 @@ public sealed class DiscordBot
     {
         var singleVantageMissStreak = 0;
         var rotation = 0;
+        var warnedCountDropWhileLeaderVisible = false;
         var lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
         var nextDelay = GetFollowHeartbeat(pollDelay);
         while (true)
@@ -5070,6 +5094,22 @@ public sealed class DiscordBot
                 case FollowAutoPulseAction.CountDropLeave:
                     return "player count dropped";
                 case FollowAutoPulseAction.RebaselineAndWait:
+                    // A count drop with the locked nametag still visible is legitimate in a
+                    // public game (a stranger left), but when the operator themselves left and
+                    // this branch keeps swallowing it, the locked template is matching someone
+                    // who stayed - a bot's name captured at the wrong bind position, or a name
+                    // visually ambiguous with the leader's. Surface the tell once per game so
+                    // a wrong lock self-diagnoses instead of reading as "won't follow".
+                    if (!warnedCountDropWhileLeaderVisible
+                        && sample.PlayerCount is { } seenCount
+                        && baseline is { } knownBaseline
+                        && seenCount < knownBaseline)
+                    {
+                        warnedCountDropWhileLeaderVisible = true;
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: player count dropped {knownBaseline}->{seenCount} but the locked nametag is still visible, so staying. If it was YOU who left, the bound nametag is matching someone else's name - rebind with `/d2r follow bind-in-game`.{FormatBoundLeaderWatchDetail(sample)}");
+                    }
+
                     baseline = sample.PlayerCount ?? baseline;
                     singleVantageMissStreak = 0;
                     if (DateTimeOffset.UtcNow - lastLeaderVisibleReportUtc >= TimeSpan.FromSeconds(30))
@@ -5123,7 +5163,7 @@ public sealed class DiscordBot
 
                     break;
                 default:
-                    baseline ??= sample.PlayerCount;
+                    baseline = FollowAutoPulsePolicy.RaiseCountBaseline(baseline, sample.PlayerCount);
                     break;
             }
 

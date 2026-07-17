@@ -130,4 +130,23 @@ public sealed class FollowAutoPulsePolicyTests
             new FollowAutoPulsePolicy.LeaderNametagSignal(true, 0.8)
         }));
     }
+
+    // The count-drop baseline must climb to the highest count actually observed: a seed pulse
+    // that raced the party still forming (or fell back to a cached pre-join count) would
+    // otherwise pin the baseline below the real in-game count and make the leader's departure
+    // invisible - the watch-follow-auto-20260717-105143.log failure shape.
+    [Fact]
+    public void BaselineRisesToTheHighestObservedCount()
+    {
+        Assert.Equal(5, FollowAutoPulsePolicy.RaiseCountBaseline(4, 5));
+        Assert.Equal(5, FollowAutoPulsePolicy.RaiseCountBaseline(null, 5));
+    }
+
+    [Fact]
+    public void BaselineNeverDropsAndSurvivesUnsampledPulses()
+    {
+        Assert.Equal(5, FollowAutoPulsePolicy.RaiseCountBaseline(5, 4));
+        Assert.Equal(5, FollowAutoPulsePolicy.RaiseCountBaseline(5, null));
+        Assert.Null(FollowAutoPulsePolicy.RaiseCountBaseline(null, null));
+    }
 }
