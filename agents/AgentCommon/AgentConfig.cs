@@ -26,12 +26,14 @@ public sealed class VmAgentConfig : AgentConfig
     public bool IdleQuitEnabled { get; set; } = true;
     public int IdleQuitMinutes { get; set; } = 30;
     public int IdleQuitCheckSeconds { get; set; } = 60;
-    // A client that crashes or freezes on the black-surround game-load screen never resolves on
-    // its own (the load screen classifies Unknown by design), so after this many minutes of
-    // continuous Unknown frames plus a confirmed black load-screen surround, the agent quits
-    // D2R so the next ready cycle can relaunch it. The default has to clear the documented
-    // legitimate Unknown stretches (post-intro RAM/VRAM load, entry-poll sampling stalls of
-    // 12-56s under load) with room to spare - raise it before lowering it.
+    // A client that crashes or freezes on the black-surround game-load screen never resolves
+    // on its own, so once the load screen's black surround has been confirmed on watchdog
+    // ticks spanning this many minutes, the agent quits D2R so the next ready cycle can
+    // relaunch it. Deliberately keyed on the surround pixels alone - never on how the screen
+    // classifies, since brighter load-screen artwork frames can cross the splash detector's
+    // thresholds. The default has to clear the documented legitimate black stretches
+    // (intro cinematic frames, post-intro RAM/VRAM load) with room to spare - raise it
+    // before lowering it.
     public bool StuckLoadScreenQuitEnabled { get; set; } = true;
     public int StuckLoadScreenQuitMinutes { get; set; } = 4;
     public bool PartyMemberCountEnabled { get; set; } = true;

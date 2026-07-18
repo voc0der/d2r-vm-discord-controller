@@ -114,12 +114,17 @@ sample the action bar and modern globes; diagnostics still sample and print ever
 | --- | --- | --- |
 | `IsLoadScreenSurroundRegion` (all five `LoadScreenSurroundRegions` must pass) | `0.10,0.10`, `0.90,0.10`, `0.10,0.90` (each `0.14x0.12`), `0.50,0.08` and `0.50,0.92` (each `0.24x0.10`) | `Samples > 0 && AverageLuminance < 10 && DarkRatio >= 0.98` |
 
-Not part of the visible-state decision tree. This is the final confirmation step of
-`QuitIfStuckLoadScreenAsync` (the stuck-load-screen watchdog on the idle-monitor tick): a client
-that crashes/freezes on the game-load screen classifies `Unknown` forever (correct - see the
-gotcha below), so after `StuckLoadScreenQuitMinutes` (default 4) of continuous `Unknown` frames
-the watchdog takes one fresh look at these five regions, and only if every one reads near-black
-does it Alt+F4 (then kill, if frozen) the client so the next host ready cycle can relaunch it.
+Not part of the visible-state decision tree. This is the entire decision of
+`QuitIfStuckLoadScreenAsync` (the stuck-load-screen watchdog on the idle-monitor tick): once
+these five regions all read near-black on watchdog ticks spanning `StuckLoadScreenQuitMinutes`
+(default 4), the agent Alt+F4s (then kills, if frozen) the client so the next host ready cycle
+can relaunch it. **The quit is deliberately keyed on these surround pixels alone and never on
+what the screen classifies as** - the first version (v0.2.193) required a continuous streak of
+`Unknown` classifications first, and a real wedge proved that wrong: the load screen's doorway
+artwork brightens as loading progresses, a brighter frame crosses `IsDiabloSplashScreen`'s
+thresholds (see the gotcha below), the frozen frame classified `DiabloSplash` - a recognized
+state - and the streak reset on every observation while the client sat wedged for 45+ minutes.
+The surround regions sit outside the artwork panel, where no panel content can reach.
 
 The load screens draw artwork only in a centered panel (x 0.30-0.71, y 0.25-0.75); all five
 regions sit in the literal black fill outside it (measured lum 0.0 / dark 1.00). Calibration
@@ -594,10 +599,26 @@ mechanism works on a live VM. That needs a real run.
   network wait and not a detection blind spot. If `/d2r status` shows `Unknown` for a
   stretch right after intro-skip input starts working, this is the leading suspect before
   assuming the classifier missed something. The *wedged* variant of this - a client that
-  crashes/freezes on one of these screens and shows `Unknown` forever (observed live: a VM
-  stuck at `load_screen_phase_2` for 5+ minutes during a follow-auto run) - is now handled by
-  the stuck-load-screen watchdog (see its own section above): sustained `Unknown` plus a
-  confirmed black surround quits the client so the next ready cycle relaunches it.
+  crashes/freezes on one of these screens (observed live twice: a VM stuck at
+  `load_screen_phase_2` for 5+ minutes, then another for 45+ minutes) - is handled by the
+  stuck-load-screen watchdog (see its own section above): a black surround persisting across
+  watchdog ticks quits the client so the next ready cycle relaunches it.
+- **A brighter `load_screen_phase_2` frame raw-matches `IsDiabloSplashScreen` - the load
+  screen does NOT reliably classify `Unknown` while its doorway artwork is lit.** Measured,
+  not theorized: the phase_2 reference capture already reads prompt orange 0.062 (floor 0.04)
+  and logo orange 0.025 (floor 0.05) with every backdrop/contrast condition passing, so logo
+  orange is the only thing holding the check false; brightening the artwork panel 1.3x flips
+  the full check true, and a live screenshot of a wedged client showed exactly that brighter
+  door. Consequences when it matches: `/d2r status`/watch show `DiabloSplash`, follow-auto
+  reports "D2R is still at DiabloSplash; waiting for ready" indefinitely, `menu_ready` pumps
+  splash-continue bursts at a frozen client, and (the v0.2.193→v0.2.195 lesson) any watchdog
+  keyed on `Unknown` classifications stays disarmed forever. `StuckLoadScreenSurroundTests.
+  LoadScreenSplashOverlapMatchesKnownStatus` pins the captured frames' raw splash status so a
+  threshold change that makes a captured load screen match gets flagged. The splash thresholds
+  themselves were deliberately left alone - the ready loop's splash burst is harmless
+  (non-Escape, see `SendReadySplashContinueBurst`), and past attempts to re-tune startup
+  detection have their own scar tissue (v0.2.50, v0.2.95); the fix was making the watchdog
+  classification-independent instead.
 - **The last two frames of the "Diablo II" title burning in during the intro
   (`intro_three_phase2.png`, `intro_three_phase3.png`) classify as `DiabloSplash`,** not
   `Unknown`. Visually they're flame letters on black, same as the real splash - there's no

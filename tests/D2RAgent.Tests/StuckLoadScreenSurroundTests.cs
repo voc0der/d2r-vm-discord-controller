@@ -105,6 +105,27 @@ public sealed class StuckLoadScreenSurroundTests
         Assert.False(D2RScreenClassifier.IsLoadScreenSurroundRegion(empty));
     }
 
+    // Documents the overlap that broke the v0.2.193 watchdog on a real wedge: the load
+    // screen's doorway artwork brightens as loading progresses, and a brighter frame crosses
+    // IsDiabloSplashScreen's thresholds (the phase_2 reference already reads prompt orange
+    // 0.062 vs the 0.04 floor and logo orange 0.025 vs 0.05; brightening the artwork panel
+    // 1.3x flips the whole check true - measured against the reference, and confirmed by a
+    // live screenshot of a wedged client with a brighter door). The frozen frame then
+    // classifies DiabloSplash, a recognized state, which is why the watchdog must key on the
+    // black surround alone and never on classification. These rows pin the raw splash-check
+    // status of the captured frames: phase_2 sits one brightness step from true, so if a
+    // splash-threshold change ever makes a captured load screen raw-match, this fails first
+    // and the surround-only watchdog design note in pixel-classifier-catalog.md applies.
+    [Theory]
+    [InlineData("load_screen_phase_1.png", false)]
+    [InlineData("load_screen_phase_2.png", false)]
+    [InlineData("loading_splash_after_intro_videos.png", false)]
+    [InlineData("post_intro_splash_screen.png", true)]
+    public void LoadScreenSplashOverlapMatchesKnownStatus(string capture, bool expectedRawSplashMatch)
+    {
+        Assert.Equal(expectedRawSplashMatch, ReferenceCaptureClassifier.IsDiabloSplashScreen(capture));
+    }
+
     private static bool AllSurroundRegionsBlack(string capture)
     {
         foreach (var region in D2RScreenClassifier.LoadScreenSurroundRegions)
