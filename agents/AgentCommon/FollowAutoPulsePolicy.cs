@@ -84,6 +84,31 @@ public static class FollowAutoPulsePolicy
             : FollowAutoPulseAction.Wait;
     }
 
+    // Mid-join leader watch. The all-joined watch (Classify above) only starts once EVERY
+    // online account has joined - so when one bot wedges (a stuck load screen) and the
+    // operator moves on to the next game, the joined majority used to sit stranded in the
+    // abandoned game with nobody watching: the wedged bot would eventually recover, join the
+    // NEW game, complete the joined set, and only then would the watch notice the stale
+    // vantages missing the leader - forcing everyone (including the correctly-joined
+    // recovered bot) through a leave/rejoin churn. This classifies one probe of a JOINED
+    // vantage taken between join attempts, so a leader departure aborts the stale game
+    // promptly instead:
+    // - locked nametag verified present -> stay
+    // - verified absent AND another vantage independently confirmed gone -> leave now
+    // - anything else -> stay and re-probe next cycle. Deliberately NO single-vantage
+    //   miss-streak fallback here, unlike the all-joined watch: per-vantage nametag score
+    //   variance is normal (one vantage locks at 0.65 while another scores the same name
+    //   0.53), so a lone joined vantage that chronically under-scores the locked nametag
+    //   plus null confirmations from still-in-menus bots would false-abort every couple of
+    //   cycles - a leave/rejoin churn loop worse than the stranding this probe fixes. The
+    //   confirm re-asks every vantage each cycle, so the abort fires the moment a second
+    //   screen can actually verify; until then the joined-majority case (the one observed
+    //   live) is covered, and a single stranded bot falls back to the old eventual recovery.
+    public static bool ShouldAbortStaleMidJoinGame(bool? lockedPresent, bool? confirmAgreed)
+    {
+        return lockedPresent == false && confirmAgreed == true;
+    }
+
     // Count-drop semantics compare against the highest player count actually observed, not just
     // the first seed: the seed pulse races the party still forming right after the last join
     // (and its cached-status fallback can serve a count from the PREVIOUS game), and a baseline

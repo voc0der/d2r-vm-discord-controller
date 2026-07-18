@@ -174,4 +174,26 @@ public sealed class FollowAutoPulsePolicyTests
         Assert.Null(FollowAutoPulsePolicy.CombineLeaderConfirmations(new bool?[] { null, null }));
         Assert.Null(FollowAutoPulsePolicy.CombineLeaderConfirmations(Array.Empty<bool?>()));
     }
+
+    // Mid-join stale-game abort (a wedged bot kept the fleet from ever reaching the all-joined
+    // watch, so the operator moving on stranded the joined majority): the abort needs BOTH a
+    // verified-absent read from a joined vantage AND an independent confirmation. Everything
+    // else stays and re-probes next cycle - deliberately no single-vantage miss-streak (see
+    // the policy comment: per-vantage score variance would turn one chronically under-scoring
+    // lone vantage into a leave/rejoin churn loop).
+    [Theory]
+    [InlineData(false, true, true)]
+    [InlineData(true, null, false)]
+    [InlineData(null, null, false)]
+    [InlineData(false, false, false)]
+    [InlineData(false, null, false)]
+    [InlineData(true, true, false)]
+    [InlineData(null, true, false)]
+    public void MidJoinAbortRequiresVerifiedAbsencePlusConfirmation(
+        bool? lockedPresent,
+        bool? confirmAgreed,
+        bool expectedAbort)
+    {
+        Assert.Equal(expectedAbort, FollowAutoPulsePolicy.ShouldAbortStaleMidJoinGame(lockedPresent, confirmAgreed));
+    }
 }

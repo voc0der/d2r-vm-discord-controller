@@ -4549,6 +4549,7 @@ public sealed class DiscordBot
         var channel = context.Command.Channel;
         var joined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+        var midJoinRotation = 0;
         string? lastWaitingReport = null;
         var lastWaitingReportUtc = DateTimeOffset.MinValue;
         CancellationTokenSource? watchCts = null;
@@ -4628,6 +4629,60 @@ public sealed class DiscordBot
                     idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                     await DelayNextFollowCheckAsync(afterLeave: true);
                     continue;
+                }
+
+                // Partial join in progress: some accounts are in the game, some aren't. The
+                // all-joined watch above never runs in this state, so without this probe a
+                // leader who moves on (typically because one bot wedged and the operator got
+                // tired of waiting) leaves the joined majority stranded in the abandoned game
+                // until the wedged bot's own recovery eventually completes the joined set -
+                // and then the stale vantages force everyone, including the bot that just
+                // correctly joined the NEW game, through a leave/rejoin churn. One pulse of a
+                // joined vantage per cycle catches the departure early: leave the stale game,
+                // clear those accounts, and let the normal scan rejoin everyone wherever the
+                // leader actually is. See FollowAutoPulsePolicy.ClassifyMidJoinProbe for the
+                // decision table.
+                if (joined.Count > 0 && online.Length > 0)
+                {
+                    var probe = await ProbeMidJoinLeaderPresenceAsync(joined, midJoinRotation++);
+                    if (FollowAutoPulsePolicy.ShouldAbortStaleMidJoinGame(probe.LockedPresent, probe.ConfirmAgreed))
+                    {
+                        // _followAutoGameNumber only advances when a game reaches the
+                        // all-joined watch, so the game being formed here is the NEXT number.
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber + 1}: the bound leader left before everyone joined ({joined.Count}/{online.Length} in game); leaving the stale game so the fleet can rescan.{probe.Detail}",
+                            joined: joined.Count,
+                            total: online.Length);
+                        var staleLeaveResults = await LeaveAllJoinAutoAsync(
+                            channel,
+                            "follow-auto",
+                            postResult: false,
+                            metricsEnabled: _followAutoMetricsEnabled,
+                            onlyAccounts: joined);
+                        foreach (var leaveResult in staleLeaveResults.Where(result => result.Ok))
+                        {
+                            joined.Remove(leaveResult.AccountKey);
+                        }
+
+                        var staleLeaveFailures = staleLeaveResults.Where(result => !result.Ok).ToArray();
+                        if (staleLeaveFailures.Length > 0)
+                        {
+                            // Unlike the all-joined leave, a failure here doesn't end the run:
+                            // the account stays marked joined, the next cycle re-probes the
+                            // (still leaderless) game and retries the leave, and a client too
+                            // wedged to ever leave is the agent watchdog's problem, not ours.
+                            await UpdateFollowAutoMonitorAsync(
+                                $"Game #{_followAutoGameNumber + 1}: stale-game leave failed for "
+                                    + string.Join("; ", staleLeaveFailures.Select(result => $"{result.AccountKey}: {result.Message}"))
+                                    + ". Retrying on the next cycle.",
+                                joined: joined.Count,
+                                total: online.Length);
+                        }
+
+                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                        await DelayNextFollowCheckAsync(afterLeave: true);
+                        continue;
+                    }
                 }
 
                 var anyBound = false;
@@ -4998,9 +5053,18 @@ public sealed class DiscordBot
         IMessageChannel channel,
         string label,
         bool postResult = true,
-        bool metricsEnabled = true)
+        bool metricsEnabled = true,
+        IReadOnlySet<string>? onlyAccounts = null)
     {
         var (entries, _) = GetAccountEntriesByConnectivity();
+        if (onlyAccounts is not null)
+        {
+            // Follow-auto's mid-join stale-game abort leaves only the accounts actually IN
+            // the abandoned game; sending save-exit to a bot still at the lobby would just
+            // burn its command gate on a guaranteed failure.
+            entries = entries.Where(entry => onlyAccounts.Contains(entry.Key)).ToArray();
+        }
+
         if (entries.Length == 0)
         {
             if (postResult)
@@ -5310,8 +5374,10 @@ public sealed class DiscordBot
         var scoreText = match.Score is { } score
             ? $", score {score.ToString("0.000", CultureInfo.InvariantCulture)}"
             : "";
+        // Math.Max: the mid-join probe can engage the lock while the FIRST game is still
+        // forming, before _followAutoGameNumber has ever advanced past 0.
         await UpdateFollowAutoMonitorAsync(
-            $"Game #{_followAutoGameNumber}: locked onto bound nametag #{index + 1} of {sample.Matches.Count} (seen{seenFrom}{slotText}{scoreText}). Following it for the rest of this run.");
+            $"Game #{Math.Max(_followAutoGameNumber, 1)}: locked onto bound nametag #{index + 1} of {sample.Matches.Count} (seen{seenFrom}{slotText}{scoreText}). Following it for the rest of this run.");
     }
 
     private (bool? Present, int? Slot, double? Score) GetLockedNametagPresence(FollowPulseSample sample)
@@ -5407,6 +5473,41 @@ public sealed class DiscordBot
     // sample, no leader bound, or the agent couldn't check) - the cached-status fallback can
     // only ever supply a count, and pretending it said anything about the leader would turn
     // "couldn't check" into a leave trigger.
+    // Probes one JOINED vantage (rotating over the joined set) for the locked leader nametag
+    // while the fleet is still in the join phase. Returns the locked nametag's presence from
+    // that vantage and, when it read verified-absent, the cross-vantage confirmation verdict.
+    // Mid-join sightings must engage the session lock too (TryLockNametagFromSampleAsync): a
+    // run whose first game never reaches all-joined - exactly the wedged-bot case this probe
+    // exists for - previously never locked at all, which would leave every probe blind
+    // (no lock -> presence always null -> never evidence of absence).
+    private async Task<(bool? LockedPresent, bool? ConfirmAgreed, string Detail)> ProbeMidJoinLeaderPresenceAsync(
+        IReadOnlySet<string> joined,
+        int rotation)
+    {
+        var (online, _) = GetAccountEntriesByConnectivity();
+        var joinedEntries = online.Where(entry => joined.Contains(entry.Key)).ToArray();
+        if (joinedEntries.Length == 0)
+        {
+            return (null, null, "");
+        }
+
+        var (accountKey, account) = joinedEntries[rotation % joinedEntries.Length];
+        var sample = await TryFetchFollowPulseForAsync(accountKey, account, _followAutoLockedNametag);
+        await TryLockNametagFromSampleAsync(sample);
+        var (lockedPresent, _, _) = GetLockedNametagPresence(sample);
+        if (lockedPresent != false)
+        {
+            return (lockedPresent, null, "");
+        }
+
+        var flagger = sample.AccountKey ?? accountKey;
+        var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(flagger);
+        var detail = agreed == true && confirmer is { } confirmedBy
+            ? $" ({flagger} flagged it, {confirmedBy} confirmed)"
+            : $" ({flagger} flagged it; {confirmDetail})";
+        return (false, agreed, detail);
+    }
+
     private async Task<FollowPulseSample> TryFetchFollowPulseAsync(int rotation, string? activeFingerprint = null)
     {
         var (entries, _) = GetAccountEntriesByConnectivity();
