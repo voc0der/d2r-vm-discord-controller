@@ -14,7 +14,10 @@ public sealed class DiscordBot
     private const string TemplateJoinButtonId = "d2r:template:join";
     private const string FollowAutoStartButtonId = "d2r:follow:auto-start";
     private const string FollowAutoStopButtonId = "d2r:follow:auto-stop";
-    private const string FollowAutoStopSaveExitButtonId = "d2r:follow:auto-stop:save-exit";
+    // The wire ID keeps its historical "save-exit" spelling so the button still routes on
+    // messages posted by older host processes; the label users see is "Leave" (the standard
+    // label for the save-exit-all action everywhere, matching GameSessionLeaveButtonId).
+    private const string FollowAutoStopLeaveButtonId = "d2r:follow:auto-stop:save-exit";
     private const string FollowAutoStopFollowButtonId = "d2r:follow:auto-stop:follow";
     private const string FollowAutoStopQuitButtonId = "d2r:follow:auto-stop:quit";
     private const string FollowAutoStopSleepButtonId = "d2r:follow:auto-stop:sleep";
@@ -554,8 +557,8 @@ public sealed class DiscordBot
                 case FollowAutoStopButtonId:
                     await StopFollowAutoAsync(SlashContext.FromComponent(component, "follow"));
                     return;
-                case FollowAutoStopSaveExitButtonId:
-                    await HandleFollowAutoStopSaveExitButtonAsync(component);
+                case FollowAutoStopLeaveButtonId:
+                    await HandleFollowAutoStopLeaveButtonAsync(component);
                     return;
                 case FollowAutoStopFollowButtonId:
                     await HandleFollowAutoStopFollowButtonAsync(component);
@@ -626,7 +629,7 @@ public sealed class DiscordBot
     {
         return new ComponentBuilder()
             .WithButton("Create Game", TemplateCreateButtonId, ButtonStyle.Primary)
-            .WithButton("Join", TemplateJoinButtonId, ButtonStyle.Secondary)
+            .WithButton("Join Game", TemplateJoinButtonId, ButtonStyle.Secondary)
             .Build();
     }
 
@@ -757,7 +760,7 @@ public sealed class DiscordBot
     private static MessageComponent BuildFollowBindActionComponents()
     {
         return new ComponentBuilder()
-            .WithButton("Start Follow", FollowAutoStartButtonId, ButtonStyle.Primary)
+            .WithButton("Follow", FollowAutoStartButtonId, ButtonStyle.Primary)
             .Build();
     }
 
@@ -772,14 +775,14 @@ public sealed class DiscordBot
         return builder.Build();
     }
 
-    // Save and Exit only makes sense while the loop believes bots are still in a game; once
-    // it already confirmed the leave (Bots in game: 0), the useful next move is Follow.
+    // Leave only makes sense while the loop believes bots are still in a game; once it
+    // already confirmed the leave (Bots in game: 0), the useful next move is Follow.
     private static MessageComponent BuildFollowAutoStopActionComponents(bool botsInGame)
     {
         var builder = new ComponentBuilder();
         if (botsInGame)
         {
-            builder.WithButton("Save and Exit", FollowAutoStopSaveExitButtonId, ButtonStyle.Secondary);
+            builder.WithButton("Leave", FollowAutoStopLeaveButtonId, ButtonStyle.Secondary);
         }
         else
         {
@@ -1294,15 +1297,16 @@ public sealed class DiscordBot
         // save-exit faster; it just means the gate frees up, save-exit actually runs and
         // succeeds, and the result arrives after the host already gave up and discarded the
         // pending request - reported as a failure even though it worked.
-        // After a save-exit everyone is parked warm at the character screen, so the completion
-        // follow-up re-offers Follow only - Ready would be redundant.
+        // After a leave everyone is parked warm at the character screen - the same state
+        // ready-all ends in - so the completion follow-up offers the same set: Follow to
+        // keep going, Quit/Sleep to wind down. Ready would be redundant.
         await QueueAllCommandsAsync(
             context,
             "menu_save_exit",
             (accountKey, account) => BuildAccountArgs(accountKey, account),
             TimeSpan.FromSeconds(210),
             displayName: "leave",
-            offerOnCompletion: QuickActions.Follow);
+            offerOnCompletion: QuickActions.Follow | QuickActions.Quit | QuickActions.Sleep);
     }
 
     private async Task QueueReadyAllAsync(SlashContext context)
@@ -4145,7 +4149,7 @@ public sealed class DiscordBot
             (cancel.WasRunning ? "follow-auto stopped." : "follow-auto is not running.") + stopSummary);
     }
 
-    private async Task HandleFollowAutoStopSaveExitButtonAsync(SocketMessageComponent component)
+    private async Task HandleFollowAutoStopLeaveButtonAsync(SocketMessageComponent component)
     {
         await component.DeferAsync(ephemeral: true);
         await ClearFollowAutoStopActionButtonsAsync(component.Message);
