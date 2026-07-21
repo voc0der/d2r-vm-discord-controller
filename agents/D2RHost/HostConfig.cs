@@ -24,6 +24,7 @@ public sealed class HostConfig
     public ulong? DiscordGuildId { get; set; }
     public bool DisableDiscord { get; set; }
     public int HttpPort { get; set; } = 8080;
+    public WindowsFirewallConfig WindowsFirewall { get; set; } = new();
     public string DatabasePath { get; set; } = @"C:\D2ROps\d2r-host.sqlite";
     public string[] AllowedDiscordUserIds { get; set; } = [];
     public int StartAllDelaySeconds { get; set; } = 20;
@@ -36,6 +37,19 @@ public sealed class HostConfig
     public string[] AllowedVmNamePrefixes { get; set; } = [];
     public Dictionary<string, HostAgentConfig> Agents { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, AccountConfig> Accounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class WindowsFirewallConfig
+{
+    public bool Manage { get; set; } = true;
+    public string[] TrustedNetworks { get; set; } = ["LocalSubnet"];
+    public int ReconcileSeconds { get; set; } = 30;
+
+    [JsonIgnore]
+    public bool WasExplicitlyConfigured { get; set; } = true;
+
+    [JsonIgnore]
+    public string OwnerId { get; set; } = "default";
 }
 
 public sealed class HostAgentConfig

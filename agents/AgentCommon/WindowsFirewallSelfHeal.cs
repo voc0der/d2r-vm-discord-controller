@@ -21,16 +21,7 @@ public sealed record WindowsFirewallSelfHealResult(
 
 public static class WindowsFirewallSelfHeal
 {
-    private const string HostRulePrefix = "D2ROps Host inbound TCP";
     private const string AgentRulePrefix = "D2ROps Agent outbound TCP";
-
-    public static WindowsFirewallSelfHealResult EnsureHostInboundTcp(
-        int localPort,
-        Action<string>? log = null)
-    {
-        var spec = BuildHostInboundTcpRule(localPort, GetCurrentProcessPath());
-        return EnsureRuleExists(spec, log);
-    }
 
     public static WindowsFirewallSelfHealResult EnsureAgentControllerOutboundTcp(
         string controllerUrl,
@@ -49,20 +40,6 @@ public static class WindowsFirewallSelfHeal
         }
 
         return EnsureRuleExists(spec, log);
-    }
-
-    public static WindowsFirewallRuleSpec BuildHostInboundTcpRule(int localPort, string? programPath)
-    {
-        ValidateTcpPort(localPort, nameof(localPort));
-        var normalizedProgramPath = NormalizeProgramPath(programPath);
-        return new WindowsFirewallRuleSpec(
-            Name: BuildRuleName(HostRulePrefix, normalizedProgramPath, localPort.ToString()),
-            Direction: "in",
-            Protocol: "TCP",
-            LocalPort: localPort,
-            RemotePort: null,
-            RemoteIp: null,
-            ProgramPath: normalizedProgramPath);
     }
 
     public static bool TryBuildAgentControllerOutboundTcpRule(
@@ -300,14 +277,6 @@ public static class WindowsFirewallSelfHeal
         return string.IsNullOrWhiteSpace(fileName)
             ? null
             : SanitizeRuleNamePart(fileName);
-    }
-
-    private static void ValidateTcpPort(int port, string parameterName)
-    {
-        if (!IsValidTcpPort(port))
-        {
-            throw new ArgumentOutOfRangeException(parameterName, port, "TCP port must be between 1 and 65535.");
-        }
     }
 
     private static bool IsValidTcpPort(int port)

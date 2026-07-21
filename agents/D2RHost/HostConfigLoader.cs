@@ -1,4 +1,9 @@
+using System.Globalization;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AgentCommon;
 
 namespace D2RHost;
@@ -49,7 +54,11 @@ public static class HostConfigLoader
             ?? throw new InvalidOperationException($"D2R host config was empty or invalid: {path}");
 
         ApplyEnvironment(config);
-        Validate(config, HasJsonProperty(json, "nodeId"));
+        Validate(
+            config,
+            HasJsonProperty(json, "nodeId"),
+            HasJsonProperty(json, "windowsFirewall"),
+            CreateFirewallOwnerId(path));
         return config;
     }
 
@@ -61,7 +70,16 @@ public static class HostConfigLoader
             Directory.CreateDirectory(directory);
         }
 
-        var json = JsonSerializer.Serialize(config, WriteOptions);
+        var document = JsonSerializer.SerializeToNode(config, WriteOptions)
+            ?? throw new InvalidOperationException("Could not serialize the D2R host config.");
+        if (!config.WindowsFirewall.WasExplicitlyConfigured && document is JsonObject root)
+        {
+            // Preserve the old config's compatibility behavior across unrelated saves.
+            // Adding this section is the operator's explicit opt-in to scoped rules.
+            root.Remove("windowsFirewall");
+        }
+
+        var json = document.ToJsonString(WriteOptions);
         File.WriteAllText(path, json + Environment.NewLine);
     }
 
@@ -95,7 +113,11 @@ public static class HostConfigLoader
         }
     }
 
-    private static void Validate(HostConfig config, bool nodeIdWasSpecified)
+    private static void Validate(
+        HostConfig config,
+        bool nodeIdWasSpecified,
+        bool windowsFirewallWasSpecified,
+        string firewallOwnerId)
     {
         if (string.IsNullOrWhiteSpace(config.Mode))
         {
@@ -136,6 +158,30 @@ public static class HostConfigLoader
         if (config.AgentOfflineAfterSeconds < 15)
         {
             throw new InvalidOperationException("agentOfflineAfterSeconds must be at least 15.");
+        }
+
+        if (config.HttpPort is < 1 or > 65535)
+        {
+            throw new InvalidOperationException("httpPort must be between 1 and 65535.");
+        }
+
+        config.WindowsFirewall ??= new WindowsFirewallConfig();
+        config.WindowsFirewall.WasExplicitlyConfigured = windowsFirewallWasSpecified;
+        config.WindowsFirewall.OwnerId = firewallOwnerId;
+        if (config.WindowsFirewall.ReconcileSeconds is < 5 or > 3600)
+        {
+            throw new InvalidOperationException(
+                "windowsFirewall.reconcileSeconds must be between 5 and 3600.");
+        }
+
+        if (config.WindowsFirewall.Manage)
+        {
+            config.WindowsFirewall.TrustedNetworks = NormalizeTrustedNetworks(
+                config.WindowsFirewall.TrustedNetworks);
+        }
+        else
+        {
+            config.WindowsFirewall.TrustedNetworks ??= [];
         }
 
         if (config.IsWorker)
@@ -232,8 +278,127 @@ public static class HostConfigLoader
         }
 
         return !string.IsNullOrWhiteSpace(uri.Host)
+            && uri.Port is >= 1 and <= 65535
             && (string.Equals(uri.Scheme, "ws", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(uri.Scheme, "wss", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string[] NormalizeTrustedNetworks(string[]? source)
+    {
+        if (source is null || source.Length == 0)
+        {
+            throw new InvalidOperationException(
+                "windowsFirewall.trustedNetworks must contain LocalSubnet or at least one IP address/CIDR.");
+        }
+
+        var normalized = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rawValue in source)
+        {
+            var value = rawValue?.Trim() ?? "";
+            if (string.Equals(value, "LocalSubnet", StringComparison.OrdinalIgnoreCase))
+            {
+                value = "LocalSubnet";
+            }
+            else if (!TryNormalizeIpAddressOrCidr(
+                         value,
+                         out var normalizedValue,
+                         out var isUnrestricted))
+            {
+                throw new InvalidOperationException(
+                    $"windowsFirewall.trustedNetworks contains invalid value \"{value}\"; use LocalSubnet, an IP address, or CIDR.");
+            }
+            else if (isUnrestricted)
+            {
+                throw new InvalidOperationException(
+                    "windowsFirewall.trustedNetworks cannot allow every address; use manage=false when firewall policy is managed externally.");
+            }
+            else
+            {
+                value = normalizedValue;
+            }
+
+            if (seen.Add(value))
+            {
+                normalized.Add(value);
+            }
+        }
+
+        return normalized
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static bool TryNormalizeIpAddressOrCidr(
+        string value,
+        out string normalized,
+        out bool isUnrestricted)
+    {
+        normalized = "";
+        isUnrestricted = false;
+
+        if (IPAddress.TryParse(value, out var singleAddress))
+        {
+            normalized = singleAddress.ToString();
+            return true;
+        }
+
+        var slash = value.IndexOf('/');
+        if (slash <= 0
+            || slash == value.Length - 1
+            || slash != value.LastIndexOf('/')
+            || !IPAddress.TryParse(value[..slash], out var address)
+            || !int.TryParse(
+                value.AsSpan(slash + 1),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var prefixLength))
+        {
+            return false;
+        }
+
+        var maximumPrefix = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+            ? 32
+            : 128;
+        if (prefixLength > maximumPrefix)
+        {
+            return false;
+        }
+
+        normalized = $"{ApplyNetworkPrefix(address, prefixLength)}/{prefixLength}";
+        isUnrestricted = prefixLength == 0;
+        return true;
+    }
+
+    private static IPAddress ApplyNetworkPrefix(IPAddress address, int prefixLength)
+    {
+        var bytes = address.GetAddressBytes();
+        var wholeBytes = prefixLength / 8;
+        var remainingBits = prefixLength % 8;
+        if (remainingBits > 0)
+        {
+            bytes[wholeBytes] &= (byte)(0xff << (8 - remainingBits));
+            wholeBytes++;
+        }
+
+        for (var index = wholeBytes; index < bytes.Length; index++)
+        {
+            bytes[index] = 0;
+        }
+
+        return new IPAddress(bytes);
+    }
+
+    private static string CreateFirewallOwnerId(string path)
+    {
+        var canonicalPath = Path.GetFullPath(path);
+        if (OperatingSystem.IsWindows())
+        {
+            canonicalPath = canonicalPath.ToUpperInvariant();
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonicalPath));
+        return Convert.ToHexString(hash.AsSpan(0, 6)).ToLowerInvariant();
     }
 
     private static bool HasJsonProperty(string json, string propertyName)

@@ -12,6 +12,16 @@ public sealed class HostTopologyTests
     private const string ValidSecret = "test-secret-1234";
 
     [Fact]
+    public void ProgrammaticFirewallConfigUsesSecureRuntimeMetadataDefaults()
+    {
+        var firewall = new WindowsFirewallConfig();
+
+        Assert.True(firewall.WasExplicitlyConfigured);
+        Assert.Equal("default", firewall.OwnerId);
+        Assert.Equal(["LocalSubnet"], firewall.TrustedNetworks);
+    }
+
+    [Fact]
     public void LegacyConfigDefaultsToLocalMaster()
     {
         var config = LoadConfig(new
@@ -25,6 +35,198 @@ public sealed class HostTopologyTests
         Assert.Equal("local", config.NodeId);
         Assert.True(config.IsMaster);
         Assert.False(config.IsWorker);
+        Assert.True(config.WindowsFirewall.Manage);
+        Assert.Equal(["LocalSubnet"], config.WindowsFirewall.TrustedNetworks);
+        Assert.Equal(30, config.WindowsFirewall.ReconcileSeconds);
+        Assert.False(config.WindowsFirewall.WasExplicitlyConfigured);
+        Assert.Matches("^[0-9a-f]{12}$", config.WindowsFirewall.OwnerId);
+    }
+
+    [Fact]
+    public void FirewallTrustedNetworksAreNormalized()
+    {
+        var config = LoadConfig(new
+        {
+            disableDiscord = true,
+            windowsFirewall = new
+            {
+                trustedNetworks = new[] { " 10.0.0.0/8 ", "localsubnet", "LocalSubnet" },
+                reconcileSeconds = 60
+            }
+        });
+
+        Assert.Equal(["10.0.0.0/8", "LocalSubnet"], config.WindowsFirewall.TrustedNetworks);
+        Assert.Equal(60, config.WindowsFirewall.ReconcileSeconds);
+        Assert.True(config.WindowsFirewall.WasExplicitlyConfigured);
+    }
+
+    [Fact]
+    public void FirewallTrustedNetworksCanonicalizeSortAndDeduplicate()
+    {
+        var config = LoadConfig(new
+        {
+            disableDiscord = true,
+            windowsFirewall = new
+            {
+                trustedNetworks = new[]
+                {
+                    "localsubnet",
+                    "2001:0DB8:0000:0000:0000:0000:0000:0001/064",
+                    "10.2.39.65",
+                    "2001:db8::1/64",
+                    "2001:0DB8:0000:0000:0000:0000:0000:0001",
+                    "2001:db8::1",
+                    "10.2.39.65/032"
+                }
+            }
+        });
+
+        Assert.Equal(
+            ["10.2.39.65", "10.2.39.65/32", "2001:db8::/64", "2001:db8::1", "LocalSubnet"],
+            config.WindowsFirewall.TrustedNetworks);
+    }
+
+    [Fact]
+    public void FirewallTrustedNetworkCidrsAreCanonicalizedToNetworkPrefixes()
+    {
+        var config = LoadConfig(new
+        {
+            disableDiscord = true,
+            windowsFirewall = new
+            {
+                trustedNetworks = new[] { "10.2.39.65/24", "2001:db8:42:7::1234/64" }
+            }
+        });
+
+        Assert.Equal(
+            ["10.2.39.0/24", "2001:db8:42:7::/64"],
+            config.WindowsFirewall.TrustedNetworks);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Any")]
+    [InlineData("0.0.0.0/0")]
+    [InlineData("::/0")]
+    [InlineData("10.2.39.65/0")]
+    [InlineData("10.2.39.65/00")]
+    [InlineData("0000:0000:0000:0000:0000:0000:0000:0001/0")]
+    [InlineData("2001:db8::1/00")]
+    [InlineData("10.0.0.0/33")]
+    [InlineData("2001:db8::/129")]
+    [InlineData("10.0.0.0/-1")]
+    [InlineData("10.0.0.0/+8")]
+    [InlineData("10.0.0.0/8/9")]
+    [InlineData("not-a-network")]
+    public void ManagedFirewallRejectsUnsafeOrInvalidTrustedNetworks(string trustedNetwork)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => LoadConfig(new
+        {
+            disableDiscord = true,
+            windowsFirewall = new
+            {
+                trustedNetworks = new[] { trustedNetwork }
+            }
+        }));
+
+        Assert.Contains("windowsFirewall.trustedNetworks", exception.Message);
+    }
+
+    [Fact]
+    public void ExternallyManagedFirewallDoesNotRequireTrustedNetworks()
+    {
+        var config = LoadConfig(new
+        {
+            disableDiscord = true,
+            windowsFirewall = new
+            {
+                manage = false,
+                trustedNetworks = Array.Empty<string>()
+            }
+        });
+
+        Assert.False(config.WindowsFirewall.Manage);
+        Assert.Empty(config.WindowsFirewall.TrustedNetworks);
+        Assert.True(config.WindowsFirewall.WasExplicitlyConfigured);
+    }
+
+    [Fact]
+    public void FirewallOwnerIdIsStableForCanonicalPathAndDifferentAcrossPaths()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "d2r-host-firewall-owner-tests-" + Guid.NewGuid().ToString("N"));
+        var firstPath = Path.Combine(directory, "first", "d2r-host.config.json");
+        var equivalentFirstPath = Path.Combine(directory, "first", ".", "d2r-host.config.json");
+        var secondPath = Path.Combine(directory, "second", "d2r-host.config.json");
+        var json = JsonSerializer.Serialize(new
+        {
+            disableDiscord = true,
+            windowsFirewall = new { }
+        });
+        Directory.CreateDirectory(Path.GetDirectoryName(firstPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(secondPath)!);
+        File.WriteAllText(firstPath, json);
+        File.WriteAllText(secondPath, json);
+
+        try
+        {
+            var first = HostConfigLoader.Load(firstPath);
+            var equivalentFirst = HostConfigLoader.Load(equivalentFirstPath);
+            var second = HostConfigLoader.Load(secondPath);
+
+            Assert.Matches("^[0-9a-f]{12}$", first.WindowsFirewall.OwnerId);
+            Assert.Equal(first.WindowsFirewall.OwnerId, equivalentFirst.WindowsFirewall.OwnerId);
+            Assert.NotEqual(first.WindowsFirewall.OwnerId, second.WindowsFirewall.OwnerId);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void SavingLegacyConfigDoesNotSilentlyOptIntoScopedFirewallRules()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "d2r-host-firewall-save-tests-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "d2r-host.config.json");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(path, JsonSerializer.Serialize(new
+        {
+            disableDiscord = true,
+            agents = new { },
+            accounts = new { }
+        }));
+
+        try
+        {
+            var config = HostConfigLoader.Load(path);
+            HostConfigLoader.Save(path, config);
+
+            using var saved = JsonDocument.Parse(File.ReadAllText(path));
+            Assert.False(saved.RootElement.TryGetProperty("windowsFirewall", out _));
+            Assert.False(HostConfigLoader.Load(path).WindowsFirewall.WasExplicitlyConfigured);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(65536)]
+    public void HostRejectsInvalidHttpPort(int httpPort)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() => LoadConfig(new
+        {
+            disableDiscord = true,
+            httpPort
+        }));
+
+        Assert.Contains("httpPort must be between 1 and 65535", exception.Message);
     }
 
     [Fact]
@@ -97,6 +299,7 @@ public sealed class HostTopologyTests
     [InlineData("master.example:8080")]
     [InlineData("/node")]
     [InlineData("ws:///node")]
+    [InlineData("ws://master.example:0/node")]
     [InlineData("http://master.example:8080")]
     [InlineData("https://master.example")]
     public void WorkerRejectsMissingOrNonWebSocketMasterUrl(string? masterUrl)

@@ -7,6 +7,13 @@
   "agentOfflineAfterSeconds": 45,
   "disableDiscord": true,
   "httpPort": 8080,
+  "windowsFirewall": {
+    "manage": true,
+    "trustedNetworks": [
+      "LocalSubnet"
+    ],
+    "reconcileSeconds": 30
+  },
   "databasePath": "C:\\D2ROps\\d2r-host.sqlite",
   "startAllDelaySeconds": 20,
   "powerShellPath": "powershell.exe",

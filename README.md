@@ -159,6 +159,32 @@ If the extracted release folder contains only one `.exe`, `install-d2r-host.ps1`
 
 The default scheduled task runs as `SYSTEM` at startup. If you keep the Discord token in an environment variable instead of the config file, use a machine-level environment variable so the task can see it.
 
+### Windows Firewall
+
+Existing configs remain backward compatible. If the entire `windowsFirewall` object is absent, D2RHost still continuously repairs its firewall rules, but preserves the legacy unrestricted (`*`) listener-address scope so an update cannot silently disconnect an existing deployment. A legacy worker also keeps an unrestricted local scope and, for a hostname-based master, unrestricted remote scope; a literal master IP is still limited to that exact address and port. Later config saves preserve the omission. Add the section explicitly to opt into address-scoped rules; properties omitted from an explicitly present section use the values shown here:
+
+```json
+"windowsFirewall": {
+  "manage": true,
+  "trustedNetworks": ["LocalSubnet"],
+  "reconcileSeconds": 30
+}
+```
+
+With an explicit section and `manage:true`, every master and worker maintains an inbound TCP allow rule for the currently running host executable and configured `httpPort`. The local-address filter is built from usable IPv4 and IPv6 addresses on active, non-loopback interfaces; IPv6 link-local addresses are skipped. If no address can be enumerated, including during early DHCP startup or an enumeration failure, the filter falls back to Windows' dynamic `LocalSubnet` token. Inbound remote addresses are limited to `trustedNetworks`.
+
+A worker additionally maintains an outbound TCP rule for its master connection. A literal IP in `masterUrl` is restricted to that exact IP and the URL's port. A hostname is not resolved into a firewall rule; its rule uses `trustedNetworks` and the URL's port so DNS can continue selecting the endpoint. Default ports are 80 for `ws` and 443 for `wss`. The rules apply to every Windows network profile, while their remote-address scope remains restricted.
+
+`trustedNetworks` accepts `LocalSubnet`, individual IPv4 or IPv6 addresses, and CIDRs, but rejects unrestricted networks. `LocalSubnet` expands to the subnets Windows considers locally attached. For a master at `10.2.39.65` and worker at `10.2.39.66` on the same LAN, reserve those addresses (or configure them statically), set `trustedNetworks` to `["10.2.39.0/24"]` on both nodes, and use `ws://10.2.39.65:8080/node` as the worker's `masterUrl`. Add only the narrower VM-network CIDRs that must reach each listener. A stable LAN hostname may be used instead of the literal master address.
+
+Firewall rules do not create IP routes and cannot repair an incorrect `masterUrl`; normal Windows routing between the nodes is assumed. If a literal master address can change, use a static address, DHCP reservation, or stable hostname. Verify basic host-to-host connectivity independently of D2RHost.
+
+Each config owns a distinct rule group and rule names using a stable identifier derived from its canonical config-file path. This prevents one D2RHost config from cleaning up another config's rules. D2RHost reconciles at startup before serving traffic, whenever Windows reports a network-address change, and periodically at `reconcileSeconds` (30 by default; valid range 5-3600). Local IP changes are applied live; executable-path, port, role, and `masterUrl` changes take effect after restarting D2RHost.
+
+Replacement rules are assembled detached from the installed rule, preserving the installed rule if replacement fails. After a repair is created and read back successfully, stale rules are retained until a stable follow-up reconciliation. Only then are stale rules owned by that config removed. Unsuffixed managed rules and old broad rules named `D2ROps Host inbound TCP...` are eligible for removal only when they target the same executable, use inbound TCP, and match the current listener port. This staged cleanup avoids losing the recovery rule during a failed transition.
+
+D2RHost also checks whether local rules are effective. A Group Policy state that overrides or blocks local rules, no recognized active profile, or Windows Firewall being disabled on an active profile makes firewall health and `/healthz` top-level `ok` false and prevents stale-rule cleanup. The process continues running. Changing the firewall requires elevation; the installed scheduled task runs as `SYSTEM`, while an unelevated manual launch reports reconciliation failure. Set `windowsFirewall.manage` to `false` when equivalent rules are supplied centrally through Group Policy or another policy manager; D2RHost then leaves all local firewall rules untouched.
+
 Health checks:
 
 ```powershell
@@ -178,6 +204,7 @@ Install the same D2RHost release and scheduled task on the additional Hyper-V se
 - `masterUrl` to the master's `ws://` `/node` endpoint, or a `wss://` endpoint supplied by a TLS-terminating reverse proxy. D2RHost itself binds plain HTTP/WebSocket.
 - `masterSharedSecret` to a unique secret of at least 12 characters.
 - `agents`, `accounts`, `allowedVmNamePrefixes`, and PowerShell settings for VMs local to that worker only.
+- `windowsFirewall.trustedNetworks` to every source subnet that must reach the worker. For the `10.2.39.65`/`10.2.39.66` same-LAN example, use `10.2.39.0/24` and add only the specific routed VM-network CIDRs required.
 
 Add one matching entry to the master's `agents` object:
 

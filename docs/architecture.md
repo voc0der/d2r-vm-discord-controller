@@ -81,7 +81,7 @@ Commands are not retried automatically. If a worker disconnects after accepting 
 
 Every D2RHost listens on its configured `httpPort` and exposes:
 
-- `GET /healthz`: mode, node ID, and configured/connected agent counts. On a master it uses the combined fleet and includes node summaries; on a worker it uses local VM agents.
+- `GET /healthz`: mode, node ID, configured/connected agent counts, and the latest Windows Firewall reconciliation status. Its top-level `ok` follows firewall health. On a master it uses the combined fleet and includes node summaries; on a worker it uses local VM agents.
 - `GET /agents`: combined fleet snapshots on a master; local VM-agent snapshots on a worker.
 - `GET /nodes`: master/local-worker connectivity summaries on a master; the worker's own mode, node ID, and master URL on a worker.
 - `GET /config/accounts`: currently known fleet account keys on a master; locally configured account keys on a worker.
@@ -89,6 +89,26 @@ Every D2RHost listens on its configured `httpPort` and exposes:
 - `WS /node`: authenticated worker-to-master connections. It uses the same base envelope as `/agent`, with `agentKind: "host"`.
 
 The host app reads its config from the first CLI argument, then `CONFIG_PATH`, then `C:\D2ROps\d2r-host.config.json`. If that JSON is missing and the app has an interactive console, it launches first-run setup and writes the config before starting.
+
+## Windows Firewall Lifecycle
+
+Firewall migration is presence-sensitive. A config that omits the entire `windowsFirewall` object remains in legacy compatibility mode: management stays enabled and reconciliation continues, but the listener's local and remote address scopes remain unrestricted (`*`). A legacy worker's outbound rule also keeps an unrestricted local scope and an unrestricted remote scope for a hostname; a literal master IP remains exact. Saving such a config preserves the omission. Adding the object is an explicit opt-in to scoped behavior; fields omitted from a present object default to `manage: true`, `trustedNetworks: ["LocalSubnet"]`, and `reconcileSeconds: 30`.
+
+In explicitly scoped mode:
+
+- Every master and worker owns an inbound TCP allow rule scoped to the current D2RHost executable, `httpPort`, active usable IPv4 and IPv6 addresses on non-loopback interfaces, and `trustedNetworks`. IPv6 link-local addresses are excluded. If enumeration produces no usable address or raises a network-information error, the local-address filter uses Windows' dynamic `LocalSubnet` token.
+- A worker also owns an outbound TCP allow rule for `masterUrl`. A literal IPv4 or IPv6 master address produces an exact remote-address rule; a hostname uses `trustedNetworks` rather than a captured DNS result. The remote port comes from the URL, including the normal 80/443 defaults for `ws`/`wss`.
+- Rules apply to all Windows profiles but remain remote-address scoped. `trustedNetworks` accepts `LocalSubnet`, individual IPv4 or IPv6 addresses, and CIDRs, but rejects unrestricted networks.
+
+For a same-LAN deployment with the master at `10.2.39.65` and worker at `10.2.39.66`, reserve or statically configure those addresses and use `["10.2.39.0/24"]` as `trustedNetworks` on both nodes. The worker can then use `ws://10.2.39.65:8080/node`; a stable LAN hostname is also valid. Add narrower VM-network CIDRs when VM agents originate outside that `/24`.
+
+The firewall layer does not create routes or discover a replacement for an incorrect literal `masterUrl`; ordinary Windows routing between same-LAN nodes is assumed. Use a static address, DHCP reservation, or stable hostname for the master and diagnose host-to-host reachability separately from firewall-rule reconciliation.
+
+Rule names and groups contain a stable owner identifier derived from the canonical config path. Consequently, multiple configs using the same executable do not retire one another's owner-specific rules. Legacy unsuffixed managed rules and rules whose names begin with `D2ROps Host inbound TCP` are eligible for migration cleanup only when their program path matches the running executable, their direction and protocol are inbound TCP, and their local port matches the current listener port.
+
+The host reconciles at startup before serving traffic, on Windows network-address changes, and every configured interval (5-3600 seconds). Address changes are applied live; other configuration changes take effect on restart. A replacement is fully assembled as a detached COM rule before Windows is asked to install it, preserving the installed rule if replacement fails. When a desired rule is repaired, it must be read back successfully and remain stable through a follow-up reconciliation before stale owner-specific or qualifying legacy rules are removed.
+
+Effective policy is checked before mutation and again before cleanup. A Group Policy override or inbound block, no recognized active profile, or Windows Firewall being disabled on any active profile makes firewall health false and suppresses stale-rule cleanup. `/healthz` exposes that state and its top-level `ok` becomes false, while D2RHost continues running. Local mutation requires elevation; the scheduled task runs as `SYSTEM`. With `manage: false`, D2RHost does not list, create, replace, or remove local firewall rules.
 
 Useful environment overrides are:
 

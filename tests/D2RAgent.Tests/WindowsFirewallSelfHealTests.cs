@@ -6,21 +6,6 @@ namespace D2RAgent.Tests;
 public sealed class WindowsFirewallSelfHealTests
 {
     [Fact]
-    public void HostInboundRuleAllowsConfiguredLocalPort()
-    {
-        var spec = WindowsFirewallSelfHeal.BuildHostInboundTcpRule(8080, @"C:\D2ROps\D2RHost.exe");
-        var args = WindowsFirewallSelfHeal.BuildNetshAddRuleArguments(spec);
-
-        Assert.Equal("D2ROps Host inbound TCP D2RHost 8080", spec.Name);
-        Assert.Contains("dir=in", args);
-        Assert.Contains("action=allow", args);
-        Assert.Contains("protocol=TCP", args);
-        Assert.Contains("localport=8080", args);
-        Assert.Contains(@"program=C:\D2ROps\D2RHost.exe", args);
-        Assert.DoesNotContain(args, arg => arg.StartsWith("remoteport=", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
     public void AgentOutboundRuleAllowsControllerRemotePortAndIp()
     {
         var ok = WindowsFirewallSelfHeal.TryBuildAgentControllerOutboundTcpRule(
@@ -54,16 +39,6 @@ public sealed class WindowsFirewallSelfHealTests
         Assert.Contains("remoteport=443", args);
         Assert.DoesNotContain(args, arg => arg.StartsWith("remoteip=", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(args, arg => arg.StartsWith("program=", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public void HostInboundRuleNameChangesWithPublishedExeName()
-    {
-        var original = WindowsFirewallSelfHeal.BuildHostInboundTcpRule(8080, @"C:\D2ROps\D2RHost.exe");
-        var renamed = WindowsFirewallSelfHeal.BuildHostInboundTcpRule(8080, @"C:\D2ROps\OpsHost.exe");
-
-        Assert.NotEqual(original.Name, renamed.Name);
-        Assert.Equal("D2ROps Host inbound TCP OpsHost 8080", renamed.Name);
     }
 
     [Fact]

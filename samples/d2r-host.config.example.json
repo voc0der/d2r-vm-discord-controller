@@ -7,6 +7,13 @@
   "discordGuildId": null,
   "disableDiscord": false,
   "httpPort": 8080,
+  "windowsFirewall": {
+    "manage": true,
+    "trustedNetworks": [
+      "LocalSubnet"
+    ],
+    "reconcileSeconds": 30
+  },
   "databasePath": "C:\\D2ROps\\d2r-host.sqlite",
   "allowedDiscordUserIds": [
     "your_discord_user_id"

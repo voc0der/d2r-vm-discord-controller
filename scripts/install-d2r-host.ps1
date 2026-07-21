@@ -7,6 +7,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$CurrentPrincipal = [Security.Principal.WindowsPrincipal]::new($CurrentIdentity)
+if (!$CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw "D2RHost installation must run from an elevated PowerShell window so the SYSTEM task can manage Windows Firewall and Hyper-V."
+}
+
 function Resolve-AppExePath([string]$CandidatePath) {
     if (![string]::IsNullOrWhiteSpace($CandidatePath)) {
         if (!(Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {

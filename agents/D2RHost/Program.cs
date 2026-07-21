@@ -39,7 +39,6 @@ try
         Reason: hostUpdate.Message);
 
     var config = HostConfigLoader.LoadOrCreate(configPath);
-    _ = WindowsFirewallSelfHeal.EnsureHostInboundTcp(config.HttpPort, LogStartup);
 
     var builder = WebApplication.CreateBuilder(args);
     builder.WebHost.UseUrls($"http://0.0.0.0:{config.HttpPort}");
@@ -59,26 +58,35 @@ try
     builder.Services.AddSingleton<WorkerNodeOperations>();
     builder.Services.AddSingleton<WorkerNodeLink>();
     builder.Services.AddSingleton<DiscordBot>();
+    builder.Services.AddSingleton<IHostFirewallBackend, WindowsComHostFirewallBackend>();
+    builder.Services.AddSingleton<IHostNetworkAddressProvider, SystemHostNetworkAddressProvider>();
+    builder.Services.AddSingleton<HostFirewallManager>();
+    builder.Services.AddSingleton<IHostedService>(provider =>
+        provider.GetRequiredService<HostFirewallManager>());
 
     var app = builder.Build();
+    var firewallManager = app.Services.GetRequiredService<HostFirewallManager>();
+    _ = firewallManager.ReconcileNow();
 
     app.UseWebSockets();
 
-    app.MapGet("/healthz", (HostConfig hostConfig, AgentRegistry localRegistry, FleetRegistry fleetRegistry) =>
+    app.MapGet("/healthz", (HostConfig hostConfig, AgentRegistry localRegistry, FleetRegistry fleetRegistry, HostFirewallManager firewall) =>
     {
         var agents = hostConfig.IsMaster
             ? fleetRegistry.Snapshot()
             : localRegistry.Snapshot();
         var connected = agents.Count(agent => agent.Connected);
+        var firewallStatus = firewall.Status;
         return Results.Json(new
         {
-            ok = true,
+            ok = firewallStatus.Ok,
             mode = hostConfig.Mode,
             nodeId = hostConfig.NodeId,
             agents = agents.Count,
             agentsConfigured = agents.Count,
             agentsConnected = connected,
-            nodes = hostConfig.IsMaster ? fleetRegistry.NodeSnapshot() : null
+            nodes = hostConfig.IsMaster ? fleetRegistry.NodeSnapshot() : null,
+            firewall = firewallStatus
         });
     });
 
