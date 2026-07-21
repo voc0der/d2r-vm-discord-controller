@@ -47,9 +47,8 @@ public sealed class DiscordBot
 
     private readonly HostConfig _config;
     private readonly HostRuntimeOptions _runtime;
-    private readonly AgentRegistry _registry;
-    private readonly HyperVOperations _hyperV;
-    private readonly HostSystemOperations _system;
+    private readonly FleetRegistry _registry;
+    private readonly FleetHostOperations _hyperV;
     private readonly DiscordNotificationQueue _notifications;
     private readonly HostUpdateNotificationStore _hostUpdateNotifications;
     private readonly AppDb _db;
@@ -131,9 +130,8 @@ public sealed class DiscordBot
     public DiscordBot(
         HostConfig config,
         HostRuntimeOptions runtime,
-        AgentRegistry registry,
-        HyperVOperations hyperV,
-        HostSystemOperations system,
+        FleetRegistry registry,
+        FleetHostOperations hyperV,
         DiscordNotificationQueue notifications,
         HostUpdateNotificationStore hostUpdateNotifications,
         AppDb db,
@@ -143,7 +141,6 @@ public sealed class DiscordBot
         _runtime = runtime;
         _registry = registry;
         _hyperV = hyperV;
-        _system = system;
         _notifications = notifications;
         _hostUpdateNotifications = hostUpdateNotifications;
         _db = db;
@@ -188,6 +185,7 @@ public sealed class DiscordBot
             lastPulse = now;
             if (gap - HostSleepPulseInterval < HostSleepGapThreshold)
             {
+                await RefreshStartupHealthIfChangedAsync();
                 continue;
             }
 
@@ -200,6 +198,32 @@ public sealed class DiscordBot
             {
                 _logger.LogWarning(ex, "Could not post the wake-up startup message.");
             }
+        }
+    }
+
+    private async Task RefreshStartupHealthIfChangedAsync()
+    {
+        await _startupMessageLock.WaitAsync();
+        try
+        {
+            if (_startupMessage is not { } message)
+            {
+                return;
+            }
+
+            var content = AppendMetrics(metricsEnabled: false, FormatStartupMessageContent());
+            if (!string.Equals(message.Content, content, StringComparison.Ordinal))
+            {
+                await message.ModifyAsync(properties => properties.Content = content);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not refresh periodic startup health.");
+        }
+        finally
+        {
+            _startupMessageLock.Release();
         }
     }
 
@@ -878,7 +902,7 @@ public sealed class DiscordBot
             $"host: RAM {FormatMemoryUsage(hostTelemetry)}, CPU {FormatCpuPercent(hostTelemetry.CpuPercent)}"
         };
 
-        foreach (var (accountKey, account) in _config.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+        foreach (var (accountKey, account) in _registry.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
         {
             var name = FormatAccountDisplayName(accountKey, account);
             var agent = _registry.GetAgent(account.AgentId);
@@ -1258,7 +1282,7 @@ public sealed class DiscordBot
                 await RunVmCommandAsync(context, singleAccount, "menu_save_exit", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
                 return;
             case "remote":
-                var remoteUrl = _config.Agents[singleAccount.AgentId].RemoteUrl;
+                var remoteUrl = _registry.GetAgentConfig(singleAccount.AgentId)?.RemoteUrl;
                 await RespondWithMetricsAsync(
                     context,
                     string.IsNullOrWhiteSpace(remoteUrl)
@@ -1371,6 +1395,7 @@ public sealed class DiscordBot
         QueueDiscordWork(context, $"vm {commandName}", async () =>
         {
             var result = await _hyperV.HandleCommandAsync(
+                account,
                 new CommandRequest(Guid.NewGuid().ToString("N"), commandName, args),
                 CancellationToken.None);
             await ModifyOriginalResponseWithMetricsAsync(context, FormatCommandResult(result.Ok, result.Message));
@@ -1404,19 +1429,60 @@ public sealed class DiscordBot
     private async Task HandleSystemAsync(SlashContext context)
     {
         var action = HostSystemPowerActions.ParseAction(context.SubcommandName);
-        if (!OperatingSystem.IsWindows())
+        var requestedNode = BlankToNull(context.GetString("node"));
+        var allNodes = context.GetBool("all") == true;
+        if (allNodes && requestedNode is not null)
         {
             await RespondWithMetricsAsync(
                 context,
-                "/d2r system actions require Windows on the D2RHost machine.");
+                "Pass either `node` or `all:true`, not both.");
             return;
+        }
+
+        string[] targets;
+        if (allNodes)
+        {
+            // Queue workers first. If the master is also being powered down it must be
+            // last or it could disappear before forwarding the worker commands.
+            targets = GetOrderedOnlineNodeTargets();
+        }
+        else
+        {
+            var target = requestedNode ?? _config.NodeId;
+            if (!_hyperV.IsKnownNode(target))
+            {
+                await RespondWithMetricsAsync(context, $"Unknown D2RHost node `{target}`.");
+                return;
+            }
+
+            if (!_hyperV.IsNodeOnline(target))
+            {
+                await RespondWithMetricsAsync(
+                    context,
+                    $"D2RHost worker `{target}` is offline; {action.ToString().ToLowerInvariant()} was not queued.");
+                return;
+            }
+
+            targets = [target];
         }
 
         await RespondWithMetricsAsync(
             context,
-            $"{HostSystemPowerActions.FormatQueuedMessage(action)} VM clients are not targeted.");
+            $"Queueing {action.ToString().ToLowerInvariant()} on {targets.Length} node(s): "
+                + $"{string.Join(", ", targets)}. VM clients are not targeted."
+                + (allNodes ? FormatOfflineNodeSkipSuffix(targets) : ""));
         await AnnounceSystemPowerActionAsync(context, action);
-        _system.Queue(action);
+
+        var results = await QueueSystemActionsAsync(targets, action);
+        var failures = results.Where(result => !result.Result.Ok).ToArray();
+        if (failures.Length > 0)
+        {
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                $"Queued {action.ToString().ToLowerInvariant()} on {results.Count - failures.Length}/{results.Count} node(s). "
+                    + "Skipped/failed: "
+                    + string.Join("; ", failures.Select(failure => $"{failure.NodeId}: {failure.Result.Message}")));
+        }
     }
 
     private async Task AnnounceSystemPowerActionAsync(SlashContext context, HostSystemPowerAction action)
@@ -1501,6 +1567,8 @@ public sealed class DiscordBot
         return string.Join("\n", new[]
         {
             $"Config path: {_runtime.ConfigPath}",
+            $"Mode: {_config.Mode}",
+            $"Node: {_config.NodeId}",
             $"All-client stagger: {stagger}s",
             $"Session notifications: {notifications}",
             $"Update notifications: {updateNotifications}"
@@ -3084,6 +3152,7 @@ public sealed class DiscordBot
             ephemeral: true);
 
         var tracker = new FanInCompletionTracker(entries.Length);
+        var skippedAfterQueue = 0;
         var watchCts = watch ? new CancellationTokenSource() : null;
         var watchTask = watchCts is null
             ? null
@@ -3102,6 +3171,15 @@ public sealed class DiscordBot
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(index * staggerSeconds));
+                    if (_registry.GetAgent(entry.Value.AgentId)?.Connected != true)
+                    {
+                        Interlocked.Increment(ref skippedAfterQueue);
+                        await SendFollowupSafeAsync(
+                            context,
+                            $"{label} skipped for {entry.Key}: its node or VM agent went offline before dispatch.");
+                        return;
+                    }
+
                     var args = argsFactory(entry.Key, entry.Value);
                     if (readyFirstIfNotMenuReady)
                     {
@@ -3154,6 +3232,7 @@ public sealed class DiscordBot
                             label,
                             entries.Length,
                             tracker.FailedCount,
+                            Volatile.Read(ref skippedAfterQueue),
                             offerOnCompletion);
                     }
                 }
@@ -3173,13 +3252,16 @@ public sealed class DiscordBot
         string label,
         int total,
         int failed,
+        int skipped,
         QuickActions offer = QuickActions.None)
     {
         try
         {
+            var succeeded = Math.Max(total - failed - skipped, 0);
+            var skippedSuffix = skipped == 0 ? "" : $", {skipped} skipped offline";
             var message = failed == 0
-                ? $"{label} complete: {total}/{total} succeeded."
-                : $"{label} complete: {total - failed}/{total} succeeded, {failed} failed (see above).";
+                ? $"{label} complete: {succeeded} succeeded{skippedSuffix}."
+                : $"{label} complete: {succeeded} succeeded, {failed} failed{skippedSuffix} (see above).";
             var components = offer != QuickActions.None
                 ? BuildQuickStartComponents(offer)
                 : null;
@@ -3237,7 +3319,7 @@ public sealed class DiscordBot
         var online = new List<KeyValuePair<string, AccountConfig>>();
         var offline = new List<KeyValuePair<string, AccountConfig>>();
 
-        foreach (var entry in _config.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+        foreach (var entry in _registry.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
         {
             if (_registry.GetAgent(entry.Value.AgentId)?.Connected == true)
             {
@@ -4184,55 +4266,147 @@ public sealed class DiscordBot
 
     private async Task RunQuitAllThenSleepAsync(SlashContext context)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            await SetInitialCommandResponseAsync(
-                context,
-                "/d2r system sleep requires Windows on the D2RHost machine.",
-                ephemeral: true);
-            return;
-        }
-
         await CancelJoinAutoIfRunningAsync("follow-auto sleep button was pressed");
         var followAutoCancel = await CancelFollowAutoIfRunningAsync("follow-auto sleep button was pressed");
         QueueFollowAutoStopSignal(followAutoCancel.RunId);
 
-        var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
+        // Keep one node snapshot for the whole operation. A worker that appears while
+        // client quits are already running was never reconciled and must not suddenly
+        // become a sleep target at the end.
+        var sleepTargets = GetOrderedOnlineNodeTargets();
+        var targetNodeSet = sleepTargets.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var (fleetOnlineEntries, fleetOfflineEntries) = GetAccountEntriesByConnectivity();
+        var entries = fleetOnlineEntries
+            .Where(entry => targetNodeSet.Contains(_hyperV.ResolveNodeId(entry.Value)))
+            .ToArray();
+        var offlineEntries = fleetOfflineEntries
+            .Where(entry => targetNodeSet.Contains(_hyperV.ResolveNodeId(entry.Value)))
+            .ToArray();
+        var processedAccountKeys = entries
+            .Select(entry => entry.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var allResults = new List<AccountCommandRunResult>();
         if (entries.Length == 0)
         {
             await SetInitialCommandResponseAsync(
                 context,
-                "No online accounts are available to quit; putting the D2RHost machine to sleep."
-                    + FormatOfflineSkipSuffix(offlineEntries),
+                $"No online accounts are available to quit; checking once more before queueing fleet sleep."
+                    + FormatOfflineSkipSuffix(offlineEntries)
+                    + FormatOfflineNodeSkipSuffix(sleepTargets),
                 ephemeral: true);
-            await AnnounceSystemPowerActionAsync(context, HostSystemPowerAction.Sleep);
-            _system.Queue(HostSystemPowerAction.Sleep);
-            return;
+        }
+        else
+        {
+            var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
+            await SetInitialCommandResponseAsync(
+                context,
+                $"Quitting {entries.Length} online account(s) before fleet sleep with {staggerSeconds}s stagger."
+                    + FormatOfflineSkipSuffix(offlineEntries)
+                    + FormatOfflineNodeSkipSuffix(sleepTargets),
+                ephemeral: true);
+
+            allResults.AddRange(await RunQuitAllForSleepAsync(entries, staggerSeconds));
+            var failures = allResults.Where(result => !result.Ok).ToArray();
+            if (failures.Length > 0)
+            {
+                await ModifyOriginalResponseWithMetricsAsync(
+                    context,
+                    $"Fleet sleep skipped: quit completed for {allResults.Count - failures.Length}/{allResults.Count} account(s). Failed: "
+                        + string.Join("; ", failures.Select(result => $"{result.AccountKey}: {result.Message}")));
+                return;
+            }
         }
 
-        var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
-        await SetInitialCommandResponseAsync(
-            context,
-            $"Quitting {entries.Length} online account(s) before host sleep with {staggerSeconds}s stagger."
-                + FormatOfflineSkipSuffix(offlineEntries),
-            ephemeral: true);
-
-        var results = await RunQuitAllForSleepAsync(entries, staggerSeconds);
-        var failures = results.Where(result => !result.Ok).ToArray();
-        if (failures.Length > 0)
+        // Reconcile accounts that became online on one of the captured target nodes
+        // while the initial staggered quit pass was running. Already-processed agents
+        // stay connected after D2R exits, so key them out explicitly.
+        var lateEntries = GetAccountEntriesByConnectivity().Online
+            .Where(entry => targetNodeSet.Contains(_hyperV.ResolveNodeId(entry.Value)))
+            .Where(entry => processedAccountKeys.Add(entry.Key))
+            .ToArray();
+        if (lateEntries.Length > 0)
         {
-            await ModifyOriginalResponseWithMetricsAsync(
-                context,
-                $"Host sleep skipped: quit completed for {results.Length - failures.Length}/{results.Length} account(s). Failed: "
-                    + string.Join("; ", failures.Select(result => $"{result.AccountKey}: {result.Message}")));
+            var lateResults = await RunQuitAllForSleepAsync(lateEntries, staggerSeconds: 0);
+            allResults.AddRange(lateResults);
+            var lateFailures = lateResults.Where(result => !result.Ok).ToArray();
+            if (lateFailures.Length > 0)
+            {
+                await ModifyOriginalResponseWithMetricsAsync(
+                    context,
+                    $"Fleet sleep skipped: {allResults.Count - lateFailures.Length}/{allResults.Count} client quit(s) succeeded. Newly online failures: "
+                        + string.Join("; ", lateFailures.Select(result => $"{result.AccountKey}: {result.Message}")));
+                return;
+            }
+        }
+
+        var completionPrefix = allResults.Count == 0
+            ? "No client quits were needed."
+            : $"Quit complete: {allResults.Count}/{allResults.Count} account(s) succeeded.";
+        await ModifyOriginalResponseWithMetricsAsync(
+            context,
+            $"{completionPrefix} Queueing sleep on {sleepTargets.Length} captured online D2RHost node(s)."
+                + FormatOfflineNodeSkipSuffix(sleepTargets));
+        await AnnounceSystemPowerActionAsync(context, HostSystemPowerAction.Sleep);
+        await QueueQuickSleepTargetsAsync(context, sleepTargets, completionPrefix);
+    }
+
+    private string[] GetOrderedOnlineNodeTargets()
+    {
+        return _hyperV.NodeIds(onlineOnly: true)
+            .OrderBy(nodeId => _hyperV.IsLocalNode(nodeId) ? 1 : 0)
+            .ThenBy(nodeId => nodeId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private async Task QueueQuickSleepTargetsAsync(
+        SlashContext context,
+        IReadOnlyList<string> targets,
+        string prefix)
+    {
+        var results = await QueueSystemActionsAsync(targets, HostSystemPowerAction.Sleep);
+        var failures = results.Where(result => !result.Result.Ok).ToArray();
+        if (failures.Length == 0)
+        {
             return;
         }
 
         await ModifyOriginalResponseWithMetricsAsync(
             context,
-            $"Quit complete: {results.Length}/{results.Length} account(s) succeeded. Putting the D2RHost machine to sleep.");
-        await AnnounceSystemPowerActionAsync(context, HostSystemPowerAction.Sleep);
-        _system.Queue(HostSystemPowerAction.Sleep);
+            $"{prefix} Sleep queued on {results.Count - failures.Length}/{results.Count} node(s). Skipped/failed: "
+                + string.Join("; ", failures.Select(failure => $"{failure.NodeId}: {failure.Result.Message}")));
+    }
+
+    private async Task<List<(string NodeId, CommandResult Result)>> QueueSystemActionsAsync(
+        IReadOnlyList<string> targets,
+        HostSystemPowerAction action)
+    {
+        var results = new List<(string NodeId, CommandResult Result)>();
+        foreach (var nodeId in targets)
+        {
+            if (_hyperV.IsLocalNode(nodeId) && results.Any(result => !result.Result.Ok))
+            {
+                results.Add((
+                    nodeId,
+                    CommandResult.Failure(
+                        "Master kept online because at least one worker did not confirm the requested power action.")));
+                continue;
+            }
+
+            results.Add((nodeId, await _hyperV.QueueSystemActionAsync(nodeId, action)));
+        }
+
+        return results;
+    }
+
+    private string FormatOfflineNodeSkipSuffix(IReadOnlyCollection<string> selectedNodes)
+    {
+        var selected = selectedNodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var offline = _hyperV.NodeIds(onlineOnly: false)
+            .Where(nodeId => !selected.Contains(nodeId))
+            .ToArray();
+        return offline.Length == 0
+            ? ""
+            : $" D2RHost nodes not online at selection were skipped: {string.Join(", ", offline)}.";
     }
 
     private async Task<AccountCommandRunResult[]> RunQuitAllForSleepAsync(
@@ -5603,7 +5777,7 @@ public sealed class DiscordBot
 
     private (string AccountKey, AccountConfig Account) RequireAccount(string accountKey)
     {
-        if (!_config.Accounts.TryGetValue(accountKey, out var account))
+        if (!_registry.Accounts.TryGetValue(accountKey, out var account))
         {
             throw new InvalidOperationException($"Unknown account \"{accountKey}\".");
         }
@@ -5619,9 +5793,18 @@ public sealed class DiscordBot
 
     private string FormatHealth()
     {
+        var nodes = _registry.NodeSnapshot();
+        var connectedNodes = nodes.Count(node => node.Connected);
         var agents = _registry.Snapshot();
         var connected = agents.Count(agent => agent.Connected);
-        var lines = agents.Select(agent =>
+        var nodeLines = nodes.Select(node =>
+        {
+            var label = string.IsNullOrWhiteSpace(node.DisplayName)
+                ? node.Id
+                : $"{node.Id} ({node.DisplayName})";
+            return $"{(node.Connected ? "online " : "offline")} node {label}: {node.AgentsConnected}/{node.AgentsConfigured} agent(s)";
+        });
+        var agentLines = agents.Select(agent =>
         {
             var label = string.IsNullOrWhiteSpace(agent.DisplayName)
                 ? agent.Id
@@ -5629,7 +5812,11 @@ public sealed class DiscordBot
             return $"{(agent.Connected ? "online " : "offline")} {label}";
         });
 
-        return string.Join("\n", new[] { $"Agents: {connected}/{agents.Count} connected" }.Concat(lines));
+        return string.Join("\n", new[]
+        {
+            $"Nodes: {connectedNodes}/{nodes.Count} connected",
+            $"Agents: {connected}/{agents.Count} connected"
+        }.Concat(nodeLines).Concat(agentLines));
     }
 
     private string FormatStartupMessageContent()
@@ -5639,13 +5826,13 @@ public sealed class DiscordBot
 
     private string FormatAllAccountStatuses()
     {
-        var lines = _config.Accounts.Select(pair => FormatAccountStatusLine(pair.Key, pair.Value));
+        var lines = _registry.Accounts.Select(pair => FormatAccountStatusLine(pair.Key, pair.Value));
         return string.Join("\n", new[] { $"D2RHost version: {GetHostVersionText()}" }.Concat(lines));
     }
 
     private async Task<string> FormatAllAccountStatusesLiveAsync(CancellationToken cancellationToken)
     {
-        var lines = await Task.WhenAll(_config.Accounts.Select(
+        var lines = await Task.WhenAll(_registry.Accounts.Select(
             pair => FormatAccountStatusLineLiveAsync(pair.Key, pair.Value, cancellationToken)));
         return string.Join("\n", new[] { $"D2RHost version: {GetHostVersionText()}" }.Concat(lines));
     }
@@ -5673,7 +5860,7 @@ public sealed class DiscordBot
 
     private string FormatExceptionWithAccountStatus(Exception ex, AccountConfig account)
     {
-        var entry = _config.Accounts.FirstOrDefault(
+        var entry = _registry.Accounts.FirstOrDefault(
             pair => string.Equals(pair.Value.AgentId, account.AgentId, StringComparison.OrdinalIgnoreCase));
         var accountKey = string.IsNullOrWhiteSpace(entry.Key) ? account.AgentId : entry.Key;
         return FormatExceptionWithAccountStatus(ex, accountKey, account);

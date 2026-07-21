@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
     <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
@@ -19,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\agents\D2RAgent\D2RAgent.csproj" />
+    <ProjectReference Include="..\..\agents\D2RHost\D2RHost.csproj" />
   </ItemGroup>
 
 </Project>

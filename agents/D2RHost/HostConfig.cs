@@ -1,7 +1,25 @@
+using System.Text.Json.Serialization;
+
 namespace D2RHost;
 
 public sealed class HostConfig
 {
+    public const string MasterMode = "master";
+    public const string WorkerMode = "worker";
+
+    public string Mode { get; set; } = MasterMode;
+    public string NodeId { get; set; } = "local";
+    public string? MasterUrl { get; set; }
+    public string? MasterSharedSecret { get; set; }
+    public int NodeHeartbeatSeconds { get; set; } = 15;
+    public int AgentOfflineAfterSeconds { get; set; } = 45;
+
+    [JsonIgnore]
+    public bool IsMaster => string.Equals(Mode, MasterMode, StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsWorker => string.Equals(Mode, WorkerMode, StringComparison.OrdinalIgnoreCase);
+
     public string DiscordToken { get; set; } = "";
     public ulong? DiscordGuildId { get; set; }
     public bool DisableDiscord { get; set; }
@@ -31,6 +49,7 @@ public sealed class HostAgentConfig
 public sealed class AccountConfig
 {
     public string AgentId { get; set; } = "";
+    public string? NodeId { get; set; }
     public string? DisplayName { get; set; }
     public string? VmName { get; set; }
     public int? CharacterSlot { get; set; }

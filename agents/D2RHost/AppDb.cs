@@ -51,6 +51,63 @@ public sealed class AppDb
         }
     }
 
+    public IReadOnlyList<PersistedAgentStatus> GetAgentStatuses()
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                select agent_id, kind, connected, last_seen_utc, payload_json
+                from agent_status
+                """;
+
+            using var reader = command.ExecuteReader();
+            var statuses = new List<PersistedAgentStatus>();
+            while (reader.Read())
+            {
+                var lastSeenAt = DateTimeOffset.TryParse(reader.GetString(3), out var parsedLastSeenAt)
+                    ? parsedLastSeenAt
+                    : (DateTimeOffset?)null;
+                statuses.Add(new PersistedAgentStatus(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetInt64(2) != 0,
+                    lastSeenAt,
+                    reader.GetString(4)));
+            }
+
+            return statuses;
+        }
+    }
+
+    public void MarkAgentDisconnected(string agentId)
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                update agent_status
+                set connected = 0
+                where agent_id = $agent_id
+                """;
+            command.Parameters.AddWithValue("$agent_id", agentId);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    public void MarkAllAgentsDisconnected()
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "update agent_status set connected = 0 where connected != 0";
+            command.ExecuteNonQuery();
+        }
+    }
+
     public void InsertCommandHistory(
         string commandId,
         string agentId,
@@ -196,3 +253,10 @@ public sealed class AppDb
         return connection;
     }
 }
+
+public sealed record PersistedAgentStatus(
+    string AgentId,
+    string Kind,
+    bool Connected,
+    DateTimeOffset? LastSeenAt,
+    string PayloadJson);

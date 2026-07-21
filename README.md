@@ -4,7 +4,7 @@ Turn-key Windows ops panel for controlling Diablo II: Resurrected VMs from Disco
 
 The repo contains:
 
-- `agents/D2RHost`: C# Windows host app. Runs the Discord bot, HTTP health API, VM-agent WebSocket server, SQLite state, and Hyper-V VM controls.
+- `agents/D2RHost`: C# Windows host app. The same executable runs in `master` mode for Discord/global orchestration or `worker` mode for another Hyper-V server; every instance owns its local VM-agent listener and Hyper-V controls.
 - `agents/D2RAgent`: C# Windows user-session VM agent for Battle.net/D2R launch, screenshots, menu movement, join/create/follow, and save-exit.
 - `.github/workflows`: CI and release builds for Windows zip artifacts.
 
@@ -14,23 +14,38 @@ This intentionally stays in the ops lane: launch, kill, restart, VM lifecycle, s
 
 ```text
 Discord
-  -> D2RHost.exe on the Windows Hyper-V host
-      -> HTTP health API on :8080
-      -> WebSocket /agent listener
-      -> SQLite state
+  -> D2RHost.exe (master) on Server A
+      -> authoritative SQLite/global orchestration state
       -> local Hyper-V PowerShell commands
-          <- D2RAgent.exe inside each logged-in VM
+      <- local D2RAgent.exe instances on /agent
+      <- D2RHost.exe (worker) on Server B over /node
+          -> local Hyper-V PowerShell commands
+          <- local D2RAgent.exe instances on /agent
 ```
 
-The host PC does not need Docker or Node. The VM agents connect outbound to the host over WebSocket, so the VMs only need to reach `ws://HOST_LAN_IP:8080/agent`.
+The host PCs do not need Docker or Node. Each VM agent connects outbound to `ws://LOCAL_HOST_LAN_IP:8080/agent`. A worker D2RHost connects outbound to the master, so Server B needs to reach `ws://MASTER_LAN_IP:8080/node`; its VMs do not connect directly to the master.
 
 `D2RHost.exe` and `D2RAgent.exe` are the default published executable names. Release builds can rename them with the repo-level Actions variables `HOST_EXE_NAME` and `AGENT_EXE_NAME`; the release zip names stay `D2RHost-win-x64.zip` and `D2RAgent-win-x64.zip` so self-update can keep finding the right assets.
+
+## Master and Worker Hosts
+
+`D2RHost` defaults to `mode: "master"` and `nodeId: "local"`. Existing configs that omit both properties therefore keep their original single-host behavior.
+
+The master is the only instance that connects to Discord and owns the authoritative SQLite game/automation state. It controls its own local VMs and presents connected workers and their VM agents as one fleet. Each worker owns only its local `agents` and `accounts` configuration, accepts its local VM-agent connections, runs Hyper-V commands on its own machine, and maintains an outbound authenticated connection to the master.
+
+On the master, configure each worker under `agents` with `kind: "host"`; the entry's ID must equal the worker's `nodeId`, and its `sharedSecret` must equal the worker's `masterSharedSecret`. Do not copy the worker's VM agents or accounts into the master config: the worker advertises that non-secret inventory in its heartbeat. See [the master example](samples/d2r-host.config.example.json) and [the worker example](samples/d2r-host.worker.config.example.json).
+
+Account keys, VM-agent IDs, and node IDs must be unique across the whole fleet. A node ID is also its `kind: "host"` agent ID on the master, so it must not collide with a VM-agent ID. The only compatibility exception is an old single-host config that omitted `nodeId` and already used `local` as a VM-agent ID; new and explicitly node-aware configs reject that collision.
+
+The master uses `agentOfflineAfterSeconds` (45 seconds by default) as its minimum heartbeat freshness threshold. Agents advertise their effective heartbeat interval during authentication, so the master automatically allows enough time for a configured interval plus status-collection jitter instead of making a healthy slow-heartbeat worker flap offline. If a worker disconnects or its negotiated heartbeat becomes stale, every account advertised by that worker is treated as offline; if only one local VM agent is stale, only that account is unavailable. All-client orchestration skips unavailable accounts and continues with the rest of the fleet. Hyper-V commands for worker-owned accounts are sent to that worker and run there, so a worker can start a local VM even when that VM's D2RAgent is offline.
+
+There is intentionally no automatic master election. If the master is unavailable, workers keep their local VM-agent connections and retry the outbound master connection, but Discord and global orchestration remain unavailable until the master returns or an operator deliberately reconfigures the topology. The master is therefore the control-plane single point of failure; use an always-on management host as master if that matters for the deployment.
 
 ## Updates
 
 The host executable checks the latest GitHub release on startup. If a newer version exists, the host starts an in-place updater, exits, and restarts before it accepts VM-agent connections. After the updated host is running and VM agents authenticate, the host sends each authenticated VM agent a self-update command.
 
-When `guildChannel` is configured and `updateNotificationsEnabled` is true, D2RHost posts Discord notifications when it first comes online, when a host update completes, and when a VM agent starts its self-update.
+When `guildChannel` is configured and `updateNotificationsEnabled` is true, the master posts Discord notifications when it first comes online, when the master update completes, and when a master-local VM agent starts its self-update. Worker updates still apply locally, but worker notification queues are not forwarded to Discord.
 
 The VM agent executable can still check for an update when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
 
@@ -67,9 +82,9 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r game set name [password] [difficulty] [notes]`
 - `/d2r game show`
 - `/d2r game clear`
-- `/d2r system sleep`
-- `/d2r system shutdown`
-- `/d2r system restart`
+- `/d2r system sleep [node] [all]`
+- `/d2r system shutdown [node] [all]`
+- `/d2r system restart [node] [all]`
 - `/d2r vm status account`
 - `/d2r vm start account`
 - `/d2r vm stop account`
@@ -81,7 +96,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 
 `/d2r game set` stores the current game details in SQLite. `join` and `create-game` use those stored values when options are omitted.
 
-For folded commands, `all` defaults to true. Pass `all:false account:<x>` for one account. All-client commands skip accounts whose VM agent is offline when the command is queued.
+For folded commands, `all` defaults to true. Pass `all:false account:<x>` for one account. All-client commands skip accounts whose VM agent, or owning worker, is offline or stale when the command is queued.
 
 `/d2r create-game` with `all:true` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger. If you do not pass `character-slot`, the host uses each account's optional `characterSlot` value from `d2r-host.config.json`, then falls back to the VM agent's local default.
 
@@ -89,15 +104,15 @@ Join/create session notifications include `Leave` and `Quit` buttons. `Leave` qu
 
 `/d2r ready` queues the ready flow for every online account. Pass `account:<x>` to warm one account. `/d2r start` with `all:true` uses the same all-account ready flow, so cold-booted clients should land on character select instead of merely starting the D2R process.
 
-`/d2r restart` respawns `D2RHost`. On startup, the host runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed host update once the command exists in Discord.
+`/d2r restart` respawns the master D2RHost process only. On startup, the master runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed master update once the command exists in Discord.
 
-`/d2r system sleep`, `/d2r system shutdown`, and `/d2r system restart` publicly announce the requested host power action in the command channel, then run it on the D2RHost machine only. They do not send shutdown/restart commands to the VM clients.
+`/d2r system sleep`, `/d2r system shutdown`, and `/d2r system restart` default to the master node for backward compatibility. Pass `node:<node-id>` to target one known node (including the master), or `all:true` to target every currently online D2RHost node. `node` and `all:true` are mutually exclusive. Fleet-wide actions are queued on online workers first and the master last so the control plane remains available long enough to forward them. Offline workers are listed and skipped. If an online worker fails to confirm the action, the master is deliberately kept online for recovery. These commands power physical D2RHost machines only—not VM guests.
 
 Menu commands that need D2R running, such as `lobby`, `play`, `join`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
 
 `/d2r follow bind:true account:<x> [friend-row:<n>]` captures whoever is sitting in that account's selected friend row right now (default row 1, no need to type a name - useful from a phone with no keyboard) and distributes that snippet to every online account. `bind:false` clears it everywhere, including any in-game leader bind. A plain `/d2r follow` starts auto-following that bound friend; `auto:false` stops it.
 
-`/d2r follow bind-in-game:<1-8> [account:<x>]` additionally fingerprints the in-game party-bar name at that position, counted left to right across the portraits visible on the vantage account's screen (default vantage: the first online account; the fingerprint is distributed everywhere, so any VM can check it). A character never shows in its own party bar, so count only the other members you see from that vantage; the bar sorts alphabetically, so check the current order rather than assuming join order. Bind it to your own character from inside a game with your bots. **Play multiple alts? Bind each one once (repeat the command while playing each alt) - every bind appends a nametag to the rolodex, and each follow-auto run figures out which alt you're on: the first game locks onto whichever bound nametag it actually sees (highest match score wins, bind order breaks ties) and follows that one for the rest of the run. Until one is spotted, none of them can trigger a leave (count-drop behavior applies), so playing an unbound alt is safe too.** **The bind is verified before it takes effect: your character is the one name every bot can see, so if any other bot reports the captured name missing from its own party bar, that name is that bot's character (you counted the wrong slot) and that nametag is removed everywhere with the account named - your other bound nametags are untouched** - so you can't silently end up following a bot. Once set, follow-auto leaves a game when *that player* is gone instead of whenever the player count drops - in public games a stranger leaving no longer makes every bot leave and immediately rejoin. The check is forceful: as soon as one VM loses sight of you, it immediately makes a different VM look, and the bots leave the moment that second VM agrees (rather than waiting for the next scheduled pulse). `bind-in-game:0` clears all bound nametags and restores the count-drop behavior. Follow-auto posts one live status message for the run, showing the current game number and a Stop button while it is active. When the Stop button ends follow-auto, that message offers `Save and Exit`, `Quit`, and `Sleep` shortcuts for two minutes; `Sleep` quits all online clients successfully before putting the host to sleep. With `watch:true`, follow-auto also writes the diagnostics log for the whole run, across multiple games, including the latest match-score checkpoint. Old low-detail follow-bind snippets must be rebound before follow-auto will click rows. Use `all:false account:<x>` to right-click a manually-specified row once.
+`/d2r follow bind-in-game:<1-8> [account:<x>]` additionally fingerprints the in-game party-bar name at that position, counted left to right across the portraits visible on the vantage account's screen (default vantage: the first online account; the fingerprint is distributed everywhere, so any VM can check it). A character never shows in its own party bar, so count only the other members you see from that vantage; the bar sorts alphabetically, so check the current order rather than assuming join order. Bind it to your own character from inside a game with your bots. **Play multiple alts? Bind each one once (repeat the command while playing each alt) - every bind appends a nametag to the rolodex, and each follow-auto run figures out which alt you're on: the first game locks onto whichever bound nametag it actually sees (highest match score wins, bind order breaks ties) and follows that one for the rest of the run. Until one is spotted, none of them can trigger a leave (count-drop behavior applies), so playing an unbound alt is safe too.** **The bind is verified before it takes effect: your character is the one name every bot can see, so if any other bot reports the captured name missing from its own party bar, that name is that bot's character (you counted the wrong slot) and that nametag is removed everywhere with the account named - your other bound nametags are untouched** - so you can't silently end up following a bot. Once set, follow-auto leaves a game when *that player* is gone instead of whenever the player count drops - in public games a stranger leaving no longer makes every bot leave and immediately rejoin. The check is forceful: as soon as one VM loses sight of you, it immediately makes a different VM look, and the bots leave the moment that second VM agrees (rather than waiting for the next scheduled pulse). `bind-in-game:0` clears all bound nametags and restores the count-drop behavior. Follow-auto posts one live status message for the run, showing the current game number and a Stop button while it is active. When the Stop button ends follow-auto, that message offers `Save and Exit`, `Quit`, and `Sleep` shortcuts for two minutes; `Sleep` captures the online node set, quits all clients online on those nodes (including one reconciliation pass for clients that appear during the stagger), then sleeps workers first and the master last. A worker failure keeps the master awake. With `watch:true`, follow-auto also writes the diagnostics log for the whole run, across multiple games, including the latest match-score checkpoint. Old low-detail follow-bind snippets must be rebound before follow-auto will click rows. Use `all:false account:<x>` to right-click a manually-specified row once.
 
 ## Host Setup
 
@@ -119,18 +134,19 @@ C:\D2ROps\D2RHost.exe
 
 If `C:\D2ROps\d2r-host.config.json` does not exist, the host opens a terminal setup flow and writes it. If the JSON already exists, setup is skipped and the host starts normally.
 
-The setup flow asks for:
+For the master, the setup flow asks for:
 
+- Choose `master` mode and a globally unique `nodeId`.
 - Set `discordToken` or set a machine-level `DISCORD_TOKEN` environment variable.
 - Optional: set `discordGuildId` for instant guild slash-command registration.
 - Add your Discord user ID to `allowedDiscordUserIds`.
-- Add one `agents` entry per VM agent. Each `sharedSecret` must match that VM's config.
-- Add one `accounts` entry per controlled D2R account, mapping it to the VM agent and Hyper-V VM name.
+- Add one `agents` entry per VM agent local to the master. Each `sharedSecret` must match that VM's config.
+- Add one `accounts` entry per local controlled D2R account, mapping it to the VM agent and Hyper-V VM name.
 - Set the default character slot for each account. Discord's `character-slot` option overrides this per command.
 - Set `allowedVmNamePrefixes` so the host only operates your D2R VMs.
 - Set `startAllDelaySeconds` or the `CLIENT_STAGGER_SECONDS` environment variable to stagger all-client commands.
 
-You can still copy `samples/d2r-host.config.example.json` and edit it by hand if you prefer.
+You can still copy `samples/d2r-host.config.example.json` and edit it by hand if you prefer. Older single-host configs do not need `mode` or `nodeId`; omitted values mean `master` and `local`.
 
 5. Install the host scheduled task from an elevated PowerShell prompt after the config exists:
 
@@ -148,7 +164,32 @@ Health checks:
 ```powershell
 Invoke-RestMethod http://localhost:8080/healthz
 Invoke-RestMethod http://localhost:8080/agents
+Invoke-RestMethod http://localhost:8080/nodes
+Invoke-RestMethod http://localhost:8080/config/accounts
 ```
+
+On the master, `/healthz` and `/agents` summarize the combined fleet, `/nodes` reports the local master plus configured worker connectivity, and `/config/accounts` lists the currently known fleet account keys. On a worker, the same endpoints report local agents/accounts; `/nodes` reports that worker's identity, mode, and master URL. The WebSocket listeners are `/agent` for VM agents and `/node` for worker-to-master connections.
+
+### Adding a Worker Host
+
+Install the same D2RHost release and scheduled task on the additional Hyper-V server, then create a worker config from [samples/d2r-host.worker.config.example.json](samples/d2r-host.worker.config.example.json). Set:
+
+- `mode` to `worker` and `nodeId` to a fleet-wide unique value.
+- `masterUrl` to the master's `ws://` `/node` endpoint, or a `wss://` endpoint supplied by a TLS-terminating reverse proxy. D2RHost itself binds plain HTTP/WebSocket.
+- `masterSharedSecret` to a unique secret of at least 12 characters.
+- `agents`, `accounts`, `allowedVmNamePrefixes`, and PowerShell settings for VMs local to that worker only.
+
+Add one matching entry to the master's `agents` object:
+
+```json
+"server-b": {
+  "kind": "host",
+  "displayName": "Second Hyper-V Host",
+  "sharedSecret": "replace_with_long_random_node_secret_02"
+}
+```
+
+The worker never starts Discord, even if `disableDiscord` is omitted or false. Its local VM agents must use the worker's `/agent` URL and matching local VM-agent secrets. Restart the master after adding the `kind: "host"` entry, then start the worker; its inventory becomes available after its first status heartbeat.
 
 ## VM Agent Setup
 
@@ -169,7 +210,7 @@ Copy-Item .\D2RAgent-win-x64\* C:\D2ROps\ -Recurse -Force
 C:\D2ROps\D2RAgent.exe
 ```
 
-If `C:\D2ROps\vm-agent.config.json` does not exist, the VM agent asks for `agentId`, `controllerUrl`, `sharedSecret`, and Battle.net path, then writes the JSON. Use the agent values printed by the host setup.
+If `C:\D2ROps\vm-agent.config.json` does not exist, the VM agent asks for `agentId`, `controllerUrl`, `sharedSecret`, and Battle.net path, then writes the JSON. Use the values printed by the D2RHost setup on that VM's physical server. In a multi-host deployment, `controllerUrl` must point to the local D2RHost `/agent` endpoint, not directly to the master.
 
 If the JSON already exists, the VM agent skips setup and probes the host. If it cannot connect, it asks whether the hostname or port changed, rewrites the JSON, and retries.
 
@@ -216,7 +257,7 @@ The VM agent can drive the flows captured in `docs/runbooks/assets/d2r-ui/`:
 
 Before menu commands click into the lobby, the agent waits for the character screen or lobby tabs to be visually detectable. For `join` and `create-game`, it retries the final Join/Create button until the active lobby tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. After `play`, `join`, `create-game`, or `follow`, the agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use. Disable that with `ui.toggleLegacyGraphicsAfterEnteringGame: false` in the VM config.
 
-All-client commands are staggered and skip offline VM agents. Set `CLIENT_STAGGER_SECONDS=30` on the host, or set `startAllDelaySeconds` in `d2r-host.config.json`.
+All-client commands are staggered and skip offline VM agents and disconnected/stale workers. Set `CLIENT_STAGGER_SECONDS=30` on the master, or set `startAllDelaySeconds` in its `d2r-host.config.json`.
 
 ## Build Locally
 

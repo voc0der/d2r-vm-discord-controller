@@ -44,6 +44,7 @@ jobs:
           }
           dotnet publish @publishArgs
           Copy-Item samples/d2r-host.config.example.json artifacts/D2RHost/
+          Copy-Item samples/d2r-host.worker.config.example.json artifacts/D2RHost/
           Copy-Item scripts/install-d2r-host.ps1 artifacts/D2RHost/
           Compress-Archive -Path artifacts/D2RHost/* -DestinationPath artifacts/D2RHost-win-x64.zip -Force
 

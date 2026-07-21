@@ -8,6 +8,9 @@ namespace AgentCommon;
 
 public sealed class AgentClient<TConfig> where TConfig : AgentConfig
 {
+    private const int MinimumHeartbeatSeconds = 5;
+    private const int MaximumHeartbeatSeconds = 300;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -189,6 +192,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
                 sharedSecret = _config.SharedSecret,
                 version = GetCurrentVersionText(),
                 hostName = Environment.MachineName,
+                heartbeatSeconds = EffectiveHeartbeatSeconds,
                 probeOnly
             },
             cancellationToken);
@@ -202,7 +206,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
         Func<CancellationToken, Task<object>> statusFactory,
         CancellationToken cancellationToken)
     {
-        var interval = TimeSpan.FromSeconds(Math.Max(_config.HeartbeatSeconds, 5));
+        var interval = TimeSpan.FromSeconds(EffectiveHeartbeatSeconds);
 
         while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
         {
@@ -380,6 +384,11 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
             ?.InformationalVersion
             ?? "0.0.0";
     }
+
+    private int EffectiveHeartbeatSeconds => Math.Clamp(
+        _config.HeartbeatSeconds,
+        MinimumHeartbeatSeconds,
+        MaximumHeartbeatSeconds);
 
     private void NotifyConnectionState(AgentConnectionState state)
     {

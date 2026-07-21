@@ -52,34 +52,60 @@ try
     builder.Services.AddSingleton<HostUpdateNotificationStore>();
     builder.Services.AddSingleton<AppDb>();
     builder.Services.AddSingleton<AgentRegistry>();
+    builder.Services.AddSingleton<FleetRegistry>();
     builder.Services.AddSingleton<HyperVOperations>();
+    builder.Services.AddSingleton<FleetHostOperations>();
     builder.Services.AddSingleton<HostSystemOperations>();
+    builder.Services.AddSingleton<WorkerNodeOperations>();
+    builder.Services.AddSingleton<WorkerNodeLink>();
     builder.Services.AddSingleton<DiscordBot>();
 
     var app = builder.Build();
 
     app.UseWebSockets();
 
-    app.MapGet("/healthz", (AgentRegistry registry) =>
+    app.MapGet("/healthz", (HostConfig hostConfig, AgentRegistry localRegistry, FleetRegistry fleetRegistry) =>
     {
+        var agents = hostConfig.IsMaster
+            ? fleetRegistry.Snapshot()
+            : localRegistry.Snapshot();
+        var connected = agents.Count(agent => agent.Connected);
         return Results.Json(new
         {
             ok = true,
-            agents = registry.Snapshot().Count
+            mode = hostConfig.Mode,
+            nodeId = hostConfig.NodeId,
+            agents = agents.Count,
+            agentsConfigured = agents.Count,
+            agentsConnected = connected,
+            nodes = hostConfig.IsMaster ? fleetRegistry.NodeSnapshot() : null
         });
     });
 
-    app.MapGet("/agents", (AgentRegistry registry) =>
+    app.MapGet("/agents", (HostConfig hostConfig, AgentRegistry localRegistry, FleetRegistry fleetRegistry) =>
     {
-        return Results.Json(registry.Snapshot());
+        return Results.Json(hostConfig.IsMaster ? fleetRegistry.Snapshot() : localRegistry.Snapshot());
     });
 
-    app.MapGet("/config/accounts", () =>
+    app.MapGet("/nodes", (HostConfig hostConfig, FleetRegistry fleetRegistry) =>
     {
-        return Results.Json(config.Accounts.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase).ToArray());
+        return hostConfig.IsMaster
+            ? Results.Json(fleetRegistry.NodeSnapshot())
+            : Results.Json(new
+            {
+                nodeId = hostConfig.NodeId,
+                mode = hostConfig.Mode,
+                masterUrl = hostConfig.MasterUrl
+            });
     });
 
-    app.Map("/agent", async context =>
+    app.MapGet("/config/accounts", (HostConfig hostConfig, FleetRegistry fleetRegistry) =>
+    {
+        var accounts = hostConfig.IsMaster ? fleetRegistry.Accounts : hostConfig.Accounts;
+        return Results.Json(accounts.Keys.OrderBy(key => key, StringComparer.OrdinalIgnoreCase).ToArray());
+    });
+
+    RequestDelegate AgentEndpoint(string expectedAgentKind) => async context =>
     {
         if (!context.WebSockets.IsWebSocketRequest)
         {
@@ -90,24 +116,50 @@ try
 
         var registry = context.RequestServices.GetRequiredService<AgentRegistry>();
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
-        await registry.HandleWebSocketAsync(socket, context.RequestAborted);
-    });
+        await registry.HandleWebSocketAsync(socket, context.RequestAborted, expectedAgentKind);
+    };
+    app.Map("/agent", AgentEndpoint("vm"));
+    app.Map("/node", AgentEndpoint("host"));
 
-    var bot = app.Services.GetRequiredService<DiscordBot>();
-    await bot.StartAsync();
-    app.Lifetime.ApplicationStopping.Register(() =>
+    DiscordBot? bot = null;
+    Task? workerLinkTask = null;
+    if (config.IsMaster)
+    {
+        bot = app.Services.GetRequiredService<DiscordBot>();
+        await bot.StartAsync();
+        app.Lifetime.ApplicationStopping.Register(() =>
+        {
+            try
+            {
+                bot.StopAsync().GetAwaiter().GetResult();
+            }
+            catch
+            {
+                // Shutdown best effort.
+            }
+        });
+    }
+    else
+    {
+        var workerLink = app.Services.GetRequiredService<WorkerNodeLink>();
+        workerLinkTask = Task.Run(
+            () => workerLink.RunForeverAsync(app.Lifetime.ApplicationStopping),
+            CancellationToken.None);
+    }
+
+    await app.RunAsync();
+    if (workerLinkTask is not null)
     {
         try
         {
-            bot.StopAsync().GetAwaiter().GetResult();
+            await workerLinkTask;
         }
-        catch
+        catch (OperationCanceledException)
         {
-            // Shutdown best effort.
+            // Normal worker shutdown.
         }
-    });
+    }
 
-    await app.RunAsync();
     return 0;
 }
 catch (Exception ex)

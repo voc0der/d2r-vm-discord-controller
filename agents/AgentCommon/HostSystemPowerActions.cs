@@ -41,9 +41,9 @@ public static class HostSystemPowerActions
 
         return action switch
         {
-            HostSystemPowerAction.Sleep => $"D2RHost is going to sleep.{suffix}",
-            HostSystemPowerAction.Shutdown => $"D2RHost is shutting down.{suffix}",
-            HostSystemPowerAction.Restart => $"D2RHost is restarting.{suffix}",
+            HostSystemPowerAction.Sleep => $"D2RHost sleep requested.{suffix}",
+            HostSystemPowerAction.Shutdown => $"D2RHost shutdown requested.{suffix}",
+            HostSystemPowerAction.Restart => $"D2RHost restart requested.{suffix}",
             _ => throw new InvalidOperationException($"Unsupported system action: {action}")
         };
     }

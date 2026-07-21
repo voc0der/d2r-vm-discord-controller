@@ -1,0 +1,46 @@
+{
+  "mode": "worker",
+  "nodeId": "server-b",
+  "masterUrl": "ws://192.168.1.50:8080/node",
+  "masterSharedSecret": "replace_with_long_random_node_secret_02",
+  "nodeHeartbeatSeconds": 15,
+  "agentOfflineAfterSeconds": 45,
+  "disableDiscord": true,
+  "httpPort": 8080,
+  "databasePath": "C:\\D2ROps\\d2r-host.sqlite",
+  "startAllDelaySeconds": 20,
+  "powerShellPath": "powershell.exe",
+  "powerShellTimeoutSeconds": 90,
+  "allowedVmNamePrefixes": [
+    "d2r-"
+  ],
+  "agents": {
+    "d2r-hc-03": {
+      "kind": "vm",
+      "displayName": "BO-03 VM Agent",
+      "sharedSecret": "replace_with_long_random_vm_secret_03",
+      "remoteUrl": "parsec://optional-remote-control-link"
+    },
+    "d2r-hc-04": {
+      "kind": "vm",
+      "displayName": "BO-04 VM Agent",
+      "sharedSecret": "replace_with_long_random_vm_secret_04"
+    }
+  },
+  "accounts": {
+    "hc3": {
+      "agentId": "d2r-hc-03",
+      "nodeId": "server-b",
+      "vmName": "d2r-hc-03",
+      "displayName": "BO-03",
+      "characterSlot": 1
+    },
+    "hc4": {
+      "agentId": "d2r-hc-04",
+      "nodeId": "server-b",
+      "vmName": "d2r-hc-04",
+      "displayName": "BO-04",
+      "characterSlot": 1
+    }
+  }
+}

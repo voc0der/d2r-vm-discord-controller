@@ -101,7 +101,13 @@ public sealed class DiscordSlashCommandsTests
         foreach (var subcommand in system.Options!)
         {
             var metric = Assert.Single(subcommand.Options!, option => option.Name == "metric");
+            var node = Assert.Single(subcommand.Options!, option => option.Name == "node");
+            var all = Assert.Single(subcommand.Options!, option => option.Name == "all");
             Assert.Equal(ApplicationCommandOptionType.Boolean, metric.Type);
+            Assert.Equal(ApplicationCommandOptionType.String, node.Type);
+            Assert.False(node.IsRequired);
+            Assert.Equal(ApplicationCommandOptionType.Boolean, all.Type);
+            Assert.False(all.IsRequired);
         }
 
         Assert.Equal(ApplicationCommandOptionType.SubCommandGroup, vm.Type);

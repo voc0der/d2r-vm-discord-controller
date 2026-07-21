@@ -121,9 +121,10 @@ public sealed class HyperVOperations
         {
             await process.WaitForExitAsync(timeoutCts.Token);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
             TryKill(process);
+            cancellationToken.ThrowIfCancellationRequested();
             return CommandResult.Failure($"PowerShell command timed out after {_config.PowerShellTimeoutSeconds}s.");
         }
 

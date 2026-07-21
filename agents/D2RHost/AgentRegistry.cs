@@ -7,6 +7,10 @@ namespace D2RHost;
 
 public sealed class AgentRegistry
 {
+    private const int MinimumAdvertisedHeartbeatSeconds = 5;
+    private const int MaximumAdvertisedHeartbeatSeconds = 300;
+    private const int HeartbeatCollectionAndJitterGraceSeconds = 20;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly HostConfig _config;
@@ -17,6 +21,7 @@ public sealed class AgentRegistry
     private readonly ConcurrentDictionary<string, ConnectedAgent> _agents = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, PendingCommand> _pending = new();
     private readonly ConcurrentDictionary<string, byte> _autoUpdateAttempts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _registrationLock = new();
 
     // Raised on the websocket receive loop after an agent authenticates or drops; handlers
     // must hand off to a background task rather than block the agent's socket.
@@ -34,9 +39,14 @@ public sealed class AgentRegistry
         _notifications = notifications;
         _db = db;
         _logger = logger;
+
+        LoadPersistedAgentStatuses();
     }
 
-    public async Task HandleWebSocketAsync(WebSocket socket, CancellationToken cancellationToken)
+    public async Task HandleWebSocketAsync(
+        WebSocket socket,
+        CancellationToken cancellationToken,
+        string? expectedAgentKind = null)
     {
         string? agentId = null;
 
@@ -64,7 +74,7 @@ public sealed class AgentRegistry
                     var hello = JsonSerializer.Deserialize<HelloMessage>(raw, JsonOptions)
                         ?? throw new InvalidOperationException("Invalid hello payload.");
 
-                    if (!Authenticate(hello))
+                    if (!Authenticate(hello, expectedAgentKind))
                     {
                         _logger.LogWarning("Agent authentication failed for {AgentId}", hello.AgentId);
                         await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "authentication failed", cancellationToken);
@@ -87,7 +97,6 @@ public sealed class AgentRegistry
                     }
 
                     agentId = hello.AgentId;
-                    RegisterAgent(socket, hello);
                     await SendJsonAsync(
                         socket,
                         new
@@ -97,19 +106,22 @@ public sealed class AgentRegistry
                             ok = true
                         },
                         cancellationToken);
-                    QueueSelfUpdateAfterAuthentication(hello.AgentId, hello.Version);
+                    // Do not expose the connection to command senders until hello_ack is
+                    // on the wire; otherwise a command can race that un-serialized send.
+                    RegisterAgent(socket, hello);
+                    QueueSelfUpdateAfterAuthentication(hello.AgentId, hello.AgentKind, hello.Version);
                     continue;
                 }
 
                 if (string.Equals(type, "status", StringComparison.OrdinalIgnoreCase))
                 {
-                    UpdateStatus(agentId, document.RootElement);
+                    UpdateStatus(agentId, socket, document.RootElement);
                     continue;
                 }
 
                 if (string.Equals(type, "command_result", StringComparison.OrdinalIgnoreCase))
                 {
-                    CompleteCommand(document.RootElement);
+                    CompleteCommand(agentId, socket, document.RootElement);
                 }
             }
         }
@@ -125,25 +137,53 @@ public sealed class AgentRegistry
         {
             if (agentId is not null
                 && _agents.TryGetValue(agentId, out var current)
-                && ReferenceEquals(current.Socket, socket)
-                && _agents.TryRemove(agentId, out var removed))
+                && current.TryDetachSocket(socket))
             {
-                _db.UpsertAgentStatus(removed.Id, removed.Kind, connected: false, removed.LastStatusJson ?? "{}");
+                FailPendingCommands(current.Id, socket);
+                _db.MarkAgentDisconnected(current.Id);
                 _logger.LogWarning("Agent disconnected: {AgentId}", agentId);
                 ConnectivityChanged?.Invoke();
             }
         }
     }
 
+    private void LoadPersistedAgentStatuses()
+    {
+        var persistedStatuses = _db.GetAgentStatuses();
+        _db.MarkAllAgentsDisconnected();
+
+        foreach (var persisted in persistedStatuses)
+        {
+            if (!_config.Agents.TryGetValue(persisted.AgentId, out var configured))
+            {
+                continue;
+            }
+
+            _agents[persisted.AgentId] = new ConnectedAgent(
+                persisted.AgentId,
+                configured.Kind,
+                configured.DisplayName,
+                hostName: null,
+                version: null,
+                connectedAt: null,
+                persisted.LastSeenAt,
+                persisted.PayloadJson,
+                statusReceivedAt: persisted.LastSeenAt,
+                heartbeatSeconds: null,
+                socket: null);
+        }
+    }
+
     public IReadOnlyList<AgentSnapshot> Snapshot()
     {
+        var now = DateTimeOffset.UtcNow;
         return _config.Agents
             .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
             .Select(pair =>
             {
-                if (_agents.TryGetValue(pair.Key, out var connected))
+                if (_agents.TryGetValue(pair.Key, out var agent))
                 {
-                    return connected.ToSnapshot(connected: true);
+                    return agent.ToSnapshot(IsConnected(agent, now));
                 }
 
                 return new AgentSnapshot(
@@ -162,9 +202,9 @@ public sealed class AgentRegistry
 
     public AgentSnapshot? GetAgent(string agentId)
     {
-        if (_agents.TryGetValue(agentId, out var connected))
+        if (_agents.TryGetValue(agentId, out var agent))
         {
-            return connected.ToSnapshot(connected: true);
+            return agent.ToSnapshot(IsConnected(agent, DateTimeOffset.UtcNow));
         }
 
         if (!_config.Agents.TryGetValue(agentId, out var configured))
@@ -192,13 +232,13 @@ public sealed class AgentRegistry
         CancellationToken cancellationToken = default)
     {
         if (!_agents.TryGetValue(agentId, out var agent)
-            || agent.Socket.State != WebSocketState.Open)
+            || !TryGetConnectedSocket(agent, DateTimeOffset.UtcNow, out var socket))
         {
-            throw new InvalidOperationException($"Agent \"{agentId}\" is not connected.");
+            throw new InvalidOperationException($"Agent \"{agentId}\" is not connected or its heartbeat is stale.");
         }
 
         var commandId = Guid.NewGuid().ToString("N");
-        var pending = new PendingCommand(agentId, command);
+        var pending = new PendingCommand(agentId, command, socket);
         if (!_pending.TryAdd(commandId, pending))
         {
             throw new InvalidOperationException("Could not register pending command.");
@@ -211,7 +251,14 @@ public sealed class AgentRegistry
         {
             if (_pending.TryRemove(commandId, out var removed))
             {
-                removed.TrySetException(new TimeoutException($"Command \"{command}\" timed out for agent \"{agentId}\"."));
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    removed.TrySetCanceled(cancellationToken);
+                }
+                else
+                {
+                    removed.TrySetException(new TimeoutException($"Command \"{command}\" timed out for agent \"{agentId}\"."));
+                }
             }
         });
 
@@ -226,17 +273,89 @@ public sealed class AgentRegistry
             },
             JsonOptions);
 
-        await agent.SendLock.WaitAsync(cancellationToken);
+        var sendLockHeld = false;
         try
         {
-            await agent.Socket.SendAsync(payload, WebSocketMessageType.Text, true, cancellationToken);
+            await agent.SendLock.WaitAsync(timeoutCts.Token);
+            sendLockHeld = true;
+
+            if (!_pending.TryGetValue(commandId, out var activePending)
+                || !ReferenceEquals(activePending, pending))
+            {
+                return await pending.Task;
+            }
+
+            if (!_agents.TryGetValue(agentId, out var current)
+                || !ReferenceEquals(current, agent)
+                || !agent.HasSocket(socket)
+                || !IsConnected(agent, DateTimeOffset.UtcNow))
+            {
+                throw new InvalidOperationException($"Agent \"{agentId}\" disconnected or its heartbeat became stale before the command was sent.");
+            }
+
+            await socket.SendAsync(payload, WebSocketMessageType.Text, true, timeoutCts.Token);
+        }
+        catch
+        {
+            if (_pending.TryRemove(commandId, out _))
+            {
+                throw;
+            }
+
+            return await pending.Task;
         }
         finally
         {
-            agent.SendLock.Release();
+            if (sendLockHeld)
+            {
+                agent.SendLock.Release();
+            }
         }
 
         return await pending.Task;
+    }
+
+    private bool IsConnected(ConnectedAgent agent, DateTimeOffset now)
+    {
+        return TryGetConnectedSocket(agent, now, out _);
+    }
+
+    private bool TryGetConnectedSocket(
+        ConnectedAgent agent,
+        DateTimeOffset now,
+        out WebSocket socket)
+    {
+        var currentSocket = agent.Socket;
+        var lastSeenAt = agent.LastSeenAt;
+        if (currentSocket is not null
+            && currentSocket.State == WebSocketState.Open
+            && lastSeenAt is not null
+            && now - lastSeenAt.Value <= GetOfflineThreshold(agent)
+            && agent.HasSocket(currentSocket))
+        {
+            socket = currentSocket;
+            return true;
+        }
+
+        socket = null!;
+        return false;
+    }
+
+    private TimeSpan GetOfflineThreshold(ConnectedAgent agent)
+    {
+        var configured = TimeSpan.FromSeconds(_config.AgentOfflineAfterSeconds);
+        if (agent.HeartbeatSeconds is not { } heartbeatSeconds)
+        {
+            return configured;
+        }
+
+        var advertised = Math.Clamp(
+            heartbeatSeconds,
+            MinimumAdvertisedHeartbeatSeconds,
+            MaximumAdvertisedHeartbeatSeconds);
+        var negotiated = TimeSpan.FromSeconds(
+            advertised + HeartbeatCollectionAndJitterGraceSeconds);
+        return negotiated > configured ? negotiated : configured;
     }
 
     private static int GetAgentCommandTimeoutMs(TimeSpan hostTimeout)
@@ -250,39 +369,68 @@ public sealed class AgentRegistry
         return (int)Math.Clamp(timeout.TotalMilliseconds, 1, int.MaxValue);
     }
 
-    private bool Authenticate(HelloMessage hello)
+    private bool Authenticate(HelloMessage hello, string? expectedAgentKind)
     {
         return _config.Agents.TryGetValue(hello.AgentId, out var configured)
+            && (string.IsNullOrWhiteSpace(expectedAgentKind)
+                || string.Equals(expectedAgentKind, hello.AgentKind, StringComparison.OrdinalIgnoreCase))
             && string.Equals(configured.Kind, hello.AgentKind, StringComparison.OrdinalIgnoreCase)
             && configured.SharedSecret == hello.SharedSecret;
     }
 
     private void RegisterAgent(WebSocket socket, HelloMessage hello)
     {
-        if (_agents.TryRemove(hello.AgentId, out var existing))
+        var configured = _config.Agents[hello.AgentId];
+        var now = DateTimeOffset.UtcNow;
+        ConnectedAgent? existing;
+        ConnectedAgent connected;
+        WebSocket? existingSocket;
+        lock (_registrationLock)
         {
-            _ = existing.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "new connection established", CancellationToken.None);
+            _agents.TryGetValue(hello.AgentId, out existing);
+            connected = new ConnectedAgent(
+                hello.AgentId,
+                hello.AgentKind,
+                configured.DisplayName,
+                hello.HostName,
+                hello.Version,
+                now,
+                now,
+                existing?.LastStatusJson,
+                statusReceivedAt: null,
+                heartbeatSeconds: hello.HeartbeatSeconds,
+                socket: socket);
+
+            _agents[hello.AgentId] = connected;
+            existingSocket = existing?.Socket;
+            if (existingSocket is not null && !ReferenceEquals(existingSocket, socket))
+            {
+                existing!.TryDetachSocket(existingSocket);
+            }
         }
 
-        var configured = _config.Agents[hello.AgentId];
-        var connected = new ConnectedAgent(
-            hello.AgentId,
-            hello.AgentKind,
-            configured.DisplayName,
-            hello.HostName,
-            hello.Version,
-            DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow,
-            socket);
+        _db.UpsertAgentStatus(connected.Id, connected.Kind, connected: true, connected.LastStatusJson ?? "{}");
 
-        _agents[hello.AgentId] = connected;
-        _db.UpsertAgentStatus(connected.Id, connected.Kind, connected: true, "{}");
+        if (existingSocket is not null && !ReferenceEquals(existingSocket, socket))
+        {
+            FailPendingCommands(hello.AgentId, existingSocket);
+            _ = existingSocket.CloseAsync(
+                WebSocketCloseStatus.NormalClosure,
+                "new connection established",
+                CancellationToken.None);
+        }
+
         _logger.LogInformation("Agent authenticated: {AgentId}", hello.AgentId);
         ConnectivityChanged?.Invoke();
     }
 
-    private void QueueSelfUpdateAfterAuthentication(string agentId, string? version)
+    private void QueueSelfUpdateAfterAuthentication(string agentId, string agentKind, string? version)
     {
+        if (!string.Equals(agentKind, "vm", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         if (!_autoUpdate.Enabled)
         {
             _logger.LogDebug(
@@ -388,23 +536,86 @@ public sealed class AgentRegistry
                 : null;
     }
 
-    private void UpdateStatus(string agentId, JsonElement root)
+    private void UpdateStatus(string agentId, WebSocket socket, JsonElement root)
     {
-        if (!_agents.TryGetValue(agentId, out var agent))
+        if (!_agents.TryGetValue(agentId, out var agent) || !agent.HasSocket(socket))
         {
             return;
         }
 
         var statusJson = root.GetProperty("status").GetRawText();
-        agent.LastSeenAt = DateTimeOffset.UtcNow;
-        agent.LastStatusJson = statusJson;
-        _db.UpsertAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
+        var previousConnectivity = string.Equals(agent.Kind, "host", StringComparison.OrdinalIgnoreCase)
+            ? GetAdvertisedAgentConnectivity(agent.LastStatusJson)
+            : null;
+        agent.UpdateStatus(DateTimeOffset.UtcNow, statusJson);
+        if (_agents.TryGetValue(agentId, out var current)
+            && ReferenceEquals(current, agent)
+            && current.HasSocket(socket))
+        {
+            _db.UpsertAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
+        }
+
+        if (previousConnectivity is not null
+            && !string.Equals(
+                previousConnectivity,
+                GetAdvertisedAgentConnectivity(statusJson),
+                StringComparison.Ordinal))
+        {
+            ConnectivityChanged?.Invoke();
+        }
     }
 
-    private void CompleteCommand(JsonElement root)
+    private static string? GetAdvertisedAgentConnectivity(string? statusJson)
+    {
+        if (string.IsNullOrWhiteSpace(statusJson))
+        {
+            return "";
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(statusJson);
+            if (!document.RootElement.TryGetProperty("agents", out var agents)
+                || agents.ValueKind != JsonValueKind.Array)
+            {
+                return "";
+            }
+
+            return string.Join(
+                "|",
+                agents.EnumerateArray()
+                    .Select(agent =>
+                    {
+                        if (agent.ValueKind != JsonValueKind.Object)
+                        {
+                            return "";
+                        }
+
+                        var id = agent.TryGetProperty("id", out var idProperty)
+                            && idProperty.ValueKind == JsonValueKind.String
+                            ? idProperty.GetString() ?? ""
+                            : "";
+                        var connected = agent.TryGetProperty("snapshot", out var snapshot)
+                            && snapshot.ValueKind == JsonValueKind.Object
+                            && snapshot.TryGetProperty("connected", out var connectedProperty)
+                            && connectedProperty.ValueKind == JsonValueKind.True;
+                        return $"{id.ToUpperInvariant()}:{connected}";
+                    })
+                    .OrderBy(value => value, StringComparer.Ordinal));
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return "";
+        }
+    }
+
+    private void CompleteCommand(string sourceAgentId, WebSocket socket, JsonElement root)
     {
         var commandId = root.GetProperty("commandId").GetString() ?? "";
-        if (!_pending.TryRemove(commandId, out var pending))
+        if (!_pending.TryGetValue(commandId, out var pending)
+            || !string.Equals(pending.AgentId, sourceAgentId, StringComparison.OrdinalIgnoreCase)
+            || !ReferenceEquals(pending.Socket, socket)
+            || !_pending.TryRemove(commandId, out pending))
         {
             // Most commonly this is a late result: the agent's command actually ran to
             // completion (often successfully) after the host already gave up waiting and
@@ -430,31 +641,56 @@ public sealed class AgentRegistry
             root.GetProperty("message").GetString() ?? "",
             root.TryGetProperty("data", out var data) ? data.Clone() : null);
 
-        if (result.Data is { } resultData && LooksLikeStatusPayload(resultData))
+        if (string.Equals(pending.Command, "status", StringComparison.OrdinalIgnoreCase)
+            && result.Data is { ValueKind: JsonValueKind.Object } resultData)
         {
-            UpdateStatusJson(result.AgentId, resultData.GetRawText());
+            UpdateStatusJson(pending.AgentId, socket, resultData.GetRawText());
         }
 
         _db.InsertCommandHistory(commandId, pending.AgentId, pending.Command, result.Ok, result.Message);
         pending.TrySetResult(result);
     }
 
-    private static bool LooksLikeStatusPayload(JsonElement data)
+    private void UpdateStatusJson(string agentId, WebSocket socket, string statusJson)
     {
-        return data.ValueKind == JsonValueKind.Object
-            && data.TryGetProperty("machineTelemetry", out _);
-    }
-
-    private void UpdateStatusJson(string agentId, string statusJson)
-    {
-        if (!_agents.TryGetValue(agentId, out var agent))
+        if (!_agents.TryGetValue(agentId, out var agent) || !agent.HasSocket(socket))
         {
             return;
         }
 
-        agent.LastSeenAt = DateTimeOffset.UtcNow;
-        agent.LastStatusJson = statusJson;
-        _db.UpsertAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
+        agent.UpdateStatus(DateTimeOffset.UtcNow, statusJson);
+        if (_agents.TryGetValue(agentId, out var current)
+            && ReferenceEquals(current, agent)
+            && current.HasSocket(socket))
+        {
+            _db.UpsertAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
+        }
+    }
+
+    private void FailPendingCommands(string agentId, WebSocket socket)
+    {
+        var failedCount = 0;
+        foreach (var pair in _pending)
+        {
+            if (!string.Equals(pair.Value.AgentId, agentId, StringComparison.OrdinalIgnoreCase)
+                || !ReferenceEquals(pair.Value.Socket, socket)
+                || !_pending.TryRemove(pair.Key, out var pending))
+            {
+                continue;
+            }
+
+            failedCount++;
+            pending.TrySetException(new InvalidOperationException(
+                $"Agent \"{agentId}\" disconnected before command \"{pending.Command}\" completed."));
+        }
+
+        if (failedCount > 0)
+        {
+            _logger.LogWarning(
+                "Failed {PendingCommandCount} pending command(s) after agent {AgentId} disconnected.",
+                failedCount,
+                agentId);
+        }
     }
 
     private static async Task<string?> ReceiveStringAsync(WebSocket socket, CancellationToken cancellationToken)
@@ -499,19 +735,29 @@ public sealed class AgentRegistry
         string SharedSecret,
         string? Version,
         string? HostName,
+        int? HeartbeatSeconds = null,
         bool ProbeOnly = false);
 
     private sealed class ConnectedAgent
     {
+        private readonly object _statusLock = new();
+        private WebSocket? _socket;
+        private DateTimeOffset? _lastSeenAt;
+        private string? _lastStatusJson;
+        private DateTimeOffset? _statusReceivedAt;
+
         public ConnectedAgent(
             string id,
             string kind,
             string? displayName,
             string? hostName,
             string? version,
-            DateTimeOffset connectedAt,
-            DateTimeOffset lastSeenAt,
-            WebSocket socket)
+            DateTimeOffset? connectedAt,
+            DateTimeOffset? lastSeenAt,
+            string? lastStatusJson,
+            DateTimeOffset? statusReceivedAt,
+            int? heartbeatSeconds,
+            WebSocket? socket)
         {
             Id = id;
             Kind = kind;
@@ -519,8 +765,11 @@ public sealed class AgentRegistry
             HostName = hostName;
             Version = version;
             ConnectedAt = connectedAt;
-            LastSeenAt = lastSeenAt;
-            Socket = socket;
+            HeartbeatSeconds = heartbeatSeconds;
+            _lastSeenAt = lastSeenAt;
+            _lastStatusJson = lastStatusJson;
+            _statusReceivedAt = statusReceivedAt;
+            _socket = socket;
         }
 
         public string Id { get; }
@@ -528,24 +777,79 @@ public sealed class AgentRegistry
         public string? DisplayName { get; }
         public string? HostName { get; }
         public string? Version { get; }
-        public DateTimeOffset ConnectedAt { get; }
-        public DateTimeOffset LastSeenAt { get; set; }
-        public string? LastStatusJson { get; set; }
-        public WebSocket Socket { get; }
+        public DateTimeOffset? ConnectedAt { get; }
+        public int? HeartbeatSeconds { get; }
+        public DateTimeOffset? LastSeenAt
+        {
+            get
+            {
+                lock (_statusLock)
+                {
+                    return _lastSeenAt;
+                }
+            }
+        }
+
+        public string? LastStatusJson
+        {
+            get
+            {
+                lock (_statusLock)
+                {
+                    return _lastStatusJson;
+                }
+            }
+        }
+
+        public DateTimeOffset? StatusReceivedAt
+        {
+            get
+            {
+                lock (_statusLock)
+                {
+                    return _statusReceivedAt;
+                }
+            }
+        }
+
+        public WebSocket? Socket => Volatile.Read(ref _socket);
         public SemaphoreSlim SendLock { get; } = new(1, 1);
+
+        public bool HasSocket(WebSocket socket) => ReferenceEquals(Socket, socket);
+
+        public bool TryDetachSocket(WebSocket socket)
+        {
+            return ReferenceEquals(
+                Interlocked.CompareExchange(ref _socket, null, socket),
+                socket);
+        }
+
+        public void UpdateStatus(DateTimeOffset lastSeenAt, string statusJson)
+        {
+            lock (_statusLock)
+            {
+                _lastSeenAt = lastSeenAt;
+                _lastStatusJson = statusJson;
+                _statusReceivedAt = lastSeenAt;
+            }
+        }
 
         public AgentSnapshot ToSnapshot(bool connected)
         {
-            return new AgentSnapshot(
-                Id,
-                Kind,
-                DisplayName,
-                HostName,
-                Version,
-                connected,
-                ConnectedAt,
-                LastSeenAt,
-                LastStatusJson);
+            lock (_statusLock)
+            {
+                return new AgentSnapshot(
+                    Id,
+                    Kind,
+                    DisplayName,
+                    HostName,
+                    Version,
+                    connected,
+                    ConnectedAt,
+                    _lastSeenAt,
+                    _lastStatusJson,
+                    _statusReceivedAt);
+            }
         }
     }
 
@@ -554,18 +858,22 @@ public sealed class AgentRegistry
         private readonly TaskCompletionSource<CommandResultInfo> _source =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public PendingCommand(string agentId, string command)
+        public PendingCommand(string agentId, string command, WebSocket socket)
         {
             AgentId = agentId;
             Command = command;
+            Socket = socket;
         }
 
         public string AgentId { get; }
         public string Command { get; }
+        public WebSocket Socket { get; }
         public Task<CommandResultInfo> Task => _source.Task;
 
         public void TrySetResult(CommandResultInfo result) => _source.TrySetResult(result);
         public void TrySetException(Exception exception) => _source.TrySetException(exception);
+        public void TrySetCanceled(CancellationToken cancellationToken) =>
+            _source.TrySetCanceled(cancellationToken);
     }
 }
 
@@ -578,7 +886,8 @@ public sealed record AgentSnapshot(
     bool Connected,
     DateTimeOffset? ConnectedAt,
     DateTimeOffset? LastSeenAt,
-    string? LastStatusJson);
+    string? LastStatusJson,
+    DateTimeOffset? StatusReceivedAt = null);
 
 public sealed record CommandResultInfo(
     string AgentId,
