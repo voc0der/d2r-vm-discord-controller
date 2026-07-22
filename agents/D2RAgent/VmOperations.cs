@@ -16,6 +16,14 @@ public sealed class VmOperations
     // attempts plus launch overhead, so this cooldown is mostly a backstop against a pathological
     // case (a session that keeps coming back broken) turning into a tight restart loop.
     private const int BrokenSessionRestartCooldownSeconds = 60;
+    // A repeat broken-session recovery inside this window - with no healthy session observed in
+    // between - means the D2R restart changed nothing, which points past the game at the
+    // launcher (see RecoverFromBrokenBattleNetSessionAsync). Generous on purpose: while the
+    // session stays broken, consecutive recovery attempts arrive only minutes apart (cooldown
+    // skips plus a follow-auto cycle plus the ~45s reconnect timeout), and a healthy cycle
+    // resets the streak, so the window only has to separate "same incident, restart didn't
+    // take" from "new incident on a VM whose last recovery was long ago".
+    private const int BrokenSessionEscalationWindowMinutes = 30;
     // Per-VM config can be stale on already-provisioned satellites (it predates this
     // floor and won't pick up a new default just because the code changed). These
     // are hard floors applied on top of the configured/clamped values rather than
@@ -86,6 +94,9 @@ public sealed class VmOperations
     private DateTimeOffset? _lastLobbyOrGameInteractionUtc;
     private DateTimeOffset? _lastObservedD2RStartUtc;
     private DateTimeOffset? _lastBrokenSessionRestartUtc;
+    // Consecutive broken-session recoveries with no confirmed-healthy session in between;
+    // guarded by _activityLock, reset by MarkBattleNetSessionHealthy.
+    private int _brokenSessionRecoveryStreak;
     private string? _lastActivityReason;
     private LastInputActionSnapshot? _lastInputAction;
     private string? _lastObservedFrame;
@@ -532,26 +543,99 @@ public sealed class VmOperations
         return await LaunchD2RAsync(cancellationToken);
     }
 
+    internal enum BrokenSessionRecoveryAction
+    {
+        // The last recovery was too recent; nothing was restarted this cycle.
+        SkipRecentRestart,
+        RestartD2R,
+        RestartBattleNetAndD2R
+    }
+
+    internal readonly record struct BrokenSessionRecoveryDecision(BrokenSessionRecoveryAction Action, int RecoveryStreak);
+
+    // Pure decision half of RecoverFromBrokenBattleNetSessionAsync: given the last recovery
+    // time and the running streak of recoveries that never produced a confirmed-healthy
+    // session, choose what this recovery should restart. The first recovery of an incident
+    // restarts D2R alone; a repeat inside the escalation window means that restart changed
+    // nothing, so the launcher itself is wedged and gets cold-restarted too.
+    internal static BrokenSessionRecoveryDecision ClassifyBrokenSessionRecovery(
+        DateTimeOffset? lastRecoveryUtc,
+        int recoveryStreak,
+        DateTimeOffset nowUtc)
+    {
+        if (lastRecoveryUtc is { } last
+            && nowUtc - last < TimeSpan.FromSeconds(BrokenSessionRestartCooldownSeconds))
+        {
+            return new(BrokenSessionRecoveryAction.SkipRecentRestart, recoveryStreak);
+        }
+
+        var streak = lastRecoveryUtc is { } previous
+            && nowUtc - previous < TimeSpan.FromMinutes(BrokenSessionEscalationWindowMinutes)
+            ? recoveryStreak + 1
+            : 1;
+        return new(
+            streak >= 2 ? BrokenSessionRecoveryAction.RestartBattleNetAndD2R : BrokenSessionRecoveryAction.RestartD2R,
+            streak);
+    }
+
     // A stuck-offline character screen that won't reconnect via the Online tab means the
     // client's Battle.net session itself is wedged - no client-side click fixes that, only a
     // full close + relaunch does, so Battle.net can hand it a fresh session on the next login.
-    // Returns false (no restart attempted) if the last one was too recent, so a session that
-    // keeps coming back broken doesn't turn into a tight kill/relaunch loop.
-    private async Task<bool> RecoverFromBrokenBattleNetSessionAsync(CancellationToken cancellationToken)
+    // Skips (nothing restarted) if the last recovery was too recent, so a session that keeps
+    // coming back broken doesn't turn into a tight kill/relaunch loop.
+    //
+    // One D2R restart is usually enough - but when the launcher ITSELF is wedged (Battle.net
+    // stuck at "Connecting..." with the account never signing in), every relaunched D2R just
+    // lands back on "Cannot Connect to Server", forever. Only killing Battle.net.exe clears
+    // that state, so a repeat recovery with no healthy session observed since the last one
+    // escalates to a cold restart of the launcher as well (ClassifyBrokenSessionRecovery);
+    // MarkBattleNetSessionHealthy resets the streak once a live session is confirmed.
+    private async Task<BrokenSessionRecoveryAction> RecoverFromBrokenBattleNetSessionAsync(CancellationToken cancellationToken)
+    {
+        BrokenSessionRecoveryDecision decision;
+        lock (_activityLock)
+        {
+            decision = ClassifyBrokenSessionRecovery(
+                _lastBrokenSessionRestartUtc,
+                _brokenSessionRecoveryStreak,
+                DateTimeOffset.UtcNow);
+            if (decision.Action != BrokenSessionRecoveryAction.SkipRecentRestart)
+            {
+                _brokenSessionRecoveryStreak = decision.RecoveryStreak;
+                _lastBrokenSessionRestartUtc = DateTimeOffset.UtcNow;
+            }
+        }
+
+        switch (decision.Action)
+        {
+            case BrokenSessionRecoveryAction.RestartD2R:
+                await RestartD2RAsync(cancellationToken);
+                break;
+            case BrokenSessionRecoveryAction.RestartBattleNetAndD2R:
+                MarkCommandCheckpoint("RecoverFromBrokenBattleNetSession: D2R restart did not produce a working session; cold-restarting Battle.net too");
+                KillD2R();
+                _ = KillProcesses(GetBattleNetProcessNames());
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                if (!_config.PreferBattleNetExecLaunch && !string.IsNullOrWhiteSpace(_config.D2RPath))
+                {
+                    // The direct-launch path never touches the launcher on its own; exec
+                    // launches cold-start Battle.net inside LaunchD2RAsync (with a retry).
+                    _ = LaunchBattleNet();
+                }
+
+                await LaunchD2RAsync(cancellationToken);
+                break;
+        }
+
+        return decision.Action;
+    }
+
+    private void MarkBattleNetSessionHealthy()
     {
         lock (_activityLock)
         {
-            if (_lastBrokenSessionRestartUtc is { } last
-                && DateTimeOffset.UtcNow - last < TimeSpan.FromSeconds(BrokenSessionRestartCooldownSeconds))
-            {
-                return false;
-            }
-
-            _lastBrokenSessionRestartUtc = DateTimeOffset.UtcNow;
+            _brokenSessionRecoveryStreak = 0;
         }
-
-        await RestartD2RAsync(cancellationToken);
-        return true;
     }
 
     public async Task RunIdleMonitorAsync(Action<string>? log, CancellationToken cancellationToken)
@@ -1819,12 +1903,15 @@ public sealed class VmOperations
         // failure instead so an interactive caller isn't surprised by their game being restarted.
         if (IsCharacterScreenOffline(input) && !await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
         {
-            MarkCommandCheckpoint("FollowAutoCheckAsync: offline character screen did not reconnect; recovering with a D2R restart");
-            var restarted = await RecoverFromBrokenBattleNetSessionAsync(cancellationToken);
+            MarkCommandCheckpoint("FollowAutoCheckAsync: offline character screen did not reconnect; recovering with a restart");
+            var recovery = await RecoverFromBrokenBattleNetSessionAsync(cancellationToken);
             return CommandResult.Success(
-                restarted
-                    ? "D2R's Battle.net session was stuck offline and the Online tab did not reconnect; restarted D2R to force a fresh session. Waiting for the next follow-auto cycle."
-                    : "D2R's Battle.net session is still stuck offline after a recent restart; waiting before trying again.",
+                recovery switch
+                {
+                    BrokenSessionRecoveryAction.RestartD2R => "D2R's Battle.net session was stuck offline and the Online tab did not reconnect; restarted D2R to force a fresh session. Waiting for the next follow-auto cycle.",
+                    BrokenSessionRecoveryAction.RestartBattleNetAndD2R => "D2R came back from a restart still stuck offline, so the Battle.net launcher itself is wedged (stuck Connecting); killed Battle.net.exe and cold-started the launcher and D2R. Waiting for the next follow-auto cycle.",
+                    _ => "D2R's Battle.net session is still stuck offline after a recent restart; waiting before trying again."
+                },
                 new
                 {
                     bound = true,
@@ -1901,6 +1988,11 @@ public sealed class VmOperations
         {
             return friends;
         }
+
+        // A live friends list proves this client's Battle.net session works again, so the
+        // next stuck-offline detection is a fresh incident - not evidence that the last
+        // restart failed (which is what escalates recovery to a Battle.net cold start).
+        MarkBattleNetSessionHealthy();
 
         var maxRows = GetFollowFingerprintMaxScanRows(_config.Ui);
         var rowMatches = new List<FriendRowFingerprintMatch>();
