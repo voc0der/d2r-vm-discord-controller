@@ -13,7 +13,15 @@ internal static class Program
 
         try
         {
-            if (await SelfUpdater.CheckAndOfferUpdateAsync(SelfUpdateOptions.D2RAgent(args)))
+            var startupUpdate = await SelfUpdater.CheckAndStartUpdateAsync(
+                SelfUpdateOptions.D2RAgent(args),
+                requirePrompt: false);
+            if (!startupUpdate.Ok)
+            {
+                Console.WriteLine($"Update check failed, continuing startup: {startupUpdate.Message}");
+            }
+
+            if (startupUpdate.UpdateStarted)
             {
                 return 0;
             }

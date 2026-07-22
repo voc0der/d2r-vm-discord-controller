@@ -47,7 +47,7 @@ The host executable checks the latest GitHub release on startup. If a newer vers
 
 When `guildChannel` is configured and `updateNotificationsEnabled` is true, the master posts Discord notifications when it first comes online, when the master update completes, and when a master-local VM agent starts its self-update. Worker updates still apply locally, but worker notification queues are not forwarded to Discord.
 
-The VM agent executable can still check for an update when launched from an interactive Windows console. If a newer version exists, the app asks whether to update in place.
+The VM agent executable also checks for an update whenever it starts. If a newer version exists, it automatically starts an in-place update without waiting for console input.
 
 When an update is started, the app starts a PowerShell updater, exits, downloads the matching release zip, replaces the files in the exe directory, and restarts the published exe from that release. If the exe name changed, the updater also points the scheduled task at the new exe before starting it.
 
