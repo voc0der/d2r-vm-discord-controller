@@ -39,6 +39,10 @@ try
         Reason: hostUpdate.Message);
 
     var config = HostConfigLoader.LoadOrCreate(configPath);
+    foreach (var warning in HostConfigLoader.GetWarnings(config))
+    {
+        LogStartup($"Configuration warning: {warning}");
+    }
 
     var builder = WebApplication.CreateBuilder(args);
     builder.WebHost.UseUrls($"http://0.0.0.0:{config.HttpPort}");

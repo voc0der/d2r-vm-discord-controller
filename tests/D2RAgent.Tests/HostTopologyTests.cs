@@ -546,6 +546,69 @@ public sealed class HostTopologyTests
     }
 
     [Fact]
+    public void ConfigWarningsNameUnmappedVmAgents()
+    {
+        var config = new HostConfig
+        {
+            Agents = new Dictionary<string, HostAgentConfig>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["D2R_1"] = new() { Kind = "vm" },
+                ["D2R_2"] = new() { Kind = "vm" }
+            },
+            Accounts = new Dictionary<string, AccountConfig>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["hc1"] = new() { AgentId = "d2r_1" }
+            }
+        };
+
+        var warnings = HostConfigLoader.GetWarnings(config);
+
+        Assert.Contains(
+            warnings,
+            warning => warning.Contains("D2R_2", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            warnings,
+            warning => warning.Contains("D2R_1", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ConfigWarningsNameEveryAccountSharingOneVmAgent()
+    {
+        var config = new HostConfig
+        {
+            Agents = new Dictionary<string, HostAgentConfig>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["D2R_1"] = new() { Kind = "vm" }
+            },
+            Accounts = new Dictionary<string, AccountConfig>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["hc1"] = new() { AgentId = "D2R_1" },
+                ["mule"] = new() { AgentId = "d2r_1" }
+            }
+        };
+
+        var warning = Assert.Single(HostConfigLoader.GetWarnings(config));
+
+        Assert.Contains("D2R_1", warning, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("hc1", warning, StringComparison.Ordinal);
+        Assert.Contains("mule", warning, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ConfigWarningsDoNotRequireAccountsForHostAgents()
+    {
+        var config = new HostConfig
+        {
+            Agents = new Dictionary<string, HostAgentConfig>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["server-b"] = new() { Kind = "host" }
+            }
+        };
+
+        Assert.Empty(HostConfigLoader.GetWarnings(config));
+    }
+
+    [Fact]
     public async Task WorkerStatusProjectionOmitsMasterAndAgentSecrets()
     {
         using var fixture = new WorkerOperationsFixture();
@@ -594,6 +657,89 @@ public sealed class HostTopologyTests
 
         Assert.False(result.Ok);
         Assert.Equal("agent_command args must be a JSON object.", result.Message);
+    }
+
+    [Fact]
+    public void AccountConnectivityDistinguishesOfflineMappingsFromConnectedUnmappedAgents()
+    {
+        var accounts = Enumerable.Range(1, 4).ToDictionary(
+            index => $"hc{index}",
+            index => new AccountConfig { AgentId = $"D2R_{index}" },
+            StringComparer.OrdinalIgnoreCase);
+        var agents = Enumerable.Range(1, 8)
+            .Select(index => VmAgentSnapshot($"D2R_{index}", connected: index >= 5))
+            .ToArray();
+
+        var connectivity = FleetRegistry.ClassifyAccountConnectivity(accounts, agents);
+
+        Assert.Empty(connectivity.Online);
+        Assert.Equal(
+            ["hc1", "hc2", "hc3", "hc4"],
+            connectivity.Offline.Select(entry => entry.Key));
+        Assert.Equal(
+            ["D2R_1", "D2R_2", "D2R_3", "D2R_4"],
+            connectivity.Offline.Select(entry => entry.Value.AgentId));
+        Assert.Equal(
+            ["D2R_5", "D2R_6", "D2R_7", "D2R_8"],
+            connectivity.ConnectedUnaddressableAgents.Select(agent => agent.Id));
+    }
+
+    [Fact]
+    public void AccountConnectivityMatchesMappedAgentIdsCaseInsensitively()
+    {
+        var account = new AccountConfig { AgentId = "d2r_1" };
+        var accounts = new Dictionary<string, AccountConfig>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["hc1"] = account
+        };
+
+        var connectivity = FleetRegistry.ClassifyAccountConnectivity(
+            accounts,
+            [VmAgentSnapshot("D2R_1", connected: true)]);
+
+        var online = Assert.Single(connectivity.Online);
+        Assert.Equal("hc1", online.Key);
+        Assert.Same(account, online.Value);
+        Assert.Empty(connectivity.Offline);
+        Assert.Empty(connectivity.ConnectedUnaddressableAgents);
+    }
+
+    [Fact]
+    public void AccountConnectivityDiagnosticsNameNodeAgentAndOfflineMapping()
+    {
+        var accounts = new Dictionary<string, AccountConfig>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["hc1"] = new() { AgentId = "D2R_1" }
+        };
+        var agentNodes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["d2r_5"] = "server-b"
+        };
+        var connectivity = FleetRegistry.ClassifyAccountConnectivity(
+            accounts,
+            [
+                VmAgentSnapshot("D2R_1", connected: false),
+                VmAgentSnapshot("D2R_5", connected: true)
+            ],
+            agentNodes);
+
+        var unaddressable = Assert.Single(connectivity.ConnectedUnaddressableAgents);
+        Assert.Equal("server-b", unaddressable.NodeId);
+        Assert.Equal(
+            [
+                "Accounts: 0/1 available",
+                "Connected VM agents not addressable by a fleet account: server-b/D2R_5"
+            ],
+            DiscordBot.FormatAccountConnectivityHealthLines(connectivity));
+
+        var suffix = DiscordBot.FormatOfflineSkipSuffix(
+            connectivity.Offline,
+            connectivity.ConnectedUnaddressableAgents);
+        Assert.Contains("server-b/D2R_5", suffix, StringComparison.Ordinal);
+        Assert.Contains("hc1 -> D2R_1", suffix, StringComparison.Ordinal);
+        Assert.True(
+            suffix.IndexOf("server-b/D2R_5", StringComparison.Ordinal)
+                < suffix.IndexOf("hc1 -> D2R_1", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -662,6 +808,11 @@ public sealed class HostTopologyTests
         Assert.Equal("hc2", account.Key);
         Assert.Equal("vm-hc2", account.Value.AgentId);
         Assert.Equal("server-b", account.Value.NodeId);
+
+        var connectivity = fleet.GetAccountConnectivity();
+        Assert.Empty(connectivity.Online);
+        Assert.Equal("hc2", Assert.Single(connectivity.Offline).Key);
+        Assert.Empty(connectivity.ConnectedUnaddressableAgents);
 
         var remoteAgent = Assert.IsType<AgentSnapshot>(fleet.GetAgent("vm-hc2"));
         Assert.False(remoteAgent.Connected);
@@ -819,6 +970,20 @@ public sealed class HostTopologyTests
             sharedSecret = ValidSecret
         }
     };
+
+    private static AgentSnapshot VmAgentSnapshot(string agentId, bool connected)
+    {
+        return new AgentSnapshot(
+            agentId,
+            "vm",
+            agentId,
+            HostName: null,
+            Version: null,
+            connected,
+            ConnectedAt: null,
+            LastSeenAt: null,
+            LastStatusJson: null);
+    }
 
     private static HostConfig LoadConfig(object document)
     {

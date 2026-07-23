@@ -83,6 +83,51 @@ public static class HostConfigLoader
         File.WriteAllText(path, json + Environment.NewLine);
     }
 
+    public static IReadOnlyList<string> GetWarnings(HostConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        var warnings = new List<string>();
+        var vmAgentIds = config.Agents
+            .Where(pair => string.Equals(pair.Value.Kind, "vm", StringComparison.OrdinalIgnoreCase))
+            .Select(pair => pair.Key)
+            .OrderBy(agentId => agentId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var accountsByAgent = config.Accounts
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Value.AgentId))
+            .GroupBy(pair => pair.Value.AgentId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(pair => pair.Key)
+                    .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+        var unmappedVmAgentIds = vmAgentIds
+            .Where(agentId => !accountsByAgent.ContainsKey(agentId))
+            .ToArray();
+        if (unmappedVmAgentIds.Length > 0)
+        {
+            warnings.Add(
+                $"VM agent(s) without account mappings: {string.Join(", ", unmappedVmAgentIds)}. "
+                + "Fleet-wide client commands only target entries under accounts.");
+        }
+
+        var duplicateMappings = accountsByAgent
+            .Where(pair => pair.Value.Length > 1)
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => $"{pair.Key} <- {string.Join(", ", pair.Value)}")
+            .ToArray();
+        if (duplicateMappings.Length > 0)
+        {
+            warnings.Add(
+                "Multiple accounts map to the same VM agent and can dispatch duplicate commands: "
+                + $"{string.Join("; ", duplicateMappings)}.");
+        }
+
+        return warnings;
+    }
+
     private static void ApplyEnvironment(HostConfig config)
     {
         config.DiscordToken = Environment.GetEnvironmentVariable("DISCORD_TOKEN")

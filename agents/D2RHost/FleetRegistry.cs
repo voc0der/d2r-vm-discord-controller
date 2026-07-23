@@ -33,6 +33,61 @@ public sealed class FleetRegistry
 
     public IReadOnlyDictionary<string, AccountConfig> Accounts => BuildSnapshot().Accounts;
 
+    public FleetAccountConnectivitySnapshot GetAccountConnectivity()
+    {
+        var fleet = BuildSnapshot();
+        return ClassifyAccountConnectivity(fleet.Accounts, fleet.Agents.Values, fleet.AgentNodes);
+    }
+
+    internal static FleetAccountConnectivitySnapshot ClassifyAccountConnectivity(
+        IReadOnlyDictionary<string, AccountConfig> accounts,
+        IEnumerable<AgentSnapshot> agents,
+        IReadOnlyDictionary<string, string>? agentNodes = null)
+    {
+        var agentsById = agents.ToDictionary(
+            agent => agent.Id,
+            StringComparer.OrdinalIgnoreCase);
+        var referencedAgentIds = accounts.Values
+            .Where(account => !string.IsNullOrWhiteSpace(account.AgentId))
+            .Select(account => account.AgentId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var online = new List<KeyValuePair<string, AccountConfig>>();
+        var offline = new List<KeyValuePair<string, AccountConfig>>();
+
+        foreach (var entry in accounts.OrderBy(
+                     pair => pair.Key,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            if (agentsById.TryGetValue(entry.Value.AgentId, out var agent)
+                && agent.Connected)
+            {
+                online.Add(entry);
+            }
+            else
+            {
+                offline.Add(entry);
+            }
+        }
+
+        var connectedUnaddressableAgents = agentsById.Values
+            .Where(agent =>
+                agent.Connected
+                && string.Equals(agent.Kind, "vm", StringComparison.OrdinalIgnoreCase)
+                && !referencedAgentIds.Contains(agent.Id))
+            .OrderBy(agent => agent.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(agent => new FleetUnaddressableAgent(
+                agent,
+                agentNodes is not null && agentNodes.TryGetValue(agent.Id, out var nodeId)
+                    ? nodeId
+                    : null))
+            .ToArray();
+
+        return new FleetAccountConnectivitySnapshot(
+            online.ToArray(),
+            offline.ToArray(),
+            connectedUnaddressableAgents);
+    }
+
     public IReadOnlyList<AgentSnapshot> Snapshot()
     {
         return BuildSnapshot().Agents.Values
@@ -494,3 +549,15 @@ public sealed record FleetNodeSnapshot(
     DateTimeOffset? LastSeenAt,
     int AgentsConnected,
     int AgentsConfigured);
+
+public sealed record FleetAccountConnectivitySnapshot(
+    KeyValuePair<string, AccountConfig>[] Online,
+    KeyValuePair<string, AccountConfig>[] Offline,
+    FleetUnaddressableAgent[] ConnectedUnaddressableAgents);
+
+public sealed record FleetUnaddressableAgent(
+    AgentSnapshot Agent,
+    string? NodeId)
+{
+    public string Id => Agent.Id;
+}

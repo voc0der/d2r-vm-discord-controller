@@ -1831,12 +1831,15 @@ public sealed class DiscordBot
 
     private async Task QueueCreateGameAllAsync(SlashContext context, GameInput game, bool watch)
     {
-        var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
+        var connectivity = _registry.GetAccountConnectivity();
+        var entries = connectivity.Online;
+        var offlineEntries = connectivity.Offline;
         if (entries.Length == 0)
         {
             await RespondWithMetricsAsync(
                 context,
-                "No online accounts are available for create-game-all." + FormatOfflineSkipSuffix(offlineEntries));
+                "No online accounts are available for create-game-all."
+                    + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents));
             return;
         }
 
@@ -1851,7 +1854,7 @@ public sealed class DiscordBot
                 + $"{entries.Length} account(s) will warm up with {staggerSeconds}s stagger; "
                 + $"{joiners.Length} joiner(s) will prepare Join Game while {creator.Key} creates."
                 + FormatReadyFirstSuffix(readyFirstCount)
-                + FormatOfflineSkipSuffix(offlineEntries));
+                + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents));
 
         await StartGameSessionAsync(
             context,
@@ -2691,12 +2694,15 @@ public sealed class DiscordBot
 
     private async Task QueueJoinAllAsync(SlashContext context, GameInput game, bool watch)
     {
-        var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
+        var connectivity = _registry.GetAccountConnectivity();
+        var entries = connectivity.Online;
+        var offlineEntries = connectivity.Offline;
         if (entries.Length == 0)
         {
             await RespondWithMetricsAsync(
                 context,
-                "No online accounts are available for join-all." + FormatOfflineSkipSuffix(offlineEntries));
+                "No online accounts are available for join-all."
+                    + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents));
             return;
         }
 
@@ -2712,7 +2718,7 @@ public sealed class DiscordBot
             $"Queued join-all for {entries.Length} online account(s) into {game.GameName} with {staggerSeconds}s stagger."
                 + " Accounts will prepare Join Game first, then submit."
                 + FormatReadyFirstSuffix(readyFirstCount)
-                + FormatOfflineSkipSuffix(offlineEntries));
+                + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents));
 
         await StartGameSessionAsync(
             context,
@@ -3130,12 +3136,15 @@ public sealed class DiscordBot
         QuickActions offerOnCompletion = QuickActions.None)
     {
         var label = displayName ?? commandName;
-        var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
+        var connectivity = _registry.GetAccountConnectivity();
+        var entries = connectivity.Online;
+        var offlineEntries = connectivity.Offline;
         if (entries.Length == 0)
         {
             await SetInitialCommandResponseAsync(
                 context,
-                $"No online accounts are available for {label}." + FormatOfflineSkipSuffix(offlineEntries),
+                $"No online accounts are available for {label}."
+                    + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents),
                 ephemeral: true);
             return;
         }
@@ -3148,7 +3157,7 @@ public sealed class DiscordBot
             context,
             $"Queued {entries.Length} online {label} command(s) with {staggerSeconds}s stagger."
                 + FormatReadyFirstSuffix(readyFirstCount)
-                + FormatOfflineSkipSuffix(offlineEntries),
+                + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents),
             ephemeral: true);
 
         var tracker = new FanInCompletionTracker(entries.Length);
@@ -3316,22 +3325,8 @@ public sealed class DiscordBot
 
     private (KeyValuePair<string, AccountConfig>[] Online, KeyValuePair<string, AccountConfig>[] Offline) GetAccountEntriesByConnectivity()
     {
-        var online = new List<KeyValuePair<string, AccountConfig>>();
-        var offline = new List<KeyValuePair<string, AccountConfig>>();
-
-        foreach (var entry in _registry.Accounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
-        {
-            if (_registry.GetAgent(entry.Value.AgentId)?.Connected == true)
-            {
-                online.Add(entry);
-            }
-            else
-            {
-                offline.Add(entry);
-            }
-        }
-
-        return (online.ToArray(), offline.ToArray());
+        var connectivity = _registry.GetAccountConnectivity();
+        return (connectivity.Online, connectivity.Offline);
     }
 
     private async Task<CommandResultInfo?> SendReadyIfNotMenuReadyAsync(AccountConfig account, object args)
@@ -3479,14 +3474,47 @@ public sealed class DiscordBot
         return $" {readyFirstCount} account(s) need `/d2r ready` before menu automation.";
     }
 
-    private static string FormatOfflineSkipSuffix(IReadOnlyCollection<KeyValuePair<string, AccountConfig>> offlineEntries)
+    internal static string FormatOfflineSkipSuffix(
+        IReadOnlyCollection<KeyValuePair<string, AccountConfig>> offlineEntries,
+        IReadOnlyCollection<FleetUnaddressableAgent>? connectedUnaddressableAgents = null)
     {
-        if (offlineEntries.Count == 0)
+        var unavailableAgentWarning =
+            connectedUnaddressableAgents is null || connectedUnaddressableAgents.Count == 0
+                ? ""
+                : " Connected VM agent(s) not addressable by a fleet account: "
+                    + $"{string.Join(", ", connectedUnaddressableAgents.Select(FormatUnaddressableAgent))}; "
+                    + "they are not command targets. Check the owning node's `accounts` mappings "
+                    + "and fleet-wide account-key uniqueness.";
+        var offlineAccountWarning = offlineEntries.Count == 0
+            ? ""
+            : $" Skipped {offlineEntries.Count} offline account(s): "
+                + $"{string.Join(", ", offlineEntries.Select(entry => $"{entry.Key} -> {entry.Value.AgentId}"))}.";
+        return unavailableAgentWarning + offlineAccountWarning;
+    }
+
+    private static string FormatUnaddressableAgent(FleetUnaddressableAgent entry) =>
+        string.IsNullOrWhiteSpace(entry.NodeId)
+            ? entry.Id
+            : $"{entry.NodeId}/{entry.Id}";
+
+    internal static string[] FormatAccountConnectivityHealthLines(
+        FleetAccountConnectivitySnapshot connectivity)
+    {
+        var accountCount = connectivity.Online.Length + connectivity.Offline.Length;
+        var lines = new List<string>
         {
-            return "";
+            $"Accounts: {connectivity.Online.Length}/{accountCount} available"
+        };
+        if (connectivity.ConnectedUnaddressableAgents.Length > 0)
+        {
+            lines.Add(
+                "Connected VM agents not addressable by a fleet account: "
+                    + string.Join(
+                        ", ",
+                        connectivity.ConnectedUnaddressableAgents.Select(FormatUnaddressableAgent)));
         }
 
-        return $" Skipped {offlineEntries.Count} offline account(s): {string.Join(", ", offlineEntries.Select(entry => entry.Key))}.";
+        return lines.ToArray();
     }
 
     private object BuildMenuArgs(
@@ -3774,7 +3802,9 @@ public sealed class DiscordBot
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
             }
 
-            var (entries, offlineEntries) = GetAccountEntriesByConnectivity();
+            var connectivity = _registry.GetAccountConnectivity();
+            var entries = connectivity.Online;
+            var offlineEntries = connectivity.Offline;
             if (entries.Length == 0)
             {
                 await UpdateJoinAutoMonitorAsync($"No online accounts available (attempt {attempt}).", gameName: game.GameName, joined: 0, total: 0);
@@ -3782,7 +3812,8 @@ public sealed class DiscordBot
                 {
                     await SendJoinAutoMessageAsync(
                         channel,
-                        $"join-auto: no online accounts available (attempt {attempt})." + FormatOfflineSkipSuffix(offlineEntries),
+                        $"join-auto: no online accounts available (attempt {attempt})."
+                            + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents),
                         context.MetricsEnabled);
                 }
             }
@@ -4275,12 +4306,18 @@ public sealed class DiscordBot
         // become a sleep target at the end.
         var sleepTargets = GetOrderedOnlineNodeTargets();
         var targetNodeSet = sleepTargets.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var (fleetOnlineEntries, fleetOfflineEntries) = GetAccountEntriesByConnectivity();
+        var fleetConnectivity = _registry.GetAccountConnectivity();
+        var fleetOnlineEntries = fleetConnectivity.Online;
+        var fleetOfflineEntries = fleetConnectivity.Offline;
         var entries = fleetOnlineEntries
             .Where(entry => targetNodeSet.Contains(_hyperV.ResolveNodeId(entry.Value)))
             .ToArray();
         var offlineEntries = fleetOfflineEntries
             .Where(entry => targetNodeSet.Contains(_hyperV.ResolveNodeId(entry.Value)))
+            .ToArray();
+        var unaddressableAgents = fleetConnectivity.ConnectedUnaddressableAgents
+            .Where(entry => targetNodeSet.Contains(
+                string.IsNullOrWhiteSpace(entry.NodeId) ? _config.NodeId : entry.NodeId))
             .ToArray();
         var processedAccountKeys = entries
             .Select(entry => entry.Key)
@@ -4291,7 +4328,7 @@ public sealed class DiscordBot
             await SetInitialCommandResponseAsync(
                 context,
                 $"No online accounts are available to quit; checking once more before queueing fleet sleep."
-                    + FormatOfflineSkipSuffix(offlineEntries)
+                    + FormatOfflineSkipSuffix(offlineEntries, unaddressableAgents)
                     + FormatOfflineNodeSkipSuffix(sleepTargets),
                 ephemeral: true);
         }
@@ -4301,7 +4338,7 @@ public sealed class DiscordBot
             await SetInitialCommandResponseAsync(
                 context,
                 $"Quitting {entries.Length} online account(s) before fleet sleep with {staggerSeconds}s stagger."
-                    + FormatOfflineSkipSuffix(offlineEntries)
+                    + FormatOfflineSkipSuffix(offlineEntries, unaddressableAgents)
                     + FormatOfflineNodeSkipSuffix(sleepTargets),
                 ephemeral: true);
 
@@ -5797,6 +5834,8 @@ public sealed class DiscordBot
         var connectedNodes = nodes.Count(node => node.Connected);
         var agents = _registry.Snapshot();
         var connected = agents.Count(agent => agent.Connected);
+        var accountConnectivity = _registry.GetAccountConnectivity();
+        var accountLines = FormatAccountConnectivityHealthLines(accountConnectivity);
         var nodeLines = nodes.Select(node =>
         {
             var label = string.IsNullOrWhiteSpace(node.DisplayName)
@@ -5811,12 +5850,11 @@ public sealed class DiscordBot
                 : $"{agent.Id} ({agent.DisplayName})";
             return $"{(agent.Connected ? "online " : "offline")} {label}";
         });
-
         return string.Join("\n", new[]
         {
             $"Nodes: {connectedNodes}/{nodes.Count} connected",
             $"Agents: {connected}/{agents.Count} connected"
-        }.Concat(nodeLines).Concat(agentLines));
+        }.Concat(accountLines).Concat(nodeLines).Concat(agentLines));
     }
 
     private string FormatStartupMessageContent()

@@ -138,8 +138,8 @@ Expected state:
 Current implementation:
 
 - `/d2r start all:false account:<account>` sends `launch_d2r` to the VM agent.
-- `/d2r start` queues the ready flow for every online VM agent.
-- `/d2r ready` queues the ready flow for every online VM agent; pass `account:<account>` to warm just one.
+- `/d2r start` queues the ready flow for every online configured account.
+- `/d2r ready` queues the ready flow for every online configured account; pass `account:<account>` to warm just one. Connected VM agents that are not addressable because their account mapping is missing or rejected (for example, a duplicate fleet account key) are reported but are not controlled implicitly.
 - The ready flow launches D2R, retries the Battle.net launch command and Battle.net Play while waiting for D2R, then nudges intro/title states until character select is visually detected.
 - Before launching D2R, the VM agent shows the desktop to minimize other windows. If Battle.net is already running, the agent restores Battle.net before sending the launch command.
 - By default, the agent starts D2R through Battle.net with `Battle.net.exe --exec="launch OSI"`.

@@ -104,6 +104,8 @@ Join/create session notifications include `Leave` and `Quit` buttons. `Leave` qu
 
 `/d2r ready` queues the ready flow for every online account. Pass `account:<x>` to warm one account. `/d2r start` with `all:true` uses the same all-account ready flow, so cold-booted clients should land on character select instead of merely starting the D2R process.
 
+Discord health output reports agent connectivity and account availability separately. A connected VM agent is only a command target when its owning node's `accounts` entry survives fleet-wide identity validation. When a connected agent is not addressable because its account mapping is missing or rejected—for example, because its account key duplicates another node's—health and relevant all-client command responses name both the node and agent so the configuration can be corrected without guessing.
+
 `/d2r restart` respawns the master D2RHost process only. On startup, the master runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed master update once the command exists in Discord.
 
 `/d2r system sleep`, `/d2r system shutdown`, and `/d2r system restart` default to the master node for backward compatibility. Pass `node:<node-id>` to target one known node (including the master), or `all:true` to target every currently online D2RHost node. `node` and `all:true` are mutually exclusive. Fleet-wide actions are queued on online workers first and the master last so the control plane remains available long enough to forward them. Offline workers are listed and skipped. If an online worker fails to confirm the action, the master is deliberately kept online for recovery. These commands power physical D2RHost machines only—not VM guests.
