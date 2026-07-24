@@ -151,10 +151,24 @@ internal static class FullCaptureRegionSampler
             return flat;
         }
 
+        // Fresh troubleshooting captures are commonly dropped in the repository root before
+        // they are catalogued under docs/runbooks/assets. Let regression tests exercise those
+        // exact submitted pixels without first duplicating a multi-megabyte image.
+        var rootCapture = Path.Combine(FindRepositoryRoot(), fileName);
+        if (File.Exists(rootCapture))
+        {
+            return rootCapture;
+        }
+
         throw new FileNotFoundException($"Reference capture not found: {fileName}");
     }
 
     private static string FindAssetsDirectory()
+    {
+        return Path.Combine(FindRepositoryRoot(), "docs", "runbooks", "assets", "d2r-ui");
+    }
+
+    private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "D2ROps.sln")))
@@ -167,6 +181,6 @@ internal static class FullCaptureRegionSampler
             throw new DirectoryNotFoundException("Could not locate repo root (D2ROps.sln) from test base directory.");
         }
 
-        return Path.Combine(directory.FullName, "docs", "runbooks", "assets", "d2r-ui");
+        return directory.FullName;
     }
 }

@@ -1895,6 +1895,64 @@ public sealed class VmOperations
         }
 
         ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
+        CommandResult? unexpectedGameLeave = null;
+        var unexpectedGameRecovery = await RunFollowAutoInGameRecoveryAsync(
+            detectBeforeToggle: () => TryRunBounded<bool?>(
+                () => IsInGameReady(input),
+                InGameSafetyCheckBoundMs,
+                fallback: null),
+            toggleLegacyGraphics: () =>
+            {
+                MarkCommandCheckpoint("FollowAutoCheckAsync: possible unexpected in-game state; toggling legacy graphics before re-check");
+                input.PressLegacyGraphicsToggle();
+                _ = input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames());
+            },
+            waitForLegacyGraphics: DelayStepAsync,
+            detectAfterToggle: () => TryRunBounded<bool?>(
+                () => IsInGameReadyStrict(input),
+                InGameSafetyCheckBoundMs,
+                fallback: null),
+            leaveGame: async token =>
+            {
+                MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed unexpected in-game state after legacy toggle; using Save and Exit");
+                unexpectedGameLeave = await SaveAndExitAsync(token);
+                return unexpectedGameLeave.Ok;
+            },
+            cancellationToken);
+
+        if (unexpectedGameRecovery == FollowAutoInGameRecoveryOutcome.LeftGame)
+        {
+            return CommandResult.Success(
+                "This pending client was already in a game. Toggled legacy graphics, confirmed the in-game HUD, and used Save and Exit; waiting for the next follow-auto cycle to join the bound friend.",
+                new
+                {
+                    bound = true,
+                    joined = false,
+                    d2rReady = false,
+                    recoveredUnexpectedGame = true
+                });
+        }
+
+        if (unexpectedGameRecovery == FollowAutoInGameRecoveryOutcome.LeaveFailed)
+        {
+            return CommandResult.Failure(
+                $"Follow-auto confirmed this pending client was already in a game after toggling legacy graphics, but Save and Exit failed: {unexpectedGameLeave?.Message ?? "unknown failure"}",
+                unexpectedGameLeave?.Data);
+        }
+
+        if (unexpectedGameRecovery == FollowAutoInGameRecoveryOutcome.DetectionInconclusive)
+        {
+            return CommandResult.Success(
+                "Follow-auto suspected this pending client was already in a game and toggled legacy graphics, but the fresh in-game check was still inconclusive; waiting for the next follow-auto cycle without clicking.",
+                new
+                {
+                    bound = true,
+                    joined = false,
+                    d2rReady = false
+                });
+        }
+
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         // A previous follow attempt may have been cancelled or timed out after D2R rendered
         // this modal but before it could dismiss it. Clear it before trying to navigate the
         // lobby; otherwise the overlay absorbs every friends-list click and looks like a
@@ -3348,6 +3406,45 @@ public sealed class VmOperations
     private bool MightAlreadyBeInGame(WindowsInput input)
     {
         return TryRunBounded(() => IsInGameReady(input), InGameSafetyCheckBoundMs, fallback: true);
+    }
+
+    // A pending follow-auto account can be left in the previous game after an agent/host
+    // restart or a partial-join bookkeeping loss. The ordinary menu-click safety gate correctly
+    // refuses to click Lobby in that state, but merely turning that refusal into "wait one
+    // cycle" strands the account forever: every cycle reaches the same gate again.
+    //
+    // G is the only safe normalization input here. It cannot open or confirm a dialog, and the
+    // legacy HUD gives the fresh detector stable globe/action-bar anchors before we decide
+    // whether Save and Exit is appropriate. A timeout before the toggle is treated as
+    // suspicion and gets the same safe normalization; a timeout after it remains
+    // inconclusive and never authorizes either a menu click or an Escape+Save-and-Exit click.
+    internal static async Task<FollowAutoInGameRecoveryOutcome> RunFollowAutoInGameRecoveryAsync(
+        Func<bool?> detectBeforeToggle,
+        Action toggleLegacyGraphics,
+        Func<CancellationToken, Task> waitForLegacyGraphics,
+        Func<bool?> detectAfterToggle,
+        Func<CancellationToken, Task<bool>> leaveGame,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (detectBeforeToggle() == false)
+        {
+            return FollowAutoInGameRecoveryOutcome.NotInGame;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        toggleLegacyGraphics();
+        await waitForLegacyGraphics(cancellationToken);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return detectAfterToggle() switch
+        {
+            false => FollowAutoInGameRecoveryOutcome.NotInGame,
+            null => FollowAutoInGameRecoveryOutcome.DetectionInconclusive,
+            true => await leaveGame(cancellationToken)
+                ? FollowAutoInGameRecoveryOutcome.LeftGame
+                : FollowAutoInGameRecoveryOutcome.LeaveFailed
+        };
     }
 
     internal static bool ShouldSkipMenuClickForInGameSafety(bool guardAgainstInGame, Func<bool> mightAlreadyBeInGame)
@@ -6505,6 +6602,14 @@ public sealed class VmOperations
         OfflineCharacterScreen,
         TimedOut,
         CurrentCharacterCannotJoin
+    }
+
+    internal enum FollowAutoInGameRecoveryOutcome
+    {
+        NotInGame,
+        LeftGame,
+        DetectionInconclusive,
+        LeaveFailed
     }
 
     private enum InGameHudMatchKind
