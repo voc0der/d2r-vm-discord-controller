@@ -1895,6 +1895,18 @@ public sealed class VmOperations
         }
 
         ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
+        // A previous follow attempt may have been cancelled or timed out after D2R rendered
+        // this modal but before it could dismiss it. Clear it before trying to navigate the
+        // lobby; otherwise the overlay absorbs every friends-list click and looks like a
+        // generic "could not confirm lobby" failure.
+        if (IsCannotJoinCurrentCharacterDialogOpen(input))
+        {
+            MarkCommandCheckpoint("FollowAutoCheckAsync: current-character join restriction still visible; dismissing");
+            var dismissed = await DismissCannotJoinCurrentCharacterDialogAsync(input, cancellationToken);
+            return CurrentCharacterCannotJoinFollowResult(dismissed);
+        }
+
+        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         // An offline character screen that won't reconnect via the Online tab needs more than
         // another click - the client's Battle.net session is wedged, and only a close + relaunch
         // rehooks a fresh one. Handled here rather than inside EnsureLobbyOpenedAsync because a
@@ -2061,6 +2073,11 @@ public sealed class VmOperations
             () => ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken));
         if (!entry.Entered)
         {
+            if (entry.FailureResult == GameEntryWaitResult.CurrentCharacterCannotJoin)
+            {
+                return CurrentCharacterCannotJoinFollowResult(entry.DialogDismissed);
+            }
+
             return CommandResult.Failure(
                 $"Found the bound friend at row {matchedRow} and clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {entry.Message} {scoreSummary}",
                 await CollectStatusAsync(cancellationToken));
@@ -2086,6 +2103,23 @@ public sealed class VmOperations
                 ? "Joined the bound friend's game."
                 : "Joined the bound friend's game (entry confirmed by the join flow; strict HUD globes were not separately confirmed).",
             new { bound = true, joined = true, strictlyConfirmed, fingerprintScores = scoreSummary });
+    }
+
+    internal static CommandResult CurrentCharacterCannotJoinFollowResult(bool dismissed)
+    {
+        var action = dismissed
+            ? "Clicked Cancel; follow-auto will keep retrying the bound friend's game."
+            : "Cancel could not be visually confirmed; follow-auto will try to dismiss the dialog and join again next cycle.";
+        return CommandResult.Success(
+            $"D2R reports: \"You cannot join the game with your current character.\" This can indicate a difficulty, level, capacity, or other game restriction. {action}",
+            new
+            {
+                bound = true,
+                joined = false,
+                joinBlocked = true,
+                joinBlockReason = "currentCharacterCannotJoin",
+                dialogDismissed = dismissed
+            });
     }
 
     internal static bool CanAutoClickFollowFingerprint(FriendFingerprint template)
@@ -2220,9 +2254,23 @@ public sealed class VmOperations
         if (!IsAnyLobbyEntryMenuVisible(input))
         {
             var entry = await WaitForGameEntryAsync(input, cancellationToken);
+            if (entry == GameEntryWaitResult.CurrentCharacterCannotJoin)
+            {
+                return await BuildCurrentCharacterCannotJoinAttemptResultAsync(
+                    input,
+                    dialogRetries: 0,
+                    connectionRetries: 0,
+                    cancellationToken);
+            }
+
             return entry == GameEntryWaitResult.EnteredGame
                 ? new GameEntryAttemptResult(true, DialogRetries: 0, ConnectionRetries: 0, "Entered game.")
-                : new GameEntryAttemptResult(false, DialogRetries: 0, ConnectionRetries: 0, FormatGameEntryWaitFailure(entry));
+                : new GameEntryAttemptResult(
+                    false,
+                    DialogRetries: 0,
+                    ConnectionRetries: 0,
+                    FormatGameEntryWaitFailure(entry),
+                    FailureResult: entry);
         }
 
         var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1));
@@ -2263,6 +2311,18 @@ public sealed class VmOperations
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
+            }
+
+            if (waitResult == GameEntryWaitResult.CurrentCharacterCannotJoin
+                || IsCannotJoinCurrentCharacterDialogOpen(input))
+            {
+                MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): current character cannot join; dismissing for next follow cycle");
+                stopCheck?.Invoke();
+                return await BuildCurrentCharacterCannotJoinAttemptResultAsync(
+                    input,
+                    dialogRetries,
+                    connectionRetries,
+                    cancellationToken);
             }
 
             if (!ShouldReselectFriendGameBeforeRetry(waitResult))
@@ -2347,6 +2407,24 @@ public sealed class VmOperations
         }
 
         return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, joinGameTab, dialogRetries, connectionRetries));
+    }
+
+    private async Task<GameEntryAttemptResult> BuildCurrentCharacterCannotJoinAttemptResultAsync(
+        WindowsInput input,
+        int dialogRetries,
+        int connectionRetries,
+        CancellationToken cancellationToken)
+    {
+        var dismissed = await DismissCannotJoinCurrentCharacterDialogAsync(input, cancellationToken);
+        return new GameEntryAttemptResult(
+            Entered: false,
+            dialogRetries,
+            connectionRetries,
+            dismissed
+                ? "D2R reported that the game cannot be joined with the current character; clicked Cancel so a later follow cycle can retry."
+                : "D2R reported that the game cannot be joined with the current character; Cancel was clicked but dismissal could not be visually confirmed.",
+            FailureResult: GameEntryWaitResult.CurrentCharacterCannotJoin,
+            DialogDismissed: dismissed);
     }
 
     private async Task<CommandResult?> EnsureFriendsListVisibleAsync(
@@ -4520,6 +4598,16 @@ public sealed class VmOperations
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
             }
 
+            MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking current-character join restriction");
+            if (IsCannotJoinCurrentCharacterDialogOpen(input))
+            {
+                return await BuildCurrentCharacterCannotJoinAttemptResultAsync(
+                    input,
+                    dialogRetries,
+                    connectionRetries,
+                    cancellationToken);
+            }
+
             MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}, checking game-entry error dialog");
             if (IsGameEntryErrorDialogOpen(input))
             {
@@ -4633,7 +4721,15 @@ public sealed class VmOperations
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game after wait result.");
             }
 
-            if (waitResult == GameEntryWaitResult.ConnectionInterrupted)
+            if (waitResult == GameEntryWaitResult.CurrentCharacterCannotJoin)
+            {
+                return await BuildCurrentCharacterCannotJoinAttemptResultAsync(
+                    input,
+                    dialogRetries,
+                    connectionRetries,
+                    cancellationToken);
+            }
+            else if (waitResult == GameEntryWaitResult.ConnectionInterrupted)
             {
                 connectionRetries++;
                 MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: connection interrupted (retry {connectionRetries}), waiting for bounce-back menu");
@@ -4741,6 +4837,24 @@ public sealed class VmOperations
         }
 
         return !IsGameEntryErrorDialogOpen(input);
+    }
+
+    private async Task<bool> DismissCannotJoinCurrentCharacterDialogAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.CannotJoinCurrentCharacterCancelButton));
+            await DelayLongAsync(cancellationToken);
+
+            if (!IsCannotJoinCurrentCharacterDialogOpen(input))
+            {
+                return true;
+            }
+        }
+
+        return !IsCannotJoinCurrentCharacterDialogOpen(input);
     }
 
     private async Task<bool> WaitForMenuAfterConnectionInterruptedAsync(
@@ -4901,6 +5015,7 @@ public sealed class VmOperations
             GameEntryWaitResult.ReturnedToCharacterScreen => "The client returned to character select instead of entering the game.",
             GameEntryWaitResult.OfflineCharacterScreen => "The client returned to the offline character screen instead of entering the game.",
             GameEntryWaitResult.TimedOut => "No in-game HUD/globe state, lobby return, or connection-interrupted state was detected.",
+            GameEntryWaitResult.CurrentCharacterCannotJoin => "D2R reported that the game cannot be joined with the current character.",
             _ => "The game-entry result was inconclusive."
         };
     }
@@ -5232,6 +5347,34 @@ public sealed class VmOperations
                 && topBorder.DarkRatio < 0.75
                 && body.AverageLuminance < 40
                 && body.DarkRatio > 0.70;
+        }, EntryLoopCheckBoundMs);
+    }
+
+    private bool IsCannotJoinCurrentCharacterDialogOpen(WindowsInput input)
+    {
+        return TryRunBounded(() =>
+        {
+            var cancelButton = input.SampleRegion(
+                GetUiPoint(D2RUiCoordinateTarget.CannotJoinCurrentCharacterCancelButton),
+                widthRatio: 0.13,
+                heightRatio: 0.050);
+            var switchCharactersButton = input.SampleRegion(
+                new AgentCommon.UiPoint(0.570, 0.539),
+                widthRatio: 0.15,
+                heightRatio: 0.050);
+            var topBorder = input.SampleRegion(
+                new AgentCommon.UiPoint(0.500, 0.381),
+                widthRatio: 0.32,
+                heightRatio: 0.025);
+            var body = input.SampleRegion(
+                new AgentCommon.UiPoint(0.500, 0.455),
+                widthRatio: 0.32,
+                heightRatio: 0.15);
+            return D2RScreenClassifier.IsCannotJoinCurrentCharacterDialog(
+                cancelButton,
+                switchCharactersButton,
+                topBorder,
+                body);
         }, EntryLoopCheckBoundMs);
     }
 
@@ -5580,6 +5723,13 @@ public sealed class VmOperations
             }
             else
             {
+                MarkCommandCheckpoint($"WaitForGameEntryAsync: poll iteration {pollIteration}, checking current-character join restriction");
+                if (IsCannotJoinCurrentCharacterDialogOpen(input))
+                {
+                    MarkCommandCheckpoint("WaitForGameEntryAsync: current character cannot join dialog visible");
+                    return GameEntryWaitResult.CurrentCharacterCannotJoin;
+                }
+
                 MarkCommandCheckpoint($"WaitForGameEntryAsync: poll iteration {pollIteration}, checking game-entry error dialog");
                 if (IsGameEntryErrorDialogOpen(input))
                 {
@@ -5640,6 +5790,12 @@ public sealed class VmOperations
         if (sawConnectionInterrupted)
         {
             return GameEntryWaitResult.ConnectionInterrupted;
+        }
+
+        MarkCommandCheckpoint("WaitForGameEntryAsync: deadline, checking current-character join restriction");
+        if (IsCannotJoinCurrentCharacterDialogOpen(input))
+        {
+            return GameEntryWaitResult.CurrentCharacterCannotJoin;
         }
 
         MarkCommandCheckpoint("WaitForGameEntryAsync: deadline, checking game-entry error dialog");
@@ -6347,7 +6503,8 @@ public sealed class VmOperations
         ReturnedToMenu,
         ReturnedToCharacterScreen,
         OfflineCharacterScreen,
-        TimedOut
+        TimedOut,
+        CurrentCharacterCannotJoin
     }
 
     private enum InGameHudMatchKind
@@ -6385,7 +6542,9 @@ public sealed class VmOperations
         bool Entered,
         int DialogRetries,
         int ConnectionRetries,
-        string Message);
+        string Message,
+        GameEntryWaitResult? FailureResult = null,
+        bool DialogDismissed = false);
 
     private sealed record ReadyWaitResult(
         bool Ready,

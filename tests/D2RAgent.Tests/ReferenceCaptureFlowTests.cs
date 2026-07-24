@@ -80,6 +80,7 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("cant_join_hell.png", ReferenceVisibleState.Unknown)]
     [InlineData("game_exists_name.png", ReferenceVisibleState.Unknown)]
     [InlineData("game_password_doesnt_match.png", ReferenceVisibleState.Unknown)]
+    [InlineData("cannot_join_game_with_current_character.png", ReferenceVisibleState.Unknown)]
     public void RealCaptureClassifiesAsExpectedState(string capture, ReferenceVisibleState expected)
     {
         Assert.Equal(expected, ReferenceCaptureClassifier.Classify(capture));
@@ -209,6 +210,7 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("cant_join_hell.png", ReferenceReadyState.Unknown)]
     [InlineData("game_exists_name.png", ReferenceReadyState.Unknown)]
     [InlineData("game_password_doesnt_match.png", ReferenceReadyState.Unknown)]
+    [InlineData("cannot_join_game_with_current_character.png", ReferenceReadyState.Unknown)]
     public void RealCaptureClassifiesAsExpectedReadyState(string capture, ReferenceReadyState expected)
     {
         Assert.Equal(expected, ReferenceCaptureClassifier.ClassifyReady(capture));
@@ -230,8 +232,30 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("game_password_doesnt_match.png", true)]
     [InlineData("cant_join_hell.png", true)]
     [InlineData("game_exists_name.png", true)]
+    // The center sample lands on the bright seam between this modal's two buttons, so the
+    // generic shape also matches. Production deliberately checks the specific detector first.
+    [InlineData("cannot_join_game_with_current_character.png", true)]
     public void GameEntryErrorDialogDetectorAlsoCoversBattleNetReconnectFailures(string capture, bool expectedOpen)
     {
         Assert.Equal(expectedOpen, ReferenceCaptureClassifier.IsGameEntryErrorDialogOpen(capture));
+    }
+
+    [Theory]
+    [InlineData("cannot_join_game_with_current_character.png", true)]
+    [InlineData("cant_join_hell.png", false)]
+    [InlineData("game_password_doesnt_match.png", false)]
+    [InlineData("game_exists_name.png", false)]
+    [InlineData("battlenet_reconnect_failed_to_authenticate.png", false)]
+    [InlineData("lobby_right_click_friend_join_game_available.png", false)]
+    [InlineData("lobby_join_game_screen.png", false)]
+    [InlineData("char_screen_act1.png", false)]
+    [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", false)]
+    public void CannotJoinCurrentCharacterDetectorMatchesOnlyItsTwoButtonModal(
+        string capture,
+        bool expectedOpen)
+    {
+        Assert.Equal(
+            expectedOpen,
+            ReferenceCaptureClassifier.IsCannotJoinCurrentCharacterDialogOpen(capture));
     }
 }

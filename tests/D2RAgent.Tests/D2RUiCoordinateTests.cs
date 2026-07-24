@@ -35,6 +35,7 @@ public sealed class D2RUiCoordinateTests
         { D2RUiCoordinateTarget.JoinDifficultyHellOption, 1153, 223 },
         { D2RUiCoordinateTarget.JoinGameButton, 1045, 478 },
         { D2RUiCoordinateTarget.GameEntryErrorDialogOkButton, 683, 414 },
+        { D2RUiCoordinateTarget.CannotJoinCurrentCharacterCancelButton, 581, 414 },
         { D2RUiCoordinateTarget.CreateGameTab, 919, 55 },
         { D2RUiCoordinateTarget.CreateGameNameField, 1046, 123 },
         { D2RUiCoordinateTarget.CreatePasswordField, 1046, 172 },

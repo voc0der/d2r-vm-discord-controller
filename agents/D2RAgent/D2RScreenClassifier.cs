@@ -86,6 +86,35 @@ internal static class D2RScreenClassifier
             && stats.DarkRatio < 0.70;
     }
 
+    public static bool IsCannotJoinCurrentCharacterDialog(
+        ScreenRegionStats cancelButton,
+        ScreenRegionStats switchCharactersButton,
+        ScreenRegionStats topBorder,
+        ScreenRegionStats body)
+    {
+        // Unlike D2R's generic one-button OK dialog, this join restriction has two bright
+        // buttons at fixed positions: Cancel on the left and Switch Characters on the right.
+        // The old generic detector sampled the gap between them as if it were an OK button,
+        // then repeatedly clicked that inert gap and left follow-auto wedged on the modal.
+        // Requiring both button faces distinguishes this state from the generic dialog and
+        // ordinary lobby chrome while the border/body pair confirms that a modal is present.
+        static bool IsDialogButton(ScreenRegionStats stats)
+        {
+            return stats.AverageLuminance > 45
+                && stats.LuminanceStdDev > 25
+                && stats.GreyRatio > 0.45
+                && stats.DarkRatio < 0.45;
+        }
+
+        return IsDialogButton(cancelButton)
+            && IsDialogButton(switchCharactersButton)
+            && topBorder.AverageLuminance > 28
+            && topBorder.GreyRatio > 0.25
+            && topBorder.DarkRatio < 0.75
+            && body.AverageLuminance < 40
+            && body.DarkRatio > 0.75;
+    }
+
     public static bool IsLobbyTabReady(
         ScreenRegionStats tab,
         bool characterButtonPairReady,

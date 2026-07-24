@@ -90,6 +90,7 @@ public sealed class StuckLoadScreenSurroundTests
     [InlineData("cant_join_hell.png", false)]
     [InlineData("game_exists_name.png", false)]
     [InlineData("game_password_doesnt_match.png", false)]
+    [InlineData("cannot_join_game_with_current_character.png", false)]
     public void SurroundConfirmationMatchesKnownScreens(string capture, bool expectedConfirmed)
     {
         Assert.Equal(expectedConfirmed, AllSurroundRegionsBlack(capture));

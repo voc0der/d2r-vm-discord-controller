@@ -30,6 +30,7 @@ public enum D2RUiCoordinateTarget
     JoinDifficultyHellOption,
     JoinGameButton,
     GameEntryErrorDialogOkButton,
+    CannotJoinCurrentCharacterCancelButton,
     CreateGameTab,
     CreateGameNameField,
     CreatePasswordField,
@@ -127,6 +128,7 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.JoinDifficultyHellOption => Choose(ui.JoinDifficultyHellOption, Defaults.JoinDifficultyHellOption),
             D2RUiCoordinateTarget.JoinGameButton => Choose(ui.JoinGameButton, Defaults.JoinGameButton),
             D2RUiCoordinateTarget.GameEntryErrorDialogOkButton => Choose(ui.GameEntryErrorDialogOkButton, Defaults.GameEntryErrorDialogOkButton),
+            D2RUiCoordinateTarget.CannotJoinCurrentCharacterCancelButton => Choose(ui.CannotJoinCurrentCharacterCancelButton, Defaults.CannotJoinCurrentCharacterCancelButton),
             D2RUiCoordinateTarget.CreateGameTab => Choose(ui.CreateGameTab, Defaults.CreateGameTab),
             D2RUiCoordinateTarget.CreateGameNameField => Choose(ui.CreateGameNameField, Defaults.CreateGameNameField),
             D2RUiCoordinateTarget.CreatePasswordField => Choose(ui.CreatePasswordField, Defaults.CreatePasswordField),
@@ -291,6 +293,7 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.JoinDifficultyHellOption => "Join Game Hell option",
             D2RUiCoordinateTarget.JoinGameButton => "Final Join Game button",
             D2RUiCoordinateTarget.GameEntryErrorDialogOkButton => "Game-entry error OK button",
+            D2RUiCoordinateTarget.CannotJoinCurrentCharacterCancelButton => "Cannot-join-current-character Cancel button",
             D2RUiCoordinateTarget.CreateGameTab => "Lobby Create Game tab",
             D2RUiCoordinateTarget.CreateGameNameField => "Create Game name field",
             D2RUiCoordinateTarget.CreatePasswordField => "Create Game password field",
@@ -354,6 +357,7 @@ public static class D2RUiCoordinateCatalog
                 or D2RUiCoordinateTarget.JoinDifficultyHellOption
                 or D2RUiCoordinateTarget.JoinGameButton => "1366x768/lobby_join_game_screen.png",
             D2RUiCoordinateTarget.GameEntryErrorDialogOkButton => "game_and_password_dont_match.jpg",
+            D2RUiCoordinateTarget.CannotJoinCurrentCharacterCancelButton => "1366x768/cannot_join_game_with_current_character.png",
             D2RUiCoordinateTarget.CreateGameTab
                 or D2RUiCoordinateTarget.CreateGameNameField
                 or D2RUiCoordinateTarget.CreatePasswordField
@@ -379,6 +383,7 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.FriendRowStart => "Additional rows use friendRowHeight, default 0.049 of window height.",
             D2RUiCoordinateTarget.FriendContextJoinGame => "Row-1 context-menu option; runtime clicks keep the same in-menu offset from the right-clicked friend row because the menu is anchored to the pointer position.",
             D2RUiCoordinateTarget.IntroSkipPoint => "Center click/key target used during intro, splash, and title skip bursts.",
+            D2RUiCoordinateTarget.CannotJoinCurrentCharacterCancelButton => "Dismisses the two-button current-character join restriction without switching characters.",
             D2RUiCoordinateTarget.ModernHealthGlobe
                 or D2RUiCoordinateTarget.ModernManaGlobe
                 or D2RUiCoordinateTarget.LegacyHealthGlobe

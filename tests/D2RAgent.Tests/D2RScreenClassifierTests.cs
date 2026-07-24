@@ -484,6 +484,48 @@ public sealed class D2RScreenClassifierTests
             formPanelReady));
     }
 
+    [Fact]
+    public void CannotJoinCurrentCharacterDialogRequiresBothButtonsAndModalChrome()
+    {
+        var cancel = Stats(
+            averageLuminance: 56,
+            luminanceStdDev: 30,
+            greyRatio: 0.64,
+            darkRatio: 0.26);
+        var switchCharacters = Stats(
+            averageLuminance: 56,
+            luminanceStdDev: 43,
+            greyRatio: 0.53,
+            darkRatio: 0.33);
+        var topBorder = Stats(
+            averageLuminance: 40,
+            luminanceStdDev: 35,
+            greyRatio: 0.46,
+            darkRatio: 0.54);
+        var body = Stats(
+            averageLuminance: 28,
+            luminanceStdDev: 33,
+            greyRatio: 0.12,
+            darkRatio: 0.85);
+
+        Assert.True(D2RScreenClassifier.IsCannotJoinCurrentCharacterDialog(
+            cancel,
+            switchCharacters,
+            topBorder,
+            body));
+
+        var missingRightButton = Stats(
+            averageLuminance: 33,
+            luminanceStdDev: 29,
+            greyRatio: 0.33,
+            darkRatio: 0.63);
+        Assert.False(D2RScreenClassifier.IsCannotJoinCurrentCharacterDialog(
+            cancel,
+            missingRightButton,
+            topBorder,
+            body));
+    }
+
     private static ScreenRegionStats Stats(
         double averageLuminance,
         double luminanceStdDev = 0,

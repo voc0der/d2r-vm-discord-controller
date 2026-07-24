@@ -293,6 +293,19 @@ inside `sample_player_count` (the follow-auto pulse); classified per-sample by
 | `IsLobbyCreateTabActive` | `CreateGameTab` (`0.673,0.071` `0.12x0.04`) | `AverageLuminance > 40 && LuminanceStdDev > 30 && GreyRatio > 0.45 && DarkRatio < 0.50`. Diagnostic-only (not part of `IsGameEntryMenuVisible`/`IsAnyLobbyEntryMenuVisible`) - identifies *which* lobby tab is active, for the ready-loop classifier breakdown. The `LuminanceStdDev > 30` guard is load-bearing: without it, `char_screen_act5.png`'s bright Act5 background (std=26.9) and the in-game `sitting_in_town*.png` captures (std=3-4, a flat decorative UI border at this exact coordinate) both false-positive on lum/grey/dark alone. Every real lobby capture measures std≈42.8 here regardless of sub-state (drawer open/closed, Friends tab, context menu) - the std gap is wide enough that no narrower band was needed. |
 | `IsLobbyJoinTabActive` | `JoinGameTab` (`0.766,0.071` `0.12x0.04`) | `AverageLuminance < 48 && GreyRatio > 0.40 && DarkRatio > 0.35 && DarkRatio < 0.50`. Same diagnostic-only purpose as `IsLobbyCreateTabActive`, mirrored for the Join tab. Inactive Join tab reads `dark > 0.90` and active reads `dark` 0.35-0.50, so the dark-ratio band alone separates them; `char_screen_act5.png`'s Join-tab region (`grey=0.75, dark=0.235`) falls outside that band, unlike the Create tab false positive, so no std guard was needed here. |
 
+### Game-entry modal detectors
+
+| Function | Regions | Threshold / recovery |
+| --- | --- | --- |
+| `IsGameEntryErrorDialogOpen` | generic OK button `0.500,0.539` `0.14x0.05`; top border `0.500,0.381` `0.32x0.025`; body `0.500,0.465` `0.32x0.20` | Recognizes the generic one-button join/create/reconnect error widget. Recovery clicks `GameEntryErrorDialogOkButton` at `683,414`. |
+| `IsCannotJoinCurrentCharacterDialogOpen` | Cancel `0.425,0.539` `0.13x0.05`; Switch Characters `0.570,0.539` `0.15x0.05`; top border `0.500,0.381` `0.32x0.025`; body `0.500,0.455` `0.32x0.15` | Both buttons must have `AverageLuminance > 45`, `LuminanceStdDev > 25`, `GreyRatio > 0.45`, and `DarkRatio < 0.45`; the modal border/body must also match. Recovery clicks Cancel at `581,414`, reports the current-character restriction in the follow monitor, and returns control to the normal follow cadence for another attempt. |
+
+The dedicated two-button check runs before the generic OK-dialog check. In
+`cannot_join_game_with_current_character.png`, the generic detector's old center sample lands
+on the bright seam between Cancel and Switch Characters and passes its OK-button thresholds.
+Clicking that center seam does nothing, which is why the previous flow remained jammed on this
+screen even though it appeared to have detected an error dialog.
+
 `LobbyOrGame` is `IsGameEntryMenuVisible(createTab || joinTab, entryButtonReady, formPanelReady)`.
 Top-level visible-state detection (`v0.2.85`) checks **strict** in-game evidence
 (`IsInGameReadyStrict` - the modern/legacy HUD globe profiles only, never the broad Frame-kind
@@ -655,9 +668,10 @@ mechanism works on a live VM. That needs a real run.
   or pause menu is more often open, revisit using `legacy_gfx_ingame_save_and_exit_hightlighted.png`
   vs `modern_gfx_ingame_save_and_exit_hovered.png` as the two reference captures.
 - **Error dialog captures (`cant_join_hell.png`, `game_exists_name.png`,
-  `game_password_doesnt_match.png`) classify as `Unknown`** in this state machine, which is
+  `game_password_doesnt_match.png`, `cannot_join_game_with_current_character.png`) classify as `Unknown`** in this state machine, which is
   correct, not a gap - they're recognized by a separate dedicated detector
-  (`IsGameEntryErrorDialogOpen`), not part of `DetectVisibleD2RState`/`DetectReadyScreenState`.
+  (`IsGameEntryErrorDialogOpen` or `IsCannotJoinCurrentCharacterDialogOpen`), not part of
+  `DetectVisibleD2RState`/`DetectReadyScreenState`.
   Originally written only for the join/create game-entry flow, but it turns out to be a fully
   generic OK-dialog widget: the Battle.net reconnect failures ("Failed to authenticate. Please
   try again.", "Cannot Connect to Server" - `battlenet_reconnect_failed_to_authenticate.png`,

@@ -4910,6 +4910,11 @@ public sealed class DiscordBot
                         case FollowAutoCheckOutcome.Joined:
                             anyBound = true;
                             joined.Add(result.AccountKey);
+                            // The monitor is about to show concrete progress. Clear the
+                            // de-duplication key so an unchanged restriction/wait reason from
+                            // another pending account can immediately replace that progress
+                            // line instead of being suppressed for five minutes.
+                            lastWaitingReport = null;
                             await UpdateFollowAutoMonitorAsync(
                                 $"{result.AccountKey} joined the bound friend's game.",
                                 joined: joined.Count,

@@ -20,6 +20,7 @@ Coordinates for click/sample targets in these states are centralized in [automat
 | Lobby Join Game | `assets/d2r-ui/join_game.jpg` | Join Game tab with game name/password fields. |
 | Join password mismatch | `assets/d2r-ui/game_and_password_dont_match.jpg` | Join Game error modal with OK button. |
 | Join game unavailable | `assets/d2r-ui/game_no_longer_available_to_join.jpg` | Join Game unavailable error modal with OK button. |
+| Current character cannot join | `assets/d2r-ui/1366x768/cannot_join_game_with_current_character.png` | Two-button join restriction modal. Follow clicks Cancel, reports the restriction, and retries until the friend's game becomes joinable. |
 | Connection Interrupted | `assets/d2r-ui/connection_interrupted.jpg` | Full-screen connection interrupted message during game entry. |
 | Lobby Create Game | `assets/d2r-ui/create_game.jpg` | Create Game tab with name/password/difficulty/options. |
 | Create name exists | `assets/d2r-ui/1366x768/game_exists_name.png` | Create Game error modal when the chosen game name already exists. |
@@ -44,6 +45,7 @@ Primary state-to-coordinate links:
 | Intro/title/splash | `IntroSkipPoint` | `683,384` |
 | Character select | `CharacterSlot1`, `CharacterPlayButton`, `CharacterLobbyButton`, `CharacterOnlineTab` | `1216,92`, `574,689`, `799,689`, `1161,38` |
 | Join Game lobby | `JoinGameTab`, `JoinGameNameField`, `JoinPasswordField`, `JoinGameButton` | `1046,55`, `952,106`, `1143,106`, `1045,478` |
+| Current character cannot join | `CannotJoinCurrentCharacterCancelButton` | `581,414` |
 | Create Game lobby | `CreateGameTab`, `CreateGameNameField`, `CreatePasswordField`, `CreateGameButton` | `919,55`, `1046,123`, `1046,172`, `1045,475` |
 | Friend follow | `LobbyPartyIcon`, `FriendRowStart`, `FriendContextJoinGame` | `131,543`, `246,138`, `380,264` (row-1 context reference; runtime offsets from the right-clicked row) |
 | In game | `ModernHealthGlobe`, `ModernManaGlobe`, `InGameHudBar` | `355,691`, `1038,691`, `683,733` |

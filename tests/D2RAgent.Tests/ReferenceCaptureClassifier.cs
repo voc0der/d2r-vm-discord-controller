@@ -180,6 +180,23 @@ internal static class ReferenceCaptureClassifier
             && body.DarkRatio > 0.70;
     }
 
+    // Mirrors VmOperations.IsCannotJoinCurrentCharacterDialogOpen. This is the two-button
+    // "You cannot join the game with your current character" modal, not D2R's generic
+    // one-button OK dialog. Follow-auto must click Cancel (not the gap between the buttons),
+    // report the restriction, and retry from the friends list on its next cycle.
+    public static bool IsCannotJoinCurrentCharacterDialogOpen(string capture)
+    {
+        var cancelButton = Sample(capture, new UiPoint(0.425, 0.539), 0.13, 0.050);
+        var switchCharactersButton = Sample(capture, new UiPoint(0.570, 0.539), 0.15, 0.050);
+        var topBorder = Sample(capture, new UiPoint(0.500, 0.381), 0.32, 0.025);
+        var body = Sample(capture, new UiPoint(0.500, 0.455), 0.32, 0.15);
+        return D2RScreenClassifier.IsCannotJoinCurrentCharacterDialog(
+            cancelButton,
+            switchCharactersButton,
+            topBorder,
+            body);
+    }
+
     public static bool IsCharacterButtonPairReady(string capture)
     {
         var play = Sample(capture, new UiPoint(0.420, 0.897), 0.13, 0.055);

@@ -18,6 +18,7 @@ Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 - `join_game.jpg`: Lobby Join Game tab.
 - `game_and_password_dont_match.jpg`: Join Game modal when the game name and password do not match.
 - `game_no_longer_available_to_join.jpg`: Join Game modal when the selected game is no longer available.
+- `1366x768/cannot_join_game_with_current_character.png`: Two-button join restriction modal; follow dismisses it with Cancel, reports the issue, and retries.
 - `connection_interrupted.jpg`: Full-screen connection interrupted message that returns to the prior menu state.
 - `create_game.jpg`: Lobby Create Game tab.
 - `1366x768/game_exists_name.png`: Redacted Create Game modal when the chosen game name already exists.
