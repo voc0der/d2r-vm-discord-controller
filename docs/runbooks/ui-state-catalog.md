@@ -26,6 +26,7 @@ Coordinates for click/sample targets in these states are centralized in [automat
 | Create name exists | `assets/d2r-ui/1366x768/game_exists_name.png` | Create Game error modal when the chosen game name already exists. |
 | Friends drawer | `assets/d2r-ui/lobby_right_click_party_icon.jpg` | Friends drawer opened from the icon beside chat. |
 | Friend Join Game menu | `assets/d2r-ui/friend_context_join_game.jpg` | Right-click friend context menu with `Join Game`. |
+| Follow-auto pending client in game | `assets/d2r-ui/1366x768/follow_auto_pending_modern_ingame.png` | Modern-graphics in-game HUD from the stale-game recovery case; strict HUD confirmation leads to Save and Exit before a later rejoin cycle. |
 | Save and Exit | `assets/d2r-ui/save_and_exit_resurrected.jpg` | Resurrected graphics pause menu. |
 | Save and Exit Legacy | `assets/d2r-ui/save_and_exit_legacy.jpg` | Legacy graphics pause menu. |
 

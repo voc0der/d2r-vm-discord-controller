@@ -443,6 +443,8 @@ References:
 
 ![Low graphics mode generic 1366x768](assets/d2r-ui/1366x768/low_graphics_mode_generic.png)
 
+![Follow-auto pending client unexpectedly still in a modern-graphics game at 1366x768](assets/d2r-ui/1366x768/follow_auto_pending_modern_ingame.png)
+
 Expected state:
 
 - Health and mana globes are present.
@@ -464,7 +466,7 @@ Use the new image set to make the flow less guessy:
 - Create game: use `lobby_create_game_screen.png` and `lobby_create_game_filled.png` to verify that the form accepted focus and text. Use `lobby_create_game_terror_zones_not_available.png` so the terrorized checkbox state is not mistaken for a failure.
 - Join game: use `lobby_join_game_screen.png` and the difficulty dropdown capture to verify the active tab and difficulty selection before typing. Use `game_password_doesnt_match.png` and `cant_join_hell.png` as generic recoverable error dialogs; use `cannot_join_game_with_current_character.png` for the separate two-button follow retry state.
 - Friend follow: use the party icon hover/click captures to verify the drawer state. Fresh drawer opens show `lobby_click_party_icon.png` with the Friends accordion collapsed; expanded rows are shown in `lobby_friends_tab_party.png`. Distinguish `lobby_right_click_friend_join_game_available.png` from `lobby_right_click_friend_nojoin_game_available.png` so follow fails fast when Join Game is not present.
-- Game entry: use `just_landed_in_game_checkforhealthandmanaglobes.png` and `low_graphics_mode_generic.png` as positive success states. The detector has separate modern and legacy globe anchors because legacy mode is pillarboxed at 1366x768.
+- Game entry: use `just_landed_in_game_checkforhealthandmanaglobes.png`, `low_graphics_mode_generic.png`, and `follow_auto_pending_modern_ingame.png` as positive success states. The detector has separate modern and legacy globe anchors because legacy mode is pillarboxed at 1366x768.
 - Save and exit: use both modern and legacy save/exit captures so the clean-leave flow works before and after the legacy graphics toggle.
 
 ## Follow Bind/Auto (Issue #25)

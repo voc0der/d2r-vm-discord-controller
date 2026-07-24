@@ -69,7 +69,7 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("low_graphics_mode_generic.png", ReferenceVisibleState.InGame)]
     [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", ReferenceVisibleState.InGame)]
     [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceVisibleState.InGame)]
-    [InlineData("D2R_3-screenshot.png", ReferenceVisibleState.InGame)]
+    [InlineData("follow_auto_pending_modern_ingame.png", ReferenceVisibleState.InGame)]
     // Modern-graphics Save and Exit dims the action bar enough that IsInGameHudFrame's
     // brightness checks miss even though the corner globes are still visible - unlike
     // legacy graphics above. Documented, not (yet) treated as a bug - see the runbook.
@@ -202,7 +202,7 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("low_graphics_mode_generic.png", ReferenceReadyState.InGame)]
     [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", ReferenceReadyState.InGame)]
     [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceReadyState.InGame)]
-    [InlineData("D2R_3-screenshot.png", ReferenceReadyState.InGame)]
+    [InlineData("follow_auto_pending_modern_ingame.png", ReferenceReadyState.InGame)]
     // Same documented gap as Classify(): modern-graphics Save and Exit dims the action bar
     // past every in-game threshold (strict and broad alike) and doesn't coincidentally overlap
     // the lobby check either, so Unknown is correct here, not a regression.

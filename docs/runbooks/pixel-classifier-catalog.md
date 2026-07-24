@@ -368,8 +368,9 @@ click/key burst sent while the client is actually already in a live game is a mo
 and in Hardcore, the wrong one can kill a character. Every reference capture the ready loop's
 new `InGame` branch is verified against (`sitting_in_town*.png`,
 `just_landed_in_game_checkforhealthandmanaglobes.png`, `low_graphics_mode_generic.png`,
-`legacy_gfx_ingame_save_and_exit_*.png`) was directly measured to pass strict modern-or-legacy
-HUD globe evidence *before* writing this fix, specifically to confirm the existing
+`follow_auto_pending_modern_ingame.png`, `legacy_gfx_ingame_save_and_exit_*.png`) was directly
+measured to pass strict modern-or-legacy HUD globe evidence *before* writing this fix,
+specifically to confirm the existing
 `sitting_in_town.png` lobby-tab/entry-button overlap (documented above) can never reach the new
 lobby branch in the ready loop either - strict in-game evidence wins first, exactly as it does
 in `DetectVisibleD2RState`.
