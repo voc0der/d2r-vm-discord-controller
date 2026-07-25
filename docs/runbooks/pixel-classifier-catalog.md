@@ -661,23 +661,22 @@ mechanism works on a live VM. That needs a real run.
   independent bug from the v0.2.71/72/73 `IsInGameReady` throttle saga** - it reproduced
   identically on v0.2.73 (plain, unbounded, un-throttled `IsInGameReady`, after that throttle was
   fully reverted), proving the throttle was never the actual cause of this particular freeze.
-- **Modern-graphics Save and Exit dims the action bar enough that `IsInGameHudFrame` misses
-  it, while legacy graphics doesn't.** `legacy_gfx_ingame_save_and_exit_*.png` classifies as
-  `InGame` (the corner globes and action bar are still bright enough); the matching
-  `modern_gfx_ingame_save_and_exit_*.png` captures classify as `Unknown` (the pause overlay
-  desaturates the action bar past the `IsInGameHudFrame` thresholds, and the globes alone
-  aren't sampled outside that profile check). Not yet treated as a bug - the credible failure
-  mode is a menu command starting while D2R happens to be paused at this exact menu, which
-  would fall through to the ready loop's input bursts; on a pause menu, Escape's normal effect
-  is to resume the game, which is the actually-correct recovery here, not a new problem. If a
-  config later allows the ready loop to start a menu command while a game-entry error dialog
-  or pause menu is more often open, revisit using `legacy_gfx_ingame_save_and_exit_hightlighted.png`
-  vs `modern_gfx_ingame_save_and_exit_hovered.png` as the two reference captures.
-- **Error dialog captures (`cant_join_hell.png`, `game_exists_name.png`,
-  `game_password_doesnt_match.png`, `cannot_join_game_with_current_character.png`) classify as `Unknown`** in this state machine, which is
-  correct, not a gap - they're recognized by a separate dedicated detector
-  (`IsGameEntryErrorDialogOpen` or `IsCannotJoinCurrentCharacterDialogOpen`), not part of
-  `DetectVisibleD2RState`/`DetectReadyScreenState`.
+- **Modern-graphics Save and Exit dims the action bar enough that the ordinary HUD profiles
+  miss it.** The dedicated modern pause detector combines both still-colored modern globes
+  with all three centered grey buttons (Options, Save and Exit, Return to Game).
+  `modern_gfx_ingame_save_and_exit_*.png` therefore classifies as `InGame` without relaxing
+  the generic action-bar thresholds, while normal modern gameplay, legacy pause captures,
+  lobby/character screens, and load screens reject the overlay-specific check. Stale-game
+  recovery clicks the already-visible Save and Exit button directly; it does not press Escape
+  first (which would close the menu), and it freshly re-confirms the overlay before every
+  retry so that coordinate can never become a blind in-world click.
+- **Generic error dialog captures (`cant_join_hell.png`, `game_exists_name.png`,
+  `game_password_doesnt_match.png`) classify as `Unknown`** in this state machine, which is
+  correct, not a gap - they're recognized by the separate `IsGameEntryErrorDialogOpen`
+  detector. `cannot_join_game_with_current_character.png` remains `Unknown` for visible-status
+  reporting but is now a terminal `CannotJoinCurrentCharacterDialog` state in the ready loop:
+  `menu_ready` dismisses its distinct two-button modal before sending generic startup input,
+  allowing the subsequent follow-auto check to run.
   Originally written only for the join/create game-entry flow, but it turns out to be a fully
   generic OK-dialog widget: the Battle.net reconnect failures ("Failed to authenticate. Please
   try again.", "Cannot Connect to Server" - `battlenet_reconnect_failed_to_authenticate.png`,

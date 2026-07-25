@@ -27,7 +27,8 @@ public enum ReferenceReadyState
     OfflineCharacterScreen,
     CharacterScreen,
     LobbyOrGame,
-    InGame
+    InGame,
+    CannotJoinCurrentCharacterDialog
 }
 
 // Replicates VmOperations.DetectVisibleD2RState/DetectReadyScreenState's exact region
@@ -120,6 +121,11 @@ internal static class ReferenceCaptureClassifier
         if (IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap(capture))
         {
             return ReferenceReadyState.LobbyOrGame;
+        }
+
+        if (IsCannotJoinCurrentCharacterDialogOpen(capture))
+        {
+            return ReferenceReadyState.CannotJoinCurrentCharacterDialog;
         }
 
         return ReferenceReadyState.Unknown;
@@ -226,6 +232,7 @@ internal static class ReferenceCaptureClassifier
         var legacyMana = Sample(capture, new UiPoint(0.800, 0.900), 0.055, 0.080);
 
         return D2RScreenClassifier.IsInGameHudProfile(modernHealth, modernMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18)
+            || IsModernSaveAndExitMenu(capture, modernHealth, modernMana)
             || D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18);
     }
 
@@ -244,12 +251,40 @@ internal static class ReferenceCaptureClassifier
             return true;
         }
 
+        if (IsModernSaveAndExitMenu(capture, modernHealth, modernMana))
+        {
+            return true;
+        }
+
         if (D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
         {
             return true;
         }
 
         return D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud);
+    }
+
+    public static bool IsModernSaveAndExitMenu(string capture)
+    {
+        var modernHealth = Sample(capture, new UiPoint(0.260, 0.900), 0.055, 0.080);
+        var modernMana = Sample(capture, new UiPoint(0.760, 0.900), 0.055, 0.080);
+        return IsModernSaveAndExitMenu(capture, modernHealth, modernMana);
+    }
+
+    private static bool IsModernSaveAndExitMenu(
+        string capture,
+        ScreenRegionStats modernHealth,
+        ScreenRegionStats modernMana)
+    {
+        var optionsButton = Sample(capture, new UiPoint(0.500, 0.374), 0.16, 0.045);
+        var saveAndExitButton = Sample(capture, new UiPoint(0.500, 0.439), 0.16, 0.045);
+        var returnToGameButton = Sample(capture, new UiPoint(0.500, 0.505), 0.16, 0.045);
+        return D2RScreenClassifier.IsModernSaveAndExitMenu(
+            modernHealth,
+            modernMana,
+            optionsButton,
+            saveAndExitButton,
+            returnToGameButton);
     }
 
     public static bool IsAnyLobbyEntryMenuVisible(string capture)

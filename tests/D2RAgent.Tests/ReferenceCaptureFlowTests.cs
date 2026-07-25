@@ -70,11 +70,11 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", ReferenceVisibleState.InGame)]
     [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceVisibleState.InGame)]
     [InlineData("follow_auto_pending_modern_ingame.png", ReferenceVisibleState.InGame)]
-    // Modern-graphics Save and Exit dims the action bar enough that IsInGameHudFrame's
-    // brightness checks miss even though the corner globes are still visible - unlike
-    // legacy graphics above. Documented, not (yet) treated as a bug - see the runbook.
-    [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", ReferenceVisibleState.Unknown)]
-    [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceVisibleState.Unknown)]
+    // The modern pause overlay dims the ordinary action bar/globe profile, but its two
+    // colored globes plus three centered menu buttons are explicit in-game evidence.
+    [InlineData("save_and_exit_resurrected.jpg", ReferenceVisibleState.InGame)]
+    [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", ReferenceVisibleState.InGame)]
+    [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceVisibleState.InGame)]
     // Error dialogs overlay the lobby but aren't part of this state machine - they're
     // handled by their own dedicated detector (IsGameEntryErrorDialogOpen), not modeled
     // here, so Unknown is the correct, expected result rather than a gap.
@@ -203,16 +203,15 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", ReferenceReadyState.InGame)]
     [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceReadyState.InGame)]
     [InlineData("follow_auto_pending_modern_ingame.png", ReferenceReadyState.InGame)]
-    // Same documented gap as Classify(): modern-graphics Save and Exit dims the action bar
-    // past every in-game threshold (strict and broad alike) and doesn't coincidentally overlap
-    // the lobby check either, so Unknown is correct here, not a regression.
-    [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", ReferenceReadyState.Unknown)]
-    [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceReadyState.Unknown)]
-    // Error dialogs overlay the lobby but aren't part of this state machine.
+    [InlineData("save_and_exit_resurrected.jpg", ReferenceReadyState.InGame)]
+    [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", ReferenceReadyState.InGame)]
+    [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceReadyState.InGame)]
+    // Generic error dialogs remain Unknown. The two-button current-character restriction is
+    // a terminal ready state so menu_ready stops generic input and can dismiss it safely.
     [InlineData("cant_join_hell.png", ReferenceReadyState.Unknown)]
     [InlineData("game_exists_name.png", ReferenceReadyState.Unknown)]
     [InlineData("game_password_doesnt_match.png", ReferenceReadyState.Unknown)]
-    [InlineData("cannot_join_game_with_current_character.png", ReferenceReadyState.Unknown)]
+    [InlineData("cannot_join_game_with_current_character.png", ReferenceReadyState.CannotJoinCurrentCharacterDialog)]
     public void RealCaptureClassifiesAsExpectedReadyState(string capture, ReferenceReadyState expected)
     {
         Assert.Equal(expected, ReferenceCaptureClassifier.ClassifyReady(capture));
@@ -259,5 +258,22 @@ public sealed class ReferenceCaptureFlowTests
         Assert.Equal(
             expectedOpen,
             ReferenceCaptureClassifier.IsCannotJoinCurrentCharacterDialogOpen(capture));
+    }
+
+    [Theory]
+    [InlineData("save_and_exit_resurrected.jpg", true)]
+    [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", true)]
+    [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", true)]
+    [InlineData("follow_auto_pending_modern_ingame.png", false)]
+    [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", false)]
+    [InlineData("lobby_join_game_screen.png", false)]
+    [InlineData("char_screen_act1.png", false)]
+    [InlineData("load_screen_phase_1.png", false)]
+    [InlineData("cannot_join_game_with_current_character.png", false)]
+    public void ModernSaveAndExitDetectorRequiresGlobesAndThreeButtonOverlay(
+        string capture,
+        bool expectedOpen)
+    {
+        Assert.Equal(expectedOpen, ReferenceCaptureClassifier.IsModernSaveAndExitMenu(capture));
     }
 }

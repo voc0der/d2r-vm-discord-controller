@@ -1118,6 +1118,17 @@ public sealed class VmOperations
 
         var input = new WindowsInput();
 
+        // A timed-out/cancelled follow attempt can leave this modal covering the lobby. It
+        // makes every ordinary ready-state detector read Unknown and absorbs the startup
+        // plan's clicks, so clear the dedicated two-button dialog before sending any generic
+        // startup input. A confirmed dismissal is enough to report ready: this modal only
+        // exists over the online lobby, and the next menu command performs its own checks.
+        var leftoverJoinDialog = await DismissCannotJoinDialogDuringReadyAsync(input, cancellationToken);
+        if (leftoverJoinDialog is not null)
+        {
+            return leftoverJoinDialog;
+        }
+
         // menu_ready is frequently run defensively right before another menu command - notably
         // the follow-auto rejoin, which fires it immediately after the client left its last
         // game. When the client is already back at the lobby (confirmed operationally within
@@ -1160,6 +1171,21 @@ public sealed class VmOperations
         {
             return CommandResult.Failure(
                 $"{FormatCharacterScreenReadyFailure(ready, input)} Initial launch result: {launch.Message}. Ready loop sent {ready.LaunchAttempts} retry launch command(s) and {ready.PlayClicks} Battle.net Play click(s). Last launch result: {ready.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
+                await CollectStatusAsync(cancellationToken));
+        }
+
+        if (ready.LastState == ReadyScreenState.CannotJoinCurrentCharacterDialog)
+        {
+            var cleanup = await DismissCannotJoinDialogDuringReadyAsync(input, cancellationToken);
+            if (cleanup is not null)
+            {
+                return cleanup;
+            }
+
+            MarkLobbyOrGameInteraction(
+                "Ready flow saw a leftover current-character join restriction that disappeared before cleanup.");
+            return CommandResult.Success(
+                "The leftover current-character join restriction is no longer visible; D2R is ready at the lobby.",
                 await CollectStatusAsync(cancellationToken));
         }
 
@@ -1896,26 +1922,33 @@ public sealed class VmOperations
 
         ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         CommandResult? unexpectedGameLeave = null;
+        var recoveredOpenModernPauseMenu = false;
         var unexpectedGameRecovery = await RunFollowAutoInGameRecoveryAsync(
-            detectBeforeToggle: () => TryRunBounded<bool?>(
-                () => IsInGameReady(input),
+            detectBeforeNormalization: () => TryRunBounded<InGameHudMatchKind?>(
+                () => DetectBestInGameHudMatch(input),
                 InGameSafetyCheckBoundMs,
                 fallback: null),
             toggleLegacyGraphics: () =>
             {
-                MarkCommandCheckpoint("FollowAutoCheckAsync: possible unexpected in-game state; toggling legacy graphics before re-check");
-                input.PressLegacyGraphicsToggle();
-                _ = input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames());
+                MarkCommandCheckpoint("FollowAutoCheckAsync: unexpected game is not confirmed legacy; sending one graphics toggle before re-check");
+                SendOneLegacyGraphicsToggle(input);
             },
             waitForLegacyGraphics: DelayStepAsync,
-            detectAfterToggle: () => TryRunBounded<bool?>(
-                () => IsInGameReadyStrict(input),
+            detectAfterNormalization: () => TryRunBounded<InGameHudMatchKind?>(
+                () => DetectBestInGameHudMatch(input),
                 InGameSafetyCheckBoundMs,
                 fallback: null),
             leaveGame: async token =>
             {
-                MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed unexpected in-game state after legacy toggle; using Save and Exit");
+                MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed unexpected game is in legacy graphics; using Save and Exit");
                 unexpectedGameLeave = await SaveAndExitAsync(token);
+                return unexpectedGameLeave.Ok;
+            },
+            leaveOpenModernPauseMenu: async token =>
+            {
+                recoveredOpenModernPauseMenu = true;
+                MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed an open modern Save and Exit menu; clicking its Save and Exit button directly");
+                unexpectedGameLeave = await SaveAndExitFromOpenModernPauseMenuAsync(input, token);
                 return unexpectedGameLeave.Ok;
             },
             cancellationToken);
@@ -1923,27 +1956,30 @@ public sealed class VmOperations
         if (unexpectedGameRecovery == FollowAutoInGameRecoveryOutcome.LeftGame)
         {
             return CommandResult.Success(
-                "This pending client was already in a game. Toggled legacy graphics, confirmed the in-game HUD, and used Save and Exit; waiting for the next follow-auto cycle to join the bound friend.",
+                recoveredOpenModernPauseMenu
+                    ? "This pending client was already in a game with the modern Save and Exit menu open. Clicked Save and Exit directly; waiting for the next follow-auto cycle to join the bound friend."
+                    : "This pending client was already in a game. Confirmed legacy graphics and used Save and Exit; waiting for the next follow-auto cycle to join the bound friend.",
                 new
                 {
                     bound = true,
                     joined = false,
                     d2rReady = false,
-                    recoveredUnexpectedGame = true
+                    recoveredUnexpectedGame = true,
+                    recoveredOpenModernPauseMenu
                 });
         }
 
         if (unexpectedGameRecovery == FollowAutoInGameRecoveryOutcome.LeaveFailed)
         {
             return CommandResult.Failure(
-                $"Follow-auto confirmed this pending client was already in a game after toggling legacy graphics, but Save and Exit failed: {unexpectedGameLeave?.Message ?? "unknown failure"}",
+                $"Follow-auto confirmed this pending client was already in a game, but Save and Exit failed: {unexpectedGameLeave?.Message ?? "unknown failure"}",
                 unexpectedGameLeave?.Data);
         }
 
         if (unexpectedGameRecovery == FollowAutoInGameRecoveryOutcome.DetectionInconclusive)
         {
             return CommandResult.Success(
-                "Follow-auto suspected this pending client was already in a game and toggled legacy graphics, but the fresh in-game check was still inconclusive; waiting for the next follow-auto cycle without clicking.",
+                "Follow-auto suspected this pending client was already in a game, but a fresh legacy HUD profile could not be confirmed; waiting for the next follow-auto cycle without clicking.",
                 new
                 {
                     bound = true,
@@ -2766,6 +2802,72 @@ public sealed class VmOperations
             await CollectStatusAsync(cancellationToken));
     }
 
+    private async Task<CommandResult> SaveAndExitFromOpenModernPauseMenuAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        var lastPostExitState = "post-exit menu state was not visually confirmed";
+        for (var attempt = 1; attempt <= SaveExitMaxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Never retry this fixed-coordinate click merely because a generic HUD sample
+            // still says "in game." Once the modern pause overlay is gone, the same point is
+            // the live world and could move a Hardcore character. Every attempt must freshly
+            // re-prove the distinctive three-button overlay first.
+            var pauseMenuMatch = TryRunBounded<InGameHudMatchKind?>(
+                () => DetectBestInGameHudMatch(input),
+                InGameSafetyCheckBoundMs,
+                fallback: null);
+            if (pauseMenuMatch != InGameHudMatchKind.ModernSaveAndExitMenu)
+            {
+                MarkLobbyOrGameInteraction(
+                    "Direct Save and Exit retry was suppressed because the modern pause menu was no longer confirmed.");
+                return CommandResult.Failure(
+                    $"The modern Save and Exit menu was not freshly confirmed before attempt {attempt}; no fixed-coordinate click was sent.{FormatInputDiagnosticsSuffix()}",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
+            MarkCommandCheckpoint(
+                $"SaveAndExitFromOpenModernPauseMenuAsync: direct attempt {attempt}/{SaveExitMaxAttempts}");
+            var saveAndExitPoint = GetUiPoint(D2RUiCoordinateTarget.SaveAndExitButton);
+            if (!input.SendWindowClick(saveAndExitPoint, GetD2RProcessNames(), MouseButton.Left))
+            {
+                // SendWindowClick returning false means it found no usable D2R HWND, so no
+                // window-targeted click was delivered. Use one visible click as the fallback;
+                // never fire both successful routes at this state-changing button.
+                input.VisibleClickOnce(saveAndExitPoint, MouseButton.Left);
+            }
+
+            var (confirmed, postExitState) = await WaitForPostSaveExitMenuAsync(input, cancellationToken);
+            lastPostExitState = postExitState;
+            if (confirmed)
+            {
+                var attemptNote = attempt > 1 ? $" on attempt {attempt}" : "";
+                return CommandResult.Success(
+                    $"Open-menu Save and Exit flow completed{attemptNote}; {postExitState}.",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
+            if (!IsInGameReady(input))
+            {
+                MarkD2RActivityUnknown(
+                    "Open-menu Save and Exit completed, but the post-exit menu state was not detected.");
+                return CommandResult.Success(
+                    $"Open-menu Save and Exit flow completed; {postExitState}.",
+                    await CollectStatusAsync(cancellationToken));
+            }
+
+            MarkLobbyOrGameInteraction(
+                $"Direct Save and Exit attempt {attempt} left the confirmed modern pause menu visible; retrying.");
+        }
+
+        MarkLobbyOrGameInteraction("Direct Save and Exit failed; the modern pause menu is still visible.");
+        return CommandResult.Failure(
+            $"Direct Save and Exit did not leave the game after {SaveExitMaxAttempts} attempts ({lastPostExitState}).{FormatInputDiagnosticsSuffix()}",
+            await CollectStatusAsync(cancellationToken));
+    }
+
     private async Task<CommandResult?> EnsureCharacterScreenReadyForMenuAsync(
         WindowsInput input,
         CancellationToken cancellationToken,
@@ -2820,7 +2922,9 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
-        if (ready.LastState is ReadyScreenState.LobbyOrGame or ReadyScreenState.InGame)
+        if (ready.LastState is ReadyScreenState.LobbyOrGame
+            or ReadyScreenState.InGame
+            or ReadyScreenState.CannotJoinCurrentCharacterDialog)
         {
             MarkLobbyOrGameInteraction($"Ready loop detected {ready.LastState} instead of the character screen.");
             return CommandResult.Failure(
@@ -3413,37 +3517,55 @@ public sealed class VmOperations
     // refuses to click Lobby in that state, but merely turning that refusal into "wait one
     // cycle" strands the account forever: every cycle reaches the same gate again.
     //
-    // G is the only safe normalization input here. It cannot open or confirm a dialog, and the
-    // legacy HUD gives the fresh detector stable globe/action-bar anchors before we decide
-    // whether Save and Exit is appropriate. A timeout before the toggle is treated as
-    // suspicion and gets the same safe normalization; a timeout after it remains
-    // inconclusive and never authorizes either a menu click or an Escape+Save-and-Exit click.
+    // For an ordinary live HUD, legacy graphics gives the fresh detector stable globe/action-
+    // bar anchors before we decide whether Save and Exit is appropriate. A client already in
+    // legacy mode must not receive G again (that would switch it back to modern); modern,
+    // broad-frame, and initially-unsampled states get exactly one G delivery, and only a fresh
+    // LegacyProfile match authorizes the ordinary Escape+Save-and-Exit flow.
+    //
+    // A positively identified modern Save-and-Exit menu is the one exception: G is ignored
+    // while that overlay is open, and SaveAndExitAsync's leading Escape would close the menu.
+    // Its dedicated three-button-plus-globes classifier therefore authorizes only the already-
+    // visible Save and Exit button, never an in-world or lobby click.
     internal static async Task<FollowAutoInGameRecoveryOutcome> RunFollowAutoInGameRecoveryAsync(
-        Func<bool?> detectBeforeToggle,
+        Func<InGameHudMatchKind?> detectBeforeNormalization,
         Action toggleLegacyGraphics,
         Func<CancellationToken, Task> waitForLegacyGraphics,
-        Func<bool?> detectAfterToggle,
+        Func<InGameHudMatchKind?> detectAfterNormalization,
         Func<CancellationToken, Task<bool>> leaveGame,
+        Func<CancellationToken, Task<bool>> leaveOpenModernPauseMenu,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (detectBeforeToggle() == false)
+        var beforeNormalization = detectBeforeNormalization();
+        if (beforeNormalization == InGameHudMatchKind.None)
         {
             return FollowAutoInGameRecoveryOutcome.NotInGame;
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        toggleLegacyGraphics();
-        await waitForLegacyGraphics(cancellationToken);
+        if (beforeNormalization == InGameHudMatchKind.ModernSaveAndExitMenu)
+        {
+            return await leaveOpenModernPauseMenu(cancellationToken)
+                ? FollowAutoInGameRecoveryOutcome.LeftGame
+                : FollowAutoInGameRecoveryOutcome.LeaveFailed;
+        }
+
+        if (beforeNormalization != InGameHudMatchKind.LegacyProfile)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            toggleLegacyGraphics();
+            await waitForLegacyGraphics(cancellationToken);
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
-        return detectAfterToggle() switch
+        return detectAfterNormalization() switch
         {
-            false => FollowAutoInGameRecoveryOutcome.NotInGame,
+            InGameHudMatchKind.None => FollowAutoInGameRecoveryOutcome.NotInGame,
             null => FollowAutoInGameRecoveryOutcome.DetectionInconclusive,
-            true => await leaveGame(cancellationToken)
+            InGameHudMatchKind.LegacyProfile => await leaveGame(cancellationToken)
                 ? FollowAutoInGameRecoveryOutcome.LeftGame
-                : FollowAutoInGameRecoveryOutcome.LeaveFailed
+                : FollowAutoInGameRecoveryOutcome.LeaveFailed,
+            _ => FollowAutoInGameRecoveryOutcome.DetectionInconclusive
         };
     }
 
@@ -4954,6 +5076,32 @@ public sealed class VmOperations
         return !IsCannotJoinCurrentCharacterDialogOpen(input);
     }
 
+    private async Task<CommandResult?> DismissCannotJoinDialogDuringReadyAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        if (!IsCannotJoinCurrentCharacterDialogOpen(input))
+        {
+            return null;
+        }
+
+        MarkCommandCheckpoint(
+            "ReadyClientAsync: leftover current-character join restriction visible; dismissing before startup input");
+        var dismissed = await DismissCannotJoinCurrentCharacterDialogAsync(input, cancellationToken);
+        if (!dismissed)
+        {
+            return CommandResult.Failure(
+                $"D2R's leftover current-character join restriction could not be dismissed.{FormatInputDiagnosticsSuffix()}",
+                await CollectStatusAsync(cancellationToken));
+        }
+
+        MarkLobbyOrGameInteraction(
+            "Ready flow dismissed a leftover current-character join restriction at the lobby.");
+        return CommandResult.Success(
+            "Dismissed a leftover current-character join restriction; D2R is ready at the lobby.",
+            await CollectStatusAsync(cancellationToken));
+    }
+
     private async Task<bool> WaitForMenuAfterConnectionInterruptedAsync(
         WindowsInput input,
         AgentCommon.UiPoint activeTab,
@@ -5188,6 +5336,11 @@ public sealed class VmOperations
             return ReadyScreenState.LobbyOrGame;
         }
 
+        if (IsCannotJoinCurrentCharacterDialogOpen(input))
+        {
+            return ReadyScreenState.CannotJoinCurrentCharacterDialog;
+        }
+
         return ReadyScreenState.Unknown;
     }
 
@@ -5283,6 +5436,11 @@ public sealed class VmOperations
             return ReadyScreenState.LobbyOrGame;
         }
 
+        if (IsCannotJoinCurrentCharacterDialogOpen(input))
+        {
+            return ReadyScreenState.CannotJoinCurrentCharacterDialog;
+        }
+
         return ReadyScreenState.Unknown;
     }
 
@@ -5316,6 +5474,11 @@ public sealed class VmOperations
             return ReadyScreenState.LobbyOrGame;
         }
 
+        if (IsCannotJoinCurrentCharacterDialogOpen(input))
+        {
+            return ReadyScreenState.CannotJoinCurrentCharacterDialog;
+        }
+
         return ReadyScreenState.Unknown;
     }
 
@@ -5325,7 +5488,8 @@ public sealed class VmOperations
             or ReadyScreenState.CharacterMenu
             or ReadyScreenState.OfflineCharacterScreen
             or ReadyScreenState.LobbyOrGame
-            or ReadyScreenState.InGame;
+            or ReadyScreenState.InGame
+            or ReadyScreenState.CannotJoinCurrentCharacterDialog;
     }
 
     private bool IsCharacterButtonPairReady(WindowsInput input, bool windowRelative, int sampleGrid = MenuSampleGrid)
@@ -5555,8 +5719,12 @@ public sealed class VmOperations
     // DetectVisibleD2RState, without touching the deliberately-after-lobby Frame fallback.
     private bool IsInGameReadyStrict(WindowsInput input)
     {
-        return DetectInGameHudMatch(input, windowRelative: false) is InGameHudMatchKind.ModernProfile or InGameHudMatchKind.LegacyProfile
-            || DetectInGameHudMatch(input, windowRelative: true) is InGameHudMatchKind.ModernProfile or InGameHudMatchKind.LegacyProfile;
+        return DetectInGameHudMatch(input, windowRelative: false) is InGameHudMatchKind.ModernProfile
+                or InGameHudMatchKind.LegacyProfile
+                or InGameHudMatchKind.ModernSaveAndExitMenu
+            || DetectInGameHudMatch(input, windowRelative: true) is InGameHudMatchKind.ModernProfile
+                or InGameHudMatchKind.LegacyProfile
+                or InGameHudMatchKind.ModernSaveAndExitMenu;
     }
 
     private bool IsInGameReadyStrictBounded(WindowsInput input, bool fallbackOnTimeout)
@@ -5604,6 +5772,39 @@ public sealed class VmOperations
             return InGameHudMatchKind.ModernProfile;
         }
 
+        // The modern Escape menu dims the HUD enough to fail the ordinary profile. Only pay
+        // for its three extra samples when both dimmed globe colors are still present.
+        if (modernHealth.RedRatio > 0.12 && modernMana.BlueRatio > 0.20)
+        {
+            var optionsButton = SampleD2RRegion(
+                input,
+                new AgentCommon.UiPoint(0.500, 0.374),
+                widthRatio: 0.16,
+                heightRatio: 0.045,
+                windowRelative: windowRelative);
+            var saveAndExitButton = SampleD2RRegion(
+                input,
+                GetUiPoint(D2RUiCoordinateTarget.SaveAndExitButton),
+                widthRatio: 0.16,
+                heightRatio: 0.045,
+                windowRelative: windowRelative);
+            var returnToGameButton = SampleD2RRegion(
+                input,
+                new AgentCommon.UiPoint(0.500, 0.505),
+                widthRatio: 0.16,
+                heightRatio: 0.045,
+                windowRelative: windowRelative);
+            if (D2RScreenClassifier.IsModernSaveAndExitMenu(
+                    modernHealth,
+                    modernMana,
+                    optionsButton,
+                    saveAndExitButton,
+                    returnToGameButton))
+            {
+                return InGameHudMatchKind.ModernSaveAndExitMenu;
+            }
+        }
+
         var legacyHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var legacyMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         if (D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
@@ -5616,6 +5817,27 @@ public sealed class VmOperations
         return D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud)
             ? InGameHudMatchKind.Frame
             : InGameHudMatchKind.None;
+    }
+
+    private InGameHudMatchKind DetectBestInGameHudMatch(WindowsInput input)
+    {
+        var screenMatch = DetectInGameHudMatch(input, windowRelative: false);
+        if (screenMatch is InGameHudMatchKind.ModernProfile
+            or InGameHudMatchKind.LegacyProfile
+            or InGameHudMatchKind.ModernSaveAndExitMenu)
+        {
+            return screenMatch;
+        }
+
+        var windowMatch = DetectInGameHudMatch(input, windowRelative: true);
+        if (windowMatch is InGameHudMatchKind.ModernProfile
+            or InGameHudMatchKind.LegacyProfile
+            or InGameHudMatchKind.ModernSaveAndExitMenu)
+        {
+            return windowMatch;
+        }
+
+        return screenMatch != InGameHudMatchKind.None ? screenMatch : windowMatch;
     }
 
     private bool IsAcceptedInGameHudMatch(
@@ -6018,10 +6240,55 @@ public sealed class VmOperations
         }
 
         legacyToggle.Toggled = true;
+        var currentMatch = TryRunBounded<InGameHudMatchKind?>(
+            () => DetectBestInGameHudMatch(input),
+            InGameSafetyCheckBoundMs,
+            fallback: null);
+        if (currentMatch == InGameHudMatchKind.LegacyProfile)
+        {
+            MarkCommandCheckpoint(
+                "ToggleLegacyGraphicsAfterEntryAsync: legacy HUD already confirmed; graphics toggle skipped");
+            return;
+        }
+
+        if (currentMatch == InGameHudMatchKind.ModernSaveAndExitMenu)
+        {
+            MarkCommandCheckpoint(
+                "ToggleLegacyGraphicsAfterEntryAsync: modern pause menu is open; graphics toggle suppressed");
+            return;
+        }
+
+        if (currentMatch != InGameHudMatchKind.ModernProfile)
+        {
+            MarkCommandCheckpoint(
+                $"ToggleLegacyGraphicsAfterEntryAsync: current graphics profile was not conclusive ({currentMatch?.ToString() ?? "unsampled"}); graphics toggle suppressed");
+            return;
+        }
+
         await DelayFastMenuAsync(cancellationToken);
-        input.PressLegacyGraphicsToggle();
-        _ = input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames());
+        SendOneLegacyGraphicsToggle(input);
         await DelayFastMenuAsync(cancellationToken);
+
+        var normalizedMatch = TryRunBounded<InGameHudMatchKind?>(
+            () => DetectBestInGameHudMatch(input),
+            InGameSafetyCheckBoundMs,
+            fallback: null);
+        MarkCommandCheckpoint(
+            normalizedMatch == InGameHudMatchKind.LegacyProfile
+                ? "ToggleLegacyGraphicsAfterEntryAsync: legacy HUD confirmed after one graphics toggle"
+                : $"ToggleLegacyGraphicsAfterEntryAsync: legacy HUD was not confirmed after one graphics toggle ({normalizedMatch?.ToString() ?? "unsampled"})");
+    }
+
+    private void SendOneLegacyGraphicsToggle(WindowsInput input)
+    {
+        // Prefer the D2R HWND because FocusD2R deliberately does not block on foreground
+        // negotiation. A false return means no usable target was found and therefore no
+        // window key was sent, so the visible scan-code press is a true fallback rather than
+        // a second state-changing delivery.
+        if (!input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames()))
+        {
+            input.PressLegacyGraphicsToggle();
+        }
     }
 
     private AgentCommon.UiPoint GetUiPoint(D2RUiCoordinateTarget target)
@@ -6589,7 +6856,8 @@ public sealed class VmOperations
         OfflineCharacterScreen,
         CharacterScreen,
         LobbyOrGame,
-        InGame
+        InGame,
+        CannotJoinCurrentCharacterDialog
     }
 
     internal enum GameEntryWaitResult
@@ -6612,11 +6880,12 @@ public sealed class VmOperations
         LeaveFailed
     }
 
-    private enum InGameHudMatchKind
+    internal enum InGameHudMatchKind
     {
         None,
         ModernProfile,
         LegacyProfile,
+        ModernSaveAndExitMenu,
         Frame
     }
 

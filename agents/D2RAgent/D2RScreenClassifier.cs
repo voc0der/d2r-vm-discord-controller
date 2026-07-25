@@ -205,6 +205,33 @@ internal static class D2RScreenClassifier
             && hud.DarkRatio < 0.80;
     }
 
+    public static bool IsModernSaveAndExitMenu(
+        ScreenRegionStats health,
+        ScreenRegionStats mana,
+        ScreenRegionStats optionsButton,
+        ScreenRegionStats saveAndExitButton,
+        ScreenRegionStats returnToGameButton)
+    {
+        // Resurrected graphics dims the whole scene while the Escape menu is open. That
+        // drops the modern globes and action bar below the normal HUD-profile thresholds,
+        // but both globe colors remain visible and the menu contributes three distinctive,
+        // centered grey buttons. Requiring the entire combination avoids treating generic
+        // dark menus, loading art, or coincidental red/blue scenery as an in-game pause.
+        static bool IsPauseMenuButton(ScreenRegionStats stats)
+        {
+            return stats.AverageLuminance > 60
+                && stats.LuminanceStdDev > 40
+                && stats.GreyRatio > 0.60
+                && stats.DarkRatio < 0.35;
+        }
+
+        return health.RedRatio > 0.12
+            && mana.BlueRatio > 0.20
+            && IsPauseMenuButton(optionsButton)
+            && IsPauseMenuButton(saveAndExitButton)
+            && IsPauseMenuButton(returnToGameButton);
+    }
+
     public static bool IsInGameHudFrame(
         ScreenRegionStats actionHud,
         ScreenRegionStats bottomHud,

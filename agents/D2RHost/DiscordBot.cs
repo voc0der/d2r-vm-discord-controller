@@ -4758,11 +4758,10 @@ public sealed class DiscordBot
     private async Task RunFollowAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, long runId, CancellationToken cancellationToken)
     {
         var channel = context.Command.Channel;
-        var joined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var accountState = new FollowAutoAccountState();
         var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
         var midJoinRotation = 0;
         var currentGameActive = false;
-        var awaitingIsolatedAccountRejoin = false;
         var isolatedAccountsResyncedThisGame = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? lastWaitingReport = null;
         var lastWaitingReportUtc = DateTimeOffset.MinValue;
@@ -4801,8 +4800,18 @@ public sealed class DiscordBot
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var (online, _) = GetAccountEntriesByConnectivity();
-                var pending = online.Where(entry => !joined.Contains(entry.Key)).ToArray();
-                if (pending.Length == 0 && online.Length > 0)
+                var onlineAccountKeys = online
+                    .Select(entry => entry.Key)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var newlyOfflineJoinedAccounts = accountState.BeginRecoveryForOfflineJoined(onlineAccountKeys);
+                if (currentGameActive)
+                {
+                    isolatedAccountsResyncedThisGame.UnionWith(newlyOfflineJoinedAccounts);
+                }
+
+                var pending = online.Where(entry => !accountState.Joined.Contains(entry.Key)).ToArray();
+                var expectedAccountCount = accountState.CountExpectedAccounts(onlineAccountKeys);
+                if (accountState.CanWatch(onlineAccountKeys))
                 {
                     var initialPulse = await TryFetchFollowPulseAsync(rotation: 0, _followAutoLockedNametag);
                     await TryLockNametagFromSampleAsync(initialPulse);
@@ -4816,28 +4825,38 @@ public sealed class DiscordBot
                                 ? $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(initialPulse)}"
                                 : $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for someone to leave...",
                             joined: online.Length,
-                            total: online.Length);
-                    }
-                    else if (awaitingIsolatedAccountRejoin)
-                    {
-                        awaitingIsolatedAccountRejoin = false;
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Game #{_followAutoGameNumber}: the isolated account rejoined; all online accounts are together again.{FormatBoundLeaderWatchDetail(initialPulse)}",
-                            joined: online.Length,
-                            total: online.Length);
+                            total: expectedAccountCount);
                     }
 
                     var watchResult = await WaitForFollowAutoGameEndAsync(
                         initialPulse.PlayerCount,
                         GetFollowAutoPlayerCountDropPollDelay,
+                        accountState,
                         isolatedAccountsResyncedThisGame,
                         cancellationToken);
                     if (watchResult.IsolatedAccountKey is { } isolatedAccountKey)
                     {
+                        // Once recovery starts, this account is no longer allowed to contribute
+                        // to the all-joined decision. Remember the exact key before sending the
+                        // leave: a timeout, ambiguous reply, or disconnect must still route it
+                        // through normal menu recovery when it next becomes reachable.
+                        accountState.BeginRecovery(isolatedAccountKey);
+                        isolatedAccountsResyncedThisGame.Add(isolatedAccountKey);
+                        if (!watchResult.AttemptTargetedLeave)
+                        {
+                            await UpdateFollowAutoMonitorAsync(
+                                $"Game #{_followAutoGameNumber}: {watchResult.Reason} {isolatedAccountKey} is marked recovery-pending and must complete the normal menu recovery after reconnecting; the healthy accounts remain in the current game.",
+                                joined: accountState.JoinedCount,
+                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
+                            idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                            await DelayNextFollowCheckAsync();
+                            continue;
+                        }
+
                         await UpdateFollowAutoMonitorAsync(
                             $"Game #{_followAutoGameNumber}: {watchResult.Reason} Leaving only {isolatedAccountKey} so it can rejoin the current game.",
-                            joined: joined.Count,
-                            total: online.Length);
+                            joined: accountState.JoinedCount,
+                            total: accountState.CountExpectedAccounts(onlineAccountKeys));
 
                         var isolatedAccount = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                         {
@@ -4848,24 +4867,22 @@ public sealed class DiscordBot
                             "follow-auto",
                             postResult: false,
                             metricsEnabled: _followAutoMetricsEnabled,
-                            onlyAccounts: isolatedAccount);
+                            onlyAccounts: isolatedAccount,
+                            cancellationToken: cancellationToken);
                         var resyncLeave = resyncLeaveResults.FirstOrDefault();
                         if (resyncLeave is { Ok: true })
                         {
-                            joined.Remove(isolatedAccountKey);
-                            isolatedAccountsResyncedThisGame.Add(isolatedAccountKey);
-                            awaitingIsolatedAccountRejoin = true;
                             await UpdateFollowAutoMonitorAsync(
                                 $"Game #{_followAutoGameNumber}: {isolatedAccountKey} left its divergent game and will rejoin the bound friend on the next cycle.",
-                                joined: joined.Count,
-                                total: online.Length);
+                                joined: accountState.JoinedCount,
+                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
                         }
                         else
                         {
                             await UpdateFollowAutoMonitorAsync(
-                                $"Game #{_followAutoGameNumber}: could not resynchronize {isolatedAccountKey}: {resyncLeave?.Message ?? "the account was no longer online"}. Retrying detection.",
-                                joined: joined.Count,
-                                total: online.Length);
+                                $"Game #{_followAutoGameNumber}: {isolatedAccountKey}'s leave was not confirmed ({resyncLeave?.Message ?? "the account was no longer online"}). It remains pending and the normal menu recovery path will retry it.",
+                                joined: accountState.JoinedCount,
+                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
                         }
 
                         idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
@@ -4881,7 +4898,8 @@ public sealed class DiscordBot
                         channel,
                         "follow-auto",
                         postResult: false,
-                        metricsEnabled: _followAutoMetricsEnabled);
+                        metricsEnabled: _followAutoMetricsEnabled,
+                        cancellationToken: cancellationToken);
                     var leaveFailures = leaveResults.Where(result => !result.Ok).ToArray();
                     if (leaveFailures.Length > 0)
                     {
@@ -4894,14 +4912,13 @@ public sealed class DiscordBot
 
                     _followAutoGamesCompleted++;
                     currentGameActive = false;
-                    awaitingIsolatedAccountRejoin = false;
                     isolatedAccountsResyncedThisGame.Clear();
                     await UpdateFollowAutoMonitorAsync(
                         $"Game #{_followAutoGameNumber}: all accounts left. Preparing Game #{_followAutoGameNumber + 1}...",
                         joined: 0,
                         total: online.Length);
 
-                    joined.Clear();
+                    accountState.ClearJoined();
                     idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                     await DelayNextFollowCheckAsync(afterLeave: true);
                     continue;
@@ -4918,9 +4935,9 @@ public sealed class DiscordBot
                 // clear those accounts, and let the normal scan rejoin everyone wherever the
                 // leader actually is. See FollowAutoPulsePolicy.ClassifyMidJoinProbe for the
                 // decision table.
-                if (joined.Count > 0 && online.Length > 0)
+                if (accountState.JoinedCount > 0 && online.Length > 0)
                 {
-                    var probe = await ProbeMidJoinLeaderPresenceAsync(joined, midJoinRotation++);
+                    var probe = await ProbeMidJoinLeaderPresenceAsync(accountState.Joined, midJoinRotation++);
                     if (FollowAutoPulsePolicy.ShouldAbortStaleMidJoinGame(probe.LockedPresent, probe.ConfirmAgreed))
                     {
                         var partialGameNumber = currentGameActive
@@ -4929,40 +4946,43 @@ public sealed class DiscordBot
                         var departureTiming = currentGameActive
                             ? "while an isolated account was rejoining"
                             : "before everyone joined";
+                        var staleAccountKeys = accountState.Joined
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var staleJoinedCount = staleAccountKeys.Count;
+                        // These accounts need a fresh menu check even when save-exit times out
+                        // or one target disconnects before dispatch. Move every intended target
+                        // to recovery first; command replies only improve the status message.
+                        accountState.BeginRecovery(staleAccountKeys);
                         await UpdateFollowAutoMonitorAsync(
-                            $"Game #{partialGameNumber}: the bound leader left {departureTiming} ({joined.Count}/{online.Length} in game); leaving the stale game so the fleet can rescan.{probe.Detail}",
-                            joined: joined.Count,
-                            total: online.Length);
+                            $"Game #{partialGameNumber}: the bound leader left {departureTiming} ({staleJoinedCount}/{expectedAccountCount} in game); leaving the stale game so the fleet can rescan.{probe.Detail}",
+                            joined: accountState.JoinedCount,
+                            total: accountState.CountExpectedAccounts(onlineAccountKeys));
                         var staleLeaveResults = await LeaveAllJoinAutoAsync(
                             channel,
                             "follow-auto",
                             postResult: false,
                             metricsEnabled: _followAutoMetricsEnabled,
-                            onlyAccounts: joined);
-                        foreach (var leaveResult in staleLeaveResults.Where(result => result.Ok))
-                        {
-                            joined.Remove(leaveResult.AccountKey);
-                        }
+                            onlyAccounts: staleAccountKeys,
+                            cancellationToken: cancellationToken);
 
                         var staleLeaveFailures = staleLeaveResults.Where(result => !result.Ok).ToArray();
                         if (staleLeaveFailures.Length > 0)
                         {
-                            // Unlike the all-joined leave, a failure here doesn't end the run:
-                            // the account stays marked joined, the next cycle re-probes the
-                            // (still leaderless) game and retries the leave, and a client too
-                            // wedged to ever leave is the agent watchdog's problem, not ours.
+                            // Unlike the all-joined leave, a failure here doesn't end the run.
+                            // Every target is already recovery-pending, so its next normal
+                            // follow check performs the same safe in-game recovery before join.
                             await UpdateFollowAutoMonitorAsync(
                                 $"Game #{partialGameNumber}: stale-game leave failed for "
                                     + string.Join("; ", staleLeaveFailures.Select(result => $"{result.AccountKey}: {result.Message}"))
-                                    + ". Retrying on the next cycle.",
-                                joined: joined.Count,
-                                total: online.Length);
+                                    + ". Those accounts remain pending for normal menu recovery.",
+                                joined: accountState.JoinedCount,
+                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
                         }
-                        else if (currentGameActive)
+
+                        if (currentGameActive)
                         {
                             _followAutoGamesCompleted++;
                             currentGameActive = false;
-                            awaitingIsolatedAccountRejoin = false;
                             isolatedAccountsResyncedThisGame.Clear();
                         }
 
@@ -4970,6 +4990,32 @@ public sealed class DiscordBot
                         await DelayNextFollowCheckAsync(afterLeave: true);
                         continue;
                     }
+                }
+
+                var offlineRecoveryAccounts = accountState.GetOfflineRecoveryAccounts(onlineAccountKeys);
+                if (pending.Length == 0 && offlineRecoveryAccounts.Length > 0)
+                {
+                    var waitingReport = "waiting for recovery account(s) to reconnect: "
+                        + string.Join(", ", offlineRecoveryAccounts);
+                    if (!string.Equals(waitingReport, lastWaitingReport, StringComparison.Ordinal)
+                        || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
+                    {
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Waiting: {waitingReport}. The online peers will not be treated as an all-joined fleet.",
+                            joined: accountState.JoinedCount,
+                            total: expectedAccountCount);
+                        lastWaitingReport = waitingReport;
+                        lastWaitingReportUtc = DateTimeOffset.UtcNow;
+                    }
+
+                    if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
+                    {
+                        await CompleteFollowAutoMonitorAsync(ok: false, "Idle timeout detected; follow-auto disabled.");
+                        break;
+                    }
+
+                    await DelayNextFollowCheckAsync();
+                    continue;
                 }
 
                 var anyBound = false;
@@ -4985,16 +5031,19 @@ public sealed class DiscordBot
                     {
                         case FollowAutoCheckOutcome.Joined:
                             anyBound = true;
-                            joined.Add(result.AccountKey);
+                            var completedRecovery = accountState.RecoveryPending.Contains(result.AccountKey);
+                            accountState.MarkJoined(result.AccountKey);
                             // The monitor is about to show concrete progress. Clear the
                             // de-duplication key so an unchanged restriction/wait reason from
                             // another pending account can immediately replace that progress
                             // line instead of being suppressed for five minutes.
                             lastWaitingReport = null;
                             await UpdateFollowAutoMonitorAsync(
-                                $"{result.AccountKey} joined the bound friend's game.",
-                                joined: joined.Count,
-                                total: online.Length);
+                                completedRecovery
+                                    ? $"{result.AccountKey} completed recovery and rejoined the bound friend's game."
+                                    : $"{result.AccountKey} joined the bound friend's game.",
+                                joined: accountState.JoinedCount,
+                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
                             idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                             break;
                         case FollowAutoCheckOutcome.Waiting:
@@ -5020,8 +5069,8 @@ public sealed class DiscordBot
                         {
                             await UpdateFollowAutoMonitorAsync(
                                 $"Waiting: {waitingReport}",
-                                joined: joined.Count,
-                                total: online.Length);
+                                joined: accountState.JoinedCount,
+                                total: expectedAccountCount);
                             lastWaitingReport = waitingReport;
                             lastWaitingReportUtc = DateTimeOffset.UtcNow;
                         }
@@ -5053,8 +5102,8 @@ public sealed class DiscordBot
                     {
                         await UpdateFollowAutoMonitorAsync(
                             $"Waiting: {waitingReport}",
-                            joined: joined.Count,
-                            total: online.Length);
+                            joined: accountState.JoinedCount,
+                            total: expectedAccountCount);
                         lastWaitingReport = waitingReport;
                         lastWaitingReportUtc = DateTimeOffset.UtcNow;
                     }
@@ -5346,18 +5395,33 @@ public sealed class DiscordBot
         string label,
         bool postResult = true,
         bool metricsEnabled = true,
-        IReadOnlySet<string>? onlyAccounts = null)
+        IReadOnlySet<string>? onlyAccounts = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var (entries, _) = GetAccountEntriesByConnectivity();
+        var unavailableResults = Array.Empty<JoinResult>();
         if (onlyAccounts is not null)
         {
             // Follow-auto's mid-join stale-game abort leaves only the accounts actually IN
             // the abandoned game; sending save-exit to a bot still at the lobby would just
-            // burn its command gate on a guaranteed failure.
+            // burn its command gate on a guaranteed failure. Still return one result for every
+            // requested key: an offline target is an unconfirmed leave, never silent success.
             entries = entries.Where(entry => onlyAccounts.Contains(entry.Key)).ToArray();
+            var onlineKeys = entries
+                .Select(entry => entry.Key)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            unavailableResults = onlyAccounts
+                .Where(accountKey => !onlineKeys.Contains(accountKey))
+                .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+                .Select(accountKey => new JoinResult(
+                    accountKey,
+                    false,
+                    "account is offline; leave could not be confirmed"))
+                .ToArray();
         }
 
-        if (entries.Length == 0)
+        if (entries.Length == 0 && unavailableResults.Length == 0)
         {
             if (postResult)
             {
@@ -5367,12 +5431,21 @@ public sealed class DiscordBot
             return [];
         }
 
-        var leaveResults = await Task.WhenAll(entries.Select(async entry =>
+        var onlineLeaveResults = await Task.WhenAll(entries.Select(async entry =>
         {
             try
             {
-                var result = await _registry.SendCommandAsync(entry.Value.AgentId, "menu_save_exit", BuildAccountArgs(entry.Key, entry.Value), TimeSpan.FromSeconds(210));
+                var result = await _registry.SendCommandAsync(
+                    entry.Value.AgentId,
+                    "menu_save_exit",
+                    BuildAccountArgs(entry.Key, entry.Value),
+                    TimeSpan.FromSeconds(210),
+                    cancellationToken);
                 return new JoinResult(entry.Key, result.Ok, result.Message);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -5380,6 +5453,9 @@ public sealed class DiscordBot
                 return new JoinResult(entry.Key, false, FormatExceptionWithAccountStatus(ex, entry.Key, entry.Value));
             }
         }));
+        var leaveResults = onlineLeaveResults
+            .Concat(unavailableResults)
+            .ToArray();
 
         var failed = leaveResults.Where(result => !result.Ok).ToArray();
         if (postResult)
@@ -5434,6 +5510,7 @@ public sealed class DiscordBot
     private async Task<FollowAutoGameWatchResult> WaitForFollowAutoGameEndAsync(
         int? baseline,
         Func<TimeSpan> pollDelay,
+        FollowAutoAccountState accountState,
         IReadOnlySet<string> isolatedAccountsResyncedThisGame,
         CancellationToken cancellationToken)
     {
@@ -5446,6 +5523,19 @@ public sealed class DiscordBot
         while (true)
         {
             await Task.Delay(nextDelay, cancellationToken);
+            var (connectedEntries, _) = GetAccountEntriesByConnectivity();
+            var onlineAccountKeys = connectedEntries
+                .Select(entry => entry.Key)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var disconnectedAccounts = accountState.BeginRecoveryForOfflineJoined(onlineAccountKeys);
+            if (disconnectedAccounts.FirstOrDefault() is { } disconnectedAccountKey)
+            {
+                return new FollowAutoGameWatchResult(
+                    $"{disconnectedAccountKey} disconnected while it was marked joined.",
+                    disconnectedAccountKey,
+                    AttemptTargetedLeave: false);
+            }
+
             var sample = await TryFetchFollowPulseAsync(rotation++, _followAutoLockedNametag);
             await TryLockNametagFromSampleAsync(sample);
 
@@ -6541,7 +6631,8 @@ public sealed class DiscordBot
 
     private sealed record FollowAutoGameWatchResult(
         string Reason,
-        string? IsolatedAccountKey = null);
+        string? IsolatedAccountKey = null,
+        bool AttemptTargetedLeave = true);
 
     private sealed class SlashContext
     {

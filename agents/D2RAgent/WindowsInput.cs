@@ -419,7 +419,7 @@ internal sealed class WindowsInput
 
     public void PressLegacyGraphicsToggle()
     {
-        ScanKey(VkG);
+        ScanKeyOnce(VkG);
     }
 
     public void PressReadySkipKey()
@@ -1175,6 +1175,25 @@ internal sealed class WindowsInput
         Thread.Sleep(InputGapMilliseconds);
 
         Key(virtualKey);
+    }
+
+    private static void ScanKeyOnce(byte virtualKey)
+    {
+        var scanCode = (ushort)MapVirtualKey(virtualKey, MapVkToVsc);
+        if (scanCode == 0)
+        {
+            // A legacy virtual-key press is the sole fallback when Windows cannot resolve
+            // a scan code. Do not also send another input route: G changes state, so two
+            // successfully delivered presses would immediately undo each other.
+            Key(virtualKey);
+            return;
+        }
+
+        var extendedKey = IsExtendedVirtualKey(virtualKey);
+        SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: false, extendedKey) });
+        Thread.Sleep(InputHoldMilliseconds);
+        SendInputs(new[] { Input.ForScanCode(scanCode, keyUp: true, extendedKey) });
+        Thread.Sleep(InputGapMilliseconds);
     }
 
     private static void KeyDown(byte virtualKey)
