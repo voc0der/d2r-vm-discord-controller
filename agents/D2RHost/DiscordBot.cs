@@ -4761,6 +4761,9 @@ public sealed class DiscordBot
         var joined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
         var midJoinRotation = 0;
+        var currentGameActive = false;
+        var awaitingIsolatedAccountRejoin = false;
+        var isolatedAccountsResyncedThisGame = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? lastWaitingReport = null;
         var lastWaitingReportUtc = DateTimeOffset.MinValue;
         CancellationTokenSource? watchCts = null;
@@ -4801,18 +4804,77 @@ public sealed class DiscordBot
                 var pending = online.Where(entry => !joined.Contains(entry.Key)).ToArray();
                 if (pending.Length == 0 && online.Length > 0)
                 {
-                    _followAutoGameNumber++;
                     var initialPulse = await TryFetchFollowPulseAsync(rotation: 0, _followAutoLockedNametag);
                     await TryLockNametagFromSampleAsync(initialPulse);
+                    if (!currentGameActive)
+                    {
+                        _followAutoGameNumber++;
+                        currentGameActive = true;
+                        isolatedAccountsResyncedThisGame.Clear();
+                        await UpdateFollowAutoMonitorAsync(
+                            initialPulse.LeaderBound
+                                ? $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(initialPulse)}"
+                                : $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for someone to leave...",
+                            joined: online.Length,
+                            total: online.Length);
+                    }
+                    else if (awaitingIsolatedAccountRejoin)
+                    {
+                        awaitingIsolatedAccountRejoin = false;
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: the isolated account rejoined; all online accounts are together again.{FormatBoundLeaderWatchDetail(initialPulse)}",
+                            joined: online.Length,
+                            total: online.Length);
+                    }
+
+                    var watchResult = await WaitForFollowAutoGameEndAsync(
+                        initialPulse.PlayerCount,
+                        GetFollowAutoPlayerCountDropPollDelay,
+                        isolatedAccountsResyncedThisGame,
+                        cancellationToken);
+                    if (watchResult.IsolatedAccountKey is { } isolatedAccountKey)
+                    {
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: {watchResult.Reason} Leaving only {isolatedAccountKey} so it can rejoin the current game.",
+                            joined: joined.Count,
+                            total: online.Length);
+
+                        var isolatedAccount = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            isolatedAccountKey
+                        };
+                        var resyncLeaveResults = await LeaveAllJoinAutoAsync(
+                            channel,
+                            "follow-auto",
+                            postResult: false,
+                            metricsEnabled: _followAutoMetricsEnabled,
+                            onlyAccounts: isolatedAccount);
+                        var resyncLeave = resyncLeaveResults.FirstOrDefault();
+                        if (resyncLeave is { Ok: true })
+                        {
+                            joined.Remove(isolatedAccountKey);
+                            isolatedAccountsResyncedThisGame.Add(isolatedAccountKey);
+                            awaitingIsolatedAccountRejoin = true;
+                            await UpdateFollowAutoMonitorAsync(
+                                $"Game #{_followAutoGameNumber}: {isolatedAccountKey} left its divergent game and will rejoin the bound friend on the next cycle.",
+                                joined: joined.Count,
+                                total: online.Length);
+                        }
+                        else
+                        {
+                            await UpdateFollowAutoMonitorAsync(
+                                $"Game #{_followAutoGameNumber}: could not resynchronize {isolatedAccountKey}: {resyncLeave?.Message ?? "the account was no longer online"}. Retrying detection.",
+                                joined: joined.Count,
+                                total: online.Length);
+                        }
+
+                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                        await DelayNextFollowCheckAsync(afterLeave: true);
+                        continue;
+                    }
+
                     await UpdateFollowAutoMonitorAsync(
-                        initialPulse.LeaderBound
-                            ? $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(initialPulse)}"
-                            : $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for someone to leave...",
-                        joined: online.Length,
-                        total: online.Length);
-                    var endReason = await WaitForFollowAutoGameEndAsync(initialPulse.PlayerCount, GetFollowAutoPlayerCountDropPollDelay, cancellationToken);
-                    await UpdateFollowAutoMonitorAsync(
-                        $"Game #{_followAutoGameNumber}: {endReason}. Leaving the bound friend's game...",
+                        $"Game #{_followAutoGameNumber}: {watchResult.Reason}. Leaving the bound friend's game...",
                         joined: online.Length,
                         total: online.Length);
                     var leaveResults = await LeaveAllJoinAutoAsync(
@@ -4831,6 +4893,9 @@ public sealed class DiscordBot
                     }
 
                     _followAutoGamesCompleted++;
+                    currentGameActive = false;
+                    awaitingIsolatedAccountRejoin = false;
+                    isolatedAccountsResyncedThisGame.Clear();
                     await UpdateFollowAutoMonitorAsync(
                         $"Game #{_followAutoGameNumber}: all accounts left. Preparing Game #{_followAutoGameNumber + 1}...",
                         joined: 0,
@@ -4858,10 +4923,14 @@ public sealed class DiscordBot
                     var probe = await ProbeMidJoinLeaderPresenceAsync(joined, midJoinRotation++);
                     if (FollowAutoPulsePolicy.ShouldAbortStaleMidJoinGame(probe.LockedPresent, probe.ConfirmAgreed))
                     {
-                        // _followAutoGameNumber only advances when a game reaches the
-                        // all-joined watch, so the game being formed here is the NEXT number.
+                        var partialGameNumber = currentGameActive
+                            ? _followAutoGameNumber
+                            : _followAutoGameNumber + 1;
+                        var departureTiming = currentGameActive
+                            ? "while an isolated account was rejoining"
+                            : "before everyone joined";
                         await UpdateFollowAutoMonitorAsync(
-                            $"Game #{_followAutoGameNumber + 1}: the bound leader left before everyone joined ({joined.Count}/{online.Length} in game); leaving the stale game so the fleet can rescan.{probe.Detail}",
+                            $"Game #{partialGameNumber}: the bound leader left {departureTiming} ({joined.Count}/{online.Length} in game); leaving the stale game so the fleet can rescan.{probe.Detail}",
                             joined: joined.Count,
                             total: online.Length);
                         var staleLeaveResults = await LeaveAllJoinAutoAsync(
@@ -4883,11 +4952,18 @@ public sealed class DiscordBot
                             // (still leaderless) game and retries the leave, and a client too
                             // wedged to ever leave is the agent watchdog's problem, not ours.
                             await UpdateFollowAutoMonitorAsync(
-                                $"Game #{_followAutoGameNumber + 1}: stale-game leave failed for "
+                                $"Game #{partialGameNumber}: stale-game leave failed for "
                                     + string.Join("; ", staleLeaveFailures.Select(result => $"{result.AccountKey}: {result.Message}"))
                                     + ". Retrying on the next cycle.",
                                 joined: joined.Count,
                                 total: online.Length);
+                        }
+                        else if (currentGameActive)
+                        {
+                            _followAutoGamesCompleted++;
+                            currentGameActive = false;
+                            awaitingIsolatedAccountRejoin = false;
+                            isolatedAccountsResyncedThisGame.Clear();
                         }
 
                         idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
@@ -5351,15 +5427,18 @@ public sealed class DiscordBot
     // the NEXT vantage in the rotation rather than the same screen twice.
     // FollowAutoPulsePolicy turns each sample into stay/rebaseline/confirm/leave - see that
     // class for the decision table and why count drops stop mattering while the bound leader
-    // is verified present. Returns a short human-readable reason for the monitor message.
+    // is verified present. Returns either a whole-game end reason or the one isolated account
+    // that should be removed from the joined set and resynchronized.
     // Join-auto keeps using WaitForPlayerCountDropAsync above: its games are the accounts' own
     // private games, where "someone left" really does mean the game is over.
-    private async Task<string> WaitForFollowAutoGameEndAsync(
+    private async Task<FollowAutoGameWatchResult> WaitForFollowAutoGameEndAsync(
         int? baseline,
         Func<TimeSpan> pollDelay,
+        IReadOnlySet<string> isolatedAccountsResyncedThisGame,
         CancellationToken cancellationToken)
     {
         var singleVantageMissStreak = 0;
+        var isolatedMissStreaks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var rotation = 0;
         var warnedCountDropWhileLeaderVisible = false;
         var lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
@@ -5378,8 +5457,13 @@ public sealed class DiscordBot
             switch (FollowAutoPulsePolicy.Classify(sample.LeaderBound, lockedPresent, sample.PlayerCount, baseline))
             {
                 case FollowAutoPulseAction.CountDropLeave:
-                    return "player count dropped";
+                    return new FollowAutoGameWatchResult("player count dropped");
                 case FollowAutoPulseAction.RebaselineAndWait:
+                    if (sample.AccountKey is { } visibleAccountKey)
+                    {
+                        isolatedMissStreaks.Remove(visibleAccountKey);
+                    }
+
                     // A count drop with the locked nametag still visible is legitimate in a
                     // public game (a stranger left), but when the operator themselves left and
                     // this branch keeps swallowing it, the locked template is matching someone
@@ -5415,22 +5499,55 @@ public sealed class DiscordBot
                         var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(sample.AccountKey);
                         if (agreed == true)
                         {
-                            return sample.AccountKey is { } flagger && confirmer is { } confirmedBy
-                                ? $"the bound leader left the game ({flagger} flagged it, {confirmedBy} confirmed)"
-                                : "the bound leader left the game";
+                            return new FollowAutoGameWatchResult(
+                                sample.AccountKey is { } flagger && confirmer is { } confirmedBy
+                                    ? $"the bound leader left the game ({flagger} flagged it, {confirmedBy} confirmed)"
+                                    : "the bound leader left the game");
                         }
 
                         if (agreed == false)
                         {
-                            // A different VM still sees the leader (and no VM verified absence),
-                            // so the flagger's miss reads as a transient - name briefly occluded
-                            // or a per-vantage render difference, not a departure.
+                            // A different VM still sees the leader (and no VM verified absence).
+                            // One such split read can be transient; repeated split reads from the
+                            // same account mean that account is probably in another game while
+                            // the host's joined set still counts it as healthy.
                             baseline = sample.PlayerCount ?? baseline;
+                            var isolatedMissStreak = 0;
+                            var alreadyResyncedThisGame = false;
+                            if (sample.AccountKey is { } isolatedAccountKey)
+                            {
+                                isolatedMissStreaks.TryGetValue(isolatedAccountKey, out var priorMissStreak);
+                                isolatedMissStreak = FollowAutoPulsePolicy.NextIsolatedVantageMissStreak(
+                                    priorMissStreak,
+                                    lockedPresent,
+                                    agreed);
+                                isolatedMissStreaks[isolatedAccountKey] = isolatedMissStreak;
+                                alreadyResyncedThisGame = isolatedAccountsResyncedThisGame.Contains(isolatedAccountKey);
+                                if (FollowAutoPulsePolicy.ShouldResyncIsolatedVantage(
+                                        isolatedMissStreak,
+                                        alreadyResyncedThisGame))
+                                {
+                                    return new FollowAutoGameWatchResult(
+                                        $"{isolatedAccountKey} missed the bound leader on {isolatedMissStreak} independently-confirmed checks while the other bots still saw it.{confirmDetail}",
+                                        isolatedAccountKey);
+                                }
+                            }
+
+                            var isolationDetail = sample.AccountKey is not null
+                                ? alreadyResyncedThisGame
+                                    ? " It already had one targeted resync this game, so it will not be cycled repeatedly."
+                                    : $" Confirmed-isolation miss {isolatedMissStreak}/{FollowAutoPulsePolicy.IsolatedVantageResyncSamples}."
+                                : "";
                             await UpdateFollowAutoMonitorAsync(
-                                $"Game #{_followAutoGameNumber}: {flaggerName} lost sight of the bound leader, but {confirmer} still sees it - treating the miss as transient. {confirmDetail}{FormatBoundLeaderWatchDetail(sample)}");
+                                $"Game #{_followAutoGameNumber}: {flaggerName} lost sight of the bound leader, but {confirmer} still sees it.{isolationDetail} {confirmDetail}{FormatBoundLeaderWatchDetail(sample)}");
                         }
                         else
                         {
+                            if (sample.AccountKey is { } inconclusiveAccountKey)
+                            {
+                                isolatedMissStreaks.Remove(inconclusiveAccountKey);
+                            }
+
                             // agreed == null: no other vantage could get a clean read this
                             // instant. Don't leave on one screen's word - the next heartbeat
                             // pulse tries again - but say WHY on the monitor: a fleet that can
@@ -5446,7 +5563,7 @@ public sealed class DiscordBot
                         // the lone vantage to miss the leader on two back-to-back scans.
                         if (++singleVantageMissStreak >= FollowAutoPulsePolicy.LeaderGoneConfirmationSamples)
                         {
-                            return "the bound leader left the game";
+                            return new FollowAutoGameWatchResult("the bound leader left the game");
                         }
 
                         await UpdateFollowAutoMonitorAsync(
@@ -5457,6 +5574,11 @@ public sealed class DiscordBot
 
                     break;
                 default:
+                    if (sample.AccountKey is { } unsampledAccountKey)
+                    {
+                        isolatedMissStreaks.Remove(unsampledAccountKey);
+                    }
+
                     baseline = FollowAutoPulsePolicy.RaiseCountBaseline(baseline, sample.PlayerCount);
                     break;
             }
@@ -6416,6 +6538,10 @@ public sealed class DiscordBot
         string AccountKey,
         FollowAutoCheckOutcome Outcome,
         string Message);
+
+    private sealed record FollowAutoGameWatchResult(
+        string Reason,
+        string? IsolatedAccountKey = null);
 
     private sealed class SlashContext
     {

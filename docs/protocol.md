@@ -281,10 +281,14 @@ locked entry: present -> rebaseline; player-count drop with no locked-nametag si
 locked nametag missing -> raise a flag. A flag does not leave on its own - the host immediately
 forces a check of the SAME locked nametag on a *different* online VM, and only leaves if that
 independent vantage also can't see it (the leave reason names both accounts). A second VM that
-still sees it clears the flag as a transient; if no other VM can get a clean read at that
-instant, the loop keeps waiting rather than leaving on one screen's word. With only a single VM
-online there is no independent screen, so that lone vantage falls back to requiring two
-back-to-back misses.
+still sees it makes the first split read transient. If the same account produces two such
+independently-contradicted misses, however, the host treats that account as isolated in another
+game: it sends Save and Exit only there, removes it from the joined set, and lets the normal
+follow check rejoin it to the current game. This targeted resync is capped at once per account
+per game so a chronic per-VM fingerprint mismatch cannot cause a leave/rejoin loop. If no other
+VM can get a clean read at that instant, the loop keeps waiting rather than leaving on one
+screen's word. With only a single VM online there is no independent screen, so that lone
+vantage falls back to requiring two back-to-back misses.
 
 After `menu_play`, `menu_join_game`, `menu_create_game`, and `menu_join_friend`, the VM agent can wait and press `G` to switch to legacy graphics. This is controlled by `ui.toggleLegacyGraphicsAfterEnteringGame` and `ui.legacyGraphicsToggleDelaySeconds` in `vm-agent.config.json`.
 

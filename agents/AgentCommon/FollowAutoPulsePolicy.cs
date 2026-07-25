@@ -58,6 +58,13 @@ public static class FollowAutoPulsePolicy
 
     public const int SingleVantageRescanSeconds = 1;
 
+    // Multi-vantage divergence recovery. One miss contradicted by another VM is still treated
+    // as transient, but the same account producing two independently-contradicted misses means
+    // that account is probably in a different game while the host still counts it as joined.
+    // The host then leaves/rejoins only that account. It caps this at one resync attempt per
+    // account per game so a chronically under-scoring render cannot churn forever.
+    public const int IsolatedVantageResyncSamples = 2;
+
     public static TimeSpan GetHeartbeat(TimeSpan baseDelay, int vantageCount)
     {
         var faster = TimeSpan.FromTicks(baseDelay.Ticks / HeartbeatSpeedupDivisor);
@@ -107,6 +114,25 @@ public static class FollowAutoPulsePolicy
     public static bool ShouldAbortStaleMidJoinGame(bool? lockedPresent, bool? confirmAgreed)
     {
         return lockedPresent == false && confirmAgreed == true;
+    }
+
+    // "confirmAgreed == false" means the flagger missed the leader while at least one other VM
+    // explicitly still sees that same locked nametag. Only that exact split-brain signal grows
+    // the streak; a visible leader, fleet-wide absence, or an inconclusive confirmation resets
+    // it. The dictionary that holds these streaks is host-side and keyed by account.
+    public static int NextIsolatedVantageMissStreak(
+        int currentStreak,
+        bool? lockedPresent,
+        bool? confirmAgreed)
+    {
+        return lockedPresent == false && confirmAgreed == false
+            ? currentStreak + 1
+            : 0;
+    }
+
+    public static bool ShouldResyncIsolatedVantage(int missStreak, bool alreadyResyncedThisGame)
+    {
+        return !alreadyResyncedThisGame && missStreak >= IsolatedVantageResyncSamples;
     }
 
     // Count-drop semantics compare against the highest player count actually observed, not just

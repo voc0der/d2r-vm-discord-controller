@@ -271,7 +271,12 @@ mid-loading, not in a game) neither confirm nor disqualify.
 divided heartbeat, but a single VM losing sight of the leader does not leave on its own word - the
 host immediately forces a leader check on a different VM and only leaves if that independent
 vantage also can't see the leader. A second VM that still sees the leader clears the flag as a
-transient. Only when exactly one VM is online does it fall back to two back-to-back misses.
+transient once. Two independently-contradicted misses from the same account instead identify
+that account as isolated from the fleet: the host sends Save and Exit only to it, removes it
+from the joined set, and rejoins it through the pending-account flow without advancing the
+current game number. One targeted resync attempt per account per game prevents a chronic
+per-vantage fingerprint mismatch from cycling the client indefinitely. Only when exactly one VM
+is online does leader-departure detection fall back to two back-to-back misses.
 
 Live consumers: `VmOperations.FollowBindInGameCapture` (bind), `VmOperations.SampleLeaderMatches`
 inside `sample_player_count` (the follow-auto pulse); classified per-sample by

@@ -196,4 +196,50 @@ public sealed class FollowAutoPulsePolicyTests
     {
         Assert.Equal(expectedAbort, FollowAutoPulsePolicy.ShouldAbortStaleMidJoinGame(lockedPresent, confirmAgreed));
     }
+
+    [Fact]
+    public void RepeatedMissesContradictedByPeersTriggerOneAccountResync()
+    {
+        var streak = FollowAutoPulsePolicy.NextIsolatedVantageMissStreak(
+            currentStreak: 0,
+            lockedPresent: false,
+            confirmAgreed: false);
+
+        Assert.Equal(1, streak);
+        Assert.False(FollowAutoPulsePolicy.ShouldResyncIsolatedVantage(streak, alreadyResyncedThisGame: false));
+
+        streak = FollowAutoPulsePolicy.NextIsolatedVantageMissStreak(
+            streak,
+            lockedPresent: false,
+            confirmAgreed: false);
+
+        Assert.Equal(FollowAutoPulsePolicy.IsolatedVantageResyncSamples, streak);
+        Assert.True(FollowAutoPulsePolicy.ShouldResyncIsolatedVantage(streak, alreadyResyncedThisGame: false));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, null)]
+    [InlineData(null, false)]
+    public void AnythingExceptConfirmedIsolationResetsTheAccountStreak(
+        bool? lockedPresent,
+        bool? confirmAgreed)
+    {
+        Assert.Equal(
+            0,
+            FollowAutoPulsePolicy.NextIsolatedVantageMissStreak(
+                currentStreak: FollowAutoPulsePolicy.IsolatedVantageResyncSamples - 1,
+                lockedPresent,
+                confirmAgreed));
+    }
+
+    [Fact]
+    public void AccountIsNotResyncedTwiceInTheSameGame()
+    {
+        Assert.False(
+            FollowAutoPulsePolicy.ShouldResyncIsolatedVantage(
+                FollowAutoPulsePolicy.IsolatedVantageResyncSamples + 1,
+                alreadyResyncedThisGame: true));
+    }
 }
