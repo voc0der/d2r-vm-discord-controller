@@ -4809,22 +4809,31 @@ public sealed class DiscordBot
                     isolatedAccountsResyncedThisGame.UnionWith(newlyOfflineJoinedAccounts);
                 }
 
-                var pending = online.Where(entry => !accountState.Joined.Contains(entry.Key)).ToArray();
+                // Parked accounts are online and expected, but must not re-attempt the current
+                // game: a full game's freed slot belongs to whoever left it (a human), never to
+                // a waiting bot. They rejoin automatically once the fleet advances.
+                var pending = online
+                    .Where(entry => !accountState.Joined.Contains(entry.Key)
+                        && !accountState.ParkedGameFull.Contains(entry.Key))
+                    .ToArray();
                 var expectedAccountCount = accountState.CountExpectedAccounts(onlineAccountKeys);
                 if (accountState.CanWatch(onlineAccountKeys))
                 {
-                    var initialPulse = await TryFetchFollowPulseAsync(rotation: 0, _followAutoLockedNametag);
+                    var initialPulse = await TryFetchFollowPulseAsync(rotation: 0, _followAutoLockedNametag, accountState.Joined);
                     await TryLockNametagFromSampleAsync(initialPulse);
                     if (!currentGameActive)
                     {
                         _followAutoGameNumber++;
                         currentGameActive = true;
                         isolatedAccountsResyncedThisGame.Clear();
+                        var parkedNote = accountState.ParkedGameFullCount > 0
+                            ? $" ({FormatParkedGameFullNote(accountState)})"
+                            : "";
                         await UpdateFollowAutoMonitorAsync(
                             initialPulse.LeaderBound
-                                ? $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(initialPulse)}"
-                                : $"Game #{_followAutoGameNumber}: all online accounts joined. Watching for someone to leave...",
-                            joined: online.Length,
+                                ? $"Game #{_followAutoGameNumber}: all joinable accounts joined.{parkedNote} Watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(initialPulse)}"
+                                : $"Game #{_followAutoGameNumber}: all joinable accounts joined.{parkedNote} Watching for someone to leave...",
+                            joined: accountState.JoinedCount,
                             total: expectedAccountCount);
                     }
 
@@ -4892,13 +4901,23 @@ public sealed class DiscordBot
 
                     await UpdateFollowAutoMonitorAsync(
                         $"Game #{_followAutoGameNumber}: {watchResult.Reason}. Leaving the bound friend's game...",
-                        joined: online.Length,
-                        total: online.Length);
+                        joined: accountState.JoinedCount,
+                        total: expectedAccountCount);
+                    // Scope the leave to the accounts actually in the game and still online.
+                    // A game-full-parked account sits at the lobby - sending it save-exit would
+                    // burn its command gate on a guaranteed failure and end the whole run on a
+                    // phantom "leave failed".
+                    var (leaveOnline, _) = GetAccountEntriesByConnectivity();
+                    var joinedLeaveTargets = accountState.Joined
+                        .Where(accountKey => leaveOnline.Any(entry =>
+                            string.Equals(entry.Key, accountKey, StringComparison.OrdinalIgnoreCase)))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
                     var leaveResults = await LeaveAllJoinAutoAsync(
                         channel,
                         "follow-auto",
                         postResult: false,
                         metricsEnabled: _followAutoMetricsEnabled,
+                        onlyAccounts: joinedLeaveTargets,
                         cancellationToken: cancellationToken);
                     var leaveFailures = leaveResults.Where(result => !result.Ok).ToArray();
                     if (leaveFailures.Length > 0)
@@ -4913,8 +4932,14 @@ public sealed class DiscordBot
                     _followAutoGamesCompleted++;
                     currentGameActive = false;
                     isolatedAccountsResyncedThisGame.Clear();
+                    // The game the parked accounts were shut out of is over; they resume the
+                    // normal join scan for the next one alongside everyone else.
+                    var unparkedAccounts = accountState.ClearGameFullParking();
+                    var unparkedNote = unparkedAccounts.Length > 0
+                        ? $" {string.Join(", ", unparkedAccounts)} sat out that full game and will rejoin with the fleet."
+                        : "";
                     await UpdateFollowAutoMonitorAsync(
-                        $"Game #{_followAutoGameNumber}: all accounts left. Preparing Game #{_followAutoGameNumber + 1}...",
+                        $"Game #{_followAutoGameNumber}: all accounts left.{unparkedNote} Preparing Game #{_followAutoGameNumber + 1}...",
                         joined: 0,
                         total: online.Length);
 
@@ -4986,6 +5011,10 @@ public sealed class DiscordBot
                             isolatedAccountsResyncedThisGame.Clear();
                         }
 
+                        // The game everyone was parked out of is being abandoned; the rescan
+                        // targets wherever the leader went next, a fresh capacity situation.
+                        accountState.ClearGameFullParking();
+
                         idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                         await DelayNextFollowCheckAsync(afterLeave: true);
                         continue;
@@ -5005,6 +5034,35 @@ public sealed class DiscordBot
                             joined: accountState.JoinedCount,
                             total: expectedAccountCount);
                         lastWaitingReport = waitingReport;
+                        lastWaitingReportUtc = DateTimeOffset.UtcNow;
+                    }
+
+                    if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
+                    {
+                        await CompleteFollowAutoMonitorAsync(ok: false, "Idle timeout detected; follow-auto disabled.");
+                        break;
+                    }
+
+                    await DelayNextFollowCheckAsync();
+                    continue;
+                }
+
+                // Every online account is parked on a full game and none ever made it inside:
+                // there is no vantage to observe the game ending, so the fleet cannot un-park
+                // itself. Without this guard the empty pending set would fall through to the
+                // no-results scan below and end the run with a bogus "no fingerprint" stop.
+                if (pending.Length == 0 && accountState.JoinedCount == 0 && accountState.ParkedGameFullCount > 0)
+                {
+                    var parkedStallReport = $"{FormatParkedGameFullNote(accountState)}. No fleet account is inside that game to watch it end, "
+                        + "so they stay warm at the lobby; restart follow-auto (Stop, then Follow) if the leader has already moved on.";
+                    if (!string.Equals(parkedStallReport, lastWaitingReport, StringComparison.Ordinal)
+                        || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
+                    {
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Waiting: {parkedStallReport}",
+                            joined: 0,
+                            total: expectedAccountCount);
+                        lastWaitingReport = parkedStallReport;
                         lastWaitingReportUtc = DateTimeOffset.UtcNow;
                     }
 
@@ -5049,6 +5107,28 @@ public sealed class DiscordBot
                         case FollowAutoCheckOutcome.Waiting:
                             anyBound = true;
                             waitingReports.Add($"{result.AccountKey}: {result.Message}");
+                            break;
+                        case FollowAutoCheckOutcome.GameFull:
+                            anyBound = true;
+                            var (fullAttempt, parked) = accountState.RecordGameFullStrike(result.AccountKey);
+                            if (parked)
+                            {
+                                // Progress-style monitor line (not a de-duplicated waiting
+                                // report): parking is a state change the operator must see.
+                                lastWaitingReport = null;
+                                await UpdateFollowAutoMonitorAsync(
+                                    $"{result.AccountKey}: the bound friend's game is still full after {fullAttempt} attempts. "
+                                        + "Parked warm at the lobby - it will NOT take a freed slot in this game, and rejoins automatically when the fleet moves to the next one.",
+                                    joined: accountState.JoinedCount,
+                                    total: accountState.CountExpectedAccounts(onlineAccountKeys));
+                            }
+                            else
+                            {
+                                waitingReports.Add(
+                                    $"{result.AccountKey}: game is full (attempt {fullAttempt}/{FollowAutoAccountState.MaxGameFullAttempts}, will park after {FollowAutoAccountState.MaxGameFullAttempts})");
+                            }
+
+                            idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                             break;
                         case FollowAutoCheckOutcome.Unbound:
                             unboundReports.Add($"{result.AccountKey}: {result.Message}");
@@ -5096,6 +5176,11 @@ public sealed class DiscordBot
 
                 if (waitingReports.Count > 0)
                 {
+                    if (accountState.ParkedGameFullCount > 0)
+                    {
+                        waitingReports.Add(FormatParkedGameFullNote(accountState));
+                    }
+
                     var waitingReport = string.Join("; ", waitingReports);
                     if (!string.Equals(waitingReport, lastWaitingReport, StringComparison.Ordinal)
                         || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
@@ -5220,6 +5305,13 @@ public sealed class DiscordBot
         if (TryGetBoolean(data, "joined", out var didJoin) && didJoin)
         {
             return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.Joined, result.Message);
+        }
+
+        if (TryGetBoolean(data, "joinBlocked", out var joinBlocked) && joinBlocked
+            && TryGetString(data, "joinBlockReason", out var joinBlockReason)
+            && string.Equals(joinBlockReason, "gameIsFull", StringComparison.OrdinalIgnoreCase))
+        {
+            return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.GameFull, result.Message);
         }
 
         return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.Waiting, result.Message);
@@ -5536,7 +5628,7 @@ public sealed class DiscordBot
                     AttemptTargetedLeave: false);
             }
 
-            var sample = await TryFetchFollowPulseAsync(rotation++, _followAutoLockedNametag);
+            var sample = await TryFetchFollowPulseAsync(rotation++, _followAutoLockedNametag, accountState.Joined);
             await TryLockNametagFromSampleAsync(sample);
 
             // Only the session-locked nametag can drive the leave decision. Before a lock
@@ -5582,11 +5674,14 @@ public sealed class DiscordBot
                     break;
                 case FollowAutoPulseAction.LeaderMissingHere:
                     var (online, _) = GetAccountEntriesByConnectivity();
-                    if (online.Length > 1)
+                    // Count joined vantages only: a game-full-parked account is online but sits
+                    // at the lobby, so it can neither confirm nor deny the leader's absence.
+                    var joinedOnlineCount = online.Count(entry => accountState.Joined.Contains(entry.Key));
+                    if (joinedOnlineCount > 1)
                     {
                         singleVantageMissStreak = 0;
                         var flaggerName = sample.AccountKey ?? "a VM";
-                        var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(sample.AccountKey);
+                        var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(sample.AccountKey, accountState.Joined);
                         if (agreed == true)
                         {
                             return new FollowAutoGameWatchResult(
@@ -5696,9 +5791,18 @@ public sealed class DiscordBot
     // Side effect: an account whose scan works but whose stored list is missing the locked
     // nametag (offline during that bind, or an older overwrite-style agent) gets the locked
     // fingerprint re-sent, so list divergence heals mid-run instead of muting that VM forever.
-    private async Task<(bool? Agreed, string? ByAccount, string Detail)> ConfirmLeaderGoneFromAnotherVantageAsync(string? flaggerKey)
+    private async Task<(bool? Agreed, string? ByAccount, string Detail)> ConfirmLeaderGoneFromAnotherVantageAsync(
+        string? flaggerKey,
+        IReadOnlySet<string>? onlyAccounts = null)
     {
         var (online, _) = GetAccountEntriesByConnectivity();
+        if (onlyAccounts is not null)
+        {
+            // Same vantage-scoping rationale as TryFetchFollowPulseAsync: only accounts in the
+            // watched game can meaningfully confirm or deny the leader's absence.
+            online = online.Where(entry => onlyAccounts.Contains(entry.Key)).ToArray();
+        }
+
         var answers = new List<bool?>();
         string? goneBy = null;
         string? presentBy = null;
@@ -5863,6 +5967,15 @@ public sealed class DiscordBot
         string? AccountKey,
         IReadOnlyList<FollowLeaderMatch> Matches);
 
+    private static string FormatParkedGameFullNote(FollowAutoAccountState accountState)
+    {
+        var parked = accountState.ParkedGameFull
+            .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return $"{string.Join(", ", parked)} {(parked.Length == 1 ? "is" : "are")} parked - the game reported full "
+            + $"{FollowAutoAccountState.MaxGameFullAttempts} times; rejoining at the fleet's next game";
+    }
+
     private string FormatBoundLeaderWatchDetail(FollowPulseSample sample)
     {
         if (!sample.LeaderBound)
@@ -5929,16 +6042,29 @@ public sealed class DiscordBot
         }
 
         var flagger = sample.AccountKey ?? accountKey;
-        var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(flagger);
+        var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(flagger, joined);
         var detail = agreed == true && confirmer is { } confirmedBy
             ? $" ({flagger} flagged it, {confirmedBy} confirmed)"
             : $" ({flagger} flagged it; {confirmDetail})";
         return (false, agreed, detail);
     }
 
-    private async Task<FollowPulseSample> TryFetchFollowPulseAsync(int rotation, string? activeFingerprint = null)
+    // onlyAccounts scopes the vantage rotation to accounts actually IN the watched game. A
+    // game-full-parked (or otherwise pending) client sitting at the lobby is a poisonous
+    // vantage: its fresh sample sees no party bar, and the status fallback reports a STALE
+    // lastPartyMemberCount from a previous game - either could fake a count-drop leave or a
+    // "leader gone" flag against a healthy game.
+    private async Task<FollowPulseSample> TryFetchFollowPulseAsync(
+        int rotation,
+        string? activeFingerprint = null,
+        IReadOnlySet<string>? onlyAccounts = null)
     {
         var (entries, _) = GetAccountEntriesByConnectivity();
+        if (onlyAccounts is not null)
+        {
+            entries = entries.Where(entry => onlyAccounts.Contains(entry.Key)).ToArray();
+        }
+
         if (entries.Length == 0)
         {
             return new FollowPulseSample(null, false, null, null, null, null, Array.Empty<FollowLeaderMatch>());
@@ -6621,7 +6747,8 @@ public sealed class DiscordBot
         Joined,
         Waiting,
         Unbound,
-        CheckFailure
+        CheckFailure,
+        GameFull
     }
 
     private sealed record FollowAutoCheckResult(

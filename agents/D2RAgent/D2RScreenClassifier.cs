@@ -115,6 +115,41 @@ internal static class D2RScreenClassifier
             && body.DarkRatio > 0.75;
     }
 
+    // Distinguishes the "Game is full" OK dialog from every other message D2R renders in the
+    // same generic one-button box (same border, same body, same OK button at 0.500/0.539).
+    // The box geometry alone can't tell them apart - the text CONTENT is the only difference,
+    // and "Game is full" is the only variant whose message is a single line short enough to
+    // leave both sides of the text row empty. Measured on the reference captures with a
+    // 17-point grid (the sparse 9-grid can land between the thin glyphs):
+    //   game_is_full.png:                 center std=45.7 bright=0.055; flanks std=3.3
+    //                                     bright=0.000 dark=1.00; second line std=3.2
+    //   game_password_doesnt_match.png:   flanks std=41.4-44.4 bright>=0.048
+    //   game_exists_name.png:             flanks std=42.0-45.1 bright>=0.042
+    //   game_no_longer_available (2-line): right flank std=55.1, second line std=25.8
+    //   cant_join_hell.png (2-button):     flanks std=55.0-67.3 (also caught earlier by the
+    //                                      two-button dialog check)
+    // Callers must confirm the generic dialog geometry first; this only inspects the text.
+    public static bool IsGameFullDialogTextBand(
+        ScreenRegionStats textCenter,
+        ScreenRegionStats textLeftFlank,
+        ScreenRegionStats textRightFlank,
+        ScreenRegionStats secondLine)
+    {
+        static bool IsEmptyBodyBand(ScreenRegionStats stats)
+        {
+            return stats.Samples > 0
+                && stats.LuminanceStdDev < 15
+                && stats.BrightRatio < 0.02
+                && stats.DarkRatio > 0.95;
+        }
+
+        return textCenter.LuminanceStdDev > 20
+            && textCenter.BrightRatio > 0.02
+            && IsEmptyBodyBand(textLeftFlank)
+            && IsEmptyBodyBand(textRightFlank)
+            && IsEmptyBodyBand(secondLine);
+    }
+
     public static bool IsLobbyTabReady(
         ScreenRegionStats tab,
         bool characterButtonPairReady,

@@ -81,6 +81,7 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("cant_join_hell.png", ReferenceVisibleState.Unknown)]
     [InlineData("game_exists_name.png", ReferenceVisibleState.Unknown)]
     [InlineData("game_password_doesnt_match.png", ReferenceVisibleState.Unknown)]
+    [InlineData("game_is_full.png", ReferenceVisibleState.Unknown)]
     [InlineData("cannot_join_game_with_current_character.png", ReferenceVisibleState.Unknown)]
     public void RealCaptureClassifiesAsExpectedState(string capture, ReferenceVisibleState expected)
     {
@@ -211,6 +212,7 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("cant_join_hell.png", ReferenceReadyState.Unknown)]
     [InlineData("game_exists_name.png", ReferenceReadyState.Unknown)]
     [InlineData("game_password_doesnt_match.png", ReferenceReadyState.Unknown)]
+    [InlineData("game_is_full.png", ReferenceReadyState.Unknown)]
     [InlineData("cannot_join_game_with_current_character.png", ReferenceReadyState.CannotJoinCurrentCharacterDialog)]
     public void RealCaptureClassifiesAsExpectedReadyState(string capture, ReferenceReadyState expected)
     {
@@ -233,12 +235,39 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("game_password_doesnt_match.png", true)]
     [InlineData("cant_join_hell.png", true)]
     [InlineData("game_exists_name.png", true)]
+    // "Game is full" uses the same generic OK-dialog widget; the specific game-full detector
+    // below is what tells it apart, and production checks that FIRST.
+    [InlineData("game_is_full.png", true)]
     // The center sample lands on the bright seam between this modal's two buttons, so the
     // generic shape also matches. Production deliberately checks the specific detector first.
     [InlineData("cannot_join_game_with_current_character.png", true)]
     public void GameEntryErrorDialogDetectorAlsoCoversBattleNetReconnectFailures(string capture, bool expectedOpen)
     {
         Assert.Equal(expectedOpen, ReferenceCaptureClassifier.IsGameEntryErrorDialogOpen(capture));
+    }
+
+    // "Game is full" must be separated from every other message rendered in the identical
+    // generic OK-dialog box: a full game is the one dialog follow-auto must NOT dismiss-and-
+    // retry-hammer, or a bot snipes the first freed (human) slot. The discriminator is the
+    // text band - "Game is full" is the only variant whose single short line leaves both
+    // text-row flanks and the second-line band empty. Verified against every generic-dialog
+    // reference capture plus non-dialog screens (measured verdicts in the classifier comment).
+    [Theory]
+    [InlineData("game_is_full.png", true)]
+    [InlineData("game_password_doesnt_match.png", false)]
+    [InlineData("game_exists_name.png", false)]
+    [InlineData("cant_join_hell.png", false)]
+    [InlineData("cannot_join_game_with_current_character.png", false)]
+    [InlineData("battlenet_reconnect_failed_to_authenticate.png", false)]
+    [InlineData("battlenet_reconnect_cannot_connect.png", false)]
+    [InlineData("battlenet_reconnect_connecting.png", false)]
+    [InlineData("lobby_join_game_screen.png", false)]
+    [InlineData("lobby_create_game_screen.png", false)]
+    [InlineData("char_screen_act1.png", false)]
+    [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", false)]
+    public void GameFullDetectorMatchesOnlyTheGameIsFullDialog(string capture, bool expectedOpen)
+    {
+        Assert.Equal(expectedOpen, ReferenceCaptureClassifier.IsGameFullDialogOpen(capture));
     }
 
     [Theory]

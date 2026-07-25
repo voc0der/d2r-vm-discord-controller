@@ -21,6 +21,7 @@ Coordinates for click/sample targets in these states are centralized in [automat
 | Join password mismatch | `assets/d2r-ui/game_and_password_dont_match.jpg` | Join Game error modal with OK button. |
 | Join game unavailable | `assets/d2r-ui/game_no_longer_available_to_join.jpg` | Join Game unavailable error modal with OK button. |
 | Current character cannot join | `assets/d2r-ui/1366x768/cannot_join_game_with_current_character.png` | Two-button join restriction modal. Follow clicks Cancel, reports the restriction, and retries until the friend's game becomes joinable. |
+| Game is full | `assets/d2r-ui/1366x768/game_is_full.png` | One-button OK modal in the same generic dialog box as the other join errors; only the text differs. Follow-auto clicks OK, reports `gameIsFull`, and the host allows 4 total attempts (1 + 3 retries) before parking that client warm at the lobby until the fleet's next game - a freed slot in a full game belongs to the human who left it, never to a waiting bot. |
 | Connection Interrupted | `assets/d2r-ui/connection_interrupted.jpg` | Full-screen connection interrupted message during game entry. |
 | Lobby Create Game | `assets/d2r-ui/create_game.jpg` | Create Game tab with name/password/difficulty/options. |
 | Create name exists | `assets/d2r-ui/1366x768/game_exists_name.png` | Create Game error modal when the chosen game name already exists. |

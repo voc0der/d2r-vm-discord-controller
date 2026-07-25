@@ -186,6 +186,25 @@ internal static class ReferenceCaptureClassifier
             && body.DarkRatio > 0.70;
     }
 
+    // Mirrors VmOperations.IsGameFullDialogOpen: the generic OK-dialog geometry gate above,
+    // then the single-short-line text-band discriminator ("Game is full" is the only generic-
+    // dialog message short enough to leave both text-row flanks and the second-line band
+    // empty). The narrow bands sample with the denser 17-point grid - see
+    // VmOperations.GameFullTextBandSampleGrid.
+    public static bool IsGameFullDialogOpen(string capture)
+    {
+        if (!IsGameEntryErrorDialogOpen(capture))
+        {
+            return false;
+        }
+
+        var textCenter = SampleTextBand(capture, new UiPoint(0.500, 0.457), 0.055, 0.034);
+        var textLeftFlank = SampleTextBand(capture, new UiPoint(0.435, 0.457), 0.055, 0.034);
+        var textRightFlank = SampleTextBand(capture, new UiPoint(0.565, 0.457), 0.055, 0.034);
+        var secondLine = SampleTextBand(capture, new UiPoint(0.500, 0.478), 0.20, 0.026);
+        return D2RScreenClassifier.IsGameFullDialogTextBand(textCenter, textLeftFlank, textRightFlank, secondLine);
+    }
+
     // Mirrors VmOperations.IsCannotJoinCurrentCharacterDialogOpen. This is the two-button
     // "You cannot join the game with your current character" modal, not D2R's generic
     // one-button OK dialog. Follow-auto must click Cancel (not the gap between the buttons),
@@ -345,5 +364,15 @@ internal static class ReferenceCaptureClassifier
     private static ScreenRegionStats Sample(string capture, UiPoint center, double widthRatio, double heightRatio)
     {
         return FullCaptureRegionSampler.Sample(capture, center, widthRatio, heightRatio, MenuSampleGrid);
+    }
+
+    private static ScreenRegionStats SampleTextBand(string capture, UiPoint center, double widthRatio, double heightRatio)
+    {
+        return FullCaptureRegionSampler.Sample(
+            capture,
+            center,
+            widthRatio,
+            heightRatio,
+            VmOperations.GameFullTextBandSampleGrid);
     }
 }

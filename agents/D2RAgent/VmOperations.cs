@@ -39,6 +39,10 @@ public sealed class VmOperations
     private const int ReadyStartupProcessCheckIntervalMs = 1000;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
+    // The "Game is full" discriminator reads thin single-line dialog text; the default 9-grid
+    // can land entirely between glyphs (measured center std drops from 45.7 to 23.0), so its
+    // narrow text bands sample denser. Mirrored by ReferenceCaptureClassifier's tests.
+    internal const int GameFullTextBandSampleGrid = 17;
     private const int FastMenuDelayMs = 150;
     // Three rounds cover the worst blind-Escape case: a lagged first attempt whose menu opened
     // after the click needs one round to toggle the menu back closed and a third to land clean.
@@ -2000,6 +2004,16 @@ public sealed class VmOperations
             return CurrentCharacterCannotJoinFollowResult(dismissed);
         }
 
+        // Same leftover-modal hazard for "Game is full": a cancelled/timed-out attempt can leave
+        // the OK dialog up, absorbing every lobby click. Report it as a full game (not a generic
+        // navigation failure) so the host's park counter sees this attempt too.
+        if (IsGameFullDialogOpen(input))
+        {
+            MarkCommandCheckpoint("FollowAutoCheckAsync: game-is-full dialog still visible; dismissing");
+            var dismissed = await DismissGameEntryErrorDialogAsync(input, cancellationToken);
+            return GameFullFollowResult(dismissed);
+        }
+
         ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         // An offline character screen that won't reconnect via the Online tab needs more than
         // another click - the client's Battle.net session is wedged, and only a close + relaunch
@@ -2172,6 +2186,11 @@ public sealed class VmOperations
                 return CurrentCharacterCannotJoinFollowResult(entry.DialogDismissed);
             }
 
+            if (entry.FailureResult == GameEntryWaitResult.GameIsFull)
+            {
+                return GameFullFollowResult(entry.DialogDismissed);
+            }
+
             return CommandResult.Failure(
                 $"Found the bound friend at row {matchedRow} and clicked Join Game, but the client did not enter the game within {Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1)}s. {entry.Message} {scoreSummary}",
                 await CollectStatusAsync(cancellationToken));
@@ -2212,6 +2231,23 @@ public sealed class VmOperations
                 joined = false,
                 joinBlocked = true,
                 joinBlockReason = "currentCharacterCannotJoin",
+                dialogDismissed = dismissed
+            });
+    }
+
+    internal static CommandResult GameFullFollowResult(bool dismissed)
+    {
+        var action = dismissed
+            ? "Clicked OK and stayed warm at the lobby; the host decides whether to retry or park this client until the fleet's next game."
+            : "OK was clicked but dismissal could not be visually confirmed; the leftover-modal cleanup on the next cycle will clear it.";
+        return CommandResult.Success(
+            $"D2R reports: \"Game is full.\" {action}",
+            new
+            {
+                bound = true,
+                joined = false,
+                joinBlocked = true,
+                joinBlockReason = "gameIsFull",
                 dialogDismissed = dismissed
             });
     }
@@ -2357,6 +2393,15 @@ public sealed class VmOperations
                     cancellationToken);
             }
 
+            if (entry == GameEntryWaitResult.GameIsFull)
+            {
+                return await BuildGameFullAttemptResultAsync(
+                    input,
+                    dialogRetries: 0,
+                    connectionRetries: 0,
+                    cancellationToken);
+            }
+
             return entry == GameEntryWaitResult.EnteredGame
                 ? new GameEntryAttemptResult(true, DialogRetries: 0, ConnectionRetries: 0, "Entered game.")
                 : new GameEntryAttemptResult(
@@ -2419,6 +2464,20 @@ public sealed class VmOperations
                     cancellationToken);
             }
 
+            // Never reselect-and-retry a full game inside this command the way stale error
+            // dialogs are retried: the host decides whether another attempt is allowed. An
+            // in-command retry loop would grab a freed slot (a dropped human's) instantly.
+            if (waitResult == GameEntryWaitResult.GameIsFull)
+            {
+                MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): game is full; dismissing and reporting to the host");
+                stopCheck?.Invoke();
+                return await BuildGameFullAttemptResultAsync(
+                    input,
+                    dialogRetries,
+                    connectionRetries,
+                    cancellationToken);
+            }
+
             if (!ShouldReselectFriendGameBeforeRetry(waitResult))
             {
                 break;
@@ -2426,6 +2485,20 @@ public sealed class VmOperations
 
             if (waitResult == GameEntryWaitResult.ErrorDialog || IsGameEntryErrorDialogOpen(input))
             {
+                // A full-game modal can pop between the wait result and this live re-probe
+                // (waitResult reads ReturnedToMenu/TimedOut). Disambiguate before the generic
+                // dismiss-and-reselect retry, which must never run against a full game.
+                if (IsGameFullDialogOpen(input))
+                {
+                    MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): late game-is-full dialog; dismissing and reporting to the host");
+                    stopCheck?.Invoke();
+                    return await BuildGameFullAttemptResultAsync(
+                        input,
+                        dialogRetries,
+                        connectionRetries,
+                        cancellationToken);
+                }
+
                 dialogRetries++;
                 MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): stale/error dialog, reselecting friend game");
                 stopCheck?.Invoke();
@@ -2501,6 +2574,24 @@ public sealed class VmOperations
         }
 
         return new GameEntryAttemptResult(false, dialogRetries, connectionRetries, FormatEntryTimeoutMessage(input, joinGameTab, dialogRetries, connectionRetries));
+    }
+
+    private async Task<GameEntryAttemptResult> BuildGameFullAttemptResultAsync(
+        WindowsInput input,
+        int dialogRetries,
+        int connectionRetries,
+        CancellationToken cancellationToken)
+    {
+        var dismissed = await DismissGameEntryErrorDialogAsync(input, cancellationToken);
+        return new GameEntryAttemptResult(
+            Entered: false,
+            dialogRetries,
+            connectionRetries,
+            dismissed
+                ? "D2R reported that the game is full; clicked OK and stayed at the lobby."
+                : "D2R reported that the game is full; OK was clicked but dismissal could not be visually confirmed.",
+            FailureResult: GameEntryWaitResult.GameIsFull,
+            DialogDismissed: dismissed);
     }
 
     private async Task<GameEntryAttemptResult> BuildCurrentCharacterCannotJoinAttemptResultAsync(
@@ -4966,7 +5057,10 @@ public sealed class VmOperations
                 blindEntryReclicks = 0;
                 continue;
             }
-            else if (waitResult == GameEntryWaitResult.ErrorDialog)
+            // GameIsFull deliberately rides the ErrorDialog path here: only follow-auto parks on
+            // a full game. The named join/create flows keep their existing dismiss-and-retry
+            // behavior so a transient full read never changes how join-all races into a game.
+            else if (waitResult is GameEntryWaitResult.ErrorDialog or GameEntryWaitResult.GameIsFull)
             {
                 dialogRetries++;
                 if (errorDialogFailureMessage is not null)
@@ -5261,6 +5355,7 @@ public sealed class VmOperations
             GameEntryWaitResult.OfflineCharacterScreen => "The client returned to the offline character screen instead of entering the game.",
             GameEntryWaitResult.TimedOut => "No in-game HUD/globe state, lobby return, or connection-interrupted state was detected.",
             GameEntryWaitResult.CurrentCharacterCannotJoin => "D2R reported that the game cannot be joined with the current character.",
+            GameEntryWaitResult.GameIsFull => "D2R reported that the game is full.",
             _ => "The game-entry result was inconclusive."
         };
     }
@@ -5594,20 +5689,44 @@ public sealed class VmOperations
 
     private bool IsGameEntryErrorDialogOpen(WindowsInput input)
     {
+        return TryRunBounded(() => IsGameEntryErrorDialogVisible(input), EntryLoopCheckBoundMs);
+    }
+
+    private bool IsGameEntryErrorDialogVisible(WindowsInput input)
+    {
+        var okButton = input.SampleRegion(GetUiPoint(D2RUiCoordinateTarget.GameEntryErrorDialogOkButton), widthRatio: 0.14, heightRatio: 0.050);
+        var topBorder = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.381), widthRatio: 0.32, heightRatio: 0.025);
+        var body = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.465), widthRatio: 0.32, heightRatio: 0.20);
+        return okButton.AverageLuminance > 45
+            && okButton.LuminanceStdDev > 25
+            && okButton.GreyRatio > 0.35
+            && okButton.DarkRatio < 0.60
+            && topBorder.AverageLuminance > 28
+            && topBorder.GreyRatio > 0.25
+            && topBorder.DarkRatio < 0.75
+            && body.AverageLuminance < 40
+            && body.DarkRatio > 0.70;
+    }
+
+    // "Game is full" renders in the exact generic OK-dialog geometry IsGameEntryErrorDialogVisible
+    // matches, so this must be checked FIRST wherever a generic dialog would otherwise absorb it -
+    // a full game must not be treated as a retryable stale-dialog error, or a follow-auto client
+    // will hammer Join and grab the first freed slot (typically a human's) the moment one opens.
+    // Text-band regions/grid mirror ReferenceCaptureClassifier.IsGameFullDialogOpen exactly.
+    private bool IsGameFullDialogOpen(WindowsInput input)
+    {
         return TryRunBounded(() =>
         {
-            var okButton = input.SampleRegion(GetUiPoint(D2RUiCoordinateTarget.GameEntryErrorDialogOkButton), widthRatio: 0.14, heightRatio: 0.050);
-            var topBorder = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.381), widthRatio: 0.32, heightRatio: 0.025);
-            var body = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.465), widthRatio: 0.32, heightRatio: 0.20);
-            return okButton.AverageLuminance > 45
-                && okButton.LuminanceStdDev > 25
-                && okButton.GreyRatio > 0.35
-                && okButton.DarkRatio < 0.60
-                && topBorder.AverageLuminance > 28
-                && topBorder.GreyRatio > 0.25
-                && topBorder.DarkRatio < 0.75
-                && body.AverageLuminance < 40
-                && body.DarkRatio > 0.70;
+            if (!IsGameEntryErrorDialogVisible(input))
+            {
+                return false;
+            }
+
+            var textCenter = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.457), widthRatio: 0.055, heightRatio: 0.034, sampleGrid: GameFullTextBandSampleGrid);
+            var textLeftFlank = input.SampleRegion(new AgentCommon.UiPoint(0.435, 0.457), widthRatio: 0.055, heightRatio: 0.034, sampleGrid: GameFullTextBandSampleGrid);
+            var textRightFlank = input.SampleRegion(new AgentCommon.UiPoint(0.565, 0.457), widthRatio: 0.055, heightRatio: 0.034, sampleGrid: GameFullTextBandSampleGrid);
+            var secondLine = input.SampleRegion(new AgentCommon.UiPoint(0.500, 0.478), widthRatio: 0.20, heightRatio: 0.026, sampleGrid: GameFullTextBandSampleGrid);
+            return D2RScreenClassifier.IsGameFullDialogTextBand(textCenter, textLeftFlank, textRightFlank, secondLine);
         }, EntryLoopCheckBoundMs);
     }
 
@@ -6052,6 +6171,12 @@ public sealed class VmOperations
                 MarkCommandCheckpoint($"WaitForGameEntryAsync: poll iteration {pollIteration}, checking game-entry error dialog");
                 if (IsGameEntryErrorDialogOpen(input))
                 {
+                    if (IsGameFullDialogOpen(input))
+                    {
+                        MarkCommandCheckpoint("WaitForGameEntryAsync: game-is-full dialog visible");
+                        return GameEntryWaitResult.GameIsFull;
+                    }
+
                     MarkCommandCheckpoint("WaitForGameEntryAsync: game-entry error dialog visible");
                     return GameEntryWaitResult.ErrorDialog;
                 }
@@ -6120,7 +6245,9 @@ public sealed class VmOperations
         MarkCommandCheckpoint("WaitForGameEntryAsync: deadline, checking game-entry error dialog");
         if (IsGameEntryErrorDialogOpen(input))
         {
-            return GameEntryWaitResult.ErrorDialog;
+            return IsGameFullDialogOpen(input)
+                ? GameEntryWaitResult.GameIsFull
+                : GameEntryWaitResult.ErrorDialog;
         }
 
         MarkCommandCheckpoint("WaitForGameEntryAsync: deadline, checking lobby menu return");
@@ -6869,7 +6996,8 @@ public sealed class VmOperations
         ReturnedToCharacterScreen,
         OfflineCharacterScreen,
         TimedOut,
-        CurrentCharacterCannotJoin
+        CurrentCharacterCannotJoin,
+        GameIsFull
     }
 
     internal enum FollowAutoInGameRecoveryOutcome
