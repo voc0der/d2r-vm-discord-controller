@@ -1540,10 +1540,85 @@ public sealed class VmOperations
         var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row: friendRow);
         var samples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows);
         var fingerprint = new FriendFingerprint(region.GridColumns, region.GridRows, samples);
+        var collidingRows = FindFollowBindCollisions(input, fingerprint, friendRow);
 
         return CommandResult.Success(
             $"Captured a follow-bind fingerprint from friend row {friendRow}.",
-            new { fingerprint = fingerprint.ToBase64(), friendRow });
+            new { fingerprint = fingerprint.ToBase64(), friendRow, collidingRows });
+    }
+
+    // Bind-in-game cross-checks a fresh nametag capture against the other visible names; the
+    // friend-row bind had no equivalent, so a name that another row can also satisfy was only ever
+    // discovered at follow time as "ambiguous; not clicking a friend row this cycle" - after the
+    // fleet was already trying to follow.
+    //
+    // The runtime separation rule is deliberately NOT reused here. Compared against the row it was
+    // just taken from, a fresh capture scores near zero, so any rival looks far away by that rule
+    // and nothing would ever be flagged. What actually matters is whether a rival clears the same
+    // usability gate at all: at follow time the bound row's own score degrades to the same order as
+    // its rivals' (list re-sorts, a friend coming online re-renders their name from dim to bright),
+    // and any row already inside the gate can then tie or overtake it.
+    private int[] FindFollowBindCollisions(WindowsInput input, FriendFingerprint fingerprint, int boundRow)
+    {
+        var maxRows = GetFollowFingerprintMaxScanRows(_config.Ui);
+        // One bounded call for every row, matching the scan path: a per-row bounded capture can
+        // exhaust the shared bounded-call slots when individual GDI reads go slow.
+        var rowSamples = TryRunBounded<List<(int Row, byte[]? Samples)>?>(
+            () =>
+            {
+                var results = new List<(int Row, byte[]? Samples)>();
+                for (var row = 1; row <= maxRows; row++)
+                {
+                    if (row == boundRow)
+                    {
+                        continue;
+                    }
+
+                    var rowRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
+                    byte[]? captured;
+                    try
+                    {
+                        captured = input.CaptureFingerprintGrid(
+                            rowRegion.Center, rowRegion.WidthRatio, rowRegion.HeightRatio, rowRegion.GridColumns, rowRegion.GridRows);
+                    }
+                    catch
+                    {
+                        captured = null;
+                    }
+
+                    results.Add((row, captured));
+                }
+
+                return results;
+            },
+            EntryLoopCheckBoundMs * maxRows,
+            fallback: null);
+
+        if (rowSamples is null)
+        {
+            // Inconclusive, not clean: report nothing rather than implying the capture was checked.
+            return [];
+        }
+
+        var colliding = new List<int>();
+        foreach (var (row, captured) in rowSamples)
+        {
+            if (captured is null)
+            {
+                continue;
+            }
+
+            var rowRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
+            var comparison = FriendFingerprint.Compare(
+                fingerprint,
+                new FriendFingerprint(rowRegion.GridColumns, rowRegion.GridRows, captured));
+            if (IsUsableFollowFingerprintMatch(comparison))
+            {
+                colliding.Add(row);
+            }
+        }
+
+        return colliding.ToArray();
     }
 
     // Pure local file I/O, no D2R interaction - bypasses _commandGate the same way screenshot and
@@ -2200,6 +2275,22 @@ public sealed class VmOperations
         ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
         var selection = SelectFollowFingerprintMatch(rowMatches);
         var scoreSummary = FormatFollowFingerprintScores(rowMatches);
+
+        // A template captured on a different sampling grid can never compare against anything this
+        // agent captures now (FriendFingerprint.Compare rejects a dimension mismatch outright), so
+        // every row would report NotComparable and the generic "not confidently found" message
+        // would send the operator hunting a detection bug that is really a stale bind. Name it.
+        var currentRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row: 1);
+        if (template.GridColumns != currentRegion.GridColumns || template.GridRows != currentRegion.GridRows)
+        {
+            MarkCommandCheckpoint(
+                $"FollowAutoCheckAsync: bound fingerprint grid {template.GridColumns}x{template.GridRows} does not match this agent's {currentRegion.GridColumns}x{currentRegion.GridRows}");
+            return CommandResult.Success(
+                $"The bound friend fingerprint was captured on a {template.GridColumns}x{template.GridRows} sampling grid but this agent now samples {currentRegion.GridColumns}x{currentRegion.GridRows}, "
+                    + "so it can never match. Re-run /d2r follow bind:true once to recapture it.",
+                new { bound = false, joined = false, fingerprintGridStale = true });
+        }
+
         if (selection.Status == FollowFingerprintSelectionStatus.NoUsableMatch || selection.Match is null)
         {
             MarkCommandCheckpoint($"FollowAutoCheckAsync: no confident bound friend match; {scoreSummary}");

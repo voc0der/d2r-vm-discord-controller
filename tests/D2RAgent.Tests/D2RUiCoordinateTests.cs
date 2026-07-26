@@ -169,6 +169,54 @@ public sealed class D2RUiCoordinateTests
         Assert.Equal(row1.Center.X, row2.Center.X);
     }
 
+    // Every agent config the first-run wizard writes materializes the whole ui object, so a fleet
+    // set up before the grid was raised carries an explicit 24 and would otherwise ignore the new
+    // default until someone hand-edited the JSON on every VM.
+    [Fact]
+    public void LegacyFingerprintGridColumnCountMigratesToTheCurrentDefault()
+    {
+        var defaults = new D2RUiAutomationConfig();
+        var legacy = new D2RUiAutomationConfig { FriendRowFingerprintGridColumns = 24 };
+
+        var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(legacy, 1);
+
+        Assert.Equal(32, defaults.FriendRowFingerprintGridColumns);
+        Assert.Equal(defaults.FriendRowFingerprintGridColumns, region.GridColumns);
+    }
+
+    // The migration is scoped to the one value that was never a choice. A deliberately configured
+    // grid - including one either side of the legacy default - still wins.
+    [Theory]
+    [InlineData(23)]
+    [InlineData(25)]
+    [InlineData(48)]
+    public void DeliberatelyConfiguredFingerprintGridColumnCountIsHonored(int configuredColumns)
+    {
+        var ui = new D2RUiAutomationConfig { FriendRowFingerprintGridColumns = configuredColumns };
+
+        var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(ui, 1);
+
+        Assert.Equal(configuredColumns, region.GridColumns);
+    }
+
+    // Capture and scan both resolve their geometry here. If they could disagree, every template
+    // would be written on one grid and compared on another, which FriendFingerprint.Compare
+    // rejects outright - a silent, total follow-auto failure.
+    [Fact]
+    public void EveryScannedRowSharesOneFingerprintGrid()
+    {
+        var ui = new D2RUiAutomationConfig { FriendRowFingerprintGridColumns = 24 };
+        var row1 = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(ui, 1);
+
+        for (var row = 2; row <= 8; row++)
+        {
+            var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(ui, row);
+            Assert.Equal(row1.GridColumns, region.GridColumns);
+            Assert.Equal(row1.GridRows, region.GridRows);
+            Assert.Equal(row1.WidthRatio, region.WidthRatio);
+        }
+    }
+
     [Fact]
     public void FingerprintRegionFallsBackWhenConfiguredRatiosAreInvalid()
     {

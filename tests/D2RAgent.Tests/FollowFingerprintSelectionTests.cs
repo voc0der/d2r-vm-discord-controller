@@ -118,6 +118,56 @@ public sealed class FollowFingerprintSelectionTests
         Assert.True(VmOperations.CanAutoClickFollowFingerprint(template));
     }
 
+    // Reproduces the live failure that motivated raising the grid: with the bound name and a
+    // similar one on adjacent rows, both cleared the usability gate 2.1 apart against a required
+    // separation of 12, so follow-auto refused to click on four VMs at once. Everything else was
+    // disqualified by signal average, which is what makes this ambiguity rather than no match.
+    [Fact]
+    public void TwoAdjacentSimilarNamesReproduceTheObservedAmbiguousStall()
+    {
+        var selection = VmOperations.SelectFollowFingerprintMatch(
+        [
+            Match(row: 1, average: 15.5, signalAverage: 112.5, signalPixels: 12),
+            Match(row: 2, average: 17.9, signalAverage: 126.6, signalPixels: 13),
+            Match(row: 3, average: 10.8, signalAverage: 110.8, signalPixels: 9),
+            Match(row: 4, average: 9.2, signalAverage: 72.4, signalPixels: 11),
+            Match(row: 5, average: 8.8, signalAverage: 70.3, signalPixels: 10),
+            Match(row: 6, average: 12.2, signalAverage: 141.9, signalPixels: 7),
+            Match(row: 7, average: 15.2, signalAverage: 159.6, signalPixels: 8),
+            Match(row: 8, average: 13.3, signalAverage: 137.2, signalPixels: 8)
+        ]);
+
+        Assert.Equal(VmOperations.FollowFingerprintSelectionStatus.Ambiguous, selection.Status);
+        Assert.Equal(5, selection.Match?.Row);
+    }
+
+    // The same fleet's fifth VM reported the other message from the same data shape - both
+    // candidates over the signal gate - which is what confirms the thresholds are being read
+    // correctly rather than the two outcomes being interchangeable.
+    [Fact]
+    public void BothCandidatesOverTheSignalGateReportNoUsableMatchInstead()
+    {
+        var selection = VmOperations.SelectFollowFingerprintMatch(
+        [
+            Match(row: 4, average: 10.5, signalAverage: 126.1, signalPixels: 7),
+            Match(row: 5, average: 13.4, signalAverage: 96.2, signalPixels: 12)
+        ]);
+
+        Assert.Equal(VmOperations.FollowFingerprintSelectionStatus.NoUsableMatch, selection.Status);
+    }
+
+    // A template captured on the old grid can never match anything captured on the new one, so the
+    // grid change forces a re-bind. The agent detects this explicitly and says so instead of
+    // reporting a generic miss - this documents why that guard has to exist.
+    [Fact]
+    public void TemplateFromTheLegacyGridCannotCompareAgainstTheCurrentOne()
+    {
+        var legacy = new FriendFingerprint(24, 4, new byte[24 * 4 * 3]);
+        var current = new FriendFingerprint(32, 4, new byte[32 * 4 * 3]);
+
+        Assert.False(FriendFingerprint.Compare(legacy, current).Comparable);
+    }
+
     private static VmOperations.FriendRowFingerprintMatch Match(
         int row,
         double average,

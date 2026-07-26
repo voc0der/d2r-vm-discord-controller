@@ -72,7 +72,16 @@ public sealed class D2RUiAutomationConfig
     public double FriendRowFingerprintOffsetY { get; set; } = -0.010;
     public double FriendRowFingerprintWidthRatio { get; set; } = 0.160;
     public double FriendRowFingerprintHeightRatio { get; set; } = 0.022;
-    public int FriendRowFingerprintGridColumns { get; set; } = 24;
+    // 24 columns over this band is roughly one sample per character, which is coarse enough that
+    // two similar short names (a 7-letter and a 6-letter account) land within a couple of points
+    // of each other and the runtime separation rule rejects both as ambiguous. 32 samples the same
+    // band finely enough to separate letter shapes rather than just rough ink distribution.
+    // Widening the band instead was considered and rejected: the sampled region already extends
+    // well past the end of a typical name, dark-on-dark grid points are skipped by the comparison
+    // entirely so extra blank space adds no discrimination, and reaching further out on either
+    // side starts capturing the friends panel's own bright chrome - which is identical on every
+    // row and would pull all rows' scores together, making ambiguity more likely rather than less.
+    public int FriendRowFingerprintGridColumns { get; set; } = 32;
     public int FriendRowFingerprintGridRows { get; set; } = 4;
     public int FriendRowFingerprintMaxScanRows { get; set; } = 8;
     public bool ClickBattleNetPlayWhenNeeded { get; set; } = true;

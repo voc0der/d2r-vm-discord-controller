@@ -212,11 +212,30 @@ public static class D2RUiCoordinateCatalog
         var offsetY = IsFiniteRatio(ui.FriendRowFingerprintOffsetY) ? ui.FriendRowFingerprintOffsetY : Defaults.FriendRowFingerprintOffsetY;
         var widthRatio = IsFinitePositiveRatio(ui.FriendRowFingerprintWidthRatio) ? ui.FriendRowFingerprintWidthRatio : Defaults.FriendRowFingerprintWidthRatio;
         var heightRatio = IsFinitePositiveRatio(ui.FriendRowFingerprintHeightRatio) ? ui.FriendRowFingerprintHeightRatio : Defaults.FriendRowFingerprintHeightRatio;
-        var columns = ui.FriendRowFingerprintGridColumns > 0 ? ui.FriendRowFingerprintGridColumns : Defaults.FriendRowFingerprintGridColumns;
+        var columns = ResolveFriendRowFingerprintGridColumns(ui.FriendRowFingerprintGridColumns);
         var gridRows = ui.FriendRowFingerprintGridRows > 0 ? ui.FriendRowFingerprintGridRows : Defaults.FriendRowFingerprintGridRows;
 
         var center = new UiPoint(Clamp01(rowPoint.X + offsetX), Clamp01(rowPoint.Y + offsetY));
         return new FriendRowFingerprintRegion(center, widthRatio, heightRatio, columns, gridRows);
+    }
+
+    // Every agent config written by the first-run wizard materializes the whole ui object, so a
+    // fleet that was set up before this change carries an explicit 24 in its JSON and would ignore
+    // the raised default forever - the operator would have to hand-edit the file on every VM. 24
+    // was never a considered choice, only the value that happened to ship, so it is treated as
+    // "not customized" and migrated. Any other value, including a deliberate 23 or 25, is honored
+    // exactly as written.
+    //
+    // Both the capture path and the scan path read their geometry through this one function, so
+    // they cannot end up disagreeing about the grid - which would silently produce templates that
+    // compare against nothing.
+    private const int LegacyFriendRowFingerprintGridColumns = 24;
+
+    internal static int ResolveFriendRowFingerprintGridColumns(int configuredColumns)
+    {
+        return configuredColumns is <= 0 or LegacyFriendRowFingerprintGridColumns
+            ? Defaults.FriendRowFingerprintGridColumns
+            : configuredColumns;
     }
 
     private static bool IsFiniteRatio(double value) => double.IsFinite(value);

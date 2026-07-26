@@ -3996,9 +3996,34 @@ public sealed class DiscordBot
             }
         }
 
+        // The vantage compared the fresh capture against every other visible friend row. A row that
+        // already clears the match gate will tie or overtake the bound row at follow time - once
+        // the list re-sorts, or once a friend who was offline (dim name) comes online (bright
+        // name) - and the run then reports "ambiguous; not clicking a friend row this cycle"
+        // forever. Say so now, while the operator is still standing at the bind.
+        var collisionWarning = "";
+        if (captureResult.Data is { } captureData
+            && captureData.TryGetProperty("collidingRows", out var collidingProperty)
+            && collidingProperty.ValueKind == JsonValueKind.Array)
+        {
+            var collidingRows = collidingProperty.EnumerateArray()
+                .Where(element => element.ValueKind == JsonValueKind.Number)
+                .Select(element => element.GetInt32())
+                .ToArray();
+            if (collidingRows.Length > 0)
+            {
+                collisionWarning =
+                    $" WARNING: this name also matches friend row {string.Join(", ", collidingRows)} closely enough to be confused with it."
+                        + " Follow-auto will refuse to click while two rows compete, which usually starts the moment one of those"
+                        + " friends comes online and their name brightens. Bind a friend whose name looks less alike, or move the"
+                        + " intended one somewhere the other is not adjacent.";
+            }
+        }
+
         var followBindMessage =
             $"Bound the friend at {resolvedAccountKey}'s friend row {capturedFriendRow}. "
             + FormatBindOwnershipSummary(distributed, online.Length, offlineAccounts.Length)
+            + collisionWarning
             + " Use /d2r follow or the button below to start following.";
         if (distributionFailures.Count > 0)
         {
