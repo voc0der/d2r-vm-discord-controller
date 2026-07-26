@@ -5747,7 +5747,34 @@ public sealed class DiscordBot
             switch (FollowAutoPulsePolicy.Classify(sample.LeaderBound, lockedPresent, sample.PlayerCount, baseline))
             {
                 case FollowAutoPulseAction.CountDropLeave:
-                    return new FollowAutoGameWatchResult("player count dropped");
+                    // A missing nametag never leaves on one screen's word - it forces an
+                    // independent second opinion first. A count drop did, and that asymmetry only
+                    // held while every vantage sampled at roughly the same instant. Pulses
+                    // round-robin across vantages, the baseline is fleet-wide, and a worker-relayed
+                    // agent answers through an extra hop (master -> worker -> agent), so its count
+                    // lags the locally-connected ones. A baseline raised by a fast vantage then
+                    // reads as a drop on the next slow one, the fleet leaves, and follow-auto
+                    // immediately rejoins the same game because the leader never went anywhere.
+                    // Same rule as the nametag path: one screen is not enough to leave on.
+                    var countConfirm = await ConfirmPlayerCountDropFromAnotherVantageAsync(
+                        sample.AccountKey, baseline, accountState.Joined);
+                    if (countConfirm.Confirmed)
+                    {
+                        return new FollowAutoGameWatchResult("player count dropped");
+                    }
+
+                    baseline = FollowAutoPulsePolicy.RaiseCountBaseline(
+                        baseline, countConfirm.HighestSeen ?? sample.PlayerCount);
+                    if (DateTimeOffset.UtcNow - lastLeaderVisibleReportUtc >= TimeSpan.FromSeconds(30))
+                    {
+                        lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: {sample.AccountKey ?? "a vantage"} saw the player count drop, "
+                                + $"but {countConfirm.Detail} - staying. Bind your character with `/d2r follow bind-in-game` "
+                                + "so leaving is driven by your nametag instead of the player count.");
+                    }
+
+                    break;
                 case FollowAutoPulseAction.RebaselineAndWait:
                     if (sample.AccountKey is { } visibleAccountKey)
                     {
@@ -5899,6 +5926,57 @@ public sealed class DiscordBot
     // Side effect: an account whose scan works but whose stored list is missing the locked
     // nametag (offline during that bind, or an older overwrite-style agent) gets the locked
     // fingerprint re-sent, so list divergence heals mid-run instead of muting that VM forever.
+    // The count-drop equivalent of ConfirmLeaderGoneFromAnotherVantageAsync. Asks every OTHER
+    // joined vantage what it currently sees: if any of them still reads the baseline count, the
+    // game has not emptied and the flagging vantage was simply sampled mid-join or through a
+    // slower path. Only a fleet that unanimously sees fewer players leaves.
+    //
+    // Scoped to joined accounts for the same reason the nametag confirmation is: a client sitting
+    // at the lobby can serve a cached count from the previous game, which is a fake vote either
+    // way. An inconclusive answer (nobody could check) deliberately does NOT confirm - staying in
+    // a game one cycle too long costs a few seconds, leaving wrongly costs a leave/rejoin churn.
+    private async Task<(bool Confirmed, int? HighestSeen, string Detail)>
+        ConfirmPlayerCountDropFromAnotherVantageAsync(
+            string? flaggerKey,
+            int? baseline,
+            IReadOnlySet<string>? onlyAccounts)
+    {
+        var (online, _) = GetAccountEntriesByConnectivity();
+        if (onlyAccounts is not null)
+        {
+            online = online.Where(entry => onlyAccounts.Contains(entry.Key)).ToArray();
+        }
+
+        int? highestSeen = null;
+        var checkedAny = false;
+        var details = new List<string>();
+        foreach (var (accountKey, account) in online)
+        {
+            if (string.Equals(accountKey, flaggerKey, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var sample = await TryFetchFollowPulseForAsync(accountKey, account, _followAutoLockedNametag);
+            if (sample.PlayerCount is not { } count)
+            {
+                continue;
+            }
+
+            checkedAny = true;
+            highestSeen = FollowAutoPulsePolicy.RaiseCountBaseline(highestSeen, count);
+            details.Add($"{accountKey}: {count}");
+            if (baseline is { } known && count >= known)
+            {
+                return (false, highestSeen, $"{accountKey} still sees {count}");
+            }
+        }
+
+        return checkedAny
+            ? (true, highestSeen, $"every other vantage agrees ({string.Join(", ", details)})")
+            : (false, highestSeen, "no other vantage could check this instant");
+    }
+
     private async Task<(bool? Agreed, string? ByAccount, string Detail)> ConfirmLeaderGoneFromAnotherVantageAsync(
         string? flaggerKey,
         IReadOnlySet<string>? onlyAccounts = null)
