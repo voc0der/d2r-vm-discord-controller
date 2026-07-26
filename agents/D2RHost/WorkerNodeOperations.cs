@@ -20,12 +20,14 @@ public sealed class WorkerNodeOperations
     private readonly HostSystemOperations _system;
     private readonly MachineTelemetrySampler _telemetry = new();
     private readonly string _nodeId;
+    private readonly string[] _restartArgs;
 
     public WorkerNodeOperations(
         HostConfig config,
         AgentRegistry registry,
         HyperVOperations hyperV,
-        HostSystemOperations system)
+        HostSystemOperations system,
+        HostRuntimeOptions? runtime = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(registry);
@@ -37,6 +39,7 @@ public sealed class WorkerNodeOperations
         _registry = registry;
         _hyperV = hyperV;
         _system = system;
+        _restartArgs = runtime?.RestartArgs ?? [];
     }
 
     public Task<WorkerNodeStatus> GetStatusAsync(CancellationToken cancellationToken)
@@ -102,6 +105,10 @@ public sealed class WorkerNodeOperations
             return command switch
             {
                 "agent_command" => await HandleAgentCommandAsync(request.Args, durationCts.Token),
+                // Without this a worker only ever updated when someone restarted it by hand, so a
+                // node could sit arbitrarily far behind the master - and a stale node is exactly
+                // the one whose own satellite auto-update has quietly stopped working.
+                "self_update" => await SelfUpdateAsync(durationCts.Token),
                 "vm_status" or "vm_start" or "vm_stop" or "vm_reboot" or "vm_snapshot" =>
                     await HandleHyperVCommandAsync(request with { Command = command }, durationCts.Token),
                 "system_sleep" => QueueSystemAction(HostSystemPowerAction.Sleep),
@@ -131,6 +138,27 @@ public sealed class WorkerNodeOperations
             return CommandResult.Failure(
                 $"Worker command exceeded the {MaximumWorkerCommandDuration.TotalMinutes:N0}-minute safety limit.");
         }
+    }
+
+    private async Task<CommandResult> SelfUpdateAsync(CancellationToken cancellationToken)
+    {
+        var result = await SelfUpdater.CheckAndStartUpdateAsync(
+            SelfUpdateOptions.D2RHost(_restartArgs),
+            requirePrompt: false,
+            cancellationToken);
+        var data = new
+        {
+            result.CheckedLatest,
+            result.UpdateAvailable,
+            result.UpdateStarted,
+            result.CurrentVersion,
+            result.LatestVersion,
+            result.LogPath
+        };
+
+        return result.Ok
+            ? CommandResult.Success(result.Message, data)
+            : CommandResult.Failure(result.Message, data);
     }
 
     private async Task<CommandResult> HandleAgentCommandAsync(

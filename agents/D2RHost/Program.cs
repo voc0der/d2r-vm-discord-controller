@@ -68,12 +68,17 @@ try
     builder.Services.AddSingleton<HostFirewallManager>();
     builder.Services.AddSingleton<IHostedService>(provider =>
         provider.GetRequiredService<HostFirewallManager>());
+    builder.Services.AddSingleton<FleetAgentUpdater>();
     if (config.IsMaster)
     {
         // Master-only: a worker relays follow-template commands for its VMs but never owns the
         // fleet's bind, so a sweep there would have nothing authoritative to sweep towards.
         builder.Services.AddSingleton<IHostedService>(provider =>
             provider.GetRequiredService<FollowTemplateStore>());
+        // Also master-only: the master is the only process with a view of the whole fleet,
+        // including VM agents whose connections belong to a worker.
+        builder.Services.AddSingleton<IHostedService>(provider =>
+            provider.GetRequiredService<FleetAgentUpdater>());
     }
 
     var app = builder.Build();

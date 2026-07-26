@@ -72,6 +72,28 @@ The master tracks the friend-row bind and the nametag rolodex as separately "rec
 
 Agents whose build predates the digest field cannot be diffed. The master falls back to what it last pushed each of them, so they converge once per bind change rather than on every sweep.
 
+## Satellite Auto-Update
+
+The master drives satellite auto-update for the whole fleet. Every five minutes it sweeps the
+combined fleet view and offers `self_update` to each connected worker node and VM agent it has not
+already offered one at that satellite's currently reported version, routing through the same
+`agent_command` relay as any other command so worker-owned agents are reached identically to local
+ones. Workers are offered first: a worker that is behind cannot relay commands it does not know
+about.
+
+This is snapshot-diffing rather than event-driven for the same reason follow-template sync is -
+worker-owned VM agents never raise a connect event on the master, they only appear in a worker's
+inventory heartbeat.
+
+Each D2RHost still offers `self_update` to its own agents as they authenticate, which remains the
+fast path. That local hook alone was not sufficient: it is gated on that host's own update check
+having succeeded at process start, so a single failed check disables updates for every agent on
+that node for the life of the process. The master's sweep is gated on the master's own check
+instead, and a disabled sweep is now reported as a warning rather than a debug line.
+
+A worker accepts `self_update` as a node command, so a worker no longer updates only when someone
+restarts it by hand.
+
 ## Availability and Routing
 
 Both VM agents and workers send periodic status heartbeats. `nodeHeartbeatSeconds` controls the worker-to-master interval, while each VM agent has its own `heartbeatSeconds`. The effective interval is included in the authenticated hello. `agentOfflineAfterSeconds` is the receiver's minimum freshness threshold (45 seconds by default); for a slower advertised interval, the receiver automatically extends it by the bounded status-collection/jitter allowance.
