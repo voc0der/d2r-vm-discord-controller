@@ -94,6 +94,54 @@ internal static class FullCaptureRegionSampler
         return new WindowsInput.CapturedPixelRegion(rect.Width, rect.Height, rgb);
     }
 
+    // Mirrors WindowsInput.CaptureFingerprintGrid the same way Sample mirrors SampleRegion: a
+    // rectangular columns x rows grid rather than the square sample grid, and the raw RGB triples
+    // a FriendFingerprint is built from. Without this the friend-row fingerprint geometry could
+    // only ever be checked by eye against a screenshot.
+    public static FriendFingerprint SampleFriendRowFingerprint(
+        string fileName,
+        UiPoint center,
+        double widthRatio,
+        double heightRatio,
+        int gridColumns,
+        int gridRows)
+    {
+        var image = LoadCached(fileName);
+        var width = image.Width;
+        var height = image.Height;
+        var columns = Math.Clamp(gridColumns, 1, 64);
+        var rows = Math.Clamp(gridRows, 1, 64);
+
+        var centerX = center.X * width;
+        var centerY = center.Y * height;
+        var regionWidth = Math.Max(width * widthRatio, columns);
+        var regionHeight = Math.Max(height * heightRatio, rows);
+
+        var samples = new byte[columns * rows * 3];
+        var index = 0;
+        for (var yIndex = 0; yIndex < rows; yIndex++)
+        {
+            var y = Math.Clamp(
+                (int)Math.Round(centerY - (regionHeight / 2) + ((yIndex + 0.5) * regionHeight / rows)),
+                0,
+                height - 1);
+
+            for (var xIndex = 0; xIndex < columns; xIndex++)
+            {
+                var x = Math.Clamp(
+                    (int)Math.Round(centerX - (regionWidth / 2) + ((xIndex + 0.5) * regionWidth / columns)),
+                    0,
+                    width - 1);
+                var pixel = image[x, y];
+                samples[index++] = pixel.R;
+                samples[index++] = pixel.G;
+                samples[index++] = pixel.B;
+            }
+        }
+
+        return new FriendFingerprint(columns, rows, samples);
+    }
+
     private static IEnumerable<(byte Red, byte Green, byte Blue)> EnumerateGridPixels(
         Image<Rgba32> image,
         double centerX,

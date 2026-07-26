@@ -164,7 +164,9 @@ public sealed class D2RUiCoordinateTests
         Assert.Equal(ui.FriendRowFingerprintHeightRatio, row1.HeightRatio);
         Assert.Equal(ui.FriendRowFingerprintGridColumns, row1.GridColumns);
         Assert.Equal(ui.FriendRowFingerprintGridRows, row1.GridRows);
-        Assert.Equal(new UiPixelPoint(246, 131), D2RUiCoordinateCatalog.ToBaselinePixels(row1.Center));
+        // Sits on the name text, clear of the status line beneath it - see
+        // FollowFingerprintReferenceTests, which measures both against a real lobby capture.
+        Assert.Equal(new UiPixelPoint(246, 126), D2RUiCoordinateCatalog.ToBaselinePixels(row1.Center));
         Assert.True(row2.Center.Y > row1.Center.Y, "Row 2's fingerprint region should sit below row 1's.");
         Assert.Equal(row1.Center.X, row2.Center.X);
     }
@@ -172,16 +174,32 @@ public sealed class D2RUiCoordinateTests
     // Every agent config the first-run wizard writes materializes the whole ui object, so a fleet
     // set up before the grid was raised carries an explicit 24 and would otherwise ignore the new
     // default until someone hand-edited the JSON on every VM.
-    [Fact]
-    public void LegacyFingerprintGridColumnCountMigratesToTheCurrentDefault()
+    // Both grid sizes this band has shipped with migrate, along with the offset and height they
+    // were paired with - all four move together whenever the band is re-measured, and a fleet
+    // configured under any earlier release carries the old numbers explicitly in its JSON.
+    [Theory]
+    [InlineData(24)]
+    [InlineData(32)]
+    public void EveryLegacyFingerprintBandMigratesToTheCurrentDefault(int legacyColumns)
     {
         var defaults = new D2RUiAutomationConfig();
-        var legacy = new D2RUiAutomationConfig { FriendRowFingerprintGridColumns = 24 };
+        var legacy = new D2RUiAutomationConfig
+        {
+            FriendRowFingerprintGridColumns = legacyColumns,
+            FriendRowFingerprintGridRows = 4,
+            FriendRowFingerprintOffsetY = -0.010,
+            FriendRowFingerprintHeightRatio = 0.022
+        };
 
         var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(legacy, 1);
 
-        Assert.Equal(32, defaults.FriendRowFingerprintGridColumns);
         Assert.Equal(defaults.FriendRowFingerprintGridColumns, region.GridColumns);
+        Assert.Equal(defaults.FriendRowFingerprintGridRows, region.GridRows);
+        Assert.Equal(defaults.FriendRowFingerprintHeightRatio, region.HeightRatio);
+        Assert.Equal(
+            D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(defaults, 1).Center.Y,
+            region.Center.Y,
+            precision: 9);
     }
 
     // The migration is scoped to the one value that was never a choice. A deliberately configured

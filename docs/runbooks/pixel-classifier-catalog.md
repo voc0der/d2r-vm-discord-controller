@@ -708,3 +708,42 @@ mechanism works on a live VM. That needs a real run.
   an ordinary failure instead of restarting a user's game out from under them) now closes and
   relaunches D2R when the reconnect attempt is exhausted, then waits for the next follow-auto
   cycle to find it back online.
+
+## Follow-bind friend-row fingerprint band
+
+Reference capture: `assets/d2r-ui/1366x768/lobby_friends_list.png`, verified by
+`FollowFingerprintReferenceTests`.
+
+A friend row renders the account name on top and a status line beneath it. Measured at 768p, a
+row's name text occupies roughly `rowY-14 .. rowY-4` and its status line starts about 8px lower
+(row 4 in the reference capture: name `y 236..242`, status `y 247..254`). The row pitch is
+`0.049` (37.6px), which matches the measured spacing between name centers.
+
+The sampled band must cover the name and clear the status line. The status line is the worst
+possible thing to sample: it changes on its own as a friend moves between menus and acts without
+them going anywhere, and most rows show the same text, so including it both destabilizes a bound
+friend's own score and pulls unrelated rows toward each other.
+
+Horizontal layout at 768p: panel chrome at `x 100..108`, portrait icon at `x 117..138` for online
+friends (absent for offline ones, which shifts their name text left by ~30px), name text from
+`x ~145` to at most `x ~220`, panel right edge near `x 385`. The band deliberately stays wider
+than the text: dark-on-dark grid points are skipped by `FriendFingerprint.Compare`, so trailing
+blank space costs nothing, while reaching outward would capture panel chrome that is identical on
+every row.
+
+Grid density is chosen on worst-case separation across +/-2px of vertical drift, not on the best
+result at one exact alignment - a grid that only separates when perfectly aligned fails
+intermittently on live VMs.
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `friendRowFingerprintOffsetY` | `-0.0153` | Centers the band on the name text |
+| `friendRowFingerprintHeightRatio` | `0.016` | Covers the name, stays above the status line |
+| `friendRowFingerprintWidthRatio` | `0.160` | Full name width plus harmless trailing blank |
+| `friendRowFingerprintGridColumns` | `48` | Worst-case separation across drift |
+| `friendRowFingerprintGridRows` | `12` | Worst-case separation across drift |
+
+Changing any of these invalidates every bound template - `FriendFingerprint.Compare` rejects a
+dimension mismatch outright - so a re-bind is required. The agent detects that case explicitly and
+says so rather than reporting a generic miss, and legacy values are migrated in
+`D2RUiCoordinateCatalog` so an existing fleet does not need its JSON hand-edited.

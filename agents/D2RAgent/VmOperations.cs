@@ -2395,6 +2395,9 @@ public sealed class VmOperations
             && template.GridRows >= FollowFingerprintMinAutoClickGridRows;
     }
 
+    internal static bool IsUsableFollowFingerprintMatchForTests(FriendFingerprintComparison comparison) =>
+        IsUsableFollowFingerprintMatch(comparison);
+
     private static bool IsUsableFollowFingerprintMatch(FriendFingerprintComparison comparison)
     {
         return comparison.Comparable

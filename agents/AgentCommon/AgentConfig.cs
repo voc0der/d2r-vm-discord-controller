@@ -68,21 +68,32 @@ public sealed class D2RUiAutomationConfig
     // on the visible name text and extend rightward for enough letters to avoid false positives
     // from visually similar short names; avoid the status line below it (which changes
     // constantly: "In Menus" vs "Act I, Hell" vs "Offline").
+    //
+    // These were measured, not estimated, against lobby_friends_list.png (see
+    // FollowFingerprintReferenceTests). In that capture a friend row's name text occupies roughly
+    // rowY-14 to rowY-4 px at 768p and the status line sits ~8px below it. The original band
+    // (offsetY -0.010, height 0.022) was centered between the two and sampled BOTH: with 4 grid
+    // rows over ~17px, one to two of every four sample rows landed on the status line. That is
+    // why follow-auto drifted - "In Menus" vs "Act I Hell" changes the fingerprint of a friend
+    // who has not moved, and it is text most rows share, which pulls their scores together.
+    // Excluding it took the closest rival from sig 50 to sig 92+ on the same capture.
     public double FriendRowFingerprintOffsetX { get; set; } = 0.000;
-    public double FriendRowFingerprintOffsetY { get; set; } = -0.010;
+    public double FriendRowFingerprintOffsetY { get; set; } = -0.0153;
     public double FriendRowFingerprintWidthRatio { get; set; } = 0.160;
-    public double FriendRowFingerprintHeightRatio { get; set; } = 0.022;
-    // 24 columns over this band is roughly one sample per character, which is coarse enough that
-    // two similar short names (a 7-letter and a 6-letter account) land within a couple of points
-    // of each other and the runtime separation rule rejects both as ambiguous. 32 samples the same
-    // band finely enough to separate letter shapes rather than just rough ink distribution.
-    // Widening the band instead was considered and rejected: the sampled region already extends
-    // well past the end of a typical name, dark-on-dark grid points are skipped by the comparison
-    // entirely so extra blank space adds no discrimination, and reaching further out on either
-    // side starts capturing the friends panel's own bright chrome - which is identical on every
-    // row and would pull all rows' scores together, making ambiguity more likely rather than less.
-    public int FriendRowFingerprintGridColumns { get; set; } = 32;
-    public int FriendRowFingerprintGridRows { get; set; } = 4;
+    public double FriendRowFingerprintHeightRatio { get; set; } = 0.016;
+    // Density chosen by sweeping the reference capture and scoring each candidate on its WORST
+    // result across +/-2px of vertical drift, not its best at one exact alignment - a grid that
+    // only separates cleanly when perfectly aligned is a grid that fails intermittently on live
+    // VMs. 48x12 was the first that kept every rival row outside the match gate at every offset
+    // in that range; 64x6 and 64x12 both let a row back inside at some alignments.
+    //
+    // Widening the band instead was considered and rejected: dark-on-dark grid points are skipped
+    // by the comparison entirely so extra blank space adds no discrimination, and reaching further
+    // out on either side starts capturing the friends panel's own bright chrome - identical on
+    // every row, so it pulls their scores together. Extra grid points are cheap since v0.2.93:
+    // each region is one BitBlt and every sample is read from the local bitmap, not the desktop.
+    public int FriendRowFingerprintGridColumns { get; set; } = 48;
+    public int FriendRowFingerprintGridRows { get; set; } = 12;
     public int FriendRowFingerprintMaxScanRows { get; set; } = 8;
     public bool ClickBattleNetPlayWhenNeeded { get; set; } = true;
     public bool DismissBattleNetWhatsNewWhenNeeded { get; set; } = true;

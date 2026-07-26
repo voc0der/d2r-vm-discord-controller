@@ -209,11 +209,13 @@ public static class D2RUiCoordinateCatalog
         ui ??= Defaults;
         var rowPoint = GetFriendRowPoint(ui, row);
         var offsetX = IsFiniteRatio(ui.FriendRowFingerprintOffsetX) ? ui.FriendRowFingerprintOffsetX : Defaults.FriendRowFingerprintOffsetX;
-        var offsetY = IsFiniteRatio(ui.FriendRowFingerprintOffsetY) ? ui.FriendRowFingerprintOffsetY : Defaults.FriendRowFingerprintOffsetY;
+        var offsetY = ResolveLegacyRatio(
+            ui.FriendRowFingerprintOffsetY, LegacyFingerprintOffsetY, Defaults.FriendRowFingerprintOffsetY, requirePositive: false);
         var widthRatio = IsFinitePositiveRatio(ui.FriendRowFingerprintWidthRatio) ? ui.FriendRowFingerprintWidthRatio : Defaults.FriendRowFingerprintWidthRatio;
-        var heightRatio = IsFinitePositiveRatio(ui.FriendRowFingerprintHeightRatio) ? ui.FriendRowFingerprintHeightRatio : Defaults.FriendRowFingerprintHeightRatio;
+        var heightRatio = ResolveLegacyRatio(
+            ui.FriendRowFingerprintHeightRatio, LegacyFingerprintHeightRatio, Defaults.FriendRowFingerprintHeightRatio, requirePositive: true);
         var columns = ResolveFriendRowFingerprintGridColumns(ui.FriendRowFingerprintGridColumns);
-        var gridRows = ui.FriendRowFingerprintGridRows > 0 ? ui.FriendRowFingerprintGridRows : Defaults.FriendRowFingerprintGridRows;
+        var gridRows = ResolveFriendRowFingerprintGridRows(ui.FriendRowFingerprintGridRows);
 
         var center = new UiPoint(Clamp01(rowPoint.X + offsetX), Clamp01(rowPoint.Y + offsetY));
         return new FriendRowFingerprintRegion(center, widthRatio, heightRatio, columns, gridRows);
@@ -229,13 +231,42 @@ public static class D2RUiCoordinateCatalog
     // Both the capture path and the scan path read their geometry through this one function, so
     // they cannot end up disagreeing about the grid - which would silently produce templates that
     // compare against nothing.
+    // Every value the friend-row fingerprint band has ever shipped with. All four fields move
+    // together whenever the band is re-measured, and a fleet configured under any earlier release
+    // carries the old numbers explicitly, so each one needs the same treatment.
     private const int LegacyFriendRowFingerprintGridColumns = 24;
+    private const int LegacyFriendRowFingerprintGridColumnsV2 = 32;
+    private const int LegacyFriendRowFingerprintGridRows = 4;
+    private const double LegacyFingerprintOffsetY = -0.010;
+    private const double LegacyFingerprintHeightRatio = 0.022;
+    private const double LegacyRatioTolerance = 1e-9;
 
     internal static int ResolveFriendRowFingerprintGridColumns(int configuredColumns)
     {
-        return configuredColumns is <= 0 or LegacyFriendRowFingerprintGridColumns
+        return configuredColumns is <= 0
+            or LegacyFriendRowFingerprintGridColumns
+            or LegacyFriendRowFingerprintGridColumnsV2
             ? Defaults.FriendRowFingerprintGridColumns
             : configuredColumns;
+    }
+
+    internal static int ResolveFriendRowFingerprintGridRows(int configuredRows)
+    {
+        return configuredRows is <= 0 or LegacyFriendRowFingerprintGridRows
+            ? Defaults.FriendRowFingerprintGridRows
+            : configuredRows;
+    }
+
+    private static double ResolveLegacyRatio(
+        double configured,
+        double legacyDefault,
+        double currentDefault,
+        bool requirePositive)
+    {
+        var usable = requirePositive ? IsFinitePositiveRatio(configured) : IsFiniteRatio(configured);
+        return !usable || Math.Abs(configured - legacyDefault) < LegacyRatioTolerance
+            ? currentDefault
+            : configured;
     }
 
     private static bool IsFiniteRatio(double value) => double.IsFinite(value);
