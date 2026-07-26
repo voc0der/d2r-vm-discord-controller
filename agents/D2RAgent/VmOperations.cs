@@ -1575,11 +1575,12 @@ public sealed class VmOperations
                     }
 
                     var rowRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
+                    var (searchHeight, searchRows) = GetFollowFingerprintSearchBand(rowRegion);
                     byte[]? captured;
                     try
                     {
                         captured = input.CaptureFingerprintGrid(
-                            rowRegion.Center, rowRegion.WidthRatio, rowRegion.HeightRatio, rowRegion.GridColumns, rowRegion.GridRows);
+                            rowRegion.Center, rowRegion.WidthRatio, searchHeight, rowRegion.GridColumns, searchRows);
                     }
                     catch
                     {
@@ -1609,9 +1610,10 @@ public sealed class VmOperations
             }
 
             var rowRegion = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
-            var comparison = FriendFingerprint.Compare(
-                fingerprint,
-                new FriendFingerprint(rowRegion.GridColumns, rowRegion.GridRows, captured));
+            // Matched across alignments exactly like the follow-time scan: a row that only
+            // collides once it shifts is still a row that will collide at follow time.
+            var comparison = CompareFollowFingerprintAcrossAlignments(
+                fingerprint, captured, rowRegion.GridColumns, rowRegion.GridRows);
             if (IsUsableFollowFingerprintMatch(comparison))
             {
                 colliding.Add(row);
@@ -2249,10 +2251,11 @@ public sealed class VmOperations
             for (var row = 1; row <= maxRows; row++)
             {
                 var region = D2RUiCoordinateCatalog.GetFriendRowFingerprintRegion(_config.Ui, row);
+                var (searchHeight, searchRows) = GetFollowFingerprintSearchBand(region);
                 byte[]? rowSamples;
                 try
                 {
-                    rowSamples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, region.HeightRatio, region.GridColumns, region.GridRows);
+                    rowSamples = input.CaptureFingerprintGrid(region.Center, region.WidthRatio, searchHeight, region.GridColumns, searchRows);
                 }
                 catch
                 {
@@ -2268,7 +2271,8 @@ public sealed class VmOperations
             var samples = allRowSamples?.FirstOrDefault(r => r.Row == row).Samples;
             var comparison = samples is null
                 ? FriendFingerprintComparison.NotComparable
-                : FriendFingerprint.Compare(template, new FriendFingerprint(region.GridColumns, region.GridRows, samples));
+                : CompareFollowFingerprintAcrossAlignments(
+                    template, samples, region.GridColumns, region.GridRows);
             rowMatches.Add(new FriendRowFingerprintMatch(row, comparison));
         }
 
@@ -2397,6 +2401,55 @@ public sealed class VmOperations
 
     internal static bool IsUsableFollowFingerprintMatchForTests(FriendFingerprintComparison comparison) =>
         IsUsableFollowFingerprintMatch(comparison);
+
+    // A bound friend does not stay on the row it was captured from - the list re-sorts whenever
+    // anyone goes online or offline, which is the entire reason this is a fingerprint rather than
+    // a stored row number. But D2R's real row pitch is not exactly the configured ratio, so the
+    // band lands on a name 1-3px differently depending on which row that name currently occupies.
+    // With the band sitting tightly on the name text, one pixel of that is enough to turn a
+    // perfect match into a miss: measured against two real captures, the bound friend scored 95.4
+    // where it sat (over the 90 gate, reported as "not confidently found") and 0.0 one pixel up.
+    //
+    // So each row is captured with extra sample rows above and below at the SAME vertical pitch,
+    // and the template is slid through them to find its best alignment. The search is deliberately
+    // narrow: it exists to absorb per-row banding error, not to hunt for the name anywhere on
+    // screen, and a wider window starts letting unrelated rows drift into a false match.
+    internal const int FollowFingerprintVerticalSlackRows = 3;
+
+    internal static FriendFingerprintComparison CompareFollowFingerprintAcrossAlignments(
+        FriendFingerprint template,
+        byte[] extendedSamples,
+        int columns,
+        int templateRows)
+    {
+        var stride = columns * 3;
+        var capturedRows = extendedSamples.Length / stride;
+        var best = FriendFingerprintComparison.NotComparable;
+        for (var offset = 0; offset + templateRows <= capturedRows; offset++)
+        {
+            var window = new byte[templateRows * stride];
+            Array.Copy(extendedSamples, offset * stride, window, 0, window.Length);
+            var comparison = FriendFingerprint.Compare(
+                template, new FriendFingerprint(columns, templateRows, window));
+            if (comparison.Comparable
+                && (!best.Comparable
+                    || comparison.SignalAverageDifference < best.SignalAverageDifference))
+            {
+                best = comparison;
+            }
+        }
+
+        return best;
+    }
+
+    // Same band, widened vertically by the slack on both sides so the pitch is preserved: the
+    // template's own sample rows still land exactly one captured row apart.
+    internal static (double HeightRatio, int GridRows) GetFollowFingerprintSearchBand(
+        FriendRowFingerprintRegion region)
+    {
+        var searchRows = region.GridRows + (2 * FollowFingerprintVerticalSlackRows);
+        return (region.HeightRatio * searchRows / region.GridRows, searchRows);
+    }
 
     private static bool IsUsableFollowFingerprintMatch(FriendFingerprintComparison comparison)
     {

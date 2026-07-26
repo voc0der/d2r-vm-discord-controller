@@ -747,3 +747,22 @@ Changing any of these invalidates every bound template - `FriendFingerprint.Comp
 dimension mismatch outright - so a re-bind is required. The agent detects that case explicitly and
 says so rather than reporting a generic miss, and legacy values are migrated in
 `D2RUiCoordinateCatalog` so an existing fleet does not need its JSON hand-edited.
+
+### Vertical alignment search
+
+D2R's real friend-row pitch is not exactly the configured `0.049`, so the band lands on a name
+1-3px differently depending on which row that name currently occupies. A bound friend does not
+stay put - the list re-sorts whenever anyone goes online or offline, which is the entire reason
+this is a fingerprint rather than a stored row number - so the template is routinely compared
+against its own name sitting at a different row, and therefore at a slightly different alignment.
+
+With the band sitting tightly on the name text, one pixel of that is enough to destroy the match.
+Measured across `lobby_friends_list.png` (bound at row 4) and `lobby_friends_list_resorted.png`
+(same friend, now row 3, after ArnoSigma went offline): the correct row scored `sig 95.4` against
+a 90 gate, and `sig 0.0` one pixel up.
+
+Each row is therefore captured with `FollowFingerprintVerticalSlackRows` extra sample rows above
+and below at the same vertical pitch, and the template is slid through them to its best alignment.
+The search stays narrow on purpose - it absorbs banding error, it does not hunt for the name
+anywhere on screen. At +/-3px exactly one row lands inside the match gate on both resorted
+captures, with every rival at 95-110.
