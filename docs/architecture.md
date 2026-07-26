@@ -62,6 +62,16 @@ Each account exists only in the config of its owning node and references a VM ag
 
 For backward compatibility only, a pre-topology single-host config that omits `nodeId` may retain a VM agent literally named `local`. Explicitly node-aware configs reject all node/agent collisions.
 
+## Follow-Bind Template Ownership
+
+The master owns the fleet's follow bind: the friend-row fingerprint every VM matches in its friends drawer, and the ordered in-game nametag rolodex. Both are persisted in the master's SQLite `follow_template` row and replicated to each VM agent as `follow-template.txt` and `leader-template.txt` in its install directory.
+
+`/d2r follow bind:true` and `bind-in-game` record the capture on the master first, then push it to every online account for an immediate, operator-visible result. Replication to everything else is reconciled rather than pushed once: each VM agent advertises a digest of what it currently holds in its status heartbeat, and the master sweeps the fleet every 60 seconds, at follow-auto start, and whenever a follow-auto check reports an unbound account. Any agent whose digest differs from the master's copy is repaired in place. This covers VMs that were offline during a bind, rebuilt from a clean image, or added to the fleet afterwards, including worker-owned VMs, whose agent connections are never visible to the master as events and only surface in worker inventory heartbeats.
+
+The master tracks the friend-row bind and the nametag rolodex as separately "recorded" halves. A half the master has never recorded is never reconciled, so a host upgraded into this feature leaves existing agent-side templates untouched until the corresponding bind command runs once, and re-binding the friend row does not disturb in-game nametags the master has no copy of. A recorded but empty state is authoritative: an unbind reaches VMs that were offline when it happened.
+
+Agents whose build predates the digest field cannot be diffed. The master falls back to what it last pushed each of them, so they converge once per bind change rather than on every sweep.
+
 ## Availability and Routing
 
 Both VM agents and workers send periodic status heartbeats. `nodeHeartbeatSeconds` controls the worker-to-master interval, while each VM agent has its own `heartbeatSeconds`. The effective interval is included in the authenticated hello. `agentOfflineAfterSeconds` is the receiver's minimum freshness threshold (45 seconds by default); for a slower advertised interval, the receiver automatically extends it by the bounded status-collection/jitter allowance.

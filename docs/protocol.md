@@ -242,6 +242,24 @@ bind-verification rollback uses it so a bad capture never wipes the other bound 
 `follow_clear_template` removes both files (a full unbind); `follow_clear_leader_template`
 removes all bound nametags.
 
+Every VM-agent status frame carries the digests of both replicas so the master can reconcile
+them against its own persisted copy without shipping the fingerprints on each heartbeat:
+
+```json
+"followTemplates": {
+  "friendDigest": "3f0a1c...",
+  "leaderDigest": "none",
+  "leaderCount": 0,
+  "error": null
+}
+```
+
+Both digests are computed over the same canonical form the agent's loaders accept - the trimmed
+fingerprint, and the normalized newline-joined nametag list - so formatting differences never read
+as divergence. `none` means the replica is empty, absent, or unreadable; an unreadable file is
+reported as empty so the next push repairs it. A status frame with no `followTemplates` object at
+all is an older agent, which the master treats as "cannot tell" rather than "holds nothing".
+
 `sample_player_count` accepts an optional `{ "fingerprint": "..." }` (the host's session-locked
 nametag; the scan short-circuits once that entry is found) and replies with the current in-game
 player count plus a per-nametag reading for every bound entry:

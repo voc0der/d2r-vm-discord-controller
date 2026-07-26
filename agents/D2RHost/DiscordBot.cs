@@ -52,6 +52,7 @@ public sealed class DiscordBot
     private readonly DiscordNotificationQueue _notifications;
     private readonly HostUpdateNotificationStore _hostUpdateNotifications;
     private readonly AppDb _db;
+    private readonly FollowTemplateStore _followTemplates;
     private readonly ILogger<DiscordBot> _logger;
     private readonly MachineTelemetrySampler _hostTelemetry = new();
     private readonly DiscordSocketClient _client;
@@ -103,7 +104,6 @@ public sealed class DiscordBot
     private bool _followAutoStopActionsRequested;
     private CancellationTokenSource? _followAutoStopActionCts;
     private long _followAutoStopActionPromptId;
-    private string? _followBoundAccountKey;
     private IUserMessage? _followAutoMonitorMessage;
     private DateTimeOffset? _followAutoStartedUtc;
     private int _followAutoGameNumber;
@@ -135,6 +135,7 @@ public sealed class DiscordBot
         DiscordNotificationQueue notifications,
         HostUpdateNotificationStore hostUpdateNotifications,
         AppDb db,
+        FollowTemplateStore followTemplates,
         ILogger<DiscordBot> logger)
     {
         _config = config;
@@ -144,6 +145,7 @@ public sealed class DiscordBot
         _notifications = notifications;
         _hostUpdateNotifications = hostUpdateNotifications;
         _db = db;
+        _followTemplates = followTemplates;
         _logger = logger;
         _client = new DiscordSocketClient(new DiscordSocketConfig
         {
@@ -3880,6 +3882,11 @@ public sealed class DiscordBot
             await context.Command.DeferAsync(ephemeral: true);
             var followAutoCancel = await CancelFollowAutoIfRunningAsync("the follow-bind target was cleared");
             var stopSignals = await SignalFollowAutoStopAgentsAsync(followAutoCancel.RunId);
+
+            // Record the unbind before pushing it: an agent that is offline right now must still
+            // be cleared when it returns, or it would rejoin a later follow-auto run still holding
+            // the fingerprint of a friend the operator deliberately unbound.
+            _followTemplates.Clear();
             var cleared = 0;
             foreach (var (accountKey, account) in online)
             {
@@ -3894,7 +3901,6 @@ public sealed class DiscordBot
                 }
             }
 
-            _followBoundAccountKey = null;
             var stopSummary = stopSignals.Attempted > 0
                 ? $" Follow-auto stop signal reached {stopSignals.Succeeded}/{stopSignals.Attempted} online agent(s)."
                 : "";
@@ -3944,6 +3950,12 @@ public sealed class DiscordBot
         var capturedFriendRow = TryGetInt(data, "friendRow", out var friendRow)
             ? friendRow
             : context.GetInt("friend-row") ?? 1;
+
+        // The host takes ownership of the capture before distributing it, so the fingerprint
+        // outlives both this command and this process. Everything below is the immediate,
+        // operator-visible half of distribution; FollowTemplateStore's sweep is what reaches
+        // agents that are offline now or join the fleet later.
+        _followTemplates.SetFriendTemplate(fingerprint, resolvedAccountKey);
         var distributed = 0;
         var distributionFailures = new List<string>();
         foreach (var (accountKey, account) in online)
@@ -3967,9 +3979,9 @@ public sealed class DiscordBot
             }
         }
 
-        _followBoundAccountKey = resolvedAccountKey;
         var followBindMessage =
             $"Captured the friend at {resolvedAccountKey}'s friend row {capturedFriendRow} and distributed it to {distributed}/{online.Length} online accounts. "
+            + "Offline and future VMs receive it automatically. "
             + "Use /d2r follow or the button below to start following.";
         if (distributionFailures.Count > 0)
         {
@@ -4078,6 +4090,9 @@ public sealed class DiscordBot
             ? $" Name box {glyphWidth}x{glyphHeight}px, {glyphBits} text pixels."
             : "";
 
+        // Recorded before distribution for the same reason as the friend-row bind, and appended
+        // rather than replaced so the host's rolodex tracks bind order exactly like each agent's.
+        _followTemplates.AppendLeaderTemplate(fingerprint);
         var distributed = 0;
         var boundNametagCount = (int?)null;
         var distributionFailures = new List<string>();
@@ -4144,7 +4159,9 @@ public sealed class DiscordBot
         if (missingFromOthers.Count > 0)
         {
             // Roll back only the fresh capture - the operator's other bound alt nametags must
-            // survive a single bad bind.
+            // survive a single bad bind. The host's own copy rolls back first so the sweep does
+            // not helpfully re-push the nametag we are in the middle of retracting.
+            _followTemplates.RemoveLeaderTemplate(fingerprint);
             foreach (var (accountKey, account) in online)
             {
                 try
@@ -4747,9 +4764,9 @@ public sealed class DiscordBot
             $"Session elapsed: {FormatElapsed(elapsed)}"
         };
 
-        if (!string.IsNullOrWhiteSpace(_followBoundAccountKey))
+        if (!string.IsNullOrWhiteSpace(_followTemplates.BoundAccountKey))
         {
-            lines.Insert(1, $"Bound friend source: {_followBoundAccountKey}");
+            lines.Insert(1, $"Bound friend source: {_followTemplates.BoundAccountKey}");
         }
 
         return string.Join("\n", lines);
@@ -4779,6 +4796,26 @@ public sealed class DiscordBot
         }
 
         await StartFollowAutoMonitorAsync(channel, context.MetricsEnabled);
+
+        // Sync before the first check rather than waiting for the periodic sweep: a VM brought
+        // online moments before Follow was pressed is the single most likely one to be holding a
+        // stale or missing bind, and one round of pushes here saves it from sitting out the first
+        // game entirely.
+        try
+        {
+            var startupSync = await _followTemplates.ReconcileAsync(cancellationToken);
+            if (startupSync.DidWork)
+            {
+                _logger.LogInformation(
+                    "follow-auto start synced follow templates: repaired {Repaired}, failures {Failures}.",
+                    startupSync.RepairedAccountList,
+                    string.Join("; ", startupSync.Failures));
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "follow-auto start follow-template sync failed.");
+        }
 
         async Task DelayNextFollowCheckAsync(bool afterLeave = false)
         {
@@ -5137,6 +5174,24 @@ public sealed class DiscordBot
                             checkFailures.Add($"{result.AccountKey}: {result.Message}");
                             break;
                     }
+                }
+
+                // An unbound VM used to be invisible whenever any other VM was bound: its report
+                // only reached the operator through the all-unbound stop path below, so a client
+                // that missed the bind - offline at the time, rebuilt, or added to the fleet
+                // afterwards - sat out whole sessions in silence while the rest of the fleet ran.
+                // Repair it from the host's authoritative copy and put it on the monitor either
+                // way. ReconcileAsync is a no-op for agents that already agree, so this costs
+                // nothing on the overwhelmingly common path where nothing diverged.
+                if (unboundReports.Count > 0 && anyBound)
+                {
+                    var repair = await _followTemplates.ReconcileAsync(cancellationToken);
+                    waitingReports.Add(repair.Repaired.Count > 0
+                        ? $"unbound: {string.Join("; ", unboundReports)} - pushed the bound friend to {repair.RepairedAccountList}, joining on the next check"
+                        : $"unbound: {string.Join("; ", unboundReports)}"
+                            + (_followTemplates.State.Recorded
+                                ? ""
+                                : " (no bind is recorded on the host yet - run /d2r follow bind:true once so late VMs are synced automatically)"));
                 }
 
                 if (!anyBound)
@@ -6197,7 +6252,11 @@ public sealed class DiscordBot
         {
             $"Nodes: {connectedNodes}/{nodes.Count} connected",
             $"Agents: {connected}/{agents.Count} connected"
-        }.Concat(accountLines).Concat(nodeLines).Concat(agentLines));
+        }
+            .Concat(accountLines)
+            .Append(_followTemplates.FormatHealthLine())
+            .Concat(nodeLines)
+            .Concat(agentLines));
     }
 
     private string FormatStartupMessageContent()

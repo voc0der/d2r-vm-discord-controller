@@ -61,12 +61,20 @@ try
     builder.Services.AddSingleton<HostSystemOperations>();
     builder.Services.AddSingleton<WorkerNodeOperations>();
     builder.Services.AddSingleton<WorkerNodeLink>();
+    builder.Services.AddSingleton<FollowTemplateStore>();
     builder.Services.AddSingleton<DiscordBot>();
     builder.Services.AddSingleton<IHostFirewallBackend, WindowsComHostFirewallBackend>();
     builder.Services.AddSingleton<IHostNetworkAddressProvider, SystemHostNetworkAddressProvider>();
     builder.Services.AddSingleton<HostFirewallManager>();
     builder.Services.AddSingleton<IHostedService>(provider =>
         provider.GetRequiredService<HostFirewallManager>());
+    if (config.IsMaster)
+    {
+        // Master-only: a worker relays follow-template commands for its VMs but never owns the
+        // fleet's bind, so a sweep there would have nothing authoritative to sweep towards.
+        builder.Services.AddSingleton<IHostedService>(provider =>
+            provider.GetRequiredService<FollowTemplateStore>());
+    }
 
     var app = builder.Build();
     var firewallManager = app.Services.GetRequiredService<HostFirewallManager>();

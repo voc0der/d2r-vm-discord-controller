@@ -1,3 +1,4 @@
+using AgentCommon;
 using Microsoft.Data.Sqlite;
 
 namespace D2RHost;
@@ -207,6 +208,84 @@ public sealed class AppDb
         }
     }
 
+    // The authoritative copy of what every VM agent's follow-template.txt and leader-template.txt
+    // are supposed to contain. Before this existed the fingerprints lived only in the agents that
+    // happened to be online at bind time, which left the host unable to repair a VM that joined
+    // the fleet later - and unable to answer "what is even bound?" after a restart.
+    public void SaveFollowTemplates(FollowTemplateState state)
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                insert into follow_template (
+                  id, friend_fingerprint, leader_fingerprints, bound_account_key,
+                  friend_recorded, leader_recorded, updated_utc)
+                values (
+                  'current', $friend_fingerprint, $leader_fingerprints, $bound_account_key,
+                  $friend_recorded, $leader_recorded, $updated_utc)
+                on conflict(id) do update set
+                  friend_fingerprint = excluded.friend_fingerprint,
+                  leader_fingerprints = excluded.leader_fingerprints,
+                  bound_account_key = excluded.bound_account_key,
+                  friend_recorded = excluded.friend_recorded,
+                  leader_recorded = excluded.leader_recorded,
+                  updated_utc = excluded.updated_utc
+                """;
+            command.Parameters.AddWithValue("$friend_fingerprint", (object?)state.FriendFingerprint ?? DBNull.Value);
+            command.Parameters.AddWithValue(
+                "$leader_fingerprints",
+                state.LeaderFingerprints.Count == 0
+                    ? DBNull.Value
+                    : PartyNameFingerprintList.Serialize(state.LeaderFingerprints));
+            command.Parameters.AddWithValue("$bound_account_key", (object?)state.BoundAccountKey ?? DBNull.Value);
+            command.Parameters.AddWithValue("$friend_recorded", state.FriendRecorded ? 1 : 0);
+            command.Parameters.AddWithValue("$leader_recorded", state.LeaderRecorded ? 1 : 0);
+            command.Parameters.AddWithValue("$updated_utc", DateTimeOffset.UtcNow.ToString("O"));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    public FollowTemplateState GetFollowTemplates()
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                select friend_fingerprint, leader_fingerprints, bound_account_key,
+                       friend_recorded, leader_recorded
+                from follow_template
+                where id = 'current'
+                """;
+
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return FollowTemplateState.NotRecorded;
+            }
+
+            return new FollowTemplateState(
+                reader.IsDBNull(0) ? null : reader.GetString(0),
+                PartyNameFingerprintList.Normalize(reader.IsDBNull(1) ? null : reader.GetString(1)),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                FriendRecorded: !reader.IsDBNull(3) && reader.GetInt64(3) != 0,
+                LeaderRecorded: !reader.IsDBNull(4) && reader.GetInt64(4) != 0);
+        }
+    }
+
+    public void ClearFollowTemplates()
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "delete from follow_template where id = 'current'";
+            command.ExecuteNonQuery();
+        }
+    }
+
     private void Initialize()
     {
         lock (_lock)
@@ -241,6 +320,16 @@ public sealed class AppDb
                   updated_by text not null,
                   updated_utc text not null
                 );
+
+                create table if not exists follow_template (
+                  id text primary key,
+                  friend_fingerprint text,
+                  leader_fingerprints text,
+                  bound_account_key text,
+                  friend_recorded integer not null default 0,
+                  leader_recorded integer not null default 0,
+                  updated_utc text not null
+                );
                 """;
             command.ExecuteNonQuery();
         }
@@ -260,3 +349,37 @@ public sealed record PersistedAgentStatus(
     bool Connected,
     DateTimeOffset? LastSeenAt,
     string PayloadJson);
+
+/// <summary>
+/// The fleet-wide follow bind: the friend-row fingerprint every agent matches in its friends
+/// drawer, the in-game nametag rolodex, and the account the friend row was captured from.
+/// </summary>
+/// <remarks>
+/// The two "recorded" flags separate "the host has never owned this half of the bind" from "the
+/// host owns an explicitly empty one", and the distinction is load-bearing in two places.
+///
+/// On the first start after this feature ships, agents already hold working templates from an
+/// older bind while the host's table is empty; treating that as an authoritative empty state would
+/// push a clear to every VM and destroy a working bind on upgrade. And the halves are tracked
+/// separately because they are bound by separate commands: re-running the friend-row bind must
+/// leave an in-game nametag rolodex the host has never recorded completely alone, exactly as it
+/// did before the host kept a copy at all. Only a recorded half reconciles.
+/// </remarks>
+public sealed record FollowTemplateState(
+    string? FriendFingerprint,
+    IReadOnlyList<string> LeaderFingerprints,
+    string? BoundAccountKey,
+    bool FriendRecorded,
+    bool LeaderRecorded)
+{
+    public static FollowTemplateState NotRecorded { get; } =
+        new(null, [], null, FriendRecorded: false, LeaderRecorded: false);
+
+    public bool Recorded => FriendRecorded || LeaderRecorded;
+
+    public bool HasFriendTemplate => !string.IsNullOrWhiteSpace(FriendFingerprint);
+
+    public string FriendDigest => FollowTemplateDigest.OfFriendTemplate(FriendFingerprint);
+
+    public string LeaderDigest => FollowTemplateDigest.OfLeaderList(LeaderFingerprints);
+}

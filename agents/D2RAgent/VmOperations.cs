@@ -258,6 +258,7 @@ public sealed class VmOperations
             lastActivityReason = activity.Reason,
             idleQuitEnabled = _config.IdleQuitEnabled,
             idleQuitMinutes = _config.IdleQuitMinutes,
+            followTemplates = CollectFollowTemplateDigests(),
             timeUtc = DateTimeOffset.UtcNow
         };
     }
@@ -308,6 +309,7 @@ public sealed class VmOperations
             lastActivityReason = activity.Reason,
             idleQuitEnabled = _config.IdleQuitEnabled,
             idleQuitMinutes = _config.IdleQuitMinutes,
+            followTemplates = CollectFollowTemplateDigests(),
             timeUtc = DateTimeOffset.UtcNow
         };
     }
@@ -1578,6 +1580,50 @@ public sealed class VmOperations
         {
             return new FollowTemplateLoadResult(null, File.Exists(path), path, ContentLength: 0, $"{ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    // Advertised on every status frame so the host can spot a replica that diverged from its
+    // authoritative copy - a VM that was offline during a bind, one rebuilt from a clean image,
+    // or one added to the fleet afterwards - and repair it without the operator having to notice
+    // and re-run the bind. Deliberately reported in the process-only status too: a VM in degraded
+    // status collection is exactly the kind that has been out of touch and needs reconciling.
+    // Any read failure reports as a missing template rather than throwing, so a corrupt file is
+    // simply overwritten by the next push instead of silently disabling this VM's follow-auto.
+    private static object CollectFollowTemplateDigests()
+    {
+        var errors = new List<string>();
+        var friendDigest = FollowTemplateDigest.None;
+        try
+        {
+            friendDigest = FollowTemplateDigest.OfFriendTemplate(
+                File.Exists(FollowTemplatePath) ? File.ReadAllText(FollowTemplatePath) : null);
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"{FollowTemplateFileName}: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        var leaderDigest = FollowTemplateDigest.None;
+        var leaderCount = 0;
+        try
+        {
+            var leaderList = PartyNameFingerprintList.Normalize(
+                File.Exists(LeaderTemplatePath) ? File.ReadAllText(LeaderTemplatePath) : null);
+            leaderDigest = FollowTemplateDigest.OfLeaderList(leaderList);
+            leaderCount = leaderList.Count;
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"{LeaderTemplateFileName}: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        return new
+        {
+            friendDigest,
+            leaderDigest,
+            leaderCount,
+            error = errors.Count > 0 ? string.Join("; ", errors) : null
+        };
     }
 
     private static CommandResult FollowSetTemplate(MenuCommandArgs args)
