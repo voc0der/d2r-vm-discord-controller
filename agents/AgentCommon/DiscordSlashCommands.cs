@@ -44,7 +44,7 @@ public static class DiscordSlashCommands
                         Sub("show", "Show the stored game details"),
                         Sub("clear", "Clear the stored game details")),
                     Group("system", "Power actions on the D2RHost Windows machine",
-                        Sub("sleep", "Sleep one D2RHost node, or every online node", NodeTarget(), AllNodesFlag()),
+                        Sub("sleep", "Sleep every online D2RHost node, or just one via node/all:false", NodeTarget(), AllNodesFlag()),
                         Sub("shutdown", "Shut down one D2RHost node, or every online node", NodeTarget(), AllNodesFlag()),
                         Sub("restart", "Restart one D2RHost node, or every online node", NodeTarget(), AllNodesFlag())),
                     Group("config", "Configure the D2R controller",
@@ -120,12 +120,15 @@ public static class DiscordSlashCommands
 
     private static SlashCommandOptionBuilder NodeTarget()
     {
-        return StringOption("node", "D2RHost node ID; defaults to the master node", required: false);
+        return StringOption("node", "One D2RHost node ID; scopes the action to that node", required: false);
     }
 
     private static SlashCommandOptionBuilder AllNodesFlag()
     {
-        return BoolOption("all", "Run on every currently online D2RHost node", required: false);
+        return BoolOption(
+            "all",
+            "Every online D2RHost node; defaults true for sleep, false for shutdown/restart",
+            required: false);
     }
 
     private static SlashCommandOptionBuilder GameName()

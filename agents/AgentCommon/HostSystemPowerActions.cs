@@ -22,6 +22,29 @@ public static class HostSystemPowerActions
         };
     }
 
+    /// <summary>
+    /// Whether a /d2r system subcommand covers every online D2RHost node when the caller
+    /// does not scope it. Sleep is the "done for the night" action and the post-follow
+    /// Sleep button already parked the whole fleet, so the slash command matches it: a
+    /// worker left awake keeps drawing power and running its VMs long after the master
+    /// parked, and nobody remembers to type all:true. Shutdown and restart stay
+    /// master-only, because those are maintenance aimed at one box.
+    /// </summary>
+    public static bool DefaultsToEveryNode(HostSystemPowerAction action)
+    {
+        return action == HostSystemPowerAction.Sleep;
+    }
+
+    /// <summary>
+    /// Resolves whether to target every online node. An explicit all flag always wins, so
+    /// all:false is the escape hatch that keeps sleep on the master alone, and naming a
+    /// node keeps the action scoped to it.
+    /// </summary>
+    public static bool ResolveEveryNode(HostSystemPowerAction action, bool? allFlag, bool nodeRequested)
+    {
+        return allFlag ?? (!nodeRequested && DefaultsToEveryNode(action));
+    }
+
     public static string FormatQueuedMessage(HostSystemPowerAction action)
     {
         return action switch

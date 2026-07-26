@@ -14,6 +14,34 @@ public sealed class HostSystemPowerActionsTests
         Assert.Equal(expected, HostSystemPowerActions.ParseAction(subcommand));
     }
 
+    // /d2r system sleep used to park the master and leave every worker awake, because
+    // fleet-wide sleep only happened when someone remembered all:true. Sleep now covers
+    // the fleet by default while shutdown/restart stay aimed at one box.
+    [Theory]
+    [InlineData(HostSystemPowerAction.Sleep, true)]
+    [InlineData(HostSystemPowerAction.Shutdown, false)]
+    [InlineData(HostSystemPowerAction.Restart, false)]
+    public void OnlySleepDefaultsToTheWholeFleet(HostSystemPowerAction action, bool expected)
+    {
+        Assert.Equal(expected, HostSystemPowerActions.DefaultsToEveryNode(action));
+        Assert.Equal(
+            expected,
+            HostSystemPowerActions.ResolveEveryNode(action, allFlag: null, nodeRequested: false));
+    }
+
+    [Theory]
+    [InlineData(HostSystemPowerAction.Sleep)]
+    [InlineData(HostSystemPowerAction.Shutdown)]
+    [InlineData(HostSystemPowerAction.Restart)]
+    public void ExplicitScopingOverridesTheSubcommandDefault(HostSystemPowerAction action)
+    {
+        // all:false is the escape hatch that keeps sleep on the master alone, and naming a
+        // node must never be silently widened into a fleet-wide power action.
+        Assert.False(HostSystemPowerActions.ResolveEveryNode(action, allFlag: false, nodeRequested: false));
+        Assert.False(HostSystemPowerActions.ResolveEveryNode(action, allFlag: null, nodeRequested: true));
+        Assert.True(HostSystemPowerActions.ResolveEveryNode(action, allFlag: true, nodeRequested: false));
+    }
+
     [Theory]
     [InlineData(HostSystemPowerAction.Shutdown, "/s")]
     [InlineData(HostSystemPowerAction.Restart, "/r")]

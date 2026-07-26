@@ -82,7 +82,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r game set name [password] [difficulty] [notes]`
 - `/d2r game show`
 - `/d2r game clear`
-- `/d2r system sleep [node] [all]`
+- `/d2r system sleep [node] [all]` (all defaults to true)
 - `/d2r system shutdown [node] [all]`
 - `/d2r system restart [node] [all]`
 - `/d2r vm status account`
@@ -108,7 +108,7 @@ Discord health output reports agent connectivity and account availability separa
 
 `/d2r restart` respawns the master D2RHost process only. On startup, the master runs its normal self-update check before reconnecting to Discord, so this is the quick way to apply a pushed master update once the command exists in Discord.
 
-`/d2r system sleep`, `/d2r system shutdown`, and `/d2r system restart` default to the master node for backward compatibility. Pass `node:<node-id>` to target one known node (including the master), or `all:true` to target every currently online D2RHost node. `node` and `all:true` are mutually exclusive. Fleet-wide actions are queued on online workers first and the master last so the control plane remains available long enough to forward them. Offline workers are listed and skipped. If an online worker fails to confirm the action, the master is deliberately kept online for recovery. These commands power physical D2RHost machines only—not VM guests.
+`/d2r system sleep` targets every currently online D2RHost node—master and workers—so parking for the night does not leave a worker awake. Pass `all:false`, or `node:<node-id>`, to sleep one node instead. `/d2r system shutdown` and `/d2r system restart` still default to the master node, since those are usually aimed at one machine; pass `all:true` to run them fleet-wide. `node` and `all:true` are mutually exclusive. Fleet-wide actions are queued on online workers first and the master last so the control plane remains available long enough to forward them. Offline workers are listed and skipped. If an online worker fails to confirm the action, the master is deliberately kept online for recovery. These commands power physical D2RHost machines only—not VM guests.
 
 Menu commands that need D2R running, such as `lobby`, `play`, `join`, `create-game`, and `follow`, run `/d2r ready` first when the latest VM status is not already a known character/lobby/game state. The Discord response calls out that extra ready step.
 

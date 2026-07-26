@@ -166,7 +166,7 @@ VM commands require `args.vmName`; `vm_snapshot` optionally accepts `args.snapsh
 
 Commands are not retried across a disconnect, and canceling the master's wait does not recall an already-dispatched command. A lost result after dispatch is an unknown outcome: a VM or system action may already have applied, so callers should reconcile current state before issuing it again.
 
-Discord system commands default to the master node. `node:<node-id>` targets that known node (and may explicitly name the master), while `all:true` targets currently online workers first and the master last. Offline workers are listed and skipped. If a selected worker does not confirm the action, the master is kept online for recovery.
+Discord `system sleep` targets every online node by default; `system shutdown` and `system restart` default to the master node. `node:<node-id>` targets that known node (and may explicitly name the master), while `all:true`—or the sleep default—targets currently online workers first and the master last. `all:false` narrows any of them back to the master alone. Offline workers are listed and skipped. If a selected worker does not confirm the action, the master is kept online for recovery.
 
 ## VM-Agent Commands
 

@@ -1432,14 +1432,19 @@ public sealed class DiscordBot
     {
         var action = HostSystemPowerActions.ParseAction(context.SubcommandName);
         var requestedNode = BlankToNull(context.GetString("node"));
-        var allNodes = context.GetBool("all") == true;
-        if (allNodes && requestedNode is not null)
+        var requestedAll = context.GetBool("all");
+        if (requestedAll == true && requestedNode is not null)
         {
             await RespondWithMetricsAsync(
                 context,
                 "Pass either `node` or `all:true`, not both.");
             return;
         }
+
+        var allNodes = HostSystemPowerActions.ResolveEveryNode(
+            action,
+            requestedAll,
+            requestedNode is not null);
 
         string[] targets;
         if (allNodes)
@@ -1468,11 +1473,18 @@ public sealed class DiscordBot
             targets = [target];
         }
 
+        // Surface the escape hatch only when the fleet-wide default actually widened the
+        // action past the master, so a single-node fleet does not get told about a flag
+        // that would change nothing.
+        var narrowingHint = requestedAll is null && allNodes && targets.Length > 1
+            ? $" Pass `all:false` to {action.ToString().ToLowerInvariant()} the master alone."
+            : "";
         await RespondWithMetricsAsync(
             context,
             $"Queueing {action.ToString().ToLowerInvariant()} on {targets.Length} node(s): "
                 + $"{string.Join(", ", targets)}. VM clients are not targeted."
-                + (allNodes ? FormatOfflineNodeSkipSuffix(targets) : ""));
+                + (allNodes ? FormatOfflineNodeSkipSuffix(targets) : "")
+                + narrowingHint);
         await AnnounceSystemPowerActionAsync(context, action);
 
         var results = await QueueSystemActionsAsync(targets, action);
