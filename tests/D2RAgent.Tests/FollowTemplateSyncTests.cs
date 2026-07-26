@@ -281,6 +281,25 @@ public sealed class FollowTemplateSyncTests
         Assert.Empty(pushes);
     }
 
+    // bind-in-game:0 empties the rolodex but keeps the friend bind. The empty list has to be
+    // authoritative or the next sweep would hand the nametags straight back to every agent that
+    // just cleared them - while the friend row, untouched, must not be disturbed.
+    [Fact]
+    public void ClearedNametagsAreAuthoritativeWithoutDisturbingTheFriendBind()
+    {
+        var friend = FriendFingerprint(0x41);
+        var state = new FollowTemplateState(
+            friend, [], "D2R_1", FriendRecorded: true, LeaderRecorded: true);
+
+        var pushes = FollowTemplateStore.PlanPushes(
+            state,
+            Advertise(friend, [LeaderFingerprint(0x11)]),
+            lastPushed: null);
+
+        var push = Assert.Single(pushes);
+        Assert.Equal("follow_clear_leader_template", push.Command);
+    }
+
     [Fact]
     public void BindSurvivesAHostRestart()
     {

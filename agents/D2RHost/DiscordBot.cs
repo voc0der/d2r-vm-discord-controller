@@ -3494,6 +3494,18 @@ public sealed class DiscordBot
         return unavailableAgentWarning + offlineAccountWarning;
     }
 
+    // Leads with where the bind actually lives rather than with a distribution count. "4/4 online
+    // accounts" reads like full fleet coverage when the fleet has nine, and it buries the part
+    // that now matters: the host holds the authoritative copy, so the accounts that were not
+    // reachable during the command are already accounted for rather than missed.
+    private static string FormatBindOwnershipSummary(int distributed, int online, int offline)
+    {
+        var pending = offline > 0
+            ? $"; the {offline} offline VM(s) sync automatically when they reconnect."
+            : ", which is the whole fleet.";
+        return $"The host owns this bind and pushed it to {distributed}/{online} online VM(s){pending}";
+    }
+
     private static string FormatUnaddressableAgent(FleetUnaddressableAgent entry) =>
         string.IsNullOrWhiteSpace(entry.NodeId)
             ? entry.Id
@@ -3871,11 +3883,12 @@ public sealed class DiscordBot
         return channel.SendMessageAsync(AppendMetrics(metricsEnabled, content));
     }
 
-    // Issue #25: capture a follow-bind fingerprint from one account's selected friend row, then push it
-    // (or clear it) to every online account so follow-auto can recognize the same name anywhere.
+    // Issue #25: capture a follow-bind fingerprint from one account's selected friend row, record it
+    // on the host, then push it to every online account so follow-auto can recognize the same name
+    // anywhere. Offline and future VMs are reconciled onto the host's copy by FollowTemplateStore.
     private async Task HandleFollowBindAsync(SlashContext context, bool bindFlag)
     {
-        var (online, _) = GetAccountEntriesByConnectivity();
+        var (online, offlineAccounts) = GetAccountEntriesByConnectivity();
 
         if (!bindFlag)
         {
@@ -3904,9 +3917,13 @@ public sealed class DiscordBot
             var stopSummary = stopSignals.Attempted > 0
                 ? $" Follow-auto stop signal reached {stopSignals.Succeeded}/{stopSignals.Attempted} online agent(s)."
                 : "";
+            var clearPending = offlineAccounts.Length > 0
+                ? $"; the {offlineAccounts.Length} offline VM(s) are cleared automatically when they reconnect."
+                : ".";
             await ModifyOriginalResponseWithMetricsAsync(
                 context,
-                $"Follow-bind cleared on {cleared}/{online.Length} online accounts (including any in-game leader bind).{stopSummary}");
+                $"Follow-bind cleared, including any in-game leader bind. The host recorded the unbind and applied it to "
+                    + $"{cleared}/{online.Length} online VM(s){clearPending}{stopSummary}");
             return;
         }
 
@@ -3980,9 +3997,9 @@ public sealed class DiscordBot
         }
 
         var followBindMessage =
-            $"Captured the friend at {resolvedAccountKey}'s friend row {capturedFriendRow} and distributed it to {distributed}/{online.Length} online accounts. "
-            + "Offline and future VMs receive it automatically. "
-            + "Use /d2r follow or the button below to start following.";
+            $"Bound the friend at {resolvedAccountKey}'s friend row {capturedFriendRow}. "
+            + FormatBindOwnershipSummary(distributed, online.Length, offlineAccounts.Length)
+            + " Use /d2r follow or the button below to start following.";
         if (distributionFailures.Count > 0)
         {
             followBindMessage += $" Template save failures: {string.Join("; ", distributionFailures)}";
@@ -4003,11 +4020,16 @@ public sealed class DiscordBot
     // follow-auto falls back to count-drop behavior).
     private async Task HandleFollowBindInGameAsync(SlashContext context, int partyPosition)
     {
-        var (online, _) = GetAccountEntriesByConnectivity();
+        var (online, offlineAccounts) = GetAccountEntriesByConnectivity();
 
         if (partyPosition == 0)
         {
             await context.Command.DeferAsync(ephemeral: true);
+
+            // Record the empty rolodex before pushing it. Without this the host would still hold
+            // the nametags and the next sweep would hand them straight back to every agent that
+            // just cleared them.
+            _followTemplates.ClearLeaderTemplates();
             var cleared = 0;
             foreach (var (accountKey, account) in online)
             {
@@ -4024,9 +4046,13 @@ public sealed class DiscordBot
 
             _followAutoLockedNametag = null;
             _followAutoLockedNametagOrdinal = null;
+            var clearPending = offlineAccounts.Length > 0
+                ? $"; the {offlineAccounts.Length} offline VM(s) are cleared automatically when they reconnect."
+                : ".";
             await ModifyOriginalResponseWithMetricsAsync(
                 context,
-                $"All bound nametags cleared on {cleared}/{online.Length} online accounts. Follow-auto will leave on player-count drops again.");
+                $"All bound nametags cleared. The host recorded it and applied it to {cleared}/{online.Length} online VM(s)"
+                    + $"{clearPending} Follow-auto will leave on player-count drops again.");
             return;
         }
 
@@ -4218,7 +4244,9 @@ public sealed class DiscordBot
             ? $" {totalBound} nametags are now bound; each follow-auto run locks onto whichever one it spots first."
             : " Follow-auto now stays while this player is in the game and leaves when they leave.";
         var message =
-            $"Captured the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s) and distributed it to {distributed}/{online.Length} online accounts.{glyphSummary}{verifiedSuffix}{ambiguitySuffix}{rolodexSuffix}";
+            $"Bound the party-bar name at {vantageKey}'s position {partyPosition} of {visibleMembers} visible member(s). "
+            + FormatBindOwnershipSummary(distributed, online.Length, offlineAccounts.Length)
+            + $"{glyphSummary}{verifiedSuffix}{ambiguitySuffix}{rolodexSuffix}";
         if (distributionFailures.Count > 0)
         {
             message += $" Template save failures: {string.Join("; ", distributionFailures)}";

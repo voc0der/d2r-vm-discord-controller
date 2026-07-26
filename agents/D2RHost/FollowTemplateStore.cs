@@ -120,6 +120,20 @@ public sealed class FollowTemplateStore : IHostedService
         });
     }
 
+    /// <summary>
+    /// Drops every in-game nametag while leaving the friend-row bind intact - the
+    /// <c>bind-in-game:0</c> path. Recorded, so a VM that was offline for it is cleared on
+    /// reconnect instead of being handed the rolodex back by the next sweep.
+    /// </summary>
+    public void ClearLeaderTemplates()
+    {
+        Mutate(state => state with
+        {
+            LeaderFingerprints = [],
+            LeaderRecorded = true
+        });
+    }
+
     /// <summary>Drops one nametag - the rollback path for a bind that captured a bot.</summary>
     public void RemoveLeaderTemplate(string fingerprint)
     {
