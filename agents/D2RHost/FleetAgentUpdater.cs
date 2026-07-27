@@ -36,8 +36,8 @@ public sealed class FleetAgentUpdater : IHostedService
     private readonly FleetRegistry _fleet;
     private readonly AgentRegistry _localRegistry;
     private readonly DiscordNotificationQueue _notifications;
+    private readonly SatelliteUpdateGate _updateGate;
     private readonly ILogger<FleetAgentUpdater> _logger;
-    private readonly HashSet<string> _offered = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _sweepLock = new(1, 1);
 
     private CancellationTokenSource? _cts;
@@ -49,6 +49,7 @@ public sealed class FleetAgentUpdater : IHostedService
         FleetRegistry fleet,
         AgentRegistry localRegistry,
         DiscordNotificationQueue notifications,
+        SatelliteUpdateGate updateGate,
         ILogger<FleetAgentUpdater> logger)
     {
         _config = config;
@@ -56,6 +57,7 @@ public sealed class FleetAgentUpdater : IHostedService
         _fleet = fleet;
         _localRegistry = localRegistry;
         _notifications = notifications;
+        _updateGate = updateGate;
         _logger = logger;
     }
 
@@ -143,17 +145,15 @@ public sealed class FleetAgentUpdater : IHostedService
         bool isNode,
         CancellationToken cancellationToken)
     {
-        // Keyed by reported version so a satellite that comes back on an older build is offered
-        // an update again, while one that is already current is not asked every sweep.
-        var key = $"{agentId}|{version ?? "(unknown)"}";
-        lock (_offered)
+        // Shared with the authentication hook, and keyed by reported version so a satellite that
+        // comes back on an older build is offered an update again while one that is already
+        // current is not asked every sweep.
+        if (!_updateGate.TryBeginOffer(agentId, version))
         {
-            if (!_offered.Add(key))
-            {
-                return false;
-            }
+            return false;
         }
 
+        var retryable = false;
         try
         {
             var result = isNode
@@ -182,18 +182,19 @@ public sealed class FleetAgentUpdater : IHostedService
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            retryable = true;
             throw;
         }
         catch (Exception ex)
         {
             // Do not remember a failed offer: the next sweep should try again.
-            lock (_offered)
-            {
-                _offered.Remove(key);
-            }
-
+            retryable = true;
             _logger.LogWarning(ex, "Fleet auto-update command failed for {AgentId}.", agentId);
             return false;
+        }
+        finally
+        {
+            _updateGate.CompleteOffer(agentId, version, retryable);
         }
     }
 

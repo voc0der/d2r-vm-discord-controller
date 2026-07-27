@@ -12,6 +12,11 @@ public static class SelfUpdater
         Timeout = TimeSpan.FromSeconds(10)
     };
 
+    /// <summary>
+    /// Set once an updater has been launched, so a second request cannot start another one.
+    /// </summary>
+    private static int _updaterStarted;
+
     static SelfUpdater()
     {
         Http.DefaultRequestHeaders.UserAgent.ParseAdd("D2ROps-SelfUpdater/1.0");
@@ -87,6 +92,24 @@ public static class SelfUpdater
                     UpdateAvailable: true,
                     UpdateStarted: false,
                     Message: $"Update to {release.TagName} was skipped by operator.",
+                    CurrentVersion: currentVersion.ToString(),
+                    LatestVersion: release.Version.ToString(),
+                    LogPath: null);
+            }
+
+            // Only one updater per process, ever. Two updaters racing over the same directory
+            // download and unpack the same release on top of each other while the exe is still
+            // running, and the loser can restart the app from a half-replaced install - which
+            // presents as an update that reported success but left the version unchanged.
+            // The host dedupes its offers, but a satellite must not depend on that being correct.
+            if (Interlocked.Exchange(ref _updaterStarted, 1) == 1)
+            {
+                return new SelfUpdateResult(
+                    Ok: true,
+                    CheckedLatest: true,
+                    UpdateAvailable: true,
+                    UpdateStarted: false,
+                    Message: $"An updater is already running for {options.AppName}; ignoring the duplicate request.",
                     CurrentVersion: currentVersion.ToString(),
                     LatestVersion: release.Version.ToString(),
                     LogPath: null);

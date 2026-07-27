@@ -101,6 +101,8 @@ minute later.
 `/d2r restart` itself pushes nothing. It respawns the master, whose own startup self-update check
 runs before Discord reconnects; every other fleet member updates through the two paths above.
 
+Both offer paths share one `SatelliteUpdateGate`, which allows a single in-flight offer per satellite and remembers what it has already offered at each reported version. Separate per-path bookkeeping was not enough: after a master restart the two line up on the same satellite within seconds, because it reconnects and is offered an update immediately and the sweep's first pass then runs while it is still restarting and still reporting the old version. Two updaters unpacking the same release over the same directory is how a node reported two "update started" messages and stayed on the old build. `SelfUpdater` also refuses to launch a second updater in the same process, so a satellite does not depend on the host's bookkeeping being correct.
+
 A worker whose build predates the `self_update` node command answers "unsupported worker command"
 and cannot update itself out of that state. That reply is posted to Discord once per build rather
 than only logged, because the failure is otherwise indistinguishable from a node that is already

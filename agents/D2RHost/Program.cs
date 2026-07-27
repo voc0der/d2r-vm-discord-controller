@@ -52,6 +52,7 @@ try
     builder.Services.AddSingleton(new HostRuntimeOptions(configPath, args));
     builder.Services.AddSingleton(agentAutoUpdate);
     builder.Services.AddSingleton<DiscordNotificationQueue>();
+    builder.Services.AddSingleton<SatelliteUpdateGate>();
     builder.Services.AddSingleton<HostUpdateNotificationStore>();
     builder.Services.AddSingleton<AppDb>();
     builder.Services.AddSingleton<AgentRegistry>();

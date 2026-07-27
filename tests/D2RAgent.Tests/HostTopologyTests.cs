@@ -800,6 +800,7 @@ public sealed class HostTopologyTests
             config,
             new AgentAutoUpdateState(false, "Disabled for tests."),
             new DiscordNotificationQueue(),
+            new SatelliteUpdateGate(),
             database,
             NullLogger<AgentRegistry>.Instance);
         var fleet = new FleetRegistry(config, restartedRegistry, NullLogger<FleetRegistry>.Instance);
@@ -876,6 +877,7 @@ public sealed class HostTopologyTests
             config,
             new AgentAutoUpdateState(false, "Disabled for tests."),
             new DiscordNotificationQueue(),
+            new SatelliteUpdateGate(),
             database,
             NullLogger<AgentRegistry>.Instance);
         var fleet = new FleetRegistry(config, registry, NullLogger<FleetRegistry>.Instance);
@@ -1056,6 +1058,7 @@ public sealed class HostTopologyTests
                 config,
                 new AgentAutoUpdateState(false, "Disabled for tests."),
                 new DiscordNotificationQueue(),
+                new SatelliteUpdateGate(),
                 database,
                 NullLogger<AgentRegistry>.Instance);
 
@@ -1131,6 +1134,7 @@ public sealed class HostTopologyTests
                 Config,
                 new AgentAutoUpdateState(false, "Disabled for tests."),
                 new DiscordNotificationQueue(),
+                new SatelliteUpdateGate(),
                 Database,
                 NullLogger<AgentRegistry>.Instance);
         }

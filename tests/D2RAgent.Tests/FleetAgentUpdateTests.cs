@@ -81,6 +81,7 @@ public sealed class FleetAgentUpdateTests
             fixture.Fleet,
             fixture.Registry,
             new DiscordNotificationQueue(),
+            new SatelliteUpdateGate(),
             NullLogger<FleetAgentUpdater>.Instance);
 
         await updater.StartAsync(CancellationToken.None);
@@ -101,6 +102,7 @@ public sealed class FleetAgentUpdateTests
             fixture.Fleet,
             fixture.Registry,
             new DiscordNotificationQueue(),
+            new SatelliteUpdateGate(),
             NullLogger<FleetAgentUpdater>.Instance);
 
         Assert.Equal(0, await updater.SweepAsync(CancellationToken.None));
@@ -128,6 +130,7 @@ public sealed class FleetAgentUpdateTests
                 Config,
                 new AgentAutoUpdateState(false, "Disabled for tests."),
                 new DiscordNotificationQueue(),
+                new SatelliteUpdateGate(),
                 Database,
                 NullLogger<AgentRegistry>.Instance);
             Fleet = new FleetRegistry(Config, Registry, NullLogger<FleetRegistry>.Instance);

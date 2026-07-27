@@ -16,12 +16,12 @@ public sealed class AgentRegistry
 
     private readonly HostConfig _config;
     private readonly AgentAutoUpdateState _autoUpdate;
+    private readonly SatelliteUpdateGate _updateGate;
     private readonly DiscordNotificationQueue _notifications;
     private readonly AppDb _db;
     private readonly ILogger<AgentRegistry> _logger;
     private readonly ConcurrentDictionary<string, ConnectedAgent> _agents = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, PendingCommand> _pending = new();
-    private readonly ConcurrentDictionary<string, byte> _autoUpdateAttempts = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _registrationLock = new();
 
     // Raised on the websocket receive loop after an agent authenticates or drops; handlers
@@ -32,12 +32,14 @@ public sealed class AgentRegistry
         HostConfig config,
         AgentAutoUpdateState autoUpdate,
         DiscordNotificationQueue notifications,
+        SatelliteUpdateGate updateGate,
         AppDb db,
         ILogger<AgentRegistry> logger)
     {
         _config = config;
         _autoUpdate = autoUpdate;
         _notifications = notifications;
+        _updateGate = updateGate;
         _db = db;
         _logger = logger;
 
@@ -446,14 +448,16 @@ public sealed class AgentRegistry
             return;
         }
 
-        var key = $"{agentId}|{version ?? "(unknown)"}";
-        if (!_autoUpdateAttempts.TryAdd(key, 0))
+        // Shared with the fleet sweep: both paths offer updates, and after a master restart they
+        // line up on the same satellite at the same version within seconds of each other.
+        if (!_updateGate.TryBeginOffer(agentId, version))
         {
             return;
         }
 
         _ = Task.Run(async () =>
         {
+            var retryable = false;
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(2));
@@ -501,7 +505,15 @@ public sealed class AgentRegistry
             }
             catch (Exception ex)
             {
+                // Only a transport failure is worth retrying. A satellite that answered and
+                // declined has given a real answer, and asking again every reconnect would
+                // repost the same Discord warning forever.
+                retryable = true;
                 _logger.LogWarning(ex, "Auto-update command failed for {AgentId}.", agentId);
+            }
+            finally
+            {
+                _updateGate.CompleteOffer(agentId, version, retryable);
             }
         });
     }
