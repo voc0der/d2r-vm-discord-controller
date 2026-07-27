@@ -1021,12 +1021,9 @@ public sealed class DiscordBot
     {
         var subcommand = context.SubcommandName;
 
-        if (subcommand == "health")
-        {
-            await RespondWithMetricsAsync(context, FormatHealth());
-            return;
-        }
-
+        // No "health" branch: 87e3780 folded that subcommand into status, which renders the same
+        // health block above the account list. The unreachable handler it left behind outlived the
+        // command by long enough to send people chasing a command Discord never offers.
         if (subcommand == "status")
         {
             await context.Command.DeferAsync(ephemeral: true);

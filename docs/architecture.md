@@ -108,7 +108,7 @@ and cannot update itself out of that state. That reply is posted to Discord once
 than only logged, because the failure is otherwise indistinguishable from a node that is already
 current. Such a node needs one manual update.
 
-`/d2r health` reports each node's version next to its agent counts, and marks a connected node
+`/d2r status` reports each node's version next to its agent counts, and marks a connected node
 whose build differs from the master's. Versions are compared as the informational version string
 agents advertise in their hello frame (`AgentVersion`), not the four-part assembly version.
 

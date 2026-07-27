@@ -3,7 +3,7 @@ using Xunit;
 
 namespace D2RAgent.Tests;
 
-// Worker node builds were invisible from Discord: /d2r health showed a node's connected state and
+// Worker node builds were invisible from Discord: the health block showed a node's connected state and
 // agent counts but never its version, so a node that had quietly stopped taking updates read
 // exactly like a current one. Showing the version only helps if "is this node behind" is answered
 // from the same string the node actually advertises.

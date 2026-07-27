@@ -57,7 +57,7 @@ Host-forced satellite updates require a VM agent version that supports the `self
 
 The same applies to worker nodes: the master offers `self_update` to a worker D2RHost when it authenticates and again on the five-minute fleet sweep, but a worker older than `v0.2.213` predates the node-side `self_update` command and needs one manual update first. When that happens the master says so in Discord instead of only logging it. `/d2r restart` respawns the master only—it does not push updates to workers or VMs; those arrive through the paths above.
 
-`/d2r health` shows each node's version and flags a connected node running a different build than the master, so a node that has stopped taking updates is visible without reading `logs/log.0`.
+`/d2r status` shows each node's version and flags a connected node running a different build than the master, so a node that has stopped taking updates is visible without reading `logs/log.0`. The same block is posted automatically in the host's startup message.
 
 Set this environment variable to skip update checks:
 

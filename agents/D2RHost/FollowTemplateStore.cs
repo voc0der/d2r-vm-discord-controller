@@ -157,7 +157,7 @@ public sealed class FollowTemplateStore : IHostedService
     /// <summary>
     /// One health line describing the fleet's bind and which online VMs are out of step with it.
     /// Read-only - it runs the same push planner the sweep does but sends nothing, so divergence
-    /// is visible in /d2r health rather than only inferable from a client that never joins.
+    /// is visible in /d2r status rather than only inferable from a client that never joins.
     /// </summary>
     public string FormatHealthLine()
     {
