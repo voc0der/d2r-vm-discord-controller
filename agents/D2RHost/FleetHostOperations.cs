@@ -123,6 +123,14 @@ public sealed class FleetHostOperations
                 return CommandResult.Failure($"System power actions require Windows on node \"{nodeId}\".");
             }
 
+            // Checked before responding: sleeping needs a privilege that shutdown.exe grants itself
+            // but a direct suspend call does not, and reporting "queued" for a host that cannot
+            // sleep is how this failed silently for so long.
+            if (action == HostSystemPowerAction.Sleep && !_localSystem.TryPrepareSleep(out var sleepError))
+            {
+                return CommandResult.Failure($"{nodeId}: cannot sleep - {sleepError}");
+            }
+
             _localSystem.Queue(action);
             return CommandResult.Success($"{nodeId}: {HostSystemPowerActions.FormatQueuedMessage(action)}");
         }

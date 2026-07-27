@@ -150,6 +150,13 @@ try
     Task? workerLinkTask = null;
     if (config.IsMaster)
     {
+        // A sleep that fails after the command has already answered would otherwise only reach
+        // the log file, which is unreadable precisely when it matters: the machine is headless
+        // and a failed sleep looks exactly like a successful one.
+        var localSystem = app.Services.GetRequiredService<HostSystemOperations>();
+        var notifications = app.Services.GetRequiredService<DiscordNotificationQueue>();
+        localSystem.SleepFailed += message => notifications.Enqueue(message);
+
         bot = app.Services.GetRequiredService<DiscordBot>();
         await bot.StartAsync();
         app.Lifetime.ApplicationStopping.Register(() =>

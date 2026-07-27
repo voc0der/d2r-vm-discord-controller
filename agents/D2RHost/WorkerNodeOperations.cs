@@ -197,6 +197,13 @@ public sealed class WorkerNodeOperations
             return CommandResult.Failure($"System power actions require Windows on node \"{_nodeId}\".");
         }
 
+        // Reported synchronously so the master surfaces it in Discord. A worker has no Discord of
+        // its own, so a sleep that fails after this point only reaches the node's own log.
+        if (action == HostSystemPowerAction.Sleep && !_system.TryPrepareSleep(out var sleepError))
+        {
+            return CommandResult.Failure($"{_nodeId}: cannot sleep - {sleepError}");
+        }
+
         _system.Queue(action);
         return CommandResult.Success(
             HostSystemPowerActions.FormatQueuedMessage(action),
