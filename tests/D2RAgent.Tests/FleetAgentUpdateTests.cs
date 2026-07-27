@@ -13,9 +13,11 @@ namespace D2RAgent.Tests;
 public sealed class FleetAgentUpdateTests
 {
     // A worker only ever updated when someone restarted it by hand, because the master's
-    // authentication hook ignores anything that is not a VM agent and the worker's own command
+    // authentication hook ignored anything that was not a VM agent and the worker's own command
     // surface had no self_update at all. A node stuck on an old build is exactly the one whose
     // local satellite auto-update has quietly stopped working, so this is the load-bearing half.
+    // The authentication hook now offers to worker nodes too, but a node old enough to predate
+    // this command still answers "unsupported" and needs one manual update to break the cycle.
     [Fact]
     public async Task WorkerAcceptsSelfUpdateFromTheMaster()
     {

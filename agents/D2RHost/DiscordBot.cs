@@ -6377,12 +6377,21 @@ public sealed class DiscordBot
         var connected = agents.Count(agent => agent.Connected);
         var accountConnectivity = _registry.GetAccountConnectivity();
         var accountLines = FormatAccountConnectivityHealthLines(accountConnectivity);
+        var masterVersion = GetHostVersionText();
         var nodeLines = nodes.Select(node =>
         {
             var label = string.IsNullOrWhiteSpace(node.DisplayName)
                 ? node.Id
                 : $"{node.Id} ({node.DisplayName})";
-            return $"{(node.Connected ? "online " : "offline")} node {label}: {node.AgentsConnected}/{node.AgentsConfigured} agent(s)";
+            // A worker's build was invisible from Discord entirely, so a node that had quietly
+            // stopped taking updates looked identical to one that was current.
+            var version = string.IsNullOrWhiteSpace(node.Version)
+                ? (node.Connected ? ", version unknown" : "")
+                : $", v{node.Version}"
+                    + (node.Connected && AgentVersion.IsDifferentBuild(node.Version, masterVersion)
+                        ? $" (master is v{masterVersion})"
+                        : "");
+            return $"{(node.Connected ? "online " : "offline")} node {label}: {node.AgentsConnected}/{node.AgentsConfigured} agent(s){version}";
         });
         var agentLines = agents.Select(agent =>
         {
@@ -6422,11 +6431,7 @@ public sealed class DiscordBot
 
     private static string GetHostVersionText()
     {
-        var assembly = Assembly.GetEntryAssembly() ?? typeof(DiscordBot).Assembly;
-        return assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion
-            ?? "0.0.0";
+        return AgentVersion.Current();
     }
 
     private string FormatAccountStatus(string accountKey)

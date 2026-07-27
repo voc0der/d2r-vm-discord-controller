@@ -378,11 +378,7 @@ public sealed class AgentClient<TConfig> where TConfig : AgentConfig
 
     private static string GetCurrentVersionText()
     {
-        var assembly = Assembly.GetEntryAssembly() ?? typeof(AgentClient<TConfig>).Assembly;
-        return assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion
-            ?? "0.0.0";
+        return AgentVersion.Current();
     }
 
     private int EffectiveHeartbeatSeconds => Math.Clamp(

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using AgentCommon;
 
 namespace D2RHost;
 
@@ -426,7 +427,12 @@ public sealed class AgentRegistry
 
     private void QueueSelfUpdateAfterAuthentication(string agentId, string agentKind, string? version)
     {
-        if (!string.Equals(agentKind, "vm", StringComparison.OrdinalIgnoreCase))
+        // Worker nodes used to be excluded here, so a VM agent got two chances to update (this,
+        // plus the fleet sweep) while a worker got only the sweep - which lands 30s after the
+        // master starts rather than the moment the node reconnects. That is exactly why a
+        // /d2r restart visibly updated every VM and appeared to do nothing to the node.
+        var isNode = string.Equals(agentKind, "host", StringComparison.OrdinalIgnoreCase);
+        if (!isNode && !string.Equals(agentKind, "vm", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -434,7 +440,7 @@ public sealed class AgentRegistry
         if (!_autoUpdate.Enabled)
         {
             _logger.LogDebug(
-                "Skipping satellite auto-update for {AgentId}: {Reason}",
+                "Skipping auto-update for {AgentId}: {Reason}",
                 agentId,
                 _autoUpdate.Reason);
             return;
@@ -457,7 +463,7 @@ public sealed class AgentRegistry
                     new
                     {
                         initiatedBy = "host",
-                        hostVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString()
+                        hostVersion = AgentVersion.Current()
                     },
                     TimeSpan.FromSeconds(45));
 
@@ -465,25 +471,37 @@ public sealed class AgentRegistry
                 {
                     if (TryReadSelfUpdateStarted(result.Data, out var currentVersion, out var latestVersion, out var logPath))
                     {
-                        _notifications.Enqueue(FormatAgentUpdateMessage(agentId, currentVersion, latestVersion, logPath));
+                        _notifications.Enqueue(
+                            FormatAgentUpdateMessage(agentId, isNode, currentVersion, latestVersion, logPath));
                     }
 
                     _logger.LogInformation(
-                        "Satellite auto-update command completed for {AgentId}: {Message}",
+                        "Auto-update command completed for {AgentId}: {Message}",
                         agentId,
                         result.Message);
                 }
                 else
                 {
+                    // A worker old enough to predate the self_update command answers "unsupported
+                    // worker command" and can never update itself out of that state. That used to
+                    // be a log line nobody reads, which is how a node sits behind indefinitely, so
+                    // say it in Discord. The per-version attempt key keeps it to once per build.
+                    if (isNode)
+                    {
+                        _notifications.Enqueue(
+                            $"D2RHost worker node `{agentId}` did not accept an update: {result.Message}"
+                                + "\nA node this far behind needs one manual update before it can self-update again.");
+                    }
+
                     _logger.LogWarning(
-                        "Satellite auto-update command failed for {AgentId}: {Message}",
+                        "Auto-update command failed for {AgentId}: {Message}",
                         agentId,
                         result.Message);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Satellite auto-update command failed for {AgentId}.", agentId);
+                _logger.LogWarning(ex, "Auto-update command failed for {AgentId}.", agentId);
             }
         });
     }
@@ -513,10 +531,12 @@ public sealed class AgentRegistry
 
     private static string FormatAgentUpdateMessage(
         string agentId,
+        bool isNode,
         string? currentVersion,
         string? latestVersion,
         string? logPath)
     {
+        var kind = isNode ? "D2RHost worker node" : "D2R VM Agent";
         var versions = !string.IsNullOrWhiteSpace(currentVersion)
             && !string.IsNullOrWhiteSpace(latestVersion)
                 ? $" {currentVersion} -> {latestVersion}"
@@ -525,7 +545,7 @@ public sealed class AgentRegistry
             ? ""
             : $"\nLog: `{logPath}`";
 
-        return $"D2R VM Agent update started for `{agentId}`{versions}.{log}";
+        return $"{kind} update started for `{agentId}`{versions}.{log}";
     }
 
     private static string? TryGetString(JsonElement root, string propertyName)

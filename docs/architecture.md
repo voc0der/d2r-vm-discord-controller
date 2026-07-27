@@ -92,7 +92,23 @@ that node for the life of the process. The master's sweep is gated on the master
 instead, and a disabled sweep is now reported as a warning rather than a debug line.
 
 A worker accepts `self_update` as a node command, so a worker no longer updates only when someone
-restarts it by hand.
+restarts it by hand. The authentication hook covers worker nodes as well as VM agents, so a
+reconnecting worker is offered an update immediately rather than waiting out the sweep's 30-second
+startup delay. Previously only VM agents took that path, which is why `/d2r restart` appeared to
+update every VM and do nothing to the node - the node's update was real but arrived quietly half a
+minute later.
+
+`/d2r restart` itself pushes nothing. It respawns the master, whose own startup self-update check
+runs before Discord reconnects; every other fleet member updates through the two paths above.
+
+A worker whose build predates the `self_update` node command answers "unsupported worker command"
+and cannot update itself out of that state. That reply is posted to Discord once per build rather
+than only logged, because the failure is otherwise indistinguishable from a node that is already
+current. Such a node needs one manual update.
+
+`/d2r health` reports each node's version next to its agent counts, and marks a connected node
+whose build differs from the master's. Versions are compared as the informational version string
+agents advertise in their hello frame (`AgentVersion`), not the four-part assembly version.
 
 ## Availability and Routing
 

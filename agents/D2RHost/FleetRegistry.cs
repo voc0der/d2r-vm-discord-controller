@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AgentCommon;
 
 namespace D2RHost;
 
@@ -363,7 +364,8 @@ public sealed class FleetRegistry
             IsLocal: true,
             Connected: true,
             Environment.MachineName,
-            System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(),
+            // Same attribute a worker advertises in its hello, so the two are comparable.
+            AgentVersion.Current(),
             DateTimeOffset.UtcNow,
             localAgents.Count(agent => agent.Connected),
             localAgents.Length);
