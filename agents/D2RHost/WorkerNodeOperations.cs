@@ -156,8 +156,13 @@ public sealed class WorkerNodeOperations
             result.LogPath
         };
 
+        // The updater script blocks on Wait-Process for this exact process before it replaces any
+        // file, so a worker that reports "update started" and then keeps running never gets
+        // updated at all - the script waits forever and the exe stays locked. The VM agent has
+        // always passed this flag; the worker never did, which is why a node could report
+        // "update started" on release after release and stay pinned to the same build.
         return result.Ok
-            ? CommandResult.Success(result.Message, data)
+            ? CommandResult.Success(result.Message, data, exitAfterResult: result.UpdateStarted)
             : CommandResult.Failure(result.Message, data);
     }
 

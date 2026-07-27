@@ -6384,7 +6384,7 @@ public sealed class DiscordBot
             // stopped taking updates looked identical to one that was current.
             var version = string.IsNullOrWhiteSpace(node.Version)
                 ? (node.Connected ? ", version unknown" : "")
-                : $", v{node.Version}"
+                : $", v{AgentVersion.Display(node.Version)}"
                     + (node.Connected && AgentVersion.IsDifferentBuild(node.Version, masterVersion)
                         ? $" (master is v{masterVersion})"
                         : "");
@@ -6428,7 +6428,7 @@ public sealed class DiscordBot
 
     private static string GetHostVersionText()
     {
-        return AgentVersion.Current();
+        return AgentVersion.Display(AgentVersion.Current());
     }
 
     private string FormatAccountStatus(string accountKey)
@@ -6545,7 +6545,7 @@ public sealed class DiscordBot
             : "";
         var version = string.IsNullOrWhiteSpace(agent.Version)
             ? ""
-            : $", version {agent.Version}";
+            : $", version {AgentVersion.Display(agent.Version)}";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
         return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}{checkpoint}, seen {lastSeen}";
     }

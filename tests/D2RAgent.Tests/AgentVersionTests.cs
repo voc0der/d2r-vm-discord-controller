@@ -49,4 +49,23 @@ public sealed class AgentVersionTests
         // would pin a permanent false warning to health output that no update can ever clear.
         Assert.False(AgentVersion.IsDifferentBuild(reported, expected));
     }
+
+    [Theory]
+    [InlineData("0.2.218+f07de7001f8f01a10c30b0ea57e3aa76e8a9d022", "0.2.218")]
+    [InlineData("0.2.218", "0.2.218")]
+    [InlineData(" 0.2.218 ", "0.2.218")]
+    public void DisplayDropsTheCommitShaThatTruncatedStatusOutput(string raw, string expected)
+    {
+        // Forty characters of SHA per line, on every node and every account line, pushed status
+        // past Discord's message limit and got it cut off mid-fleet.
+        Assert.Equal(expected, AgentVersion.Display(raw));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void DisplayNamesAnAbsentVersionRatherThanRenderingEmpty(string? raw)
+    {
+        Assert.Equal("unknown", AgentVersion.Display(raw));
+    }
 }

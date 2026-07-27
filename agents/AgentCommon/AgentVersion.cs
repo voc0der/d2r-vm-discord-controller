@@ -37,6 +37,21 @@ public static class AgentVersion
     }
 
     /// <summary>
+    /// The version as it should be shown to an operator: the release number, without the commit
+    /// SHA a CI publish appends.
+    /// </summary>
+    /// <remarks>
+    /// The raw string is "0.2.218+f07de7001f8f01a10c30b0ea57e3aa76e8a9d022" - forty characters of
+    /// SHA per line. With one line per node and per account, that pushed status output past
+    /// Discord's message limit and got it truncated, which made the fleet's versions harder to
+    /// read than when they were not shown at all.
+    /// </remarks>
+    public static string Display(string? version)
+    {
+        return string.IsNullOrWhiteSpace(version) ? "unknown" : Normalize(version);
+    }
+
+    /// <summary>
     /// Trims the build metadata a CI publish can append (for example "0.2.215+abc1234"), so a
     /// worker built from the same tag is not reported as a different build than the master.
     /// </summary>

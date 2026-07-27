@@ -176,7 +176,20 @@ try
     {
         var workerLink = app.Services.GetRequiredService<WorkerNodeLink>();
         workerLinkTask = Task.Run(
-            () => workerLink.RunForeverAsync(app.Lifetime.ApplicationStopping),
+            async () =>
+            {
+                await workerLink.RunForeverAsync(app.Lifetime.ApplicationStopping);
+
+                // The link only returns on its own when a command asked this process to exit,
+                // which today means self_update. Unlike the VM agent - where the link *is* the
+                // process - a worker is a web host, so the loop ending leaves it running and the
+                // updater sits on Wait-Process until someone restarts the machine by hand.
+                if (!app.Lifetime.ApplicationStopping.IsCancellationRequested)
+                {
+                    LogStartup("Worker link requested process exit (self-update); stopping host.");
+                    app.Lifetime.StopApplication();
+                }
+            },
             CancellationToken.None);
     }
 
