@@ -71,14 +71,34 @@ public static class HostSystemPowerActions
         };
     }
 
-    public static ProcessStartInfo CreateShutdownStartInfo(HostSystemPowerAction action)
+    /// <summary>
+    /// Builds the <c>shutdown.exe</c> invocation for an action, including hibernation, which is
+    /// how sleep is served on a machine with no legacy S1-S3 standby state.
+    /// </summary>
+    public static ProcessStartInfo CreateShutdownStartInfo(
+        HostSystemPowerAction action,
+        bool hibernateForSleep = false)
     {
         var mode = action switch
         {
             HostSystemPowerAction.Shutdown => "/s",
             HostSystemPowerAction.Restart => "/r",
+            HostSystemPowerAction.Sleep when hibernateForSleep => "/h",
             _ => throw new InvalidOperationException($"{action} does not use shutdown.exe.")
         };
+
+        if (mode == "/h")
+        {
+            // shutdown.exe rejects /t and /c alongside /h.
+            var hibernateStartInfo = new ProcessStartInfo
+            {
+                FileName = "shutdown.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            hibernateStartInfo.ArgumentList.Add("/h");
+            return hibernateStartInfo;
+        }
 
         var startInfo = new ProcessStartInfo
         {

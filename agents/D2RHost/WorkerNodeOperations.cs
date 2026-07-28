@@ -246,14 +246,16 @@ public sealed class WorkerNodeOperations
 
         // Reported synchronously so the master surfaces it in Discord. A worker has no Discord of
         // its own, so a sleep that fails after this point only reaches the node's own log.
-        if (action == HostSystemPowerAction.Sleep && !_system.TryPrepareSleep(out var sleepError))
+        string? sleepPlan = null;
+        if (action == HostSystemPowerAction.Sleep
+            && !_system.TryPrepareSleep(out var sleepError, out sleepPlan))
         {
             return CommandResult.Failure($"{_nodeId}: cannot sleep - {sleepError}");
         }
 
         _system.Queue(action);
         return CommandResult.Success(
-            HostSystemPowerActions.FormatQueuedMessage(action),
+            $"{HostSystemPowerActions.FormatQueuedMessage(action)}{sleepPlan}",
             new
             {
                 nodeId = _nodeId,

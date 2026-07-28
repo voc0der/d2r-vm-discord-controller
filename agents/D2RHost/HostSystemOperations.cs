@@ -40,8 +40,15 @@ public sealed class HostSystemOperations
     /// Verifies that Windows exposes a usable sleep state and enables the privilege sleeping needs,
     /// so a machine that cannot sleep says so before the command reports the action as queued.
     /// </summary>
-    public bool TryPrepareSleep(out string? error)
+    public bool TryPrepareSleep(out string? error) => TryPrepareSleep(out error, out _);
+
+    /// <summary>
+    /// As above, and reports which mechanism will be used so the command can say what it is really
+    /// about to do rather than promising "sleep" and hibernating.
+    /// </summary>
+    public bool TryPrepareSleep(out string? error, out string? plan)
     {
+        plan = null;
         if (!OperatingSystem.IsWindows())
         {
             error = "Host system power actions require Windows.";
@@ -56,28 +63,69 @@ public sealed class HostSystemOperations
             return false;
         }
 
-        if (!HasSupportedSleepState(
-                capabilities.SystemS1 != 0,
-                capabilities.SystemS2 != 0,
-                capabilities.SystemS3 != 0,
-                capabilities.AoAc != 0))
+        var mechanism = ResolveSleepMechanism(
+            capabilities.SystemS1 != 0,
+            capabilities.SystemS2 != 0,
+            capabilities.SystemS3 != 0,
+            capabilities.SystemS4 != 0,
+            capabilities.HiberFilePresent != 0);
+
+        if (mechanism == SleepMechanism.None)
         {
-            error = "Windows reports no supported sleep state "
-                + "(S1, S2, S3, or Modern Standby/S0 low-power idle).\n"
+            error = "this machine has no sleep state D2RHost can reach. Its firmware supports no "
+                + "legacy standby (S1/S2/S3) and hibernation is turned off, and Modern Standby "
+                + "cannot be entered by a background service.\n"
+                + "Enable hibernation once, from an elevated prompt, and sleep will work: "
+                + "`powercfg /hibernate on`\n"
                 + DescribeSleepStates();
             return false;
+        }
+
+        // Hibernation goes through shutdown.exe, which enables the privilege for itself.
+        if (mechanism == SleepMechanism.Hibernate)
+        {
+            plan = " This machine has no legacy standby state, so it will hibernate.";
+            error = null;
+            return true;
         }
 
         return WindowsShutdownPrivilege.TryEnable(out error);
     }
 
-    internal static bool HasSupportedSleepState(
+    internal enum SleepMechanism
+    {
+        None,
+        LegacySuspend,
+        Hibernate
+    }
+
+    /// <summary>
+    /// Picks how this machine can actually be put to sleep.
+    /// </summary>
+    /// <remarks>
+    /// Modern Standby is deliberately not treated as reachable. A Latitude 7430 reports
+    /// "Standby (S0 Low Power Idle) Network Connected" as its only available state, with S1/S2/S3
+    /// all unsupported by firmware - and <c>SetSuspendState</c> drives the legacy suspend path, so
+    /// there it fails with ERROR_NOT_SUPPORTED (50) from a SYSTEM service and from an elevated
+    /// interactive session alike. Treating AoAc as usable is what let such a machine pass preflight
+    /// and then silently fail. Entering S0 idle means turning the display off in the interactive
+    /// session, which a session-0 service cannot do, so hibernation is the reachable answer.
+    /// </remarks>
+    internal static SleepMechanism ResolveSleepMechanism(
         bool systemS1,
         bool systemS2,
         bool systemS3,
-        bool aoAc)
+        bool systemS4,
+        bool hiberFilePresent)
     {
-        return systemS1 || systemS2 || systemS3 || aoAc;
+        if (systemS1 || systemS2 || systemS3)
+        {
+            return SleepMechanism.LegacySuspend;
+        }
+
+        // S4 without a hiberfile means hibernation is supported but switched off, which is exactly
+        // what "Hibernation has not been enabled" reports - and shutdown /h would fail.
+        return systemS4 && hiberFilePresent ? SleepMechanism.Hibernate : SleepMechanism.None;
     }
 
     public void Queue(HostSystemPowerAction action)
@@ -120,19 +168,51 @@ public sealed class HostSystemOperations
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     private void SleepHost()
     {
-        // Shutdown and restart shell out to shutdown.exe, which enables this privilege for itself.
-        // Sleep is the one action with no console equivalent, so it has to do it here.
-        if (!WindowsShutdownPrivilege.TryEnable(out var privilegeError))
+        if (!TryPrepareSleep(out var prepareError))
         {
-            throw new InvalidOperationException($"Cannot sleep this host: {privilegeError}");
+            throw new InvalidOperationException($"Cannot sleep this host: {prepareError}");
         }
 
         var startedAt = Stopwatch.GetTimestamp();
-        if (!SetSuspendState(hibernate: false, forceCritical: false, disableWakeEvent: false))
+        var mechanism = GetPwrCapabilities(out var capabilities)
+            ? ResolveSleepMechanism(
+                capabilities.SystemS1 != 0,
+                capabilities.SystemS2 != 0,
+                capabilities.SystemS3 != 0,
+                capabilities.SystemS4 != 0,
+                capabilities.HiberFilePresent != 0)
+            : SleepMechanism.LegacySuspend;
+
+        if (mechanism == SleepMechanism.Hibernate)
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "SetSuspendState failed.");
+            // A machine whose only standby state is Modern Standby cannot be suspended by a
+            // service, so sleep means hibernate there. The operator-visible result is the same:
+            // the machine powers down and resumes where it left off.
+            _logger.LogInformation("Host has no legacy standby state; hibernating instead.");
+            using var hibernate = Process.Start(
+                HostSystemPowerActions.CreateShutdownStartInfo(
+                    HostSystemPowerAction.Sleep, hibernateForSleep: true))
+                ?? throw new InvalidOperationException("Could not start shutdown.exe to hibernate.");
+            hibernate.WaitForExit();
+            if (hibernate.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"shutdown /h failed with exit code {hibernate.ExitCode}.");
+            }
+        }
+        else if (!SetSuspendState(hibernate: false, forceCritical: false, disableWakeEvent: false))
+        {
+            var lastError = Marshal.GetLastWin32Error();
+            // 50 is ERROR_NOT_SUPPORTED, which is what a Modern-Standby-only machine returns.
+            // Say so plainly rather than leaving a bare Win32 code in the log.
+            var detail = lastError == 50
+                ? "SetSuspendState failed: this machine has no legacy standby state to enter."
+                : "SetSuspendState failed.";
+            throw new Win32Exception(lastError, $"{detail}\n{DescribeSleepStates()}");
         }
 
+        // Both paths freeze this process until the machine resumes, so a short elapsed time means
+        // the transition never happened.
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
         if (elapsed >= MinimumCredibleSleep)
         {

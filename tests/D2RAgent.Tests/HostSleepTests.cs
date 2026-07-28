@@ -12,32 +12,61 @@ namespace D2RAgent.Tests;
 public sealed class HostSleepTests
 {
     [Theory]
-    [InlineData(true, false, false, false)]
-    [InlineData(false, true, false, false)]
-    [InlineData(false, false, true, false)]
-    [InlineData(false, false, false, true)]
-    [InlineData(true, true, true, true)]
-    public void SleepCapabilityClassificationAcceptsAnyUsableState(
-        bool systemS1,
-        bool systemS2,
-        bool systemS3,
-        bool aoAc)
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, true, true)]
+    public void AnyLegacyStandbyStateUsesSetSuspendState(bool systemS1, bool systemS2, bool systemS3)
     {
-        Assert.True(HostSystemOperations.HasSupportedSleepState(
-            systemS1,
-            systemS2,
-            systemS3,
-            aoAc));
+        Assert.Equal(
+            HostSystemOperations.SleepMechanism.LegacySuspend,
+            HostSystemOperations.ResolveSleepMechanism(
+                systemS1, systemS2, systemS3, systemS4: true, hiberFilePresent: true));
     }
 
     [Fact]
-    public void SleepCapabilityClassificationRejectsNoUsableState()
+    public void NoLegacyStandbyFallsBackToHibernation()
     {
-        Assert.False(HostSystemOperations.HasSupportedSleepState(
-            systemS1: false,
-            systemS2: false,
-            systemS3: false,
-            aoAc: false));
+        Assert.Equal(
+            HostSystemOperations.SleepMechanism.Hibernate,
+            HostSystemOperations.ResolveSleepMechanism(
+                systemS1: false,
+                systemS2: false,
+                systemS3: false,
+                systemS4: true,
+                hiberFilePresent: true));
+    }
+
+    // The Latitude 7430: "Standby (S0 Low Power Idle) Network Connected" is its only available
+    // state, S1/S2/S3 are unsupported by firmware, and hibernation is switched off. SetSuspendState
+    // drives the legacy suspend path, so it returned ERROR_NOT_SUPPORTED (50) there - from a SYSTEM
+    // service and from an elevated interactive session alike. Counting Modern Standby as usable is
+    // what let this machine pass preflight and then fail every single time.
+    [Fact]
+    public void ModernStandbyAloneIsNotReachableAndMustNotPassPreflight()
+    {
+        Assert.Equal(
+            HostSystemOperations.SleepMechanism.None,
+            HostSystemOperations.ResolveSleepMechanism(
+                systemS1: false,
+                systemS2: false,
+                systemS3: false,
+                systemS4: false,
+                hiberFilePresent: false));
+    }
+
+    [Fact]
+    public void HibernationSupportedButSwitchedOffIsNotUsable()
+    {
+        // "Hibernation has not been enabled" means no hiberfil, and shutdown /h would fail.
+        Assert.Equal(
+            HostSystemOperations.SleepMechanism.None,
+            HostSystemOperations.ResolveSleepMechanism(
+                systemS1: false,
+                systemS2: false,
+                systemS3: false,
+                systemS4: true,
+                hiberFilePresent: false));
     }
 
     [Fact]
