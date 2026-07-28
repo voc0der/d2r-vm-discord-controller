@@ -14,7 +14,12 @@ public sealed record WorkerNodeStatus(
     MachineTelemetrySnapshot MachineTelemetry,
     IReadOnlyList<WorkerNodeAgent> Agents,
     IReadOnlyList<WorkerNodeAccount> Accounts,
-    int VmCommandTimeoutSeconds = WorkerNodeOperations.MaximumCommandDurationSeconds);
+    int VmCommandTimeoutSeconds = WorkerNodeOperations.MaximumCommandDurationSeconds,
+    // Things the worker needs to tell an operator but cannot say itself, because Discord lives on
+    // the master. A failed sleep is the motivating case: it happens after the command has already
+    // answered, so there is no command result left to fail, and the worker's own log is on the
+    // machine nobody is looking at. Defaulted so an older master simply ignores the field.
+    IReadOnlyList<string>? Alerts = null);
 
 /// <summary>
 /// Public metadata and the current connection snapshot for one worker-local agent.

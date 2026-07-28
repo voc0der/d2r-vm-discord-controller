@@ -574,6 +574,17 @@ public sealed class AgentRegistry
             _db.UpsertAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
         }
 
+        if (previousConnectivity is not null)
+        {
+            // A worker cannot reach Discord itself, so anything it needs an operator to see rides
+            // its heartbeat instead. It clears its mailbox as it sends, so each alert arrives once.
+            foreach (var alert in ReadWorkerAlerts(statusJson))
+            {
+                _notifications.Enqueue(alert);
+                _logger.LogWarning("Worker node {AgentId} reported: {Alert}", agentId, alert);
+            }
+        }
+
         if (previousConnectivity is not null
             && !string.Equals(
                 previousConnectivity,
@@ -581,6 +592,35 @@ public sealed class AgentRegistry
                 StringComparison.Ordinal))
         {
             ConnectivityChanged?.Invoke();
+        }
+    }
+
+    private static IReadOnlyList<string> ReadWorkerAlerts(string? statusJson)
+    {
+        if (string.IsNullOrWhiteSpace(statusJson))
+        {
+            return [];
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(statusJson);
+            if (!document.RootElement.TryGetProperty("alerts", out var alerts)
+                || alerts.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            return alerts.EnumerateArray()
+                .Where(alert => alert.ValueKind == JsonValueKind.String)
+                .Select(alert => alert.GetString())
+                .Where(alert => !string.IsNullOrWhiteSpace(alert))
+                .Select(alert => alert!)
+                .ToArray();
+        }
+        catch (JsonException)
+        {
+            return [];
         }
     }
 

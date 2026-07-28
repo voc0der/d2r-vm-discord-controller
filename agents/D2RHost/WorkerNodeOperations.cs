@@ -21,6 +21,11 @@ public sealed class WorkerNodeOperations
     private readonly MachineTelemetrySampler _telemetry = new();
     private readonly string _nodeId;
     private readonly string[] _restartArgs;
+    // Bounded on purpose: this is a mailbox for the next heartbeat, not a log. If the master is
+    // away, the newest few failures are worth more than an unbounded backlog of old ones.
+    private const int MaximumPendingAlerts = 10;
+    private readonly Queue<string> _pendingAlerts = new();
+    private readonly object _alertLock = new();
 
     public WorkerNodeOperations(
         HostConfig config,
@@ -40,6 +45,37 @@ public sealed class WorkerNodeOperations
         _hyperV = hyperV;
         _system = system;
         _restartArgs = runtime?.RestartArgs ?? [];
+
+        // A worker has no Discord of its own, so anything that fails after a command has already
+        // answered would otherwise reach nobody but the local log file.
+        _system.SleepFailed += QueueAlert;
+    }
+
+    private void QueueAlert(string message)
+    {
+        lock (_alertLock)
+        {
+            _pendingAlerts.Enqueue($"D2RHost worker node `{_nodeId}`: {message}");
+            while (_pendingAlerts.Count > MaximumPendingAlerts)
+            {
+                _pendingAlerts.Dequeue();
+            }
+        }
+    }
+
+    private string[] DrainAlerts()
+    {
+        lock (_alertLock)
+        {
+            if (_pendingAlerts.Count == 0)
+            {
+                return [];
+            }
+
+            var alerts = _pendingAlerts.ToArray();
+            _pendingAlerts.Clear();
+            return alerts;
+        }
     }
 
     public Task<WorkerNodeStatus> GetStatusAsync(CancellationToken cancellationToken)
@@ -81,7 +117,8 @@ public sealed class WorkerNodeOperations
             Math.Clamp(
                 _config.PowerShellTimeoutSeconds,
                 10,
-                MaximumCommandDurationSeconds)));
+                MaximumCommandDurationSeconds),
+            DrainAlerts()));
     }
 
     public async Task<CommandResult> HandleCommandAsync(

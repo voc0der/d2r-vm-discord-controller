@@ -28,6 +28,15 @@ public sealed class HostSystemOperations
     public event Action<string>? SleepFailed;
 
     /// <summary>
+    /// Single place the failure event is raised, so every path that discovers a sleep did not
+    /// happen reaches the operator the same way.
+    /// </summary>
+    internal void ReportSleepFailure(string message)
+    {
+        SleepFailed?.Invoke(message);
+    }
+
+    /// <summary>
     /// Verifies that Windows exposes a usable sleep state and enables the privilege sleeping needs,
     /// so a machine that cannot sleep says so before the command reports the action as queued.
     /// </summary>
@@ -85,7 +94,7 @@ public sealed class HostSystemOperations
                 _logger.LogError(ex, "Host system action {Action} failed.", action);
                 if (action == HostSystemPowerAction.Sleep)
                 {
-                    SleepFailed?.Invoke($"Host sleep failed: {ex.Message}");
+                    ReportSleepFailure($"Host sleep failed: {ex.Message}");
                 }
             }
         });
@@ -138,22 +147,112 @@ public sealed class HostSystemOperations
             "SetSuspendState reported success but returned after {Elapsed}, so the host did not suspend. {Diagnostics}",
             elapsed,
             diagnostics);
-        SleepFailed?.Invoke(
+        ReportSleepFailure(
             $"Host did not suspend: the sleep call returned after {elapsed.TotalMilliseconds:F0}ms "
             + "instead of blocking until resume.\n"
             + diagnostics);
     }
 
     /// <summary>
-    /// Asks Windows which sleep states are actually available. On the machines where this fails,
-    /// the answer is almost always in here - a Hyper-V host has S3 disabled by "an internal system
-    /// component", and a Modern Standby laptop offers S0 low-power idle and nothing else.
+    /// Everything known about why this machine will or will not sleep.
     /// </summary>
+    /// <remarks>
+    /// The in-process parts come first and deliberately do not shell out. Stripped Windows builds
+    /// are exactly the machines where sleep breaks *and* where powercfg.exe and the Settings power
+    /// pages are missing or broken, so a diagnostic that depends on them reports nothing precisely
+    /// when it is needed. Both facts below come from PowrProf directly.
+    /// </remarks>
     private string DescribeSleepStates()
+    {
+        var parts = new List<string>();
+
+        if (GetPwrCapabilities(out var capabilities))
+        {
+            parts.Add(
+                "Sleep capabilities: "
+                + $"S1={Supported(capabilities.SystemS1)} "
+                + $"S2={Supported(capabilities.SystemS2)} "
+                + $"S3={Supported(capabilities.SystemS3)} "
+                + $"S4/hibernate={Supported(capabilities.SystemS4)} "
+                + $"ModernStandby={Supported(capabilities.AoAc)} "
+                + $"HiberFile={Supported(capabilities.HiberFilePresent)}");
+        }
+        else
+        {
+            parts.Add(
+                "Sleep capabilities: unavailable "
+                + $"({new Win32Exception(Marshal.GetLastWin32Error()).Message})");
+        }
+
+        // A missing or unreadable active scheme is worth naming on its own. It breaks the Settings
+        // power pages the same way it breaks a programmatic sleep, so seeing both symptoms
+        // together points at the scheme rather than at anything this app does.
+        parts.Add(DescribeActivePowerScheme());
+
+        // powercfg is a bonus, not the source of truth. /requests is listed first because when a
+        // machine accepts the call and stays awake, an outstanding power request is the usual
+        // reason - and running VMs are a common holder of one.
+        parts.Add(RunPowercfg("/requests", "Outstanding power requests"));
+        parts.Add(RunPowercfg("/a", "Sleep states per powercfg"));
+
+        return string.Join("\n", parts);
+    }
+
+    private static string Supported(byte value)
+    {
+        return value != 0 ? "yes" : "no";
+    }
+
+    private static string DescribeActivePowerScheme()
+    {
+        var status = PowerGetActiveScheme(IntPtr.Zero, out var schemePointer);
+        if (status != 0 || schemePointer == IntPtr.Zero)
+        {
+            return $"Active power scheme: could not be read (PowerGetActiveScheme returned {status}). "
+                + "A missing or corrupt scheme breaks programmatic sleep and the Settings power pages alike.";
+        }
+
+        try
+        {
+            var schemeId = Marshal.PtrToStructure<Guid>(schemePointer);
+            var name = ReadPowerSchemeName(schemePointer);
+            return string.IsNullOrWhiteSpace(name)
+                ? $"Active power scheme: {schemeId} (no friendly name)"
+                : $"Active power scheme: {name} ({schemeId})";
+        }
+        finally
+        {
+            LocalFree(schemePointer);
+        }
+    }
+
+    private static string? ReadPowerSchemeName(IntPtr schemePointer)
+    {
+        uint size = 0;
+        PowerReadFriendlyName(IntPtr.Zero, schemePointer, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, ref size);
+        if (size == 0)
+        {
+            return null;
+        }
+
+        var buffer = Marshal.AllocHGlobal((int)size);
+        try
+        {
+            return PowerReadFriendlyName(IntPtr.Zero, schemePointer, IntPtr.Zero, IntPtr.Zero, buffer, ref size) == 0
+                ? Marshal.PtrToStringUni(buffer)
+                : null;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private string RunPowercfg(string arguments, string label)
     {
         try
         {
-            using var process = Process.Start(new ProcessStartInfo("powercfg.exe", "/a")
+            using var process = Process.Start(new ProcessStartInfo("powercfg.exe", arguments)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -163,23 +262,35 @@ public sealed class HostSystemOperations
 
             if (process is null)
             {
-                return "Could not run powercfg /a.";
+                return $"{label}: could not run powercfg {arguments}.";
             }
 
             var output = process.StandardOutput.ReadToEnd();
             if (!process.WaitForExit(TimeSpan.FromSeconds(15)))
             {
-                return "powercfg /a did not complete.";
+                return $"{label}: powercfg {arguments} did not complete.";
             }
 
-            return string.IsNullOrWhiteSpace(output)
-                ? "powercfg /a returned nothing."
-                : $"Available sleep states per powercfg /a:\n{output.Trim()}";
+            output = output.Trim();
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return $"{label}: powercfg {arguments} returned nothing.";
+            }
+
+            // Discord truncates a long message, and truncation here would drop the in-process
+            // facts above rather than the least useful tail.
+            const int maximumLength = 700;
+            if (output.Length > maximumLength)
+            {
+                output = output[..maximumLength] + "\n(truncated)";
+            }
+
+            return $"{label}:\n{output}";
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Could not collect powercfg sleep-state diagnostics.");
-            return $"Could not run powercfg /a: {ex.Message}";
+            _logger.LogDebug(ex, "Could not collect powercfg diagnostics for {Arguments}.", arguments);
+            return $"{label}: powercfg {arguments} is unavailable ({ex.Message}).";
         }
     }
 
@@ -213,7 +324,28 @@ public sealed class HostSystemOperations
         [FieldOffset(5)]
         public byte SystemS3;
 
+        [FieldOffset(6)]
+        public byte SystemS4;
+
+        [FieldOffset(8)]
+        public byte HiberFilePresent;
+
         [FieldOffset(20)]
         public byte AoAc;
     }
+
+    [DllImport("PowrProf.dll")]
+    private static extern uint PowerGetActiveScheme(IntPtr userRootPowerKey, out IntPtr activePolicyGuid);
+
+    [DllImport("PowrProf.dll", CharSet = CharSet.Unicode)]
+    private static extern uint PowerReadFriendlyName(
+        IntPtr rootPowerKey,
+        IntPtr schemeGuid,
+        IntPtr subGroupOfPowerSettingsGuid,
+        IntPtr powerSettingGuid,
+        IntPtr buffer,
+        ref uint bufferSize);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr memory);
 }
