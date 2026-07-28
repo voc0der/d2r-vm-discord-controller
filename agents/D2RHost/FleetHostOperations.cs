@@ -140,9 +140,21 @@ public sealed class FleetHostOperations
             return CommandResult.Failure($"Unknown D2RHost node \"{nodeId}\".");
         }
 
-        if (_localRegistry.GetAgent(nodeId)?.Connected != true)
+        var worker = _localRegistry.GetAgent(nodeId);
+        if (worker?.Connected != true)
         {
             return CommandResult.Failure($"D2RHost worker \"{nodeId}\" is offline; system action skipped.");
+        }
+
+        // v0.2.216 is the worker that exposed this failure: it acknowledged system_sleep, then its
+        // background SetSuspendState call failed because the privilege fix only arrived in .217.
+        // It also could not self-update out of that state because workers did not exit after
+        // starting an updater until .220. Never let that false acknowledgement take the master
+        // down too; fail synchronously with the one-time bootstrap action instead.
+        if (action == HostSystemPowerAction.Sleep
+            && WorkerNodeCompatibility.GetSleepBlockReason(nodeId, worker.Version) is { } sleepBlockReason)
+        {
+            return CommandResult.Failure(sleepBlockReason);
         }
 
         var command = action switch

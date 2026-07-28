@@ -1,4 +1,4 @@
-using AgentCommon;
+using D2RHost;
 using Xunit;
 
 namespace D2RAgent.Tests;
@@ -14,7 +14,8 @@ public sealed class WorkerSelfUpdateExitTests
     [Fact]
     public void AStartedUpdateMustAskTheProcessToExit()
     {
-        var result = CommandResult.Success("Updater started.", new { UpdateStarted = true }, exitAfterResult: true);
+        var result = WorkerNodeOperations.BuildSelfUpdateCommandResult(
+            BuildSelfUpdateResult(updateStarted: true));
 
         Assert.True(result.ExitAfterResult);
     }
@@ -24,15 +25,34 @@ public sealed class WorkerSelfUpdateExitTests
     {
         // "Already current" is the common answer on every sweep. Exiting on that would restart
         // the whole fleet every five minutes.
-        var result = CommandResult.Success("D2RHost is current at 0.2.219.", new { UpdateStarted = false }, exitAfterResult: false);
+        var result = WorkerNodeOperations.BuildSelfUpdateCommandResult(
+            BuildSelfUpdateResult(updateStarted: false));
 
         Assert.False(result.ExitAfterResult);
     }
 
     [Fact]
-    public void CommandResultsDefaultToStayingAlive()
+    public void FailedUpdateMustNotKillTheProcess()
     {
-        Assert.False(CommandResult.Success("ok").ExitAfterResult);
-        Assert.False(CommandResult.Failure("nope").ExitAfterResult);
+        var result = WorkerNodeOperations.BuildSelfUpdateCommandResult(
+            BuildSelfUpdateResult(updateStarted: false, ok: false));
+
+        Assert.False(result.Ok);
+        Assert.False(result.ExitAfterResult);
+    }
+
+    private static AgentCommon.SelfUpdateResult BuildSelfUpdateResult(
+        bool updateStarted,
+        bool ok = true)
+    {
+        return new AgentCommon.SelfUpdateResult(
+            Ok: ok,
+            CheckedLatest: true,
+            UpdateAvailable: updateStarted,
+            UpdateStarted: updateStarted,
+            Message: updateStarted ? "Updater started." : "Already current.",
+            CurrentVersion: "0.2.219",
+            LatestVersion: "0.2.220",
+            LogPath: updateStarted ? @"C:\Temp\update.log" : null);
     }
 }

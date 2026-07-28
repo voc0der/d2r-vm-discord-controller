@@ -68,4 +68,29 @@ public sealed class AgentVersionTests
     {
         Assert.Equal("unknown", AgentVersion.Display(raw));
     }
+
+    [Theory]
+    [InlineData("0.2.216", "0.2.217", -1)]
+    [InlineData("0.2.217+build-sha", "0.2.217", 0)]
+    [InlineData("0.2.220-local", "0.2.217", 1)]
+    [InlineData("0.2.217.0", "0.2.217", 0)]
+    public void ReleaseComparisonIgnoresInformationalSuffixes(
+        string left,
+        string right,
+        int expectedSign)
+    {
+        Assert.True(AgentVersion.TryCompareReleases(left, right, out var comparison));
+        Assert.Equal(expectedSign, Math.Sign(comparison));
+        Assert.Equal(expectedSign < 0, AgentVersion.IsOlderRelease(left, right));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("development")]
+    public void UnknownReleaseCannotBeGuessedOlder(string? reported)
+    {
+        Assert.False(AgentVersion.TryCompareReleases(reported, "0.2.217", out _));
+        Assert.False(AgentVersion.IsOlderRelease(reported, "0.2.217"));
+    }
 }

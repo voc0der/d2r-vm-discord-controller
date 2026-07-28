@@ -11,6 +11,35 @@ namespace D2RAgent.Tests;
 // a headless host with the screen already off, that is indistinguishable from a working sleep.
 public sealed class HostSleepTests
 {
+    [Theory]
+    [InlineData(true, false, false, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(false, false, true, false)]
+    [InlineData(false, false, false, true)]
+    [InlineData(true, true, true, true)]
+    public void SleepCapabilityClassificationAcceptsAnyUsableState(
+        bool systemS1,
+        bool systemS2,
+        bool systemS3,
+        bool aoAc)
+    {
+        Assert.True(HostSystemOperations.HasSupportedSleepState(
+            systemS1,
+            systemS2,
+            systemS3,
+            aoAc));
+    }
+
+    [Fact]
+    public void SleepCapabilityClassificationRejectsNoUsableState()
+    {
+        Assert.False(HostSystemOperations.HasSupportedSleepState(
+            systemS1: false,
+            systemS2: false,
+            systemS3: false,
+            aoAc: false));
+    }
+
     [Fact]
     public void SleepPreparationReportsWhyItCannotSleep()
     {

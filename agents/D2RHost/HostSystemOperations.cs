@@ -28,8 +28,8 @@ public sealed class HostSystemOperations
     public event Action<string>? SleepFailed;
 
     /// <summary>
-    /// Enables the privilege sleeping needs, so a machine that cannot sleep says so in the command
-    /// response instead of reporting the action as queued and then staying awake.
+    /// Verifies that Windows exposes a usable sleep state and enables the privilege sleeping needs,
+    /// so a machine that cannot sleep says so before the command reports the action as queued.
     /// </summary>
     public bool TryPrepareSleep(out string? error)
     {
@@ -39,7 +39,36 @@ public sealed class HostSystemOperations
             return false;
         }
 
+        if (!GetPwrCapabilities(out var capabilities))
+        {
+            var nativeError = new Win32Exception(Marshal.GetLastWin32Error());
+            error = $"Could not query Windows sleep capabilities: {nativeError.Message}\n"
+                + DescribeSleepStates();
+            return false;
+        }
+
+        if (!HasSupportedSleepState(
+                capabilities.SystemS1 != 0,
+                capabilities.SystemS2 != 0,
+                capabilities.SystemS3 != 0,
+                capabilities.AoAc != 0))
+        {
+            error = "Windows reports no supported sleep state "
+                + "(S1, S2, S3, or Modern Standby/S0 low-power idle).\n"
+                + DescribeSleepStates();
+            return false;
+        }
+
         return WindowsShutdownPrivilege.TryEnable(out error);
+    }
+
+    internal static bool HasSupportedSleepState(
+        bool systemS1,
+        bool systemS2,
+        bool systemS3,
+        bool aoAc)
+    {
+        return systemS1 || systemS2 || systemS3 || aoAc;
     }
 
     public void Queue(HostSystemPowerAction action)
@@ -163,4 +192,28 @@ public sealed class HostSystemOperations
         bool forceCritical,
         [MarshalAs(UnmanagedType.I1)]
         bool disableWakeEvent);
+
+    [DllImport("PowrProf.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    private static extern bool GetPwrCapabilities(out SystemPowerCapabilities capabilities);
+
+    // SYSTEM_POWER_CAPABILITIES is a 76-byte, 4-byte-packed Win32 structure. The Windows SDK
+    // uses mutually exclusive legacy fields in reserved bytes, so its flattened documentation
+    // can make this look larger than its actual ABI. Only these four one-byte BOOLEAN fields are
+    // needed here, but the native call writes the full structure.
+    [StructLayout(LayoutKind.Explicit, Size = 76)]
+    private struct SystemPowerCapabilities
+    {
+        [FieldOffset(3)]
+        public byte SystemS1;
+
+        [FieldOffset(4)]
+        public byte SystemS2;
+
+        [FieldOffset(5)]
+        public byte SystemS3;
+
+        [FieldOffset(20)]
+        public byte AoAc;
+    }
 }

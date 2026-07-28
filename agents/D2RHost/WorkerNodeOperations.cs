@@ -146,6 +146,11 @@ public sealed class WorkerNodeOperations
             SelfUpdateOptions.D2RHost(_restartArgs),
             requirePrompt: false,
             cancellationToken);
+        return BuildSelfUpdateCommandResult(result);
+    }
+
+    internal static CommandResult BuildSelfUpdateCommandResult(SelfUpdateResult result)
+    {
         var data = new
         {
             result.CheckedLatest,

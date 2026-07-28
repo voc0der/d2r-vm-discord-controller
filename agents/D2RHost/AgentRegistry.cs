@@ -476,7 +476,13 @@ public sealed class AgentRegistry
                     if (TryReadSelfUpdateStarted(result.Data, out var currentVersion, out var latestVersion, out var logPath))
                     {
                         _notifications.Enqueue(
-                            FormatAgentUpdateMessage(agentId, isNode, currentVersion, latestVersion, logPath));
+                            SatelliteUpdateNotifications.FormatStarted(
+                                agentId,
+                                isNode,
+                                version,
+                                currentVersion,
+                                latestVersion,
+                                logPath));
                     }
 
                     _logger.LogInformation(
@@ -539,25 +545,6 @@ public sealed class AgentRegistry
         latestVersion = TryGetString(root, "latestVersion");
         logPath = TryGetString(root, "logPath");
         return true;
-    }
-
-    private static string FormatAgentUpdateMessage(
-        string agentId,
-        bool isNode,
-        string? currentVersion,
-        string? latestVersion,
-        string? logPath)
-    {
-        var kind = isNode ? "D2RHost worker node" : "D2R VM Agent";
-        var versions = !string.IsNullOrWhiteSpace(currentVersion)
-            && !string.IsNullOrWhiteSpace(latestVersion)
-                ? $" {currentVersion} -> {latestVersion}"
-                : "";
-        var log = string.IsNullOrWhiteSpace(logPath)
-            ? ""
-            : $"\nLog: `{logPath}`";
-
-        return $"{kind} update started for `{agentId}`{versions}.{log}";
     }
 
     private static string? TryGetString(JsonElement root, string propertyName)

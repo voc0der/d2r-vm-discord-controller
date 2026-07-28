@@ -171,7 +171,14 @@ public sealed class FleetAgentUpdater : IHostedService
 
             if (TryReadSelfUpdateStarted(result.Data, out var current, out var latest, out var logPath))
             {
-                _notifications.Enqueue(FormatUpdateMessage(agentId, isNode, current, latest, logPath));
+                _notifications.Enqueue(
+                    SatelliteUpdateNotifications.FormatStarted(
+                        agentId,
+                        isNode,
+                        version,
+                        current,
+                        latest,
+                        logPath));
                 _logger.LogInformation(
                     "Fleet auto-update started for {AgentId}: {Current} -> {Latest}", agentId, current, latest);
                 return true;
@@ -269,21 +276,6 @@ public sealed class FleetAgentUpdater : IHostedService
         latestVersion = ReadString(root, "latestVersion");
         logPath = ReadString(root, "logPath");
         return true;
-    }
-
-    private static string FormatUpdateMessage(
-        string agentId,
-        bool isNode,
-        string? currentVersion,
-        string? latestVersion,
-        string? logPath)
-    {
-        var kind = isNode ? "D2RHost worker node" : "D2R VM Agent";
-        var versions = !string.IsNullOrWhiteSpace(currentVersion) && !string.IsNullOrWhiteSpace(latestVersion)
-            ? $" {currentVersion} -> {latestVersion}"
-            : "";
-        var log = string.IsNullOrWhiteSpace(logPath) ? "" : $"\nLog: `{logPath}`";
-        return $"{kind} update started for `{agentId}`{versions}.{log}";
     }
 
     private static string? ReadString(System.Text.Json.JsonElement root, string propertyName)

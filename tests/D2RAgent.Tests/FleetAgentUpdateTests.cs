@@ -69,6 +69,41 @@ public sealed class FleetAgentUpdateTests
         Assert.False(FleetAgentUpdater.TryReadSelfUpdateStarted(null, out _, out _, out _));
     }
 
+    [Fact]
+    public void StartedUpdateTellsAnOldWorkerAboutTheOneTimeBootstrap()
+    {
+        var message = SatelliteUpdateNotifications.FormatStarted(
+            "server-b",
+            isNode: true,
+            reportedVersion: "0.2.216",
+            currentVersion: "0.2.216",
+            latestVersion: "0.2.220",
+            logPath: @"C:\Temp\update.log");
+
+        Assert.Contains("update started", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("still running v0.2.216", message);
+        Assert.Contains("cannot stop the host process", message);
+        Assert.Contains("/d2r system restart node:server-b", message);
+    }
+
+    [Theory]
+    [InlineData(true, "0.2.220")]
+    [InlineData(false, "0.2.216")]
+    public void CurrentWorkersAndVmAgentsDoNotReceiveWorkerBootstrapInstructions(
+        bool isNode,
+        string reportedVersion)
+    {
+        var message = SatelliteUpdateNotifications.FormatStarted(
+            "satellite",
+            isNode,
+            reportedVersion,
+            currentVersion: reportedVersion,
+            latestVersion: "0.2.221",
+            logPath: null);
+
+        Assert.DoesNotContain("cannot stop the host process", message);
+    }
+
     // The sweep must not run at all when this host could not verify its own build, because it
     // would then be pushing satellites toward a release it never confirmed exists.
     [Fact]
