@@ -230,6 +230,30 @@ The worker never starts Discord, even if `disableDiscord` is omitted or false. I
 
 ## VM Agent Setup
 
+### Guest Display Resolution (required)
+
+Every controlled VM must run at **1366x768**. This is not a preference: every click coordinate, detector region, and UI snippet in this repo is measured at that resolution — see [docs/runbooks/client-menu-flows.md](docs/runbooks/client-menu-flows.md) and the `ReferenceWidth`/`ReferenceHeight` constants in `PartyMemberSlots`. At any other resolution the proportional coordinates still scale, but captured pixel fingerprints (follow-bind, party-bar detection) will not match, and the failures look like flaky automation rather than a configuration problem.
+
+A Hyper-V guest with no console attached has **no negotiated display mode** and comes up at the synthetic video adapter's default, typically 1024x768. Connecting once with VMConnect fixes it until the next boot, which is why the symptom looks intermittent. Pin it on the Hyper-V host instead, per VM, while the VM is off:
+
+```powershell
+Get-VM -Name 'D2R_*' | ForEach-Object {
+  if ($_.State -ne 'Off') { Stop-VM -Name $_.Name; Start-Sleep 5 }
+  Set-VMVideo -VMName $_.Name -ResolutionType Single -HorizontalResolution 1366 -VerticalResolution 768
+  Start-VM -Name $_.Name
+}
+```
+
+`-ResolutionType Single` offers the guest exactly one mode, so it boots at 1366x768 whether anything is connected or not. Also disable Enhanced Session Mode on the host, because it ties guest resolution to a console RDP session and will override the pin whenever someone connects:
+
+```powershell
+Set-VMHost -EnableEnhancedSessionMode $false
+```
+
+Verify with `Get-VMVideo -VMName 'D2R_*'` and `(Get-VMHost).EnableEnhancedSessionMode` (must be `False`). The agent also reports `screen=1366x768` in its input diagnostics. **After changing a VM's resolution, re-run `/d2r follow bind:true` and `/d2r follow bind-in-game:<slot>`** — existing fingerprints were captured at the old resolution and will not match.
+
+### Installing the agent
+
 For each D2R VM:
 
 1. Download `D2RAgent-win-x64.zip` from a release or build it locally.

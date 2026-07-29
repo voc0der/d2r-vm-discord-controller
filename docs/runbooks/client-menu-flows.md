@@ -6,7 +6,9 @@ The VM agent should get each VM to a useful operator state: Battle.net running, 
 
 The VM agent automates these flows with coordinate-based input and small visual anchors. The captured screenshots are organized here so the UI path is documented and easy to retune if resolution or UI state changes.
 
-The current baseline resolution is **1366x768**. New captures live under `assets/d2r-ui/1366x768/`; use those first when tuning detector regions or coordinate points. Small anchor crops live under `assets/d2r-ui/1366x768/snippets/`; prefer those over whole-scene reasoning when adding detectors. Older captures remain in `assets/d2r-ui/` as historical references. BattleTag suffix numbers visible in the friend context menu captures have been redacted in the checked-in 1366x768 copies.
+The current baseline resolution is **1366x768**, and controlled VMs are expected to be pinned to it — see [Guest Display Resolution](../../README.md#guest-display-resolution-required) for the `Set-VMVideo` commands. A headless Hyper-V guest has no negotiated display mode and boots at the synthetic adapter's default instead, so a VM nobody has connected to can silently come up at 1024x768; proportional coordinates still scale, but captured pixel fingerprints will not match.
+
+New captures live under `assets/d2r-ui/1366x768/`; use those first when tuning detector regions or coordinate points. Small anchor crops live under `assets/d2r-ui/1366x768/snippets/`; prefer those over whole-scene reasoning when adding detectors. Older captures remain in `assets/d2r-ui/` as historical references. BattleTag suffix numbers visible in the friend context menu captures have been redacted in the checked-in 1366x768 copies.
 
 The canonical click/sample coordinate table is [automation-coordinate-catalog.md](automation-coordinate-catalog.md). Runtime code should use `D2RUiCoordinateCatalog` rather than reading raw `ui.*` points directly; the helper keeps the default 1366x768 X/Y values and fallback behavior in one place.
 
