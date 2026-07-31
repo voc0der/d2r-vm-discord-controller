@@ -14,6 +14,7 @@ namespace D2RAgent.Tests;
 internal static class FullCaptureRegionSampler
 {
     private static readonly Dictionary<string, Image<Rgba32>> Cache = new();
+    private static readonly object CacheLock = new();
 
     public static ScreenRegionStats Sample(
         string fileName,
@@ -241,14 +242,17 @@ internal static class FullCaptureRegionSampler
 
     private static Image<Rgba32> LoadCached(string fileName)
     {
-        if (Cache.TryGetValue(fileName, out var cached))
+        lock (CacheLock)
         {
-            return cached;
-        }
+            if (Cache.TryGetValue(fileName, out var cached))
+            {
+                return cached;
+            }
 
-        var image = Image.Load<Rgba32>(FindCapturePath(fileName));
-        Cache[fileName] = image;
-        return image;
+            var image = Image.Load<Rgba32>(FindCapturePath(fileName));
+            Cache[fileName] = image;
+            return image;
+        }
     }
 
     private static string FindCapturePath(string fileName)
