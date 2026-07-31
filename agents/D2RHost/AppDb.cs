@@ -1,5 +1,6 @@
 using AgentCommon;
 using Microsoft.Data.Sqlite;
+using System.Text.Json;
 
 namespace D2RHost;
 
@@ -286,6 +287,184 @@ public sealed class AppDb
         }
     }
 
+    /// <summary>
+    /// Atomically replaces the local node's VM-resume rolodex. The rows are written before any
+    /// VM is stopped, so they survive sleep, shutdown, restart, or an interrupted stop pass.
+    /// </summary>
+    public void ReplacePendingVmResume(string nodeId, IEnumerable<string> vmNames)
+    {
+        var normalized = vmNames
+            .Where(vmName => !string.IsNullOrWhiteSpace(vmName))
+            .Select(vmName => vmName.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            using (var delete = connection.CreateCommand())
+            {
+                delete.Transaction = transaction;
+                delete.CommandText = "delete from host_vm_resume where node_id = $node_id";
+                delete.Parameters.AddWithValue("$node_id", nodeId);
+                delete.ExecuteNonQuery();
+            }
+
+            foreach (var vmName in normalized)
+            {
+                using var insert = connection.CreateCommand();
+                insert.Transaction = transaction;
+                insert.CommandText = """
+                    insert into host_vm_resume (node_id, vm_name, recorded_utc)
+                    values ($node_id, $vm_name, $recorded_utc)
+                    """;
+                insert.Parameters.AddWithValue("$node_id", nodeId);
+                insert.Parameters.AddWithValue("$vm_name", vmName);
+                insert.Parameters.AddWithValue("$recorded_utc", DateTimeOffset.UtcNow.ToString("O"));
+                insert.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+        }
+    }
+
+    public IReadOnlyList<string> GetPendingVmResume(string nodeId)
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                select vm_name
+                from host_vm_resume
+                where node_id = $node_id
+                order by vm_name collate nocase
+                """;
+            command.Parameters.AddWithValue("$node_id", nodeId);
+
+            using var reader = command.ExecuteReader();
+            var vmNames = new List<string>();
+            while (reader.Read())
+            {
+                vmNames.Add(reader.GetString(0));
+            }
+
+            return vmNames;
+        }
+    }
+
+    public void RemovePendingVmResume(string nodeId, string vmName)
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                delete from host_vm_resume
+                where node_id = $node_id and vm_name = $vm_name collate nocase
+                """;
+            command.Parameters.AddWithValue("$node_id", nodeId);
+            command.Parameters.AddWithValue("$vm_name", vmName);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    public void SaveFollowAutoResumeIntent(FollowAutoResumeIntent intent)
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                insert into follow_auto_resume (
+                  id, channel_id, delay_seconds, watch, idle_minutes, metrics_enabled,
+                  character_slot, friend_row, recovery_account_keys, reason, recorded_utc)
+                values (
+                  'current', $channel_id, $delay_seconds, $watch, $idle_minutes, $metrics_enabled,
+                  $character_slot, $friend_row, $recovery_account_keys, $reason, $recorded_utc)
+                on conflict(id) do update set
+                  channel_id = excluded.channel_id,
+                  delay_seconds = excluded.delay_seconds,
+                  watch = excluded.watch,
+                  idle_minutes = excluded.idle_minutes,
+                  metrics_enabled = excluded.metrics_enabled,
+                  character_slot = excluded.character_slot,
+                  friend_row = excluded.friend_row,
+                  recovery_account_keys = excluded.recovery_account_keys,
+                  reason = excluded.reason,
+                  recorded_utc = excluded.recorded_utc
+                """;
+            command.Parameters.AddWithValue("$channel_id", intent.ChannelId.ToString());
+            command.Parameters.AddWithValue("$delay_seconds", intent.DelaySeconds);
+            command.Parameters.AddWithValue("$watch", intent.Watch ? 1 : 0);
+            command.Parameters.AddWithValue("$idle_minutes", intent.IdleMinutes);
+            command.Parameters.AddWithValue("$metrics_enabled", intent.MetricsEnabled ? 1 : 0);
+            command.Parameters.AddWithValue("$character_slot", (object?)intent.CharacterSlot ?? DBNull.Value);
+            command.Parameters.AddWithValue("$friend_row", (object?)intent.FriendRow ?? DBNull.Value);
+            command.Parameters.AddWithValue(
+                "$recovery_account_keys",
+                JsonSerializer.Serialize(intent.RecoveryAccountKeys));
+            command.Parameters.AddWithValue("$reason", intent.Reason);
+            command.Parameters.AddWithValue("$recorded_utc", DateTimeOffset.UtcNow.ToString("O"));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    public FollowAutoResumeIntent? GetFollowAutoResumeIntent()
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                select channel_id, delay_seconds, watch, idle_minutes, metrics_enabled,
+                       character_slot, friend_row, recovery_account_keys, reason
+                from follow_auto_resume
+                where id = 'current'
+                """;
+
+            using var reader = command.ExecuteReader();
+            if (!reader.Read()
+                || !ulong.TryParse(reader.GetString(0), out var channelId))
+            {
+                return null;
+            }
+
+            IReadOnlyList<string> recoveryAccountKeys;
+            try
+            {
+                recoveryAccountKeys = JsonSerializer.Deserialize<string[]>(reader.GetString(7)) ?? [];
+            }
+            catch (JsonException)
+            {
+                recoveryAccountKeys = [];
+            }
+
+            return new FollowAutoResumeIntent(
+                channelId,
+                reader.GetInt32(1),
+                reader.GetInt64(2) != 0,
+                reader.GetInt32(3),
+                reader.GetInt64(4) != 0,
+                reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                reader.IsDBNull(6) ? null : reader.GetInt32(6),
+                recoveryAccountKeys,
+                reader.GetString(8));
+        }
+    }
+
+    public void ClearFollowAutoResumeIntent()
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "delete from follow_auto_resume where id = 'current'";
+            command.ExecuteNonQuery();
+        }
+    }
+
     private void Initialize()
     {
         lock (_lock)
@@ -330,6 +509,27 @@ public sealed class AppDb
                   leader_recorded integer not null default 0,
                   updated_utc text not null
                 );
+
+                create table if not exists host_vm_resume (
+                  node_id text not null,
+                  vm_name text not null collate nocase,
+                  recorded_utc text not null,
+                  primary key (node_id, vm_name)
+                );
+
+                create table if not exists follow_auto_resume (
+                  id text primary key,
+                  channel_id text not null,
+                  delay_seconds integer not null,
+                  watch integer not null,
+                  idle_minutes integer not null,
+                  metrics_enabled integer not null,
+                  character_slot integer,
+                  friend_row integer,
+                  recovery_account_keys text not null,
+                  reason text not null,
+                  recorded_utc text not null
+                );
                 """;
             command.ExecuteNonQuery();
         }
@@ -349,6 +549,17 @@ public sealed record PersistedAgentStatus(
     bool Connected,
     DateTimeOffset? LastSeenAt,
     string PayloadJson);
+
+public sealed record FollowAutoResumeIntent(
+    ulong ChannelId,
+    int DelaySeconds,
+    bool Watch,
+    int IdleMinutes,
+    bool MetricsEnabled,
+    int? CharacterSlot,
+    int? FriendRow,
+    IReadOnlyList<string> RecoveryAccountKeys,
+    string Reason);
 
 /// <summary>
 /// The fleet-wide follow bind: the friend-row fingerprint every agent matches in its friends

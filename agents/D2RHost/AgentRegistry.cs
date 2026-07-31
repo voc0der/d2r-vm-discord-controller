@@ -232,12 +232,22 @@ public sealed class AgentRegistry
         string command,
         object? args = null,
         TimeSpan? timeout = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? expectedConnectedAt = null)
     {
         if (!_agents.TryGetValue(agentId, out var agent)
             || !TryGetConnectedSocket(agent, DateTimeOffset.UtcNow, out var socket))
         {
             throw new InvalidOperationException($"Agent \"{agentId}\" is not connected or its heartbeat is stale.");
+        }
+
+        // Safety-sensitive callers can bind authorization derived from a status frame to the
+        // exact connection generation that supplied it. The reference check below covers a
+        // replacement while waiting for SendLock; this check covers a replacement before entry.
+        if (expectedConnectedAt is not null && agent.ConnectedAt != expectedConnectedAt)
+        {
+            throw new InvalidOperationException(
+                $"Agent \"{agentId}\" reconnected after the command was authorized; a fresh status is required.");
         }
 
         var commandId = Guid.NewGuid().ToString("N");

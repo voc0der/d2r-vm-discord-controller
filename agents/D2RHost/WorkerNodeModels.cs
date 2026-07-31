@@ -19,7 +19,10 @@ public sealed record WorkerNodeStatus(
     // the master. A failed sleep is the motivating case: it happens after the command has already
     // answered, so there is no command result left to fail, and the worker's own log is on the
     // machine nobody is looking at. Defaulted so an older master simply ignores the field.
-    IReadOnlyList<string>? Alerts = null);
+    IReadOnlyList<string>? Alerts = null,
+    // Explicit and fail-closed. A current master will not infer support from a version string,
+    // and an older worker that omits this field cannot receive any physical-host power action.
+    bool VmSafeHostPowerTransitions = false);
 
 /// <summary>
 /// Public metadata and the current connection snapshot for one worker-local agent.

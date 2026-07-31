@@ -5,7 +5,7 @@ using AgentCommon;
 
 namespace D2RHost;
 
-public sealed class HyperVOperations
+public sealed class HyperVOperations : ILocalVmPowerOperations
 {
     private readonly HostConfig _config;
 
@@ -40,6 +40,37 @@ public sealed class HyperVOperations
             "vm_snapshot" => await SnapshotVmAsync(vmName, request.Args, cancellationToken),
             _ => CommandResult.Failure($"Unsupported Hyper-V command: {request.Command}")
         };
+    }
+
+    public async Task<VmPowerStateResult> GetPowerStateAsync(
+        string vmName,
+        CancellationToken cancellationToken)
+    {
+        EnsureAllowedVmName(vmName);
+        var result = await RunPowerShellAsync(
+            $"$vm = Get-VM -Name {PsQuote(vmName)} -ErrorAction Stop; Write-Output ([string]$vm.State)",
+            cancellationToken);
+        return result.Ok
+            ? VmPowerStateResult.Success(result.Message.Trim())
+            : VmPowerStateResult.Failure(result.Message);
+    }
+
+    public async Task<CommandResult> StopAsync(string vmName, CancellationToken cancellationToken)
+    {
+        EnsureAllowedVmName(vmName);
+        return await RunForVmAsync(
+            vmName,
+            $"Stop-VM -Name {PsQuote(vmName)} -Force -ErrorAction Stop | Out-Null; {GetVmStatusCommand(vmName)}",
+            cancellationToken);
+    }
+
+    public async Task<CommandResult> StartAsync(string vmName, CancellationToken cancellationToken)
+    {
+        EnsureAllowedVmName(vmName);
+        return await RunForVmAsync(
+            vmName,
+            $"Start-VM -Name {PsQuote(vmName)} -ErrorAction Stop | Out-Null; {GetVmStatusCommand(vmName)}",
+            cancellationToken);
     }
 
     private async Task<CommandResult> SnapshotVmAsync(

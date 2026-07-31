@@ -7,9 +7,17 @@ public sealed class D2RUiCoordinateTests
 {
     public static TheoryData<D2RUiCoordinateTarget, int, int> BaselineTargets => new()
     {
-        { D2RUiCoordinateTarget.BattleNetPlayButton, 176, 540 },
+        { D2RUiCoordinateTarget.BattleNetPlayButton, 232, 637 },
         { D2RUiCoordinateTarget.BattleNetWhatsNewTitle, 309, 144 },
         { D2RUiCoordinateTarget.BattleNetWhatsNewCloseButton, 1152, 112 },
+        { D2RUiCoordinateTarget.BattleNetInstallRequiredContinueButton, 530, 443 },
+        { D2RUiCoordinateTarget.BattleNetInstallRequiredCancelButton, 673, 443 },
+        { D2RUiCoordinateTarget.BattleNetLocateGameLink, 253, 693 },
+        { D2RUiCoordinateTarget.BattleNetFolderPathField, 840, 674 },
+        { D2RUiCoordinateTarget.BattleNetFolderSelectButton, 1018, 724 },
+        { D2RUiCoordinateTarget.BattleNetInstallConfirmationTitle, 738, 111 },
+        { D2RUiCoordinateTarget.BattleNetChangeInstallFolder, 1188, 200 },
+        { D2RUiCoordinateTarget.BattleNetStartInstallButton, 1172, 676 },
         { D2RUiCoordinateTarget.IntroSkipPoint, 683, 384 },
         { D2RUiCoordinateTarget.CharacterSlot1, 1216, 92 },
         { D2RUiCoordinateTarget.CharacterSlot2, 1216, 161 },
@@ -88,6 +96,32 @@ public sealed class D2RUiCoordinateTests
             D2RUiCoordinateCatalog.GetPoint(ui, D2RUiCoordinateTarget.CharacterLobbyButton));
 
         Assert.Equal(new UiPixelPoint(799, 689), pixels);
+    }
+
+    [Fact]
+    public void BattleNetPlayButtonMigratesTheDesktopRelativeLegacyDefault()
+    {
+        var ui = new D2RUiAutomationConfig
+        {
+            BattleNetPlayButton = new UiPoint(0.129, 0.703)
+        };
+
+        var point = D2RUiCoordinateCatalog.GetPoint(ui, D2RUiCoordinateTarget.BattleNetPlayButton);
+
+        Assert.Equal(new UiPixelPoint(232, 637), D2RUiCoordinateCatalog.ToBaselinePixels(point));
+    }
+
+    [Fact]
+    public void BattleNetPlayButtonPreservesAnExplicitCustomPoint()
+    {
+        var ui = new D2RUiAutomationConfig
+        {
+            BattleNetPlayButton = new UiPoint(0.180, 0.820)
+        };
+
+        var point = D2RUiCoordinateCatalog.GetPoint(ui, D2RUiCoordinateTarget.BattleNetPlayButton);
+
+        Assert.Equal(new UiPixelPoint(246, 630), D2RUiCoordinateCatalog.ToBaselinePixels(point));
     }
 
     [Fact]

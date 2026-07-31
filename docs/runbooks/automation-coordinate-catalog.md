@@ -9,13 +9,27 @@ pixelY = round(point.y * 768)
 
 The implementation source of truth is `D2RUiCoordinateCatalog` in `agents/AgentCommon/D2RUiCoordinateCatalog.cs`. Use the proportional value in config; use the X/Y values below when checking the 1366x768 screenshots.
 
+The five Battle.net install-location references are privacy-safe crops from 1366x768 desktop
+captures, so their stored dimensions are the launcher/dialog dimensions rather than 1366x768.
+For those rows, the X/Y column is a common 1366x768 *reference plane* used by config tests; live
+input resolves the proportional point against the Battle.net client rectangle. The two native
+folder-dialog points resolve against the exact-title `Choose a Folder` dialog's client rectangle.
+
 ## Click And Sample Points
 
 | Target | Config/helper target | Proportional x,y | 1366x768 X,Y | Kind | Reference asset | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Battle.net Play button | `BattleNetPlayButton` | `0.129,0.703` | `176,540` | Click | `logged_in_battle_net.jpg` | Blue Play launcher button. |
+| Battle.net Play/primary action button | `BattleNetPlayButton` | `0.170,0.830` | `232,637` | Click/sample | `logged_in_battle_net.jpg` | Client-relative blue Play button. The exact persisted legacy value `0.129,0.703` is migrated because it was measured against the desktop instead of the launcher client. During authorized repair the identical-looking Install button is detected but never clicked. |
 | Battle.net What's New title | `BattleNetWhatsNewTitle` | `0.226,0.187` | `309,144` | Sample | `logged_in_battle_net.jpg` | Popup detector sample, not clicked. |
 | Battle.net What's New close | `BattleNetWhatsNewCloseButton` | `0.843,0.146` | `1152,112` | Click | `logged_in_battle_net.jpg` | Closes news/ad popup. |
+| Installation Required Continue | `BattleNetInstallRequiredContinueButton` | `0.388,0.577` | `530,443` | Sample | `1366x768/battlenet_installation_required.png` | Blue half of the two-button modal detector. Never clicked: Continue begins a new install. |
+| Installation Required Cancel | `BattleNetInstallRequiredCancelButton` | `0.493,0.577` | `673,443` | Click/sample | `1366x768/battlenet_installation_required.png` | Grey half of the modal detector and the safe dismissal target. |
+| Locate the game | `BattleNetLocateGameLink` | `0.185,0.902` | `253,693` | Click | `1366x768/battlenet_d2r_install_landing.png` | Opens existing-install selection after the modal authorized repair. |
+| Folder path field | `BattleNetFolderPathField` | `0.615,0.878` | `840,674` | Click/type | `1366x768/battlenet_choose_install_folder.png` | Relative to the exact-title native folder dialog, not the launcher. Receives the validated full install directory. |
+| Select Folder | `BattleNetFolderSelectButton` | `0.745,0.943` | `1018,724` | Click | `1366x768/battlenet_choose_install_folder.png` | Relative to the exact-title native folder dialog. |
+| Install confirmation title | `BattleNetInstallConfirmationTitle` | `0.540,0.145` | `738,111` | Sample | `1366x768/battlenet_start_install_scan.png` | High-contrast title half of the confirmation detector. |
+| Change Folder | `BattleNetChangeInstallFolder` | `0.870,0.260` | `1188,200` | Click | `1366x768/battlenet_start_install_scan.png` | Forces a stale/pre-existing confirmation through this run's validated folder chooser. |
+| Start Install/scan | `BattleNetStartInstallButton` | `0.858,0.880` | `1172,676` | Click/sample | `1366x768/battlenet_start_install_scan.png` | Clicked once only after this run submitted a directory containing `D2R.exe`; Battle.net scans/registers the existing files. |
 | Intro/title continue | `IntroSkipPoint` | `0.500,0.500` | `683,384` | Click/key focus | `1366x768/post_intro_splash_screen.png` | Center point used by intro/title skip bursts. |
 | Character slot 1 | `CharacterSlot1` | `0.890,0.120` | `1216,92` | Click | `1366x768/char_screen_act1.png` | Default selected character row. |
 | Character slot 2 | `CharacterSlot2` | `0.890,0.210` | `1216,161` | Click | `1366x768/char_screen_act1.png` | Character row 2. |

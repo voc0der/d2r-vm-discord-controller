@@ -82,6 +82,7 @@ The worker sends a heartbeat containing physical-host telemetry and its local, n
     "hostName": "SERVER-B",
     "capturedAtUtc": "2026-07-21T12:00:00Z",
     "vmCommandTimeoutSeconds": 90,
+    "vmSafeHostPowerTransitions": true,
     "machineTelemetry": {
       "memoryTotalBytes": 68719476736,
       "memoryAvailableBytes": 34359738368,
@@ -121,7 +122,7 @@ The worker sends a heartbeat containing physical-host telemetry and its local, n
 }
 ```
 
-Worker heartbeats never serialize either the worker-to-master secret or local VM-agent secrets. `nodeHeartbeatSeconds` controls their interval (clamped to 5-300 seconds by the link). The receiver treats `agentOfflineAfterSeconds` as a minimum and extends it when needed for the authenticated client-advertised interval plus bounded status-collection jitter. Each remote VM's `connected` value is trusted from the worker that evaluated it against that worker's clock and policy. `vmCommandTimeoutSeconds` advertises the worker-owned Hyper-V command budget, capped by the 15-minute worker safety limit.
+Worker heartbeats never serialize either the worker-to-master secret or local VM-agent secrets. `nodeHeartbeatSeconds` controls their interval (clamped to 5-300 seconds by the link). The receiver treats `agentOfflineAfterSeconds` as a minimum and extends it when needed for the authenticated client-advertised interval plus bounded status-collection jitter. Each remote VM's `connected` value is trusted from the worker that evaluated it against that worker's clock and policy. `vmCommandTimeoutSeconds` advertises the worker-owned Hyper-V command budget, capped by the 15-minute worker safety limit. `vmSafeHostPowerTransitions` explicitly says this worker implements the durable state-check/stop/restore transaction; absence, `false`, or a non-boolean value means unsupported.
 
 Account keys, VM-agent IDs, and node/host-agent IDs must be globally unique, case-insensitively. The master combines advertised worker inventory with its local configuration. A disconnected or stale worker makes all of its advertised VM agents unavailable; a stale local VM-agent snapshot affects only that agent. Fleet orchestration skips unavailable accounts and continues with other nodes.
 
@@ -162,11 +163,30 @@ system_shutdown
 system_restart
 ```
 
-VM commands require `args.vmName`; `vm_snapshot` optionally accepts `args.snapshotName`. They execute through the worker's local PowerShell configuration and `allowedVmNamePrefixes`. System commands queue a power action on the worker machine itself, not on a VM guest.
+VM commands require `args.vmName`; `vm_snapshot` optionally accepts `args.snapshotName`. They execute through the worker's local PowerShell configuration and `allowedVmNamePrefixes`.
 
-Commands are not retried across a disconnect, and canceling the master's wait does not recall an already-dispatched command. A lost result after dispatch is an unknown outcome: a VM or system action may already have applied, so callers should reconcile current state before issuing it again.
+The `system_*` commands still act on the worker's physical Windows machine, but they first run a local VM safety transaction. The worker takes the distinct, non-empty `vmName` values from its own `accounts` configuration, reads every Hyper-V state, and durably records only the VMs that are `Running`. It then stops and confirms those VMs `Off` before queueing sleep (or its hibernation fallback), shutdown, or restart. VMs already `Off` are not recorded and therefore stay off. A failed query or any other state, including a transitional, paused, or saved state, fails the command without queueing the host action. A partial stop pass is rolled back; a rollback that cannot finish remains in the worker's local SQLite journal for startup recovery.
 
-Discord `system sleep` targets every online node by default; `system shutdown` and `system restart` default to the master node. `node:<node-id>` targets that known node (and may explicitly name the master), while `all:true`—or the sleep default—targets currently online workers first and the master last. `all:false` narrows any of them back to the master alone. Offline workers are listed and skipped. A worker whose version predates the reliable sleep path, or whose Windows capability preflight reports no usable sleep state, returns failure before queueing; any selected worker failure keeps the master online for recovery.
+After a successful preparation, the worker keeps that host transition armed in memory and rejects another `system_*` power command until resume or failure recovery releases it. This guard is independent of the journal contents, so it also applies when no configured VM was `Running`.
+
+A successful worker system command returns the normal `command_result`. Its `data` includes the exact recorded set:
+
+```json
+{
+  "nodeId": "server-b",
+  "action": "sleep",
+  "queued": true,
+  "stoppedVms": ["d2r-hc-03", "d2r-hc-04"]
+}
+```
+
+The resume journal belongs to the node performing the Hyper-V work; it is not sent to or owned by the master. After ordinary sleep, the still-running worker process restores the recorded VMs when the suspend call returns and retries failures every 15 seconds. After shutdown/restart, the worker's startup task reads its own `databasePath` and restores them before reconnecting normally. If `shutdown.exe` returns but the worker process is still alive 30 seconds later, its watchdog treats that host transition as failed and restores the journal in-process. Restore is idempotent: an entry already `Running` is cleared without another start, and an entry is otherwise cleared only after `Start-VM` confirms `Running`.
+
+The `system_*` command names predate this state machine and did not change on the wire, so the master requires explicit capability negotiation before dispatch. `vmSafeHostPowerTransitions:true` must come from a status frame received on the worker's current authenticated connection. A cached `true` retained for inventory display across a reconnect does not count until that socket sends a new status. The eventual command send is also bound to that connection generation; if the worker reconnects between authorization and send, the send is rejected and the replacement connection must publish status first. Older workers, malformed flags, and the hello-before-first-status window therefore fail closed for sleep, shutdown, and restart; the result asks the operator to update/restart the worker and wait for a fresh heartbeat.
+
+Commands are not retried across a disconnect, and canceling the master's wait does not recall an already-dispatched command. A lost result after dispatch is an unknown outcome: a VM or system action may already have applied, so callers should reconcile current state before issuing it again. System preparation can now include multiple Hyper-V state/stop checks, so the master waits the worker-advertised `vmCommandTimeoutSeconds` plus transport headroom instead of the former fixed 20-second acknowledgement window.
+
+Discord `system sleep` targets every online node by default; `system shutdown` and `system restart` default to the master node. `node:<node-id>` targets that known node (and may explicitly name the master), while `all:true`—or the sleep default—targets currently online workers first and the master last. `all:false` narrows any of them back to the master alone. Offline workers are listed and skipped. A worker without the current-connection VM-safe power capability, or whose Windows sleep preflight reports no usable sleep state, returns failure before queueing; any selected worker failure keeps the master online for recovery.
 
 ## VM-Agent Commands
 

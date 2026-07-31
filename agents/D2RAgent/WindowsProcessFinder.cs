@@ -68,6 +68,43 @@ internal sealed class DesktopWindowScanCache
 
 internal static class WindowsProcessFinder
 {
+    public static ProcessWindowTarget? FindWindowTargetByExactTitle(string title)
+    {
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        foreach (var window in EnumerateTopLevelWindows())
+        {
+            if (!IsWindowVisible(window))
+            {
+                continue;
+            }
+
+            var actualTitle = GetWindowTitle(window);
+            if (!string.Equals(actualTitle, title, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var (pid, processName, sessionId) = ResolveWindowInfo(window);
+            if (pid == 0 || WindowsProcessIdentity.IsCurrentProcess(pid))
+            {
+                continue;
+            }
+
+            return new ProcessWindowTarget(
+                pid,
+                string.IsNullOrWhiteSpace(processName) ? "?" : processName,
+                sessionId,
+                window,
+                actualTitle);
+        }
+
+        return null;
+    }
+
     public static Process? FindProcess(IEnumerable<string> processNames)
     {
         return FindProcessesByNameOrWindowTitle(processNames)

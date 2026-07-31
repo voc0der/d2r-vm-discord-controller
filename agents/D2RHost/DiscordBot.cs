@@ -96,6 +96,9 @@ public sealed class DiscordBot
     private const int FollowAutoDefaultIdleMinutes = 60;
     private const int FollowAutoDefaultCheckSeconds = 5;
     private const int FollowAutoPostLeaveCheckSeconds = 2;
+    private static readonly TimeSpan FollowAutoNodeRecoveryTimeout = TimeSpan.FromMinutes(20);
+    private static readonly TimeSpan FollowAutoNodeRecoveryPollInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan FollowAutoLocalRestartFallbackDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan FollowAutoStopActionWindow = TimeSpan.FromMinutes(2);
     private readonly SemaphoreSlim _followAutoLock = new(1, 1);
     private readonly object _followAutoStopActionSync = new();
@@ -113,6 +116,7 @@ public sealed class DiscordBot
     private bool _followAutoMetricsEnabled;
     private long _followAutoRunSequence = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private long _followAutoCurrentRunId;
+    private int _followAutoResumeInProgress;
 
     // Multi-alt bind-in-game: the serialized nametag fingerprint this follow-auto run locked
     // onto, decided by the first pulse of the run that verifiably sees one of the bound
@@ -312,6 +316,95 @@ public sealed class DiscordBot
 
         PostStartupMessageOnce();
         await FlushUpdateNotificationsAsync();
+        _ = Task.Run(TryResumeFollowAutoAsync);
+    }
+
+    private async Task TryResumeFollowAutoAsync()
+    {
+        if (Interlocked.CompareExchange(ref _followAutoResumeInProgress, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var intent = _db.GetFollowAutoResumeIntent();
+            if (intent is null)
+            {
+                return;
+            }
+
+            IMessageChannel? channel = null;
+            for (var attempt = 1; attempt <= 24 && channel is null; attempt++)
+            {
+                channel = _client.GetChannel(intent.ChannelId) as IMessageChannel;
+                if (channel is null
+                    && _config.GuildChannel is { } fallbackChannelId
+                    && fallbackChannelId != intent.ChannelId)
+                {
+                    channel = _client.GetChannel(fallbackChannelId) as IMessageChannel;
+                }
+
+                if (channel is null)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5));
+                }
+            }
+
+            if (channel is null)
+            {
+                _logger.LogWarning(
+                    "Could not resume follow-auto after host recovery because Discord channel {ChannelId} is not visible. The resume intent remains recorded for the next start.",
+                    intent.ChannelId);
+                return;
+            }
+
+            var start = await TryBeginFollowAutoRunAsync(requireRecordedResumeIntent: true);
+            if (start is null)
+            {
+                if (_db.GetFollowAutoResumeIntent() is null)
+                {
+                    _logger.LogInformation(
+                        "The recorded follow-auto resume was cleared before it started; automatic resume was skipped.");
+                    return;
+                }
+
+                // An operator-started run wins over a stale reboot intent; otherwise the next
+                // process restart would unexpectedly launch a second run.
+                _logger.LogWarning(
+                    "Discarding the recorded follow-auto resume intent because a follow-auto run is already active.");
+                _db.ClearFollowAutoResumeIntent();
+                return;
+            }
+
+            var options = new FollowAutoRunOptions(
+                channel,
+                Math.Max(intent.DelaySeconds, 0),
+                intent.Watch,
+                TimeSpan.FromMinutes(Math.Max(intent.IdleMinutes, 1)),
+                intent.MetricsEnabled,
+                intent.CharacterSlot,
+                intent.FriendRow,
+                intent.RecoveryAccountKeys,
+                intent.Reason);
+
+            // The one-shot is consumed only after the in-memory run has been installed. A crash
+            // before this point leaves the intent available to the next process start.
+            _db.ClearFollowAutoResumeIntent();
+            QueueFollowAutoRun(options, start);
+            _logger.LogInformation(
+                "Resumed follow-auto after host recovery in Discord channel {ChannelId}; recovery accounts: {Accounts}.",
+                channel.Id,
+                string.Join(", ", intent.RecoveryAccountKeys));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not resume the recorded follow-auto run after host recovery.");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _followAutoResumeInProgress, 0);
+        }
     }
 
     private void PostStartupMessageOnce()
@@ -1479,7 +1572,7 @@ public sealed class DiscordBot
         await RespondWithMetricsAsync(
             context,
             $"Queueing {action.ToString().ToLowerInvariant()} on {targets.Length} node(s): "
-                + $"{string.Join(", ", targets)}. VM clients are not targeted."
+                + $"{string.Join(", ", targets)}. Each node first records and stops its configured Running VMs, then restores only that recorded set after resume or boot."
                 + (allNodes ? FormatOfflineNodeSkipSuffix(targets) : "")
                 + narrowingHint);
         await AnnounceSystemPowerActionAsync(context, action);
@@ -2025,11 +2118,34 @@ public sealed class DiscordBot
         KeyValuePair<string, AccountConfig>[] entries,
         CancellationToken cancellationToken)
     {
-        await RunGameAllWatchTickerAsync(context, label, gameName, () => entries, cancellationToken);
+        await RunGameAllWatchTickerAsync(
+            context.Command.Channel,
+            context.MetricsEnabled,
+            label,
+            gameName,
+            () => entries,
+            cancellationToken);
     }
 
     private async Task RunGameAllWatchTickerAsync(
         SlashContext context,
+        string label,
+        string gameName,
+        Func<KeyValuePair<string, AccountConfig>[]> getEntries,
+        CancellationToken cancellationToken)
+    {
+        await RunGameAllWatchTickerAsync(
+            context.Command.Channel,
+            context.MetricsEnabled,
+            label,
+            gameName,
+            getEntries,
+            cancellationToken);
+    }
+
+    private async Task RunGameAllWatchTickerAsync(
+        IMessageChannel channel,
+        bool metricsEnabled,
         string label,
         string gameName,
         Func<KeyValuePair<string, AccountConfig>[]> getEntries,
@@ -2042,8 +2158,8 @@ public sealed class DiscordBot
         IUserMessage? message = null;
         try
         {
-            message = await context.Command.Channel.SendMessageAsync(
-                AppendMetrics(context, FormatWatchHeader(label, gameName, startedUtc) + "\nStarting..."));
+            message = await channel.SendMessageAsync(
+                AppendMetrics(metricsEnabled, FormatWatchHeader(label, gameName, startedUtc) + "\nStarting..."));
         }
         catch (Exception ex)
         {
@@ -2061,7 +2177,7 @@ public sealed class DiscordBot
             {
                 try
                 {
-                    await message.ModifyAsync(properties => properties.Content = AppendMetrics(context, content));
+                    await message.ModifyAsync(properties => properties.Content = AppendMetrics(metricsEnabled, content));
                 }
                 catch (Exception ex)
                 {
@@ -2086,7 +2202,7 @@ public sealed class DiscordBot
             }
         }
 
-        await SendWatchLogAttachmentAsync(context, gameName, logPath);
+        await SendWatchLogAttachmentAsync(channel, metricsEnabled, gameName, logPath);
     }
 
     private async Task AwaitWatchTickerStopAsync(Task? watchTask, string label)
@@ -2141,6 +2257,19 @@ public sealed class DiscordBot
 
     private async Task SendWatchLogAttachmentAsync(SlashContext context, string gameName, string logPath)
     {
+        await SendWatchLogAttachmentAsync(
+            context.Command.Channel,
+            context.MetricsEnabled,
+            gameName,
+            logPath);
+    }
+
+    private async Task SendWatchLogAttachmentAsync(
+        IMessageChannel channel,
+        bool metricsEnabled,
+        string gameName,
+        string logPath)
+    {
         if (!File.Exists(logPath))
         {
             return;
@@ -2148,7 +2277,7 @@ public sealed class DiscordBot
 
         try
         {
-            await context.Command.Channel.SendFileAsync(logPath, AppendMetrics(context, $"Full watch log for {gameName}."));
+            await channel.SendFileAsync(logPath, AppendMetrics(metricsEnabled, $"Full watch log for {gameName}."));
         }
         catch (Exception ex)
         {
@@ -3562,6 +3691,27 @@ public sealed class DiscordBot
         };
     }
 
+    private static object BuildFollowAutoMenuArgs(
+        string accountKey,
+        AccountConfig account,
+        FollowAutoRunOptions options,
+        long followAutoRunId)
+    {
+        return new
+        {
+            accountKey,
+            displayName = account.DisplayName ?? accountKey,
+            vmName = account.VmName ?? account.AgentId,
+            gameName = (string?)null,
+            password = (string?)null,
+            difficulty = (string?)null,
+            characterSlot = options.CharacterSlot ?? account.CharacterSlot,
+            friendRow = options.FriendRow,
+            partyPosition = (int?)null,
+            followAutoRunId
+        };
+    }
+
     private static object BuildAccountArgs(string accountKey, AccountConfig account)
     {
         return new
@@ -4291,30 +4441,27 @@ public sealed class DiscordBot
 
     private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout)
     {
-        await _followAutoLock.WaitAsync();
-        CancellationTokenSource cts;
-        long runId;
-        try
+        var options = new FollowAutoRunOptions(
+            context.Command.Channel,
+            delaySeconds,
+            watch,
+            idleTimeout,
+            context.MetricsEnabled,
+            context.GetInt("character-slot"),
+            context.GetInt("friend-row"),
+            InitialRecoveryAccountKeys: []);
+        var start = await TryBeginFollowAutoRunAsync();
+        if (start is null)
         {
-            if (_followAutoCts is not null)
-            {
-                await RespondWithMetricsAsync(
-                    context,
-                    "follow auto:true is already running. Use /d2r follow auto:false first.");
-                return;
-            }
+            await RespondWithMetricsAsync(
+                context,
+                "follow auto:true is already running. Use /d2r follow auto:false first.");
+            return;
+        }
 
-            cts = new CancellationTokenSource();
-            _followAutoCts = cts;
-            runId = ++_followAutoRunSequence;
-            _followAutoCurrentRunId = runId;
-            _followAutoLockedNametag = null;
-            _followAutoLockedNametagOrdinal = null;
-        }
-        finally
-        {
-            _followAutoLock.Release();
-        }
+        // An explicit new run supersedes any stale one-shot intent left by a reboot that never
+        // completed. The active run will write a fresh intent if it later needs local recovery.
+        _db.ClearFollowAutoResumeIntent();
 
         await RespondWithMetricsAsync(
             context,
@@ -4322,7 +4469,38 @@ public sealed class DiscordBot
                 + (watch ? " Watch diagnostics are enabled." : ""),
             ephemeral: true);
 
-        _ = Task.Run(() => RunFollowAutoLoopAsync(context, delaySeconds, watch, idleTimeout, runId, cts.Token));
+        QueueFollowAutoRun(options, start);
+    }
+
+    private async Task<FollowAutoRunStart?> TryBeginFollowAutoRunAsync(
+        bool requireRecordedResumeIntent = false)
+    {
+        await _followAutoLock.WaitAsync();
+        try
+        {
+            if (_followAutoCts is not null
+                || (requireRecordedResumeIntent && _db.GetFollowAutoResumeIntent() is null))
+            {
+                return null;
+            }
+
+            var cts = new CancellationTokenSource();
+            _followAutoCts = cts;
+            var runId = ++_followAutoRunSequence;
+            _followAutoCurrentRunId = runId;
+            _followAutoLockedNametag = null;
+            _followAutoLockedNametagOrdinal = null;
+            return new FollowAutoRunStart(runId, cts);
+        }
+        finally
+        {
+            _followAutoLock.Release();
+        }
+    }
+
+    private void QueueFollowAutoRun(FollowAutoRunOptions options, FollowAutoRunStart start)
+    {
+        _ = Task.Run(() => RunFollowAutoLoopAsync(options, start.RunId, start.Cts.Token));
     }
 
     private async Task StopFollowAutoAsync(SlashContext context)
@@ -4558,6 +4736,9 @@ public sealed class DiscordBot
     // wired into the same quit/quit-all call sites as CancelJoinAutoIfRunningAsync.
     private async Task<FollowAutoCancelResult> CancelFollowAutoIfRunningAsync(string? reason, bool showPostStopActions = false)
     {
+        // Any explicit or implied stop supersedes a one-shot recovery resume that may have been
+        // written just before a local restart request.
+        _db.ClearFollowAutoResumeIntent();
         await _followAutoLock.WaitAsync();
         try
         {
@@ -4834,10 +5015,18 @@ public sealed class DiscordBot
         return string.Join("\n", lines);
     }
 
-    private async Task RunFollowAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, long runId, CancellationToken cancellationToken)
+    private async Task RunFollowAutoLoopAsync(
+        FollowAutoRunOptions options,
+        long runId,
+        CancellationToken cancellationToken)
     {
-        var channel = context.Command.Channel;
+        var channel = options.Channel;
+        var delaySeconds = options.DelaySeconds;
+        var watch = options.Watch;
+        var idleTimeout = options.IdleTimeout;
         var accountState = new FollowAutoAccountState();
+        accountState.BeginRecovery(options.InitialRecoveryAccountKeys);
+        var warmupFailures = new FollowWarmupFailureTracker();
         var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
         var midJoinRotation = 0;
         var currentGameActive = false;
@@ -4850,14 +5039,23 @@ public sealed class DiscordBot
         {
             watchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             watchTask = RunGameAllWatchTickerAsync(
-                context,
+                channel,
+                options.MetricsEnabled,
                 "follow-auto",
                 "follow-auto",
                 () => GetAccountEntriesByConnectivity().Online,
                 watchCts.Token);
         }
 
-        await StartFollowAutoMonitorAsync(channel, context.MetricsEnabled);
+        await StartFollowAutoMonitorAsync(channel, options.MetricsEnabled);
+        if (!string.IsNullOrWhiteSpace(options.ResumeReason))
+        {
+            await UpdateFollowAutoMonitorAsync(
+                $"Resumed after host recovery: {options.ResumeReason}",
+                joined: accountState.JoinedCount,
+                total: accountState.CountExpectedAccounts(
+                    GetAccountEntriesByConnectivity().Online.Select(entry => entry.Key).ToArray()));
+        }
 
         // Sync before the first check rather than waiting for the periodic sweep: a VM brought
         // online moments before Follow was pressed is the single most likely one to be holding a
@@ -5179,7 +5377,126 @@ public sealed class DiscordBot
                 var unboundReports = new List<string>();
                 var checkFailures = new List<string>();
                 var waitingReports = new List<string>();
-                var checkResults = await Task.WhenAll(pending.Select(entry => RunFollowAutoCheckEntryAsync(context, entry, runId, cancellationToken)));
+                var checkResults = await Task.WhenAll(
+                    pending.Select(entry => RunFollowAutoCheckEntryAsync(options, entry, runId, cancellationToken)));
+                var pendingByAccount = pending.ToDictionary(entry => entry.Key, StringComparer.OrdinalIgnoreCase);
+                var recoveryRequests = new Dictionary<string, FollowAutoNodeRecoveryRequest>(
+                    StringComparer.OrdinalIgnoreCase);
+                foreach (var result in checkResults)
+                {
+                    if (!pendingByAccount.TryGetValue(result.AccountKey, out var failedEntry))
+                    {
+                        continue;
+                    }
+
+                    var nodeId = _hyperV.ResolveNodeId(failedEntry.Value);
+                    if (result.WarmupOutcome == FollowWarmupOutcome.Failed)
+                    {
+                        var failure = warmupFailures.RecordFailure(result.AccountKey, nodeId);
+                        if (failure.RecoveryRequested)
+                        {
+                            recoveryRequests[nodeId] = new FollowAutoNodeRecoveryRequest(
+                                nodeId,
+                                result.AccountKey,
+                                failure.ConsecutiveFailures);
+                        }
+                    }
+                    else
+                    {
+                        // This includes a successful menu_ready and the live preflight proving
+                        // menu_ready was unnecessary. Failures later in the friend/join check do
+                        // not count as desktop-to-lobby warmup failures.
+                        warmupFailures.RecordSuccess(result.AccountKey);
+                    }
+                }
+
+                if (recoveryRequests.Count > 0)
+                {
+                    foreach (var request in recoveryRequests.Values
+                                 .OrderBy(request => _hyperV.IsLocalNode(request.NodeId) ? 1 : 0)
+                                 .ThenBy(request => request.NodeId, StringComparer.OrdinalIgnoreCase))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var nodeAccounts = GetFollowAutoAccountsForNode(request.NodeId);
+                        var nodeAccountKeys = SelectExpectedRecoveryAccountKeys(
+                            nodeAccounts.Select(entry => entry.Key),
+                            onlineAccountKeys,
+                            accountState.Joined,
+                            accountState.RecoveryPending,
+                            accountState.ParkedGameFull);
+
+                        // Mark every account this run currently expects on the physical node
+                        // before its VM-agent sockets disappear. Deliberately omit configured
+                        // accounts that were already offline: the VM lifecycle restores only VMs
+                        // that were Running, so waiting for an intentionally-Off VM would deadlock
+                        // recovery forever. Otherwise expected offline accounts are omitted from
+                        // the all-joined calculation and healthy peers can advance without them.
+                        accountState.BeginRecovery(nodeAccountKeys);
+                        var resumeRecoveryAccountKeys = _hyperV.IsLocalNode(request.NodeId)
+                            ? SelectFollowAutoResumeRecoveryAccountKeys(
+                                onlineAccountKeys,
+                                accountState.RecoveryPending)
+                            : nodeAccountKeys;
+                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                        lastWaitingReport = null;
+                        await UpdateFollowAutoMonitorAsync(
+                            $"{request.TriggerAccountKey} failed desktop-to-lobby warmup "
+                                + $"{request.ConsecutiveFailures} consecutive times. Recording and stopping the Running VMs on "
+                                + $"{request.NodeId}, then restarting that node.",
+                            joined: accountState.JoinedCount,
+                            total: accountState.CountExpectedAccounts(onlineAccountKeys));
+
+                        var recovery = await RecoverFollowAutoNodeAsync(
+                            request,
+                            nodeAccountKeys,
+                            resumeRecoveryAccountKeys,
+                            options,
+                            cancellationToken);
+                        if (!recovery.RestartQueued)
+                        {
+                            // The node never rebooted. Allow a fresh incident to accumulate
+                            // instead of leaving a permanent latch that can never request again.
+                            warmupFailures.ResetNode(request.NodeId);
+                            await UpdateFollowAutoMonitorAsync(
+                                $"Could not start recovery for {request.NodeId}: {recovery.Message} "
+                                    + $"Follow-auto remains active; five new consecutive warmup failures are required before another restart attempt.",
+                                joined: accountState.JoinedCount,
+                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
+                            continue;
+                        }
+
+                        if (recovery.LocalRestartQueued)
+                        {
+                            await UpdateFollowAutoMonitorAsync(
+                                $"{recovery.Message} This follow-auto run is recorded and will resume after D2RHost starts again.",
+                                joined: accountState.JoinedCount,
+                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
+                            return;
+                        }
+
+                        if (!recovery.RecoveryComplete)
+                        {
+                            await CompleteFollowAutoMonitorAsync(
+                                ok: false,
+                                $"Node recovery did not complete for {request.NodeId}: {recovery.Message}");
+                            return;
+                        }
+
+                        warmupFailures.ResetNode(request.NodeId);
+                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                        await UpdateFollowAutoMonitorAsync(
+                            recovery.Message + " Resuming the active follow run.",
+                            joined: accountState.JoinedCount,
+                            total: accountState.CountExpectedAccounts(
+                                GetAccountEntriesByConnectivity().Online.Select(entry => entry.Key).ToArray()));
+                    }
+
+                    // Every result in this batch predates at least one node restart. Re-sample
+                    // fresh status rather than applying stale joined/waiting outcomes.
+                    await DelayNextFollowCheckAsync();
+                    continue;
+                }
+
                 foreach (var result in checkResults)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -5353,15 +5670,243 @@ public sealed class DiscordBot
         }
     }
 
+    private KeyValuePair<string, AccountConfig>[] GetFollowAutoAccountsForNode(string nodeId)
+    {
+        return _registry.Accounts
+            .Where(entry => string.Equals(
+                _hyperV.ResolveNodeId(entry.Value),
+                nodeId,
+                StringComparison.OrdinalIgnoreCase))
+            .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private async Task<FollowAutoNodeRecoveryResult> RecoverFollowAutoNodeAsync(
+        FollowAutoNodeRecoveryRequest request,
+        IReadOnlyList<string> nodeAccountKeys,
+        IReadOnlyList<string> resumeRecoveryAccountKeys,
+        FollowAutoRunOptions options,
+        CancellationToken cancellationToken)
+    {
+        var localNode = _hyperV.IsLocalNode(request.NodeId);
+        var previousConnectedAt = localNode
+            ? null
+            : _registry.NodeSnapshot()
+                .FirstOrDefault(node => string.Equals(node.Id, request.NodeId, StringComparison.OrdinalIgnoreCase))
+                ?.ConnectedAt;
+        var restartRequestedUtc = DateTimeOffset.UtcNow;
+        if (localNode)
+        {
+            var idleMinutes = (int)Math.Clamp(
+                Math.Ceiling(options.IdleTimeout.TotalMinutes),
+                1,
+                int.MaxValue);
+            _db.SaveFollowAutoResumeIntent(new FollowAutoResumeIntent(
+                options.Channel.Id,
+                options.DelaySeconds,
+                options.Watch,
+                idleMinutes,
+                options.MetricsEnabled,
+                options.CharacterSlot,
+                options.FriendRow,
+                resumeRecoveryAccountKeys
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                $"{request.TriggerAccountKey} reached {request.ConsecutiveFailures} consecutive warmup failures on {request.NodeId}"));
+        }
+
+        CommandResult restart;
+        try
+        {
+            restart = await _hyperV.QueueSystemActionAsync(
+                request.NodeId,
+                HostSystemPowerAction.Restart,
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (localNode)
+            {
+                _db.ClearFollowAutoResumeIntent();
+            }
+
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (localNode)
+            {
+                _db.ClearFollowAutoResumeIntent();
+            }
+
+            return new FollowAutoNodeRecoveryResult(
+                RestartQueued: false,
+                RecoveryComplete: false,
+                LocalRestartQueued: false,
+                ex.Message);
+        }
+
+        if (!restart.Ok)
+        {
+            if (localNode)
+            {
+                _db.ClearFollowAutoResumeIntent();
+            }
+
+            return new FollowAutoNodeRecoveryResult(
+                RestartQueued: false,
+                RecoveryComplete: false,
+                LocalRestartQueued: false,
+                restart.Message);
+        }
+
+        if (localNode)
+        {
+            ScheduleFollowAutoLocalRestartFallback();
+            return new FollowAutoNodeRecoveryResult(
+                RestartQueued: true,
+                RecoveryComplete: false,
+                LocalRestartQueued: true,
+                restart.Message);
+        }
+
+        var deadline = DateTimeOffset.UtcNow + FollowAutoNodeRecoveryTimeout;
+        var observedNewConnection = false;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var node = _registry.NodeSnapshot()
+                .FirstOrDefault(snapshot => string.Equals(
+                    snapshot.Id,
+                    request.NodeId,
+                    StringComparison.OrdinalIgnoreCase));
+            observedNewConnection |= HasNewWorkerConnection(
+                node,
+                previousConnectedAt,
+                restartRequestedUtc);
+
+            var onlineAccountKeys = GetAccountEntriesByConnectivity().Online
+                .Select(entry => entry.Key)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (observedNewConnection
+                && AreRecoveryAccountsOnline(nodeAccountKeys, onlineAccountKeys))
+            {
+                return new FollowAutoNodeRecoveryResult(
+                    RestartQueued: true,
+                    RecoveryComplete: true,
+                    LocalRestartQueued: false,
+                    $"{request.NodeId} reconnected after restart and all {nodeAccountKeys.Count} node account(s) are online.");
+            }
+
+            await Task.Delay(FollowAutoNodeRecoveryPollInterval, cancellationToken);
+        }
+
+        var missingAccounts = nodeAccountKeys
+            .Except(
+                GetAccountEntriesByConnectivity().Online.Select(entry => entry.Key),
+                StringComparer.OrdinalIgnoreCase)
+            .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var connectionDetail = observedNewConnection
+            ? "the worker reconnected, but its VM agents did not all return"
+            : "the worker never established a new connection generation";
+        return new FollowAutoNodeRecoveryResult(
+            RestartQueued: true,
+            RecoveryComplete: false,
+            LocalRestartQueued: false,
+            $"Timed out after {FollowAutoNodeRecoveryTimeout.TotalMinutes:N0} minutes: {connectionDetail}"
+                + (missingAccounts.Length == 0
+                    ? "."
+                    : $"; still offline: {string.Join(", ", missingAccounts)}."));
+    }
+
+    private void ScheduleFollowAutoLocalRestartFallback()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // The host lifecycle gives shutdown.exe 30 seconds before declaring a late
+                // restart failure and restoring the journaled VMs. If this process is still
+                // alive after that recovery window, the reboot did not happen: consume the
+                // durable one-shot here and resume in-process. A successful restart terminates
+                // this process before the delay and the new process consumes the same intent.
+                await Task.Delay(FollowAutoLocalRestartFallbackDelay);
+                if (_db.GetFollowAutoResumeIntent() is null)
+                {
+                    return;
+                }
+
+                _logger.LogWarning(
+                    "The queued local restart did not terminate D2RHost; attempting to resume the recorded follow-auto run in the existing process.");
+                await TryResumeFollowAutoAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not resume follow-auto after a late local restart failure.");
+            }
+        });
+    }
+
+    internal static bool HasNewWorkerConnection(
+        FleetNodeSnapshot? snapshot,
+        DateTimeOffset? previousConnectedAt,
+        DateTimeOffset restartRequestedUtc)
+    {
+        if (snapshot is not { Connected: true, ConnectedAt: { } connectedAt })
+        {
+            return false;
+        }
+
+        return connectedAt >= restartRequestedUtc
+            && (previousConnectedAt is not { } previous || connectedAt > previous);
+    }
+
+    internal static bool AreRecoveryAccountsOnline(
+        IReadOnlyCollection<string> recoveryAccountKeys,
+        IReadOnlySet<string> onlineAccountKeys)
+    {
+        return recoveryAccountKeys.All(onlineAccountKeys.Contains);
+    }
+
+    internal static string[] SelectExpectedRecoveryAccountKeys(
+        IEnumerable<string> nodeAccountKeys,
+        IReadOnlySet<string> onlineAccountKeys,
+        IReadOnlySet<string> joinedAccountKeys,
+        IReadOnlySet<string> recoveryPendingAccountKeys,
+        IReadOnlySet<string> parkedAccountKeys)
+    {
+        return nodeAccountKeys
+            .Where(accountKey => onlineAccountKeys.Contains(accountKey)
+                || joinedAccountKeys.Contains(accountKey)
+                || recoveryPendingAccountKeys.Contains(accountKey)
+                || parkedAccountKeys.Contains(accountKey))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    internal static string[] SelectFollowAutoResumeRecoveryAccountKeys(
+        IReadOnlySet<string> onlineAccountKeys,
+        IReadOnlySet<string> recoveryPendingAccountKeys)
+    {
+        return onlineAccountKeys
+            .Concat(recoveryPendingAccountKeys)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     private async Task<FollowAutoCheckResult> RunFollowAutoCheckEntryAsync(
-        SlashContext context,
+        FollowAutoRunOptions options,
         KeyValuePair<string, AccountConfig> entry,
         long followAutoRunId,
         CancellationToken cancellationToken)
     {
         var accountKey = entry.Key;
         var account = entry.Value;
-        var args = BuildMenuArgs(accountKey, account, null, context, followAutoRunId);
+        var args = BuildFollowAutoMenuArgs(accountKey, account, options, followAutoRunId);
         CommandResultInfo? readyResult;
         try
         {
@@ -5373,7 +5918,8 @@ public sealed class DiscordBot
             return new FollowAutoCheckResult(
                 accountKey,
                 FollowAutoCheckOutcome.CheckFailure,
-                $"ready failed before follow-auto check: {FormatExceptionWithAccountStatus(ex, accountKey, account)}");
+                $"ready failed before follow-auto check: {FormatExceptionWithAccountStatus(ex, accountKey, account)}",
+                FollowWarmupOutcome.Failed);
         }
 
         if (readyResult?.Ok == false)
@@ -5381,7 +5927,8 @@ public sealed class DiscordBot
             return new FollowAutoCheckResult(
                 accountKey,
                 FollowAutoCheckOutcome.CheckFailure,
-                $"ready failed before follow-auto check: {readyResult.Message}");
+                $"ready failed before follow-auto check: {readyResult.Message}",
+                FollowWarmupOutcome.Failed);
         }
 
         CommandResultInfo result;
@@ -6955,9 +7502,40 @@ public sealed class DiscordBot
         GameFull
     }
 
+    private enum FollowWarmupOutcome
+    {
+        Succeeded,
+        Failed
+    }
+
     private sealed record FollowAutoCheckResult(
         string AccountKey,
         FollowAutoCheckOutcome Outcome,
+        string Message,
+        FollowWarmupOutcome WarmupOutcome = FollowWarmupOutcome.Succeeded);
+
+    private sealed record FollowAutoRunOptions(
+        IMessageChannel Channel,
+        int DelaySeconds,
+        bool Watch,
+        TimeSpan IdleTimeout,
+        bool MetricsEnabled,
+        int? CharacterSlot,
+        int? FriendRow,
+        IReadOnlyList<string> InitialRecoveryAccountKeys,
+        string? ResumeReason = null);
+
+    private sealed record FollowAutoRunStart(long RunId, CancellationTokenSource Cts);
+
+    private sealed record FollowAutoNodeRecoveryRequest(
+        string NodeId,
+        string TriggerAccountKey,
+        int ConsecutiveFailures);
+
+    private sealed record FollowAutoNodeRecoveryResult(
+        bool RestartQueued,
+        bool RecoveryComplete,
+        bool LocalRestartQueued,
         string Message);
 
     private sealed record FollowAutoGameWatchResult(

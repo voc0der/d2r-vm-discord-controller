@@ -5,6 +5,14 @@ public enum D2RUiCoordinateTarget
     BattleNetPlayButton,
     BattleNetWhatsNewTitle,
     BattleNetWhatsNewCloseButton,
+    BattleNetInstallRequiredContinueButton,
+    BattleNetInstallRequiredCancelButton,
+    BattleNetLocateGameLink,
+    BattleNetFolderPathField,
+    BattleNetFolderSelectButton,
+    BattleNetInstallConfirmationTitle,
+    BattleNetChangeInstallFolder,
+    BattleNetStartInstallButton,
     IntroSkipPoint,
     CharacterSlot1,
     CharacterSlot2,
@@ -100,9 +108,17 @@ public static class D2RUiCoordinateCatalog
         ui ??= Defaults;
         return target switch
         {
-            D2RUiCoordinateTarget.BattleNetPlayButton => Choose(ui.BattleNetPlayButton, Defaults.BattleNetPlayButton),
+            D2RUiCoordinateTarget.BattleNetPlayButton => ChooseBattleNetPlayButton(ui),
             D2RUiCoordinateTarget.BattleNetWhatsNewTitle => Choose(ui.BattleNetWhatsNewTitle, Defaults.BattleNetWhatsNewTitle),
             D2RUiCoordinateTarget.BattleNetWhatsNewCloseButton => Choose(ui.BattleNetWhatsNewCloseButton, Defaults.BattleNetWhatsNewCloseButton),
+            D2RUiCoordinateTarget.BattleNetInstallRequiredContinueButton => Choose(ui.BattleNetInstallRequiredContinueButton, Defaults.BattleNetInstallRequiredContinueButton),
+            D2RUiCoordinateTarget.BattleNetInstallRequiredCancelButton => Choose(ui.BattleNetInstallRequiredCancelButton, Defaults.BattleNetInstallRequiredCancelButton),
+            D2RUiCoordinateTarget.BattleNetLocateGameLink => Choose(ui.BattleNetLocateGameLink, Defaults.BattleNetLocateGameLink),
+            D2RUiCoordinateTarget.BattleNetFolderPathField => Choose(ui.BattleNetFolderPathField, Defaults.BattleNetFolderPathField),
+            D2RUiCoordinateTarget.BattleNetFolderSelectButton => Choose(ui.BattleNetFolderSelectButton, Defaults.BattleNetFolderSelectButton),
+            D2RUiCoordinateTarget.BattleNetInstallConfirmationTitle => Choose(ui.BattleNetInstallConfirmationTitle, Defaults.BattleNetInstallConfirmationTitle),
+            D2RUiCoordinateTarget.BattleNetChangeInstallFolder => Choose(ui.BattleNetChangeInstallFolder, Defaults.BattleNetChangeInstallFolder),
+            D2RUiCoordinateTarget.BattleNetStartInstallButton => Choose(ui.BattleNetStartInstallButton, Defaults.BattleNetStartInstallButton),
             D2RUiCoordinateTarget.IntroSkipPoint => Choose(ui.IntroSkipPoint, Defaults.IntroSkipPoint),
             D2RUiCoordinateTarget.CharacterSlot1 => GetCharacterSlotPoint(ui, 1),
             D2RUiCoordinateTarget.CharacterSlot2 => GetCharacterSlotPoint(ui, 2),
@@ -318,6 +334,14 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.BattleNetPlayButton => "Battle.net Play button",
             D2RUiCoordinateTarget.BattleNetWhatsNewTitle => "Battle.net What's New title sample",
             D2RUiCoordinateTarget.BattleNetWhatsNewCloseButton => "Battle.net What's New close button",
+            D2RUiCoordinateTarget.BattleNetInstallRequiredContinueButton => "Battle.net Installation Required Continue button sample",
+            D2RUiCoordinateTarget.BattleNetInstallRequiredCancelButton => "Battle.net Installation Required Cancel button",
+            D2RUiCoordinateTarget.BattleNetLocateGameLink => "Battle.net Locate the game link",
+            D2RUiCoordinateTarget.BattleNetFolderPathField => "Choose a Folder path field",
+            D2RUiCoordinateTarget.BattleNetFolderSelectButton => "Choose a Folder Select Folder button",
+            D2RUiCoordinateTarget.BattleNetInstallConfirmationTitle => "Battle.net install-location confirmation title sample",
+            D2RUiCoordinateTarget.BattleNetChangeInstallFolder => "Battle.net Change Folder link",
+            D2RUiCoordinateTarget.BattleNetStartInstallButton => "Battle.net Start Install/scan button",
             D2RUiCoordinateTarget.IntroSkipPoint => "D2R intro/title continue point",
             D2RUiCoordinateTarget.CharacterSlot1 => "Character slot 1",
             D2RUiCoordinateTarget.CharacterSlot2 => "Character slot 2",
@@ -366,6 +390,8 @@ public static class D2RUiCoordinateCatalog
         return target switch
         {
             D2RUiCoordinateTarget.BattleNetWhatsNewTitle
+                or D2RUiCoordinateTarget.BattleNetInstallRequiredContinueButton
+                or D2RUiCoordinateTarget.BattleNetInstallConfirmationTitle
                 or D2RUiCoordinateTarget.ModernHealthGlobe
                 or D2RUiCoordinateTarget.ModernManaGlobe
                 or D2RUiCoordinateTarget.LegacyHealthGlobe
@@ -382,6 +408,14 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.BattleNetPlayButton
                 or D2RUiCoordinateTarget.BattleNetWhatsNewTitle
                 or D2RUiCoordinateTarget.BattleNetWhatsNewCloseButton => "logged_in_battle_net.jpg",
+            D2RUiCoordinateTarget.BattleNetInstallRequiredContinueButton
+                or D2RUiCoordinateTarget.BattleNetInstallRequiredCancelButton => "1366x768/battlenet_installation_required.png",
+            D2RUiCoordinateTarget.BattleNetLocateGameLink => "1366x768/battlenet_d2r_install_landing.png",
+            D2RUiCoordinateTarget.BattleNetFolderPathField
+                or D2RUiCoordinateTarget.BattleNetFolderSelectButton => "1366x768/battlenet_choose_install_folder.png",
+            D2RUiCoordinateTarget.BattleNetStartInstallButton => "1366x768/battlenet_start_install_scan.png",
+            D2RUiCoordinateTarget.BattleNetInstallConfirmationTitle
+                or D2RUiCoordinateTarget.BattleNetChangeInstallFolder => "1366x768/battlenet_start_install_scan.png",
             D2RUiCoordinateTarget.IntroSkipPoint => "1366x768/post_intro_splash_screen.png",
             D2RUiCoordinateTarget.CharacterSlot1
                 or D2RUiCoordinateTarget.CharacterSlot2
@@ -440,8 +474,23 @@ public static class D2RUiCoordinateCatalog
                 or D2RUiCoordinateTarget.LegacyManaGlobe
                 or D2RUiCoordinateTarget.InGameHudBar => "Detection sample, not a click target.",
             D2RUiCoordinateTarget.BattleNetWhatsNewTitle => "Popup detection sample, not a click target.",
+            D2RUiCoordinateTarget.BattleNetInstallRequiredContinueButton => "Detection sample only. Repair cancels this prompt because Continue starts a new install.",
+            D2RUiCoordinateTarget.BattleNetFolderPathField
+                or D2RUiCoordinateTarget.BattleNetFolderSelectButton => "Coordinates are relative to the exact-title Choose a Folder dialog, not the Battle.net main window.",
             _ => ""
         };
+    }
+
+    private static UiPoint ChooseBattleNetPlayButton(D2RUiAutomationConfig ui)
+    {
+        var point = Choose(ui.BattleNetPlayButton, Defaults.BattleNetPlayButton);
+        // The first shipped value was measured against the whole 1366x768 desktop, while the
+        // runtime has always resolved Battle.net points against its client rectangle. Treat that
+        // exact persisted default as legacy so existing VM configs move to the measured client-
+        // relative primary-action center without hand editing.
+        return IsNear(point, x: 0.129, y: 0.703)
+            ? Copy(Defaults.BattleNetPlayButton)
+            : point;
     }
 
     private static UiPoint Choose(UiPoint? candidate, UiPoint fallback)

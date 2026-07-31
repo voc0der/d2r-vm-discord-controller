@@ -118,7 +118,8 @@ public sealed class WorkerNodeOperations
                 _config.PowerShellTimeoutSeconds,
                 10,
                 MaximumCommandDurationSeconds),
-            DrainAlerts()));
+            DrainAlerts(),
+            VmSafeHostPowerTransitions: true));
     }
 
     public async Task<CommandResult> HandleCommandAsync(
@@ -148,9 +149,9 @@ public sealed class WorkerNodeOperations
                 "self_update" => await SelfUpdateAsync(durationCts.Token),
                 "vm_status" or "vm_start" or "vm_stop" or "vm_reboot" or "vm_snapshot" =>
                     await HandleHyperVCommandAsync(request with { Command = command }, durationCts.Token),
-                "system_sleep" => QueueSystemAction(HostSystemPowerAction.Sleep),
-                "system_shutdown" => QueueSystemAction(HostSystemPowerAction.Shutdown),
-                "system_restart" => QueueSystemAction(HostSystemPowerAction.Restart),
+                "system_sleep" => await QueueSystemActionAsync(HostSystemPowerAction.Sleep, durationCts.Token),
+                "system_shutdown" => await QueueSystemActionAsync(HostSystemPowerAction.Shutdown, durationCts.Token),
+                "system_restart" => await QueueSystemActionAsync(HostSystemPowerAction.Restart, durationCts.Token),
                 _ => CommandResult.Failure($"Unsupported worker command: {request.Command}")
             };
         }
@@ -237,7 +238,9 @@ public sealed class WorkerNodeOperations
         return await _hyperV.HandleCommandAsync(request, cancellationToken);
     }
 
-    private CommandResult QueueSystemAction(HostSystemPowerAction action)
+    private async Task<CommandResult> QueueSystemActionAsync(
+        HostSystemPowerAction action,
+        CancellationToken cancellationToken)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -253,14 +256,20 @@ public sealed class WorkerNodeOperations
             return CommandResult.Failure($"{_nodeId}: cannot sleep - {sleepError}");
         }
 
-        _system.Queue(action);
+        var vmPreparation = await _system.PrepareVmsAndQueueAsync(action, cancellationToken);
+        if (!vmPreparation.Ok)
+        {
+            return CommandResult.Failure($"{_nodeId}: {vmPreparation.Message}");
+        }
+
         return CommandResult.Success(
-            $"{HostSystemPowerActions.FormatQueuedMessage(action)}{sleepPlan}",
+            $"{HostSystemPowerActions.FormatQueuedMessage(action)}{sleepPlan} {vmPreparation.Message}",
             new
             {
                 nodeId = _nodeId,
                 action = action.ToString().ToLowerInvariant(),
-                queued = true
+                queued = true,
+                stoppedVms = vmPreparation.StoppedVmNames
             });
     }
 

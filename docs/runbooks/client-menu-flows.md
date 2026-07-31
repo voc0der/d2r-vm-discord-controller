@@ -14,10 +14,15 @@ The canonical click/sample coordinate table is [automation-coordinate-catalog.md
 
 ## 1366x768 Flow Click Map
 
-| Flow step | Helper target | 1366x768 X,Y | Snippet/capture anchor |
+| Flow step | Helper target | 1366x768 reference X,Y | Snippet/capture anchor |
 | --- | --- | --- | --- |
-| Click Battle.net Play | `BattleNetPlayButton` | `176,540` | `logged_in_battle_net.jpg` |
+| Click Battle.net Play | `BattleNetPlayButton` | `232,637` | `logged_in_battle_net.jpg` |
 | Close Battle.net What's New popup | `BattleNetWhatsNewCloseButton` | `1152,112` | `battlenet_whats_new_popup.jpg` |
+| Cancel Installation Required | `BattleNetInstallRequiredCancelButton` | `673,443` | `1366x768/battlenet_installation_required.png` |
+| Locate the existing game | `BattleNetLocateGameLink` | `253,693` | `1366x768/battlenet_d2r_install_landing.png` |
+| Type existing install folder | `BattleNetFolderPathField` | `840,674` | `1366x768/battlenet_choose_install_folder.png` |
+| Confirm existing install folder | `BattleNetFolderSelectButton` | `1018,724` | `1366x768/battlenet_choose_install_folder.png` |
+| Start existing-file scan | `BattleNetStartInstallButton` | `1172,676` | `1366x768/battlenet_start_install_scan.png` |
 | Skip intro/title/splash | `IntroSkipPoint` | `683,384` | `1366x768/post_intro_splash_screen.png` |
 | Select character slot 1 | `CharacterSlot1` | `1216,92` | `1366x768/char_screen_act1.png` |
 | Recover from offline character screen | `CharacterOnlineTab` | `1161,38` | `1366x768/snippets/character_online_tab_text.png` |
@@ -39,6 +44,57 @@ The canonical click/sample coordinate table is [automation-coordinate-catalog.md
 | Click Save and Exit | `SaveAndExitButton` | `683,337` | `save_and_exit_resurrected.jpg` |
 
 `FriendContextJoinGame` is the row-1 reference point. The context menu is anchored to the right-click pointer position and does not move with the cursor afterwards, so runtime clicks apply the fixed in-menu `Join Game` offset from the actual row click point.
+
+Battle.net rows use the same 1366x768 reference plane as the coordinate catalog, but live
+clicks are launcher-client-relative. The folder field and Select Folder points are relative to
+the native `Choose a Folder` dialog. The checked-in Battle.net references are cropped from
+1366x768 desktops to remove unrelated desktop/chat content, so their image dimensions differ.
+
+## Battle.net Forgotten Install Location Self-Repair
+
+Battle.net can forget that D2R is already installed and answer `--exec="launch OSI"` with this
+modal instead of starting the game:
+
+![Battle.net Installation Required modal](assets/d2r-ui/1366x768/battlenet_installation_required.png)
+
+This exact two-button modal is the sole authorization for automatic repair. The agent samples
+both the blue Continue and grey Cancel buttons, then clicks **Cancel**. Continue is deliberately
+never clicked because it enters the new-install path before the existing files have been
+validated. While repair owns the launcher, the normal D2R center-click/key startup bursts are
+suppressed so Escape/Enter cannot dismiss or accept launcher UI accidentally.
+
+After cancellation, Battle.net should show D2R's Install landing. The agent clicks **Locate the
+game**; it never clicks the visually identical blue Install button during an authorized repair:
+
+![D2R Install landing with Locate the game](assets/d2r-ui/1366x768/battlenet_d2r_install_landing.png)
+
+`--exec` can restore Battle.net to an unrelated Shop card instead. Repair does not select any
+Shop content; it reissues the D2R product launch command on the bounded ready-loop cadence and
+retries the client-relative Locate point until the D2R card returns:
+
+![Battle.net unexpectedly restored to Shop](assets/d2r-ui/1366x768/battlenet_shop_landing.png)
+
+Before interacting with the chooser, the agent requires an existing `D2R.exe`. The directory is
+the parent of `d2rPath` when that executable override is configured; otherwise it is
+`d2rInstallDirectory` (default `C:\Program Files (x86)\Diablo II Resurrected`). A missing file
+halts repair at the safe side of every install/confirmation button. The chooser is found by its
+exact window title, `Choose a Folder`; the validated full path is typed and **Select Folder** is
+clicked relative to that dialog rather than relative to the launcher:
+
+![Choose a Folder with the existing D2R directory](assets/d2r-ui/1366x768/battlenet_choose_install_folder.png)
+
+If a confirmation panel was already open before this repair submitted a folder, the agent uses
+**Change Folder** first instead of trusting the stale path. Once this run has submitted the
+validated directory, it clicks **Start Install** once. In this state Start Install is Battle.net's
+existing-file scan/registration step; the reference shows the validated location and button:
+
+![Validated D2R install location ready to scan](assets/d2r-ui/1366x768/battlenet_start_install_scan.png)
+
+The scan normally completes in a few seconds. The agent waits five seconds, resends the D2R
+launch command, and leaves repair mode when the D2R process appears. The same repair state object
+survives both phases of the ready loop, so a timeout boundary cannot forget that the modal was
+authorized or that the folder was already submitted. Set
+`repairBattleNetInstallLocationWhenNeeded` to `false` only to opt out of this recovery.
 
 ## Visual Anchors
 

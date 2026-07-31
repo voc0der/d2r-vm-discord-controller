@@ -14,6 +14,7 @@
     ],
     "reconcileSeconds": 30
   },
+  // This physical node keeps its crash-safe pending VM-resume list in this database.
   "databasePath": "C:\\D2ROps\\d2r-host.sqlite",
   "allowedDiscordUserIds": [
     "your_discord_user_id"
@@ -45,6 +46,8 @@
       "sharedSecret": "replace_with_long_random_node_secret_02"
     }
   },
+  // Safe host power actions use these exact local vmName values. Only VMs found Running
+  // are stopped and restored; VMs already Off remain Off.
   "accounts": {
     "hc1": {
       "agentId": "d2r-hc-01",

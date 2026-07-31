@@ -111,6 +111,22 @@ public sealed class FleetHostOperations
             || (IsKnownNode(nodeId) && _localRegistry.GetAgent(nodeId)?.Connected == true);
     }
 
+    internal static string? GetVmSafeHostPowerCapabilityBlockReason(
+        string nodeId,
+        HostSystemPowerAction action,
+        bool capabilityReceivedOnCurrentConnection)
+    {
+        if (capabilityReceivedOnCurrentConnection)
+        {
+            return null;
+        }
+
+        return $"D2RHost worker \"{nodeId}\" has not advertised VM-safe host power transitions "
+            + "on its current connection; "
+            + $"{action.ToString().ToLowerInvariant()} was not queued. Update or restart that "
+            + "worker's D2RHost process, wait for a fresh heartbeat, then retry.";
+    }
+
     public async Task<CommandResult> QueueSystemActionAsync(
         string nodeId,
         HostSystemPowerAction action,
@@ -133,9 +149,15 @@ public sealed class FleetHostOperations
                 return CommandResult.Failure($"{nodeId}: cannot sleep - {sleepError}");
             }
 
-            _localSystem.Queue(action);
+            var vmPreparation = await _localSystem.PrepareVmsAndQueueAsync(action, cancellationToken);
+            if (!vmPreparation.Ok)
+            {
+                return CommandResult.Failure($"{nodeId}: {vmPreparation.Message}");
+            }
+
             return CommandResult.Success(
-                $"{nodeId}: {HostSystemPowerActions.FormatQueuedMessage(action)}{sleepPlan}");
+                $"{nodeId}: {HostSystemPowerActions.FormatQueuedMessage(action)}{sleepPlan} "
+                    + vmPreparation.Message);
         }
 
         if (!IsKnownNode(nodeId))
@@ -149,15 +171,17 @@ public sealed class FleetHostOperations
             return CommandResult.Failure($"D2RHost worker \"{nodeId}\" is offline; system action skipped.");
         }
 
-        // v0.2.216 is the worker that exposed this failure: it acknowledged system_sleep, then its
-        // background SetSuspendState call failed because the privilege fix only arrived in .217.
-        // It also could not self-update out of that state because workers did not exit after
-        // starting an updater until .220. Never let that false acknowledgement take the master
-        // down too; fail synchronously with the one-time bootstrap action instead.
-        if (action == HostSystemPowerAction.Sleep
-            && WorkerNodeCompatibility.GetSleepBlockReason(nodeId, worker.Version) is { } sleepBlockReason)
+        // The system_* command names existed before workers journaled/stopped their VMs. An old
+        // worker can therefore acknowledge the same command while implementing unsafe legacy
+        // behavior. Require an explicit capability from a status frame on this socket; neither a
+        // version guess nor cached inventory from the prior connection is sufficient.
+        var capabilityBlockReason = GetVmSafeHostPowerCapabilityBlockReason(
+            nodeId,
+            action,
+            _fleetRegistry.HasCurrentWorkerVmSafeHostPowerCapability(nodeId, worker));
+        if (capabilityBlockReason is not null)
         {
-            return CommandResult.Failure(sleepBlockReason);
+            return CommandResult.Failure(capabilityBlockReason);
         }
 
         var command = action switch
@@ -169,12 +193,16 @@ public sealed class FleetHostOperations
         };
         try
         {
+            var timeout = TimeSpan.FromSeconds(
+                    _fleetRegistry.GetNodeVmCommandTimeoutSeconds(nodeId))
+                + RemoteCommandHeadroom;
             var result = await _localRegistry.SendCommandAsync(
                 nodeId,
                 command,
                 new { requestedBy = _config.NodeId },
-                TimeSpan.FromSeconds(20),
-                cancellationToken);
+                timeout,
+                cancellationToken,
+                expectedConnectedAt: worker.ConnectedAt);
             return result.Ok
                 ? CommandResult.Success($"{nodeId}: {result.Message}", result.Data)
                 : CommandResult.Failure($"{nodeId}: {result.Message}", result.Data);

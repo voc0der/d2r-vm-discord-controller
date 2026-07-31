@@ -623,6 +623,8 @@ public sealed class HostTopologyTests
         Assert.Single(status.Agents);
         Assert.Single(status.Accounts);
         Assert.Equal(90, status.VmCommandTimeoutSeconds);
+        Assert.True(status.VmSafeHostPowerTransitions);
+        Assert.Contains("\"vmSafeHostPowerTransitions\":true", json, StringComparison.Ordinal);
     }
 
     [Theory]

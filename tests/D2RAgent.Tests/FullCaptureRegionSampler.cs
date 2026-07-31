@@ -23,17 +23,84 @@ internal static class FullCaptureRegionSampler
         int sampleGrid = 9)
     {
         var image = LoadCached(fileName);
-        var width = image.Width;
-        var height = image.Height;
+        return SampleWithinBounds(
+            image,
+            boundsLeft: 0,
+            boundsTop: 0,
+            boundsWidth: image.Width,
+            boundsHeight: image.Height,
+            center,
+            widthRatio,
+            heightRatio,
+            sampleGrid);
+    }
 
-        var centerX = center.X * width;
-        var centerY = center.Y * height;
-        var regionWidth = Math.Max(width * widthRatio, sampleGrid);
-        var regionHeight = Math.Max(height * heightRatio, sampleGrid);
+    // Battle.net's historical ready capture includes the VMConnect frame and desktop around
+    // the launcher. Production resolves launcher coordinates against the Battle.net client
+    // rectangle, so reference tests need the same option rather than silently treating the
+    // whole outer screenshot as the coordinate space.
+    public static ScreenRegionStats SampleWithinBounds(
+        string fileName,
+        int boundsLeft,
+        int boundsTop,
+        int boundsWidth,
+        int boundsHeight,
+        UiPoint center,
+        double widthRatio,
+        double heightRatio,
+        int sampleGrid = 9)
+    {
+        return SampleWithinBounds(
+            LoadCached(fileName),
+            boundsLeft,
+            boundsTop,
+            boundsWidth,
+            boundsHeight,
+            center,
+            widthRatio,
+            heightRatio,
+            sampleGrid);
+    }
+
+    private static ScreenRegionStats SampleWithinBounds(
+        Image<Rgba32> image,
+        int boundsLeft,
+        int boundsTop,
+        int boundsWidth,
+        int boundsHeight,
+        UiPoint center,
+        double widthRatio,
+        double heightRatio,
+        int sampleGrid)
+    {
+        if (boundsWidth <= 0
+            || boundsHeight <= 0
+            || boundsLeft < 0
+            || boundsTop < 0
+            || boundsLeft + boundsWidth > image.Width
+            || boundsTop + boundsHeight > image.Height)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(boundsWidth),
+                $"Sample bounds {boundsLeft},{boundsTop} {boundsWidth}x{boundsHeight} exceed capture {image.Width}x{image.Height}.");
+        }
+
+        var centerX = boundsLeft + (center.X * boundsWidth);
+        var centerY = boundsTop + (center.Y * boundsHeight);
+        var regionWidth = Math.Max(boundsWidth * widthRatio, sampleGrid);
+        var regionHeight = Math.Max(boundsHeight * heightRatio, sampleGrid);
         var grid = Math.Clamp(sampleGrid, 3, 51);
 
         return ScreenRegionStatsCalculator.FromPixels(
-            EnumerateGridPixels(image, centerX, centerY, regionWidth, regionHeight, grid, width, height));
+            EnumerateGridPixels(
+                image,
+                centerX,
+                centerY,
+                regionWidth,
+                regionHeight,
+                grid,
+                image.Width,
+                image.Height));
     }
 
     // Same capture math as Sample above, but through PartyFrameClassifier instead of

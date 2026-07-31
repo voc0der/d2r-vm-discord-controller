@@ -16,6 +16,8 @@ public sealed class VmAgentConfig : AgentConfig
     public string[] BattleNetProcessNames { get; set; } = ["Battle.net", "Battle.net Launcher", "Battle.net Helper"];
     public bool PreferBattleNetExecLaunch { get; set; } = true;
     public int BattleNetExecRetryDelaySeconds { get; set; } = 12;
+    public bool RepairBattleNetInstallLocationWhenNeeded { get; set; } = true;
+    public string D2RInstallDirectory { get; set; } = @"C:\Program Files (x86)\Diablo II Resurrected";
     public string? D2RPath { get; set; }
     public string? D2RArgs { get; set; }
     public string D2RProcessName { get; set; } = "D2R";
@@ -97,9 +99,17 @@ public sealed class D2RUiAutomationConfig
     public int FriendRowFingerprintMaxScanRows { get; set; } = 8;
     public bool ClickBattleNetPlayWhenNeeded { get; set; } = true;
     public bool DismissBattleNetWhatsNewWhenNeeded { get; set; } = true;
-    public UiPoint BattleNetPlayButton { get; set; } = new(0.129, 0.703);
+    public UiPoint BattleNetPlayButton { get; set; } = new(0.170, 0.830);
     public UiPoint BattleNetWhatsNewTitle { get; set; } = new(0.226, 0.187);
     public UiPoint BattleNetWhatsNewCloseButton { get; set; } = new(0.843, 0.146);
+    public UiPoint BattleNetInstallRequiredContinueButton { get; set; } = new(0.388, 0.577);
+    public UiPoint BattleNetInstallRequiredCancelButton { get; set; } = new(0.493, 0.577);
+    public UiPoint BattleNetLocateGameLink { get; set; } = new(0.185, 0.902);
+    public UiPoint BattleNetFolderPathField { get; set; } = new(0.615, 0.878);
+    public UiPoint BattleNetFolderSelectButton { get; set; } = new(0.745, 0.943);
+    public UiPoint BattleNetInstallConfirmationTitle { get; set; } = new(0.540, 0.145);
+    public UiPoint BattleNetChangeInstallFolder { get; set; } = new(0.870, 0.260);
+    public UiPoint BattleNetStartInstallButton { get; set; } = new(0.858, 0.880);
     public UiPoint IntroSkipPoint { get; set; } = new(0.500, 0.500);
     public int IntroClickCount { get; set; } = 80;
     public int IntroClickDelayMs { get; set; } = 250;

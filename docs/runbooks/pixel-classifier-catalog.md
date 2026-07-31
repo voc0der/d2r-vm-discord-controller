@@ -2,8 +2,9 @@
 
 This is the companion to [automation-coordinate-catalog.md](automation-coordinate-catalog.md): that
 doc says *where* each region is sampled, this one says *what's checked* once it's sampled - the
-actual color/luminance thresholds in [D2RScreenClassifier.cs](../../agents/D2RAgent/D2RScreenClassifier.cs)
-and the region definitions at each call site in `VmOperations.cs`.
+actual color/luminance thresholds in [D2RScreenClassifier.cs](../../agents/D2RAgent/D2RScreenClassifier.cs),
+[BattleNetScreenClassifier.cs](../../agents/D2RAgent/BattleNetScreenClassifier.cs), and the
+region definitions at each call site in `VmOperations.cs`.
 
 Every region is sampled with `ScreenRegionStats` (luminance average/std-dev, and the
 bright/grey/dark/orange/red/blue ratio of pixels in the sampled grid) - never raw pixel
@@ -35,6 +36,9 @@ Verified test coverage for everything in this doc:
   `ScreenRegionStats`, including the true/false boundary cases for each function.
 - `tests/D2RAgent.Tests/D2RScreenClassifierSnippetTests.cs` - the small cropped snippet
   images each threshold was tuned against, loaded via `ScreenSnippetLoader`.
+- `tests/D2RAgent.Tests/BattleNetScreenClassifierTests.cs` - every Battle.net repair gate
+  sampled from all five cropped launcher/dialog captures plus the historical installed-Play
+  capture, including the intentional Play/Install primary-button overlap.
 - `tests/D2RAgent.Tests/ReferenceCaptureFlowTests.cs` - the real end-to-end decision tree
   (`ReferenceCaptureClassifier`, mirroring `VmOperations.DetectVisibleD2RState`/
   `DetectReadyScreenState`'s exact priority order) against every full-page reference
@@ -52,6 +56,34 @@ Verified test coverage for everything in this doc:
   newly-disappeared overlap on any of them now shows up as a result change here. If a new
   `InGame` capture is added, add it here too with its actual measured overlap status, not an
   assumed `false`.
+
+## Battle.net install-location repair
+
+These checks are outside the D2R visible-state priority tree below. They run only while D2R is
+not running and Battle.net is available. Most importantly, a blue Install button is not repair
+authorization: Install and Play use the same visual treatment. Only the combined two-button
+`Installation Required` modal can set the repair state to authorized.
+
+| Function | Regions (launcher-client center, width x height ratio) | Threshold |
+| --- | --- | --- |
+| `IsInstallationRequiredModal` | Continue `0.388,0.577` `0.105x0.050`; Cancel `0.493,0.577` `0.090x0.050` | Continue: `Samples > 0`, `BlueRatio > 0.75`, `AverageLuminance > 80`, `DarkRatio < 0.15`. Cancel: `Samples > 0`, `GreyRatio > 0.65`, `AverageLuminance > 50`, `DarkRatio < 0.20`, `LuminanceStdDev > 30`. |
+| `IsPrimaryActionReady` | Play/Install `0.170,0.830` `0.160x0.060` | `Samples > 0`, `BlueRatio > 0.80`, `AverageLuminance > 75`, `DarkRatio < 0.15`. Used to click Play only outside authorized repair; inside repair it can identify the landing but cannot authorize clicking Install. |
+| `IsInstallLocationConfirmation` | Start Install `0.858,0.880` `0.135x0.050`; title `0.540,0.145` `0.360x0.060` | Start: `Samples > 0`, `BlueRatio > 0.70`, `AverageLuminance > 80`, `DarkRatio < 0.15`. Title: `Samples > 0`, `BrightRatio > 0.15`, `LuminanceStdDev > 60`, `DarkRatio > 0.55`. Both must pass. |
+
+Measured 9x9 sample-grid margins from the reference captures:
+
+- Installation Required: Continue `lum=114.5`, `blue=0.914`, `dark=0.000`; Cancel
+  `lum=76.5`, `stdDev=56.1`, `grey=0.914`, `dark=0.000`.
+- The Shop false-positive candidate reaches only `blue=0.543` at Continue and `grey=0.136`
+  at Cancel, so the combined modal gate rejects it.
+- Installed Play reads `lum=111.1`, `blue=0.94`, `dark=0.00`; broken-state Install reads
+  `lum=101.2`, `blue=1.00`, `dark=0.00`. Their intentional overlap is why the modal gate, local
+  `D2R.exe` check, and repair state are load-bearing safety controls.
+- The folder chooser can leave the blue Install button visible behind it, but that sampled
+  region falls to `lum=40.3`, below the primary-action floor.
+- Start Install reads `lum=121.1`, `blue=0.864`, `dark=0.000`; its title reads
+  `stdDev=101.6`, `bright=0.272`, `dark=0.716`. Every other repair reference rejects the
+  combined confirmation gate.
 
 ## Detection priority order
 

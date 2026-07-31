@@ -83,7 +83,9 @@ public sealed class FleetAgentUpdateTests
         Assert.Contains("update started", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("still running v0.2.216", message);
         Assert.Contains("cannot stop the host process", message);
-        Assert.Contains("/d2r system restart node:server-b", message);
+        Assert.Contains("Stop its VMs and reboot that PC locally", message);
+        Assert.Contains("will not send a remote host restart", message);
+        Assert.DoesNotContain("/d2r system restart", message);
     }
 
     [Theory]

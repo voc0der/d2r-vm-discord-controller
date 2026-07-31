@@ -9,6 +9,8 @@ public sealed class VmOperations
 {
     private const string DefaultBattleNetPath = @"C:\Program Files (x86)\Battle.net\Battle.net.exe";
     private const string DefaultBattleNetD2RArgs = "--exec=\"launch OSI\"";
+    private const string DefaultD2RInstallDirectory = @"C:\Program Files (x86)\Diablo II Resurrected";
+    private const string BattleNetFolderDialogTitle = "Choose a Folder";
     private const int MaxD2RStartTimeoutSeconds = 40;
     private const int MaxReadyStartupSkipSeconds = 45;
     private const int MaxCharacterScreenReconnectSeconds = 45;
@@ -1152,7 +1154,13 @@ public sealed class VmOperations
                 await CollectStatusAsync(cancellationToken));
         }
 
-        var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(input, cancellationToken, keepLaunchAlive: true, followAutoRunId: followAutoRunId);
+        var battleNetRepair = new BattleNetInstallRepairState();
+        var ready = await RunStartupReadyInputPlanUntilCharacterScreenAsync(
+            input,
+            cancellationToken,
+            keepLaunchAlive: true,
+            followAutoRunId: followAutoRunId,
+            battleNetRepair: battleNetRepair);
         if (!ready.Ready)
         {
             var detectorReady = await PumpStartupSkipInputsUntilCharacterScreenAsync(
@@ -1160,7 +1168,8 @@ public sealed class VmOperations
                 cancellationToken,
                 Math.Max(GetReadyLoopTimeoutSeconds(), MenuReadyFallbackTimeoutSeconds),
                 keepLaunchAlive: true,
-                followAutoRunId: followAutoRunId);
+                followAutoRunId: followAutoRunId,
+                battleNetRepair: battleNetRepair);
             ready = detectorReady with
             {
                 Nudges = ready.Nudges + detectorReady.Nudges,
@@ -3895,20 +3904,31 @@ public sealed class VmOperations
         return null;
     }
 
-    private ReadyLaunchNudgeState CreateReadyLaunchNudgeState()
+    private ReadyLaunchNudgeState CreateReadyLaunchNudgeState(
+        BattleNetInstallRepairState? battleNetRepair = null)
     {
         return new ReadyLaunchNudgeState
         {
             NextLaunchRetryAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds()),
-            NextPlayClickAt = DateTimeOffset.UtcNow
+            NextPlayClickAt = DateTimeOffset.UtcNow,
+            BattleNetRepair = battleNetRepair ?? new BattleNetInstallRepairState()
         };
     }
 
-    private void NudgeD2RLaunchDuringReady(WindowsInput input, ReadyLaunchNudgeState state)
+    private async Task<bool> NudgeD2RLaunchDuringReadyAsync(
+        WindowsInput input,
+        ReadyLaunchNudgeState state,
+        CancellationToken cancellationToken)
     {
         if (IsD2RNamedProcessRunning())
         {
-            return;
+            state.BattleNetRepair.Completed = true;
+            return false;
+        }
+
+        if (await TryRepairBattleNetInstallLocationAsync(input, state, cancellationToken))
+        {
+            return true;
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -3924,13 +3944,14 @@ public sealed class VmOperations
 
         if (now < state.NextLaunchRetryAt)
         {
-            return;
+            return false;
         }
 
         var launch = TrySendD2RLaunchCommand();
         state.LaunchAttempts++;
         state.LastLaunchMessage = launch.Message;
         state.NextLaunchRetryAt = now + TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds());
+        return false;
     }
 
     private async Task<bool> EnsureOnlineCharacterScreenAsync(
@@ -3985,7 +4006,8 @@ public sealed class VmOperations
         CancellationToken cancellationToken,
         int? timeoutSeconds = null,
         bool keepLaunchAlive = false,
-        long? followAutoRunId = null)
+        long? followAutoRunId = null,
+        BattleNetInstallRepairState? battleNetRepair = null)
     {
         var skipSeconds = timeoutSeconds ?? GetReadyLoopTimeoutSeconds();
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(skipSeconds);
@@ -3996,7 +4018,7 @@ public sealed class VmOperations
         var nextWindowRelativeDetectionAt = DateTimeOffset.UtcNow;
         var nextProcessCheckAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
-        var launchNudges = CreateReadyLaunchNudgeState();
+        var launchNudges = CreateReadyLaunchNudgeState(battleNetRepair);
 
         ReadyWaitResult Result(bool ready, int nudges, ReadyScreenState state, int timeout, bool processExitedDuringWait = false)
         {
@@ -4050,7 +4072,15 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            if (lastState == ReadyScreenState.ConnectingToBattleNet)
+            var repairUiActive = keepLaunchAlive
+                && await NudgeD2RLaunchDuringReadyAsync(input, launchNudges, cancellationToken);
+            if (repairUiActive)
+            {
+                // The generic center-click/G startup bursts are safe inside D2R, but not over
+                // Battle.net's Install/Continue UI. The dedicated repair state machine owns all
+                // input until the validated existing install has been located.
+            }
+            else if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
                 // Do not press Escape here - that can cancel a real login handshake - but keep
                 // sending the same click/G/Space/Enter burst used for the post-intro splash.
@@ -4068,11 +4098,6 @@ public sealed class VmOperations
             {
                 SendReadySkipBurst(input);
                 nudges++;
-            }
-
-            if (keepLaunchAlive)
-            {
-                NudgeD2RLaunchDuringReady(input, launchNudges);
             }
 
             if (now >= nextProcessCheckAt)
@@ -4110,7 +4135,8 @@ public sealed class VmOperations
         WindowsInput input,
         CancellationToken cancellationToken,
         bool keepLaunchAlive = false,
-        long? followAutoRunId = null)
+        long? followAutoRunId = null,
+        BattleNetInstallRepairState? battleNetRepair = null)
     {
         var plan = StartupReadyInputPlan.FromConfig(_config.Ui);
         var timeoutSeconds = GetReadyStartupSkipSeconds();
@@ -4121,7 +4147,7 @@ public sealed class VmOperations
         var nextWindowRelativeDetectionAt = DateTimeOffset.UtcNow;
         var nextProcessCheckAt = DateTimeOffset.UtcNow;
         var sawD2RProcessRunning = false;
-        var launchNudges = CreateReadyLaunchNudgeState();
+        var launchNudges = CreateReadyLaunchNudgeState(battleNetRepair);
 
         ReadyWaitResult Result(bool ready, int nudges, ReadyScreenState state, int timeout, bool processExitedDuringWait = false)
         {
@@ -4171,7 +4197,13 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            if (lastState == ReadyScreenState.ConnectingToBattleNet)
+            var repairUiActive = keepLaunchAlive
+                && await NudgeD2RLaunchDuringReadyAsync(input, launchNudges, cancellationToken);
+            if (repairUiActive)
+            {
+                // Dedicated Battle.net repair input ran (or is waiting on its next safe step).
+            }
+            else if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
                 // No Escape, but do keep nudging. A false positive here otherwise freezes the
                 // post-intro splash until the ready command times out.
@@ -4187,11 +4219,6 @@ public sealed class VmOperations
             {
                 SendReadyIntroClick(input);
                 nudges++;
-            }
-
-            if (keepLaunchAlive)
-            {
-                NudgeD2RLaunchDuringReady(input, launchNudges);
             }
 
             if (now >= nextProcessCheckAt)
@@ -4247,7 +4274,13 @@ public sealed class VmOperations
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
-            if (lastState == ReadyScreenState.ConnectingToBattleNet)
+            var repairUiActive = keepLaunchAlive
+                && await NudgeD2RLaunchDuringReadyAsync(input, launchNudges, cancellationToken);
+            if (repairUiActive)
+            {
+                // Dedicated Battle.net repair input ran (or is waiting on its next safe step).
+            }
+            else if (lastState == ReadyScreenState.ConnectingToBattleNet)
             {
                 // Still avoid Escape, but keep sending G/Space/Enter/click in case this is the
                 // plain post-intro splash being misread as the login modal.
@@ -4263,11 +4296,6 @@ public sealed class VmOperations
             {
                 SendReadyTitleSkipBurst(input);
                 nudges++;
-            }
-
-            if (keepLaunchAlive)
-            {
-                NudgeD2RLaunchDuringReady(input, launchNudges);
             }
 
             if (now >= nextProcessCheckAt)
@@ -6775,6 +6803,265 @@ public sealed class VmOperations
         return LaunchBattleNetD2R();
     }
 
+    private async Task<bool> TryRepairBattleNetInstallLocationAsync(
+        WindowsInput input,
+        ReadyLaunchNudgeState launchState,
+        CancellationToken cancellationToken)
+    {
+        var repair = launchState.BattleNetRepair;
+        if (!_config.RepairBattleNetInstallLocationWhenNeeded
+            || repair.Completed
+            || !IsBattleNetRunning())
+        {
+            return false;
+        }
+
+        var battleNetNames = GetBattleNetProcessNames();
+        bool installationRequired;
+        try
+        {
+            var continueButton = input.SampleRegion(
+                GetUiPoint(D2RUiCoordinateTarget.BattleNetInstallRequiredContinueButton),
+                widthRatio: 0.105,
+                heightRatio: 0.050,
+                coordinateProcessNames: battleNetNames);
+            var cancelButton = input.SampleRegion(
+                GetUiPoint(D2RUiCoordinateTarget.BattleNetInstallRequiredCancelButton),
+                widthRatio: 0.090,
+                heightRatio: 0.050,
+                coordinateProcessNames: battleNetNames);
+            installationRequired = BattleNetScreenClassifier.IsInstallationRequiredModal(
+                continueButton,
+                cancelButton);
+        }
+        catch (InvalidOperationException)
+        {
+            installationRequired = false;
+        }
+
+        if (installationRequired)
+        {
+            repair.Authorized = true;
+            if (!repair.ModalCancelled)
+            {
+                // Continue enters the 30GB installation path. Cancel is the only safe exit before
+                // selecting the already-existing D2R directory.
+                if (!TryClickBattleNetPoint(
+                        input,
+                        D2RUiCoordinateTarget.BattleNetInstallRequiredCancelButton,
+                        battleNetNames))
+                {
+                    repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+                    launchState.LastLaunchMessage =
+                        "Detected Battle.net's Installation Required prompt, but its Cancel button could not receive input; retrying safely.";
+                    return true;
+                }
+
+                repair.ModalCancelled = true;
+                repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+                launchState.LastLaunchMessage =
+                    "Detected Battle.net's Installation Required prompt and cancelled the new-install path; locating the existing game.";
+            }
+
+            return true;
+        }
+
+        if (!repair.Authorized)
+        {
+            return false;
+        }
+
+        var installDirectory = ResolveD2RInstallDirectory();
+        var d2rExecutable = Path.Combine(installDirectory, "D2R.exe");
+        if (!File.Exists(d2rExecutable))
+        {
+            launchState.LastLaunchMessage =
+                $"Battle.net install-location repair was detected, but the validated game executable is missing: {d2rExecutable}";
+            return true;
+        }
+
+        if (input.IsWindowWithExactTitleOpen(BattleNetFolderDialogTitle))
+        {
+            if (DateTimeOffset.UtcNow < repair.NextActionAt)
+            {
+                return true;
+            }
+
+            if (!input.TryFocusWindowWithExactTitle(BattleNetFolderDialogTitle)
+                || !input.LeftClickWindowWithExactTitle(
+                    BattleNetFolderDialogTitle,
+                    GetUiPoint(D2RUiCoordinateTarget.BattleNetFolderPathField)))
+            {
+                launchState.LastLaunchMessage =
+                    "Battle.net opened Choose a Folder, but the VM agent could not focus its path field.";
+                repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(150), cancellationToken);
+            input.SelectAll();
+            input.DeleteSelection();
+            input.TypeText(installDirectory);
+            await Task.Delay(TimeSpan.FromMilliseconds(150), cancellationToken);
+            if (!input.LeftClickWindowWithExactTitle(
+                    BattleNetFolderDialogTitle,
+                    GetUiPoint(D2RUiCoordinateTarget.BattleNetFolderSelectButton)))
+            {
+                launchState.LastLaunchMessage =
+                    "Battle.net's existing-game directory was typed, but Select Folder could not be clicked.";
+                repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+                return true;
+            }
+
+            repair.FolderSubmitted = true;
+            repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(2);
+            launchState.LastLaunchMessage =
+                $"Submitted the validated existing D2R directory to Battle.net: {installDirectory}";
+            return true;
+        }
+
+        if (DateTimeOffset.UtcNow < repair.NextActionAt)
+        {
+            return true;
+        }
+
+        var confirmationVisible = IsBattleNetInstallLocationConfirmationVisible(input, battleNetNames);
+        if (confirmationVisible)
+        {
+            if (!repair.FolderSubmitted)
+            {
+                // A stale confirmation panel may already be open from a previous manual attempt.
+                // Never accept its path: force the validated directory through the chooser first.
+                if (!TryClickBattleNetPoint(
+                        input,
+                        D2RUiCoordinateTarget.BattleNetChangeInstallFolder,
+                        battleNetNames))
+                {
+                    repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+                    launchState.LastLaunchMessage =
+                        "Battle.net showed a stale install-location confirmation, but Change Folder could not receive input; retrying safely.";
+                    return true;
+                }
+
+                repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+                launchState.LastLaunchMessage =
+                    "Battle.net already showed an install-location confirmation; reopening Change Folder to validate D2R.exe first.";
+                return true;
+            }
+
+            if (!repair.StartInstallClicked)
+            {
+                // With a directory whose D2R.exe was verified above, this button makes Battle.net
+                // scan/register the existing files; it must never be clicked for an unvalidated
+                // or default-only path.
+                if (!TryClickBattleNetPoint(
+                        input,
+                        D2RUiCoordinateTarget.BattleNetStartInstallButton,
+                        battleNetNames))
+                {
+                    repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+                    launchState.LastLaunchMessage =
+                        "Battle.net's validated Start Install scan button could not receive input; retrying safely.";
+                    return true;
+                }
+
+                repair.StartInstallClicked = true;
+                repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+                launchState.LastLaunchMessage =
+                    "Battle.net is scanning the validated existing D2R install; waiting to relaunch.";
+                return true;
+            }
+        }
+
+        if (!repair.FolderSubmitted)
+        {
+            // --exec may have left Battle.net on Shop. Reissue it before each bounded Locate
+            // attempt; clicking the same relative point on Shop is inert, and the next attempt
+            // runs after the product command has brought the D2R card back.
+            var relaunch = TrySendD2RLaunchCommand();
+            launchState.LaunchAttempts++;
+            launchState.LastLaunchMessage = relaunch.Message;
+            _ = TryClickBattleNetPoint(
+                input,
+                D2RUiCoordinateTarget.BattleNetLocateGameLink,
+                battleNetNames);
+            repair.LocateAttempts++;
+            repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+            return true;
+        }
+
+        var launch = TrySendD2RLaunchCommand();
+        launchState.LaunchAttempts++;
+        launchState.LastLaunchMessage = launch.Ok
+            ? "Battle.net install-location repair completed; D2R launch command resent."
+            : launch.Message;
+        repair.NextActionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+        return true;
+    }
+
+    private bool IsBattleNetInstallLocationConfirmationVisible(
+        WindowsInput input,
+        string[] battleNetNames)
+    {
+        try
+        {
+            var startInstall = input.SampleRegion(
+                GetUiPoint(D2RUiCoordinateTarget.BattleNetStartInstallButton),
+                widthRatio: 0.135,
+                heightRatio: 0.050,
+                coordinateProcessNames: battleNetNames);
+            var title = input.SampleRegion(
+                GetUiPoint(D2RUiCoordinateTarget.BattleNetInstallConfirmationTitle),
+                widthRatio: 0.360,
+                heightRatio: 0.060,
+                coordinateProcessNames: battleNetNames);
+            return BattleNetScreenClassifier.IsInstallLocationConfirmation(startInstall, title);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private bool TryClickBattleNetPoint(
+        WindowsInput input,
+        D2RUiCoordinateTarget target,
+        string[] battleNetNames)
+    {
+        var point = GetUiPoint(target);
+        try
+        {
+            var delivered = false;
+            if (input.TryFocusProcess(battleNetNames))
+            {
+                input.LeftClick(point, battleNetNames);
+                delivered = true;
+            }
+
+            return input.SendWindowClick(point, battleNetNames, MouseButton.Left) || delivered;
+        }
+        catch (InvalidOperationException)
+        {
+            // Battle.net can replace its main window while switching cards/dialogs. The next
+            // ready-loop pass re-resolves the window and safely retries the same state-machine step.
+            return false;
+        }
+    }
+
+    private string ResolveD2RInstallDirectory()
+    {
+        if (!string.IsNullOrWhiteSpace(_config.D2RPath)
+            && Path.GetDirectoryName(_config.D2RPath) is { Length: > 0 } directDirectory)
+        {
+            return Path.GetFullPath(directDirectory);
+        }
+
+        return Path.GetFullPath(
+            string.IsNullOrWhiteSpace(_config.D2RInstallDirectory)
+                ? DefaultD2RInstallDirectory
+                : _config.D2RInstallDirectory);
+    }
+
     private bool TryClickBattleNetPlay(WindowsInput input, bool requireButtonReady = false)
     {
         if (!_config.Ui.ClickBattleNetPlayWhenNeeded
@@ -6848,9 +7135,7 @@ public sealed class VmOperations
             widthRatio: 0.16,
             heightRatio: 0.06,
             coordinateProcessNames: GetBattleNetProcessNames());
-        return stats.BlueRatio > 0.20
-            && stats.AverageLuminance > 40
-            && stats.DarkRatio < 0.70;
+        return BattleNetScreenClassifier.IsPrimaryActionReady(stats);
     }
 
     private CommandResult LaunchBattleNet()
@@ -7258,6 +7543,18 @@ public sealed class VmOperations
         public int LaunchAttempts { get; set; }
         public int PlayClicks { get; set; }
         public string LastLaunchMessage { get; set; } = "(none)";
+        public required BattleNetInstallRepairState BattleNetRepair { get; init; }
+    }
+
+    private sealed class BattleNetInstallRepairState
+    {
+        public bool Authorized { get; set; }
+        public bool ModalCancelled { get; set; }
+        public bool FolderSubmitted { get; set; }
+        public bool StartInstallClicked { get; set; }
+        public bool Completed { get; set; }
+        public int LocateAttempts { get; set; }
+        public DateTimeOffset NextActionAt { get; set; }
     }
 
     private sealed class LegacyGraphicsToggleState

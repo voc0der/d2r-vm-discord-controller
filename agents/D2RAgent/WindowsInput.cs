@@ -113,6 +113,43 @@ internal sealed class WindowsInput
         return TrySetForegroundWindowTarget(target.WindowHandle, target.ProcessId);
     }
 
+    public bool IsWindowWithExactTitleOpen(string title)
+    {
+        EnsureWindows();
+        return WindowsProcessFinder.FindWindowTargetByExactTitle(title) is not null;
+    }
+
+    public bool TryFocusWindowWithExactTitle(string title)
+    {
+        EnsureWindows();
+        var target = WindowsProcessFinder.FindWindowTargetByExactTitle(title);
+        return target is not null
+            && target.WindowHandle != IntPtr.Zero
+            && TrySetForegroundWindowTarget(target.WindowHandle, target.ProcessId);
+    }
+
+    public bool LeftClickWindowWithExactTitle(string title, UiPoint point)
+    {
+        EnsureWindows();
+        var target = WindowsProcessFinder.FindWindowTargetByExactTitle(title);
+        if (target is null
+            || target.WindowHandle == IntPtr.Zero
+            || !TryGetClientBounds(target.WindowHandle, out var bounds))
+        {
+            return false;
+        }
+
+        _ = TrySetForegroundWindowTarget(target.WindowHandle, target.ProcessId);
+        var screenWidth = GetSystemMetrics(SmCxScreen);
+        var screenHeight = GetSystemMetrics(SmCyScreen);
+        var x = Math.Clamp((int)Math.Round(bounds.Left + (point.X * bounds.Width)), 0, screenWidth - 1);
+        var y = Math.Clamp((int)Math.Round(bounds.Top + (point.Y * bounds.Height)), 0, screenHeight - 1);
+        SendVirtualMouseClick(x, y, MouseButton.Left);
+        SendLegacyMouseClick(x, y, MouseButton.Left);
+        SendWindowMouseClick(target.WindowHandle, x, y, MouseButton.Left);
+        return true;
+    }
+
     public bool TryClickProcessWindowCenter(string processName)
     {
         return TryClickProcessWindowCenter([processName]);

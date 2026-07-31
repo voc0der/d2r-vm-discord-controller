@@ -58,6 +58,9 @@ try
     builder.Services.AddSingleton<AgentRegistry>();
     builder.Services.AddSingleton<FleetRegistry>();
     builder.Services.AddSingleton<HyperVOperations>();
+    builder.Services.AddSingleton<ILocalVmPowerOperations>(provider =>
+        provider.GetRequiredService<HyperVOperations>());
+    builder.Services.AddSingleton<VmPowerLifecycleCoordinator>();
     builder.Services.AddSingleton<FleetHostOperations>();
     builder.Services.AddSingleton<HostSystemOperations>();
     builder.Services.AddSingleton<WorkerNodeOperations>();
@@ -67,6 +70,9 @@ try
     builder.Services.AddSingleton<IHostFirewallBackend, WindowsComHostFirewallBackend>();
     builder.Services.AddSingleton<IHostNetworkAddressProvider, SystemHostNetworkAddressProvider>();
     builder.Services.AddSingleton<HostFirewallManager>();
+    builder.Services.AddSingleton<VmPowerRestoreService>();
+    builder.Services.AddSingleton<IHostedService>(provider =>
+        provider.GetRequiredService<VmPowerRestoreService>());
     builder.Services.AddSingleton<IHostedService>(provider =>
         provider.GetRequiredService<HostFirewallManager>());
     builder.Services.AddSingleton<FleetAgentUpdater>();
@@ -83,6 +89,18 @@ try
     }
 
     var app = builder.Build();
+    var vmLifecycle = app.Services.GetRequiredService<VmPowerLifecycleCoordinator>();
+    var initialVmRestore = await vmLifecycle.RestorePendingAsync();
+    if (!initialVmRestore.Complete)
+    {
+        LogStartup(
+            "VM restore remains pending and will retry in the background: "
+                + string.Join(", ", initialVmRestore.PendingVmNames)
+                + (initialVmRestore.Failures.Count == 0
+                    ? ""
+                    : ". " + string.Join("; ", initialVmRestore.Failures)));
+    }
+
     var firewallManager = app.Services.GetRequiredService<HostFirewallManager>();
     _ = firewallManager.ReconcileNow();
 

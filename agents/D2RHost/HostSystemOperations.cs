@@ -13,12 +13,18 @@ public sealed class HostSystemOperations
     /// laptops do exactly that: the call reports success and the machine stays awake.
     /// </summary>
     private static readonly TimeSpan MinimumCredibleSleep = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan VmRestoreRetryDelay = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan ShutdownWatchdogDelay = TimeSpan.FromSeconds(30);
 
     private readonly ILogger<HostSystemOperations> _logger;
+    private readonly VmPowerLifecycleCoordinator? _vmLifecycle;
 
-    public HostSystemOperations(ILogger<HostSystemOperations> logger)
+    public HostSystemOperations(
+        ILogger<HostSystemOperations> logger,
+        VmPowerLifecycleCoordinator? vmLifecycle = null)
     {
         _logger = logger;
+        _vmLifecycle = vmLifecycle;
     }
 
     /// <summary>
@@ -136,6 +142,30 @@ public sealed class HostSystemOperations
             try
             {
                 Execute(action);
+                if (action == HostSystemPowerAction.Sleep && _vmLifecycle is not null)
+                {
+                    // SetSuspendState blocks until resume. A hibernating host process may instead
+                    // be restarted by Windows, in which case the startup restore service consumes
+                    // the same persisted list.
+                    await RestorePendingVmsUntilCompleteAsync("host resume");
+                }
+                else if (_vmLifecycle is not null)
+                {
+                    // shutdown.exe /t 0 should terminate this process promptly. If Windows
+                    // accepted the command but never transitions, do not strand the pre-stopped
+                    // VMs forever merely because Process.Start itself succeeded.
+                    await Task.Delay(ShutdownWatchdogDelay);
+                    var pendingVmCount = _vmLifecycle.GetPendingVmNames().Count;
+                    _logger.LogError(
+                        "Host system action {Action} did not terminate D2RHost within {Delay}; releasing the transition arm and restoring {PendingVmCount} pending VM(s).",
+                        action,
+                        ShutdownWatchdogDelay,
+                        pendingVmCount);
+
+                    // Call even with an empty journal so the coordinator releases the in-memory
+                    // transition arm used to reject overlapping host power commands.
+                    await RestorePendingVmsUntilCompleteAsync($"failed {action} watchdog");
+                }
             }
             catch (Exception ex)
             {
@@ -144,8 +174,91 @@ public sealed class HostSystemOperations
                 {
                     ReportSleepFailure($"Host sleep failed: {ex.Message}");
                 }
+
+                if (_vmLifecycle is not null)
+                {
+                    await RestorePendingVmsUntilCompleteAsync($"failed {action}");
+                }
             }
         });
+    }
+
+    /// <summary>
+    /// Confirms configured running VMs are off and durably recorded before the physical-host
+    /// action is allowed onto the background queue.
+    /// </summary>
+    public async Task<VmPowerPreparationResult> PrepareVmsAndQueueAsync(
+        HostSystemPowerAction action,
+        CancellationToken cancellationToken = default)
+    {
+        VmPowerPreparationResult preparation;
+        try
+        {
+            preparation = _vmLifecycle is null
+                ? new VmPowerPreparationResult(
+                    true,
+                    [],
+                    "VM lifecycle coordination is unavailable; no configured VM stop was attempted.")
+                : await _vmLifecycle.PrepareForHostPowerActionAsync(cancellationToken);
+        }
+        catch
+        {
+            QueuePendingVmRollbackIfNeeded("aborted host power preparation");
+            throw;
+        }
+
+        if (!preparation.Ok)
+        {
+            if (preparation.RetryRestorePending)
+            {
+                QueuePendingVmRollbackIfNeeded("failed host power preparation");
+            }
+
+            return preparation;
+        }
+
+        Queue(action);
+        return preparation;
+    }
+
+    private void QueuePendingVmRollbackIfNeeded(string reason)
+    {
+        if (_vmLifecycle?.GetPendingVmNames().Count > 0)
+        {
+            _ = Task.Run(() => RestorePendingVmsUntilCompleteAsync(reason));
+        }
+    }
+
+    private async Task RestorePendingVmsUntilCompleteAsync(string reason)
+    {
+        if (_vmLifecycle is null)
+        {
+            return;
+        }
+
+        // Always make one coordinator call: a host with no Running VMs still has an in-memory
+        // transition arm that must be released after resume or a failed power action.
+        do
+        {
+            try
+            {
+                var restore = await _vmLifecycle.RestorePendingAsync();
+                if (restore.Complete)
+                {
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "VM restore after {Reason} failed; the persisted journal will be retried.",
+                    reason);
+            }
+
+            await Task.Delay(VmRestoreRetryDelay);
+        }
+        while (_vmLifecycle.GetPendingVmNames().Count > 0);
     }
 
     private void Execute(HostSystemPowerAction action)

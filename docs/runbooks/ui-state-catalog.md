@@ -8,6 +8,11 @@ Coordinates for click/sample targets in these states are centralized in [automat
 | --- | --- | --- |
 | Battle.net ready | `assets/d2r-ui/logged_in_battle_net.jpg` | Battle.net is logged in, D2R selected, Play button visible. |
 | Battle.net What's New popup | `assets/d2r-ui/battlenet_whats_new_popup.jpg` | Intermittent Battle.net news/ad modal that can cover Play after a cold launch. |
+| Battle.net Installation Required | `assets/d2r-ui/1366x768/battlenet_installation_required.png` | Sole authorization for forgotten-install-location repair. The agent samples Continue plus Cancel and safely clicks Cancel; Continue is never clicked. |
+| Battle.net D2R install landing | `assets/d2r-ui/1366x768/battlenet_d2r_install_landing.png` | D2R card after the launcher forgot its path. Authorized repair clicks Locate the game, never Install. |
+| Battle.net Shop mislanding | `assets/d2r-ui/1366x768/battlenet_shop_landing.png` | `--exec` restored an unrelated Shop card; repair reissues the D2R product launch command instead of clicking Shop. |
+| Battle.net existing-game folder chooser | `assets/d2r-ui/1366x768/battlenet_choose_install_folder.png` | Exact-title native dialog where the validated directory containing `D2R.exe` is typed and selected. |
+| Battle.net existing-install scan confirmation | `assets/d2r-ui/1366x768/battlenet_start_install_scan.png` | Start Install registers/scans the validated existing files. It is clicked once only after this repair submitted the folder. |
 | First intro video | `assets/d2r-ui/first_intro_video.jpg` | First full-screen startup video after D2R launches. |
 | First intro logo | `assets/d2r-ui/first_intro_video_end.jpg` | Blizzard logo at the end of the first startup video. |
 | Second intro video | `assets/d2r-ui/second_intro.jpg` | Diablo II startup/title animation before the final splash. |
@@ -43,7 +48,8 @@ Primary state-to-coordinate links:
 
 | State family | Primary helper targets | 1366x768 X/Y |
 | --- | --- | --- |
-| Battle.net ready | `BattleNetPlayButton`, `BattleNetWhatsNewCloseButton` | `176,540`, `1152,112` |
+| Battle.net ready | `BattleNetPlayButton`, `BattleNetWhatsNewCloseButton` | `232,637`, `1152,112` |
+| Battle.net install-location repair | `BattleNetInstallRequiredCancelButton`, `BattleNetLocateGameLink`, `BattleNetFolderPathField`, `BattleNetFolderSelectButton`, `BattleNetStartInstallButton` | `673,443`, `253,693`, `840,674`, `1018,724`, `1172,676` (reference-plane values; folder points resolve against the native dialog) |
 | Intro/title/splash | `IntroSkipPoint` | `683,384` |
 | Character select | `CharacterSlot1`, `CharacterPlayButton`, `CharacterLobbyButton`, `CharacterOnlineTab` | `1216,92`, `574,689`, `799,689`, `1161,38` |
 | Join Game lobby | `JoinGameTab`, `JoinGameNameField`, `JoinPasswordField`, `JoinGameButton` | `1046,55`, `952,106`, `1143,106`, `1045,478` |

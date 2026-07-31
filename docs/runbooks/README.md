@@ -6,6 +6,11 @@ Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 
 - `logged_in_battle_net.jpg`: Battle.net logged in with D2R selected and ready to press Play.
 - `battlenet_whats_new_popup.jpg`: Battle.net What's New/news modal that can appear over Play after a cold launch.
+- `1366x768/battlenet_installation_required.png`: Cropped launcher client showing the two-button prompt that authorizes forgotten-install-location repair; automation clicks Cancel, never Continue.
+- `1366x768/battlenet_d2r_install_landing.png`: Cropped D2R Install card with the safe `Locate the game` link.
+- `1366x768/battlenet_shop_landing.png`: Cropped unrelated Shop landing that makes repair resend the D2R product launch command.
+- `1366x768/battlenet_choose_install_folder.png`: Privacy-safe crop of the exact-title native folder chooser; friend/account names outside the dialog were excluded.
+- `1366x768/battlenet_start_install_scan.png`: Cropped confirmation where Start Install scans/registers a directory already validated to contain `D2R.exe`.
 - `first_intro_video.jpg`: First full-screen startup intro video.
 - `first_intro_video_end.jpg`: Blizzard logo at the end of the first startup intro.
 - `second_intro.jpg`: Second startup intro sequence.
@@ -43,3 +48,5 @@ See [client-menu-flows.md](client-menu-flows.md).
 Friend-list targeting notes live in [friend-selector-design.md](friend-selector-design.md). Do not commit screenshots that show real Battle.net tags.
 
 If `/d2r status` looks stuck/wrong or commands time out for no clear reason, see [detection-and-status-troubleshooting.md](detection-and-status-troubleshooting.md) first - it covers verified, previously-confirmed root causes (session/elevation mismatch, stale status during long commands, focus-stealing failures) so they don't need re-diagnosing each time.
+
+For the physical-host sleep/hibernate/shutdown/restart sequence, including the durable per-node list of VMs that must return, see [host-vm-power-lifecycle.md](host-vm-power-lifecycle.md).

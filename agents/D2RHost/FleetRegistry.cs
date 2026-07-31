@@ -138,7 +138,8 @@ public sealed class FleetRegistry
                 connection?.Version,
                 connection?.LastSeenAt,
                 nodeAgents.Count(agent => agent.Connected),
-                nodeAgents.Length));
+                nodeAgents.Length,
+                connection?.ConnectedAt));
         }
 
         return nodes;
@@ -157,6 +158,30 @@ public sealed class FleetRegistry
             inventory?.VmCommandTimeoutSeconds ?? WorkerNodeOperations.MaximumCommandDurationSeconds,
             10,
             WorkerNodeOperations.MaximumCommandDurationSeconds);
+    }
+
+    /// <summary>
+    /// Whether this worker explicitly advertised the crash-safe VM stop/restore transaction in a
+    /// status frame received on its current authenticated connection. Cached inventory from an
+    /// earlier connection must never authorize a physical-host power action.
+    /// </summary>
+    public bool HasCurrentWorkerVmSafeHostPowerCapability(
+        string nodeId,
+        AgentSnapshot? connection = null)
+    {
+        var node = connection ?? _localRegistry.GetAgent(nodeId);
+        var inventory = TryParseWorkerInventory(nodeId, node?.LastStatusJson);
+        return IsCurrentWorkerVmSafeHostPowerCapable(
+            node,
+            inventory?.VmSafeHostPowerTransitions == true);
+    }
+
+    internal static bool IsCurrentWorkerVmSafeHostPowerCapable(
+        AgentSnapshot? node,
+        bool advertisedCapability)
+    {
+        return advertisedCapability
+            && node is { Connected: true, ConnectedAt: not null, StatusReceivedAt: not null };
     }
 
     public async Task<CommandResultInfo> SendCommandAsync(
@@ -451,7 +476,8 @@ public sealed class FleetRegistry
                 ReadString(root, "hostName"),
                 agents,
                 accounts,
-                ReadInt(root, "vmCommandTimeoutSeconds"));
+                ReadInt(root, "vmCommandTimeoutSeconds"),
+                ReadBooleanCapability(root, "vmSafeHostPowerTransitions"));
         }
         catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
         {
@@ -513,6 +539,12 @@ public sealed class FleetRegistry
                 : null;
     }
 
+    internal static bool ReadBooleanCapability(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.True;
+    }
+
     private sealed record FleetSnapshot(
         IReadOnlyDictionary<string, AccountConfig> Accounts,
         IReadOnlyDictionary<string, AgentSnapshot> Agents,
@@ -524,7 +556,8 @@ public sealed class FleetRegistry
         string? HostName,
         IReadOnlyList<WorkerAgentInventory> Agents,
         IReadOnlyList<WorkerAccountInventory> Accounts,
-        int? VmCommandTimeoutSeconds);
+        int? VmCommandTimeoutSeconds,
+        bool VmSafeHostPowerTransitions);
 
     private sealed record WorkerAgentInventory(
         string Id,
@@ -550,7 +583,8 @@ public sealed record FleetNodeSnapshot(
     string? Version,
     DateTimeOffset? LastSeenAt,
     int AgentsConnected,
-    int AgentsConfigured);
+    int AgentsConfigured,
+    DateTimeOffset? ConnectedAt = null);
 
 public sealed record FleetAccountConnectivitySnapshot(
     KeyValuePair<string, AccountConfig>[] Online,
