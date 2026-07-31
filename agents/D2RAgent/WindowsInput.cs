@@ -11,6 +11,10 @@ internal enum MouseButton
     Right
 }
 
+internal readonly record struct D2RGraphicsDeviceFailureDismissalResult(
+    bool Detected,
+    bool DismissalSent);
+
 internal sealed class WindowsInput
 {
     private const int SmCxScreen = 0;
@@ -52,6 +56,9 @@ internal sealed class WindowsInput
     private const uint WmLButtonUp = 0x0202;
     private const uint WmRButtonDown = 0x0204;
     private const uint WmRButtonUp = 0x0205;
+    private const uint BmClick = 0x00F5;
+    private const uint SmtoAbortIfHung = 0x0002;
+    private const uint DialogActionTimeoutMs = 200;
     private const int InputHoldMilliseconds = 90;
     private const int InputGapMilliseconds = 35;
     private const int SwRestore = 9;
@@ -148,6 +155,33 @@ internal sealed class WindowsInput
         SendLegacyMouseClick(x, y, MouseButton.Left);
         SendWindowMouseClick(target.WindowHandle, x, y, MouseButton.Left);
         return true;
+    }
+
+    public D2RGraphicsDeviceFailureDismissalResult TryDismissD2RGraphicsDeviceFailureDialog(
+        IEnumerable<string> d2rProcessNames)
+    {
+        EnsureWindows();
+
+        var target = WindowsProcessFinder.FindD2RGraphicsDeviceFailureDialog(d2rProcessNames);
+        if (target is null)
+        {
+            return new D2RGraphicsDeviceFailureDismissalResult(Detected: false, DismissalSent: false);
+        }
+
+        // BM_CLICK targets the semantic IDOK control directly. It does not depend on the dialog
+        // being foreground or on a DPI-sensitive screen coordinate, and SendMessageTimeout keeps
+        // a wedged graphics-initialization dialog from hanging the ready loop that is repairing it.
+        var sent = SendMessageTimeout(
+            target.ActionButton.WindowHandle,
+            BmClick,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            SmtoAbortIfHung,
+            DialogActionTimeoutMs,
+            out _);
+        return new D2RGraphicsDeviceFailureDismissalResult(
+            Detected: true,
+            DismissalSent: sent != IntPtr.Zero);
     }
 
     public bool TryClickProcessWindowCenter(string processName)
@@ -1435,6 +1469,16 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostMessage(IntPtr windowHandle, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SendMessageTimeout(
+        IntPtr windowHandle,
+        uint message,
+        IntPtr wParam,
+        IntPtr lParam,
+        uint flags,
+        uint timeoutMs,
+        out IntPtr result);
 
     [DllImport("user32.dll")]
     private static extern bool ScreenToClient(IntPtr windowHandle, ref WindowPoint point);

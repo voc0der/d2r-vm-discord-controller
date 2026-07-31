@@ -39,6 +39,8 @@ public sealed class VmOperations
     private const int ReadyStartupDetectionIntervalMs = 250;
     private const int ReadyStartupWindowRelativeDetectionIntervalMs = 1000;
     private const int ReadyStartupProcessCheckIntervalMs = 1000;
+    private const int GraphicsDeviceFailureProbeIntervalMs = 1000;
+    private const int GraphicsDeviceFailureRestartDelaySeconds = 3;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
     // The "Game is full" discriminator reads thin single-line dialog text; the default 9-grid
@@ -450,6 +452,22 @@ public sealed class VmOperations
 
     private async Task<CommandResult> LaunchD2RAsync(CancellationToken cancellationToken, bool quickForReady = false)
     {
+        var graphicsDeviceFailure = default(D2RGraphicsDeviceFailureDismissalResult);
+        if (OperatingSystem.IsWindows())
+        {
+            graphicsDeviceFailure = await TryDismissGraphicsDeviceFailureAndWaitAsync(
+                new WindowsInput(),
+                cancellationToken);
+        }
+
+        if (graphicsDeviceFailure.Detected && !graphicsDeviceFailure.DismissalSent)
+        {
+            return CommandResult.Failure(
+                "Detected D2R's failed-to-initialize-graphics dialog, but its OK button did not accept the dismissal. The failed process was left untouched; retry the launch command.");
+        }
+
+        var recoveredGraphicsDeviceFailure = graphicsDeviceFailure.DismissalSent;
+
         if (IsD2RNamedProcessRunning())
         {
             RefreshD2RProcessActivity(d2rRunning: true);
@@ -488,10 +506,13 @@ public sealed class VmOperations
 
         if (quickForReady)
         {
+            var recoveryPrefix = recoveredGraphicsDeviceFailure
+                ? "Dismissed D2R's failed-to-initialize-graphics dialog and restarted the client. "
+                : "";
             return CommandResult.Success(
-                usedBattleNetExec
+                recoveryPrefix + (usedBattleNetExec
                     ? "Initial Battle.net D2R launch command sent; ready loop will keep nudging launch/Play while skipping startup screens."
-                    : "Initial D2R launch command sent; ready loop will start skipping startup screens immediately.");
+                    : "Initial D2R launch command sent; ready loop will start skipping startup screens immediately."));
         }
 
         if (usedBattleNetExec && !battleNetWasRunning)
@@ -514,7 +535,47 @@ public sealed class VmOperations
         var message = launchAttempts > 1
             ? "Battle.net cold-started; D2R launch command sent twice. Check status for final client state."
             : "Launch command sent. Check status for final client state.";
+        if (recoveredGraphicsDeviceFailure)
+        {
+            message = "Dismissed D2R's failed-to-initialize-graphics dialog and restarted the client. " + message;
+        }
+
         return CommandResult.Success(message, status);
+    }
+
+    private async Task<D2RGraphicsDeviceFailureDismissalResult> TryDismissGraphicsDeviceFailureAndWaitAsync(
+        WindowsInput input,
+        CancellationToken cancellationToken)
+    {
+        var dismissal = input.TryDismissD2RGraphicsDeviceFailureDialog(GetD2RProcessNames());
+        if (!dismissal.Detected)
+        {
+            return dismissal;
+        }
+
+        if (!dismissal.DismissalSent)
+        {
+            MarkCommandCheckpoint(
+                "Detected D2R's failed-to-initialize-graphics dialog, but its OK button did not accept the dismissal; leaving the process untouched for a later retry.");
+            return dismissal;
+        }
+
+        MarkCommandCheckpoint(
+            "Detected D2R's failed-to-initialize-graphics dialog; clicked OK and waiting before relaunch.");
+        await Task.Delay(TimeSpan.FromSeconds(GraphicsDeviceFailureRestartDelaySeconds), cancellationToken);
+
+        // Clicking OK normally terminates the failed D2R process. If Intel's fragile graphics
+        // initialization leaves that process behind, a Battle.net launch command can be ignored
+        // as an attempted second instance. Kill only that lingering D2R process before retrying;
+        // Battle.net and every other VM process remain untouched.
+        if (IsD2RNamedProcessRunning())
+        {
+            _ = KillD2R();
+            MarkCommandCheckpoint(
+                "D2R still existed after its graphics-device error was dismissed; killed the lingering process before relaunch.");
+        }
+
+        return dismissal;
     }
 
     private async Task PrepareDesktopForD2RLaunchAsync(bool battleNetWasRunning, CancellationToken cancellationToken)
@@ -557,6 +618,13 @@ public sealed class VmOperations
         SkipRecentRestart,
         RestartD2R,
         RestartBattleNetAndD2R
+    }
+
+    internal enum GraphicsDeviceFailureReadyAction
+    {
+        None,
+        SuppressInput,
+        Relaunch
     }
 
     internal readonly record struct BrokenSessionRecoveryDecision(BrokenSessionRecoveryAction Action, int RecoveryStreak);
@@ -1176,6 +1244,8 @@ public sealed class VmOperations
                 TimeoutSeconds = ready.TimeoutSeconds + detectorReady.TimeoutSeconds,
                 LaunchAttempts = ready.LaunchAttempts + detectorReady.LaunchAttempts,
                 PlayClicks = ready.PlayClicks + detectorReady.PlayClicks,
+                GraphicsDeviceFailureDismissals = ready.GraphicsDeviceFailureDismissals
+                    + detectorReady.GraphicsDeviceFailureDismissals,
                 LastLaunchMessage = detectorReady.LastLaunchMessage == "(none)"
                     ? ready.LastLaunchMessage
                     : detectorReady.LastLaunchMessage
@@ -1185,7 +1255,7 @@ public sealed class VmOperations
         if (!ready.Ready)
         {
             return CommandResult.Failure(
-                $"{FormatCharacterScreenReadyFailure(ready, input)} Initial launch result: {launch.Message}. Ready loop sent {ready.LaunchAttempts} retry launch command(s) and {ready.PlayClicks} Battle.net Play click(s). Last launch result: {ready.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
+                $"{FormatCharacterScreenReadyFailure(ready, input)} Initial launch result: {launch.Message}. Ready loop sent {ready.LaunchAttempts} retry launch command(s), clicked Battle.net Play {ready.PlayClicks} time(s), and dismissed {ready.GraphicsDeviceFailureDismissals} failed-to-initialize-graphics dialog(s). Last launch result: {ready.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
                 await CollectStatusAsync(cancellationToken));
         }
 
@@ -3911,6 +3981,7 @@ public sealed class VmOperations
         {
             NextLaunchRetryAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds()),
             NextPlayClickAt = DateTimeOffset.UtcNow,
+            NextGraphicsDeviceFailureProbeAt = DateTimeOffset.UtcNow,
             BattleNetRepair = battleNetRepair ?? new BattleNetInstallRepairState()
         };
     }
@@ -3920,6 +3991,42 @@ public sealed class VmOperations
         ReadyLaunchNudgeState state,
         CancellationToken cancellationToken)
     {
+        var now = DateTimeOffset.UtcNow;
+        if (now >= state.NextGraphicsDeviceFailureProbeAt)
+        {
+            state.NextGraphicsDeviceFailureProbeAt = now
+                + TimeSpan.FromMilliseconds(GraphicsDeviceFailureProbeIntervalMs);
+            var graphicsDeviceFailure = await TryDismissGraphicsDeviceFailureAndWaitAsync(input, cancellationToken);
+            var graphicsDeviceFailureAction = ClassifyGraphicsDeviceFailureReadyAction(graphicsDeviceFailure);
+            if (graphicsDeviceFailureAction != GraphicsDeviceFailureReadyAction.None)
+            {
+                // A detected-but-undismissed modal must also suppress the ready loop's generic
+                // clicks and G presses. They cannot repair this native dialog, and letting them
+                // fall through would make an explicitly recognized failure look like ordinary
+                // startup input was still making progress.
+                if (graphicsDeviceFailureAction == GraphicsDeviceFailureReadyAction.SuppressInput)
+                {
+                    return true;
+                }
+
+                state.GraphicsDeviceFailureDismissals++;
+                var recoveryLaunch = TrySendD2RLaunchCommand();
+                state.LaunchAttempts++;
+                state.LastLaunchMessage =
+                    $"Dismissed a failed-to-initialize-graphics dialog; {recoveryLaunch.Message}";
+
+                var relaunchedAt = DateTimeOffset.UtcNow;
+                state.NextLaunchRetryAt = relaunchedAt
+                    + TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds());
+                state.NextPlayClickAt = relaunchedAt + TimeSpan.FromSeconds(1.5);
+                state.NextGraphicsDeviceFailureProbeAt = relaunchedAt
+                    + TimeSpan.FromMilliseconds(GraphicsDeviceFailureProbeIntervalMs);
+                MarkCommandCheckpoint(
+                    $"Graphics-device recovery resent the normal D2R launch command ({recoveryLaunch.Message}).");
+                return true;
+            }
+        }
+
         if (IsD2RNamedProcessRunning())
         {
             state.BattleNetRepair.Completed = true;
@@ -3931,7 +4038,7 @@ public sealed class VmOperations
             return true;
         }
 
-        var now = DateTimeOffset.UtcNow;
+        now = DateTimeOffset.UtcNow;
         if (now >= state.NextPlayClickAt)
         {
             if (TryClickBattleNetPlay(input, requireButtonReady: true))
@@ -3952,6 +4059,19 @@ public sealed class VmOperations
         state.LastLaunchMessage = launch.Message;
         state.NextLaunchRetryAt = now + TimeSpan.FromSeconds(GetBattleNetExecRetryDelaySeconds());
         return false;
+    }
+
+    internal static GraphicsDeviceFailureReadyAction ClassifyGraphicsDeviceFailureReadyAction(
+        D2RGraphicsDeviceFailureDismissalResult dismissal)
+    {
+        if (!dismissal.Detected)
+        {
+            return GraphicsDeviceFailureReadyAction.None;
+        }
+
+        return dismissal.DismissalSent
+            ? GraphicsDeviceFailureReadyAction.Relaunch
+            : GraphicsDeviceFailureReadyAction.SuppressInput;
     }
 
     private async Task<bool> EnsureOnlineCharacterScreenAsync(
@@ -4030,6 +4150,7 @@ public sealed class VmOperations
                 processExitedDuringWait,
                 launchNudges.LaunchAttempts,
                 launchNudges.PlayClicks,
+                launchNudges.GraphicsDeviceFailureDismissals,
                 launchNudges.LastLaunchMessage);
         }
 
@@ -4159,6 +4280,7 @@ public sealed class VmOperations
                 processExitedDuringWait,
                 launchNudges.LaunchAttempts,
                 launchNudges.PlayClicks,
+                launchNudges.GraphicsDeviceFailureDismissals,
                 launchNudges.LastLaunchMessage);
         }
 
@@ -7534,14 +7656,17 @@ public sealed class VmOperations
         bool ProcessExitedDuringWait = false,
         int LaunchAttempts = 0,
         int PlayClicks = 0,
+        int GraphicsDeviceFailureDismissals = 0,
         string LastLaunchMessage = "(none)");
 
     private sealed class ReadyLaunchNudgeState
     {
         public DateTimeOffset NextLaunchRetryAt { get; set; }
         public DateTimeOffset NextPlayClickAt { get; set; }
+        public DateTimeOffset NextGraphicsDeviceFailureProbeAt { get; set; }
         public int LaunchAttempts { get; set; }
         public int PlayClicks { get; set; }
+        public int GraphicsDeviceFailureDismissals { get; set; }
         public string LastLaunchMessage { get; set; } = "(none)";
         public required BattleNetInstallRepairState BattleNetRepair { get; init; }
     }

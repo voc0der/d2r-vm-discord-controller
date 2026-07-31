@@ -85,6 +85,26 @@ Measured 9x9 sample-grid margins from the reference captures:
   `stdDev=101.6`, `bright=0.272`, `dark=0.716`. Every other repair reference rejects the
   combined confirmation gate.
 
+## Native graphics-device failure dialog (not pixel-classified)
+
+The Intel GPU-P `Failed to initialize graphics device` launch failure is intentionally outside
+the pixel classifier. Its position, DPI, theme, and black D2R background can vary, while the
+native dialog structure is stable. `WindowsProcessFinder` resolves the owner before reading
+window text, then requires all of these signals:
+
+- top-level native dialog class `#32770`;
+- owning process matches a configured D2R process name;
+- exact top-level title `Error`;
+- child text contains `Failed to initialize graphics device`, case-insensitively; and
+- a native `Button` child with the standard `IDOK` control ID.
+
+`WindowsInput` dismisses only that verified target with a bounded `BM_CLICK`. The ready loop
+throttles the semantic probe rather than enumerating desktop windows on every 50-250ms startup
+input tick. Generic Error windows, wrong-process dialogs, lookalike text without `IDOK`, and the
+reference image by itself cannot authorize a click. The privacy-safe 408x157 reference crop is
+`1366x768/d2r_failed_to_initialize_graphics_device.png`; it documents the state but is not used
+for runtime matching.
+
 ## Detection priority order
 
 Both `DetectVisibleD2RState` (used for `/d2r status`) and `DetectReadyScreenState`/

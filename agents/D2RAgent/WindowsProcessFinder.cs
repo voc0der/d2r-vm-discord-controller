@@ -22,6 +22,25 @@ internal sealed record ProcessWindowTarget(
     IntPtr WindowHandle,
     string? MainWindowTitle);
 
+internal sealed record WindowControlSnapshot(
+    IntPtr WindowHandle,
+    int ControlId,
+    string ClassName,
+    string Text);
+
+internal sealed record WindowDialogSnapshot(
+    int ProcessId,
+    string ProcessName,
+    int? SessionId,
+    IntPtr WindowHandle,
+    string ClassName,
+    string Title,
+    WindowControlSnapshot[] Children);
+
+internal sealed record WindowDialogTarget(
+    WindowDialogSnapshot Dialog,
+    WindowControlSnapshot ActionButton);
+
 // EnumWindows + per-window GetWindowTitle (a SendMessage under the hood, up to 200ms each) is
 // the expensive part of detection. Every top-level caller in a single status collection
 // (Battle.net check, D2R check, process discovery, input diagnostics) used to pay that cost
@@ -68,6 +87,90 @@ internal sealed class DesktopWindowScanCache
 
 internal static class WindowsProcessFinder
 {
+    private const string StandardDialogClass = "#32770";
+    private const string StandardButtonClass = "Button";
+    private const string D2RGraphicsDeviceFailureTitle = "Error";
+    private const string D2RGraphicsDeviceFailureMessageFragment = "Failed to initialize graphics device";
+    private const int IdOk = 1;
+
+    public static WindowDialogTarget? FindD2RGraphicsDeviceFailureDialog(IEnumerable<string> processNames)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        var normalizedProcessNames = WindowsProcessIdentity.NormalizeProcessNames(processNames);
+        foreach (var window in EnumerateTopLevelWindows())
+        {
+            if (!IsWindowVisible(window))
+            {
+                continue;
+            }
+
+            // This probe runs repeatedly while menu_ready is waiting for startup. Resolve the
+            // cheap PID/process identity first so unrelated desktop windows never receive a
+            // potentially blocking WM_GETTEXT request merely because they are visible.
+            var (pid, processName, sessionId) = ResolveWindowInfo(window);
+            if (pid == 0 || WindowsProcessIdentity.IsCurrentProcess(pid)
+                || !IsConfiguredProcessName(processName, normalizedProcessNames))
+            {
+                continue;
+            }
+
+            var className = GetWindowClassName(window);
+            if (!string.Equals(className, StandardDialogClass, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var title = GetWindowTitle(window);
+            if (!string.Equals(title, D2RGraphicsDeviceFailureTitle, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var snapshot = new WindowDialogSnapshot(
+                pid,
+                processName,
+                sessionId,
+                window,
+                className,
+                title,
+                CaptureChildWindows(window));
+            var match = MatchD2RGraphicsDeviceFailureDialog(snapshot, normalizedProcessNames);
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    internal static WindowDialogTarget? MatchD2RGraphicsDeviceFailureDialog(
+        WindowDialogSnapshot dialog,
+        IEnumerable<string> processNames)
+    {
+        var normalizedProcessNames = WindowsProcessIdentity.NormalizeProcessNames(processNames);
+        if (!IsConfiguredProcessName(dialog.ProcessName, normalizedProcessNames)
+            || !string.Equals(dialog.ClassName, StandardDialogClass, StringComparison.Ordinal)
+            || !string.Equals(dialog.Title, D2RGraphicsDeviceFailureTitle, StringComparison.Ordinal)
+            || !dialog.Children.Any(child =>
+                child.Text.Contains(D2RGraphicsDeviceFailureMessageFragment, StringComparison.OrdinalIgnoreCase)))
+        {
+            return null;
+        }
+
+        // IDOK is the stable semantic identity of the standard MessageBox action. Its rendered
+        // caption can vary by Windows language or include an accelerator marker, so class + ID
+        // is both stricter and more portable than comparing the visible button text.
+        var okButton = dialog.Children.FirstOrDefault(child =>
+            child.ControlId == IdOk
+            && string.Equals(child.ClassName, StandardButtonClass, StringComparison.OrdinalIgnoreCase));
+        return okButton is null ? null : new WindowDialogTarget(dialog, okButton);
+    }
+
     public static ProcessWindowTarget? FindWindowTargetByExactTitle(string title)
     {
         if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(title))
@@ -484,6 +587,35 @@ internal static class WindowsProcessFinder
         return windows;
     }
 
+    private static WindowControlSnapshot[] CaptureChildWindows(IntPtr parentWindow)
+    {
+        var children = new List<WindowControlSnapshot>();
+        _ = EnumChildWindows(parentWindow, (windowHandle, _) =>
+        {
+            children.Add(new WindowControlSnapshot(
+                windowHandle,
+                GetDlgCtrlID(windowHandle),
+                GetWindowClassName(windowHandle),
+                GetWindowTitle(windowHandle)));
+            return true;
+        }, IntPtr.Zero);
+        return children.ToArray();
+    }
+
+    private static bool IsConfiguredProcessName(string processName, IEnumerable<string> normalizedProcessNames)
+    {
+        var normalizedActual = WindowsProcessIdentity.NormalizeProcessNames([processName]).FirstOrDefault();
+        return !string.IsNullOrWhiteSpace(normalizedActual)
+            && normalizedProcessNames.Contains(normalizedActual, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string GetWindowClassName(IntPtr windowHandle)
+    {
+        var builder = new StringBuilder(256);
+        var length = GetClassName(windowHandle, builder, builder.Capacity);
+        return length > 0 ? builder.ToString(0, length) : "";
+    }
+
     private const uint WmGetText = 0x000D;
     private const uint WmGetTextLength = 0x000E;
     private const uint SmtoAbortIfHung = 0x0002;
@@ -549,7 +681,16 @@ internal static class WindowsProcessFinder
     private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
 
     [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr parentWindow, EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr windowHandle);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr windowHandle, StringBuilder className, int maxCount);
+
+    [DllImport("user32.dll")]
+    private static extern int GetDlgCtrlID(IntPtr windowHandle);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr SendMessageTimeout(

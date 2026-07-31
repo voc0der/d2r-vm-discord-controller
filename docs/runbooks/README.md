@@ -11,6 +11,7 @@ Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 - `1366x768/battlenet_shop_landing.png`: Cropped unrelated Shop landing that makes repair resend the D2R product launch command.
 - `1366x768/battlenet_choose_install_folder.png`: Privacy-safe crop of the exact-title native folder chooser; friend/account names outside the dialog were excluded.
 - `1366x768/battlenet_start_install_scan.png`: Cropped confirmation where Start Install scans/registers a directory already validated to contain `D2R.exe`.
+- `1366x768/d2r_failed_to_initialize_graphics_device.png`: Exact-pixel privacy-safe crop of the D2R graphics-device initialization error; startup recovery dismisses it and retries the game.
 - `first_intro_video.jpg`: First full-screen startup intro video.
 - `first_intro_video_end.jpg`: Blizzard logo at the end of the first startup intro.
 - `second_intro.jpg`: Second startup intro sequence.

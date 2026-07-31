@@ -96,6 +96,32 @@ survives both phases of the ready loop, so a timeout boundary cannot forget that
 authorized or that the folder was already submitted. Set
 `repairBattleNetInstallLocationWhenNeeded` to `false` only to opt out of this recovery.
 
+## Intel GPU-P Graphics-Device Launch Recovery
+
+An Intel GPU-P guest can occasionally leave D2R at this native error even though the same VM and
+driver work after another game launch:
+
+![D2R failed to initialize graphics device](assets/d2r-ui/1366x768/d2r_failed_to_initialize_graphics_device.png)
+
+This is treated as a recoverable launch failure. During `menu_ready`, the agent requires all of
+the native dialog signals before acting: a `#32770` top-level window owned by a configured D2R
+process, exact title `Error`, child text containing `Failed to initialize graphics device`, and a
+standard `OK`/`IDOK` button. A generic Error window from another application, or another D2R
+error without that message, is left alone.
+
+For a verified match, the agent sends a bounded native button click to **OK**, waits three
+seconds, closes only a lingering failed D2R process if it did not exit with the dialog, then
+resends the ordinary D2R launch command. Normal startup clicks and keys are suppressed during
+that recovery step. This game-only retry is deliberately first-line because it often succeeds;
+reaching character select, the lobby, or a game completes the warmup normally and clears that
+account's consecutive warmup-failure count.
+
+The dialog itself is not counted as five failures. If retries still cannot make the whole
+`menu_ready` command reach a usable state, that command contributes one outer warmup failure.
+The existing follow-auto policy performs the VM-safe restart of the owning physical node after
+five consecutive failed warmups, restores only the VMs it stopped, and resumes the active follow
+run after the node and accounts return.
+
 ## Visual Anchors
 
 The automation should not depend on whole-scene matching. Treat each state as a set of small anchors near expected proportional regions, then use fallback regions when the first probe is inconclusive.

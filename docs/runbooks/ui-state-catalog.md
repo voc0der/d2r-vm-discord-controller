@@ -13,6 +13,7 @@ Coordinates for click/sample targets in these states are centralized in [automat
 | Battle.net Shop mislanding | `assets/d2r-ui/1366x768/battlenet_shop_landing.png` | `--exec` restored an unrelated Shop card; repair reissues the D2R product launch command instead of clicking Shop. |
 | Battle.net existing-game folder chooser | `assets/d2r-ui/1366x768/battlenet_choose_install_folder.png` | Exact-title native dialog where the validated directory containing `D2R.exe` is typed and selected. |
 | Battle.net existing-install scan confirmation | `assets/d2r-ui/1366x768/battlenet_start_install_scan.png` | Start Install registers/scans the validated existing files. It is clicked once only after this repair submitted the folder. |
+| D2R graphics-device initialization failure | `assets/d2r-ui/1366x768/d2r_failed_to_initialize_graphics_device.png` | Recoverable Intel GPU-P launch failure. The agent semantically verifies the D2R-owned native dialog, clicks OK, waits three seconds, and retries the normal game launch. |
 | First intro video | `assets/d2r-ui/first_intro_video.jpg` | First full-screen startup video after D2R launches. |
 | First intro logo | `assets/d2r-ui/first_intro_video_end.jpg` | Blizzard logo at the end of the first startup video. |
 | Second intro video | `assets/d2r-ui/second_intro.jpg` | Diablo II startup/title animation before the final splash. |
