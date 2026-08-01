@@ -289,6 +289,8 @@ player count plus a per-nametag reading for every bound entry:
   "playerCount": 5,
   "lastPartyMemberCount": 4,
   "lastPartyMemberCountUtc": "...",
+  "visibleState": "InGame",
+  "inGame": true,
   "leaderBound": true,
   "leaderPresent": true,
   "leaderSlot": 2,
@@ -306,6 +308,15 @@ so the host can distinguish "definitely gone" from "this pulse couldn't check". 
 `leaderPresent`/`leaderSlot`/`leaderScore` are an any-nametag aggregate kept for display and
 older hosts; decisions are made from `leaderMatches`, keyed by fingerprint content so agents
 whose stored lists diverged can never be misread by index.
+
+`visibleState` is the sampling client's own screen (the `d2rVisibleState` classifier value) and
+`inGame` is its verdict about itself: `true` only for `InGame`, `false` for the screens D2R
+cannot show from inside a game (`LobbyOrGame`, `CharacterScreen`, `OfflineCharacterScreen`,
+`NotRunning`), and `null` for `DiabloSplash`/`Unknown` - a load screen or degraded capture is not
+evidence. Follow-auto's watch uses a `false` from a bot it counts as joined to rejoin that bot
+mid-game (a post-join "Connection Interrupted" drops one client back to the lobby, where every
+other field in this reply is a `null` that reads as "nothing to report"). Agents that predate
+these fields simply omit them, so an older agent never triggers that rejoin.
 
 Follow-auto's host-side loop round-robins the pulse across every online account on a divided
 heartbeat (`FollowAutoPulsePolicy.GetHeartbeat` halves the shared count-drop cadence, then
@@ -327,6 +338,20 @@ per game so a chronic per-VM fingerprint mismatch cannot cause a leave/rejoin lo
 VM can get a clean read at that instant, the loop keeps waiting rather than leaving on one
 screen's word. With only a single VM online there is no independent screen, so that lone
 vantage falls back to requiring two back-to-back misses.
+
+Before any of that, each pulse is checked against the sampling bot's own `inGame` field. A bot the
+host counts as joined that reports `false` on two consecutive pulses
+(`FollowAutoPulsePolicy.NextOutOfGameStreak` / `ShouldResyncOutOfGameVantage`) is out of the game
+entirely rather than merely unable to see the leader - the observed cause is a "Connection
+Interrupted" that lands one client back at the lobby *after* its join was already confirmed, which
+the join flow's own retry can no longer see. The host marks only that account recovery-pending and
+lets the normal follow check rejoin it, sending no Save and Exit (it is already at the menus). No
+cross-VM confirmation is possible here, since only that client can see its own screen, so the
+consecutive-read streak is the guard: a live in-game frame can misclassify as `LobbyOrGame` once
+(the lobby thresholds can match outdoor scenery), and `null` reads hold the streak without growing
+it. These rejoins are capped at `MaxOutOfGameResyncsPerGame` (3) per account per game so a vantage
+that chronically misreads its own live game cannot churn rejoins; on hitting the cap the monitor
+names the account and points at its resolution/reference images.
 
 After `menu_play`, `menu_join_game`, `menu_create_game`, and `menu_join_friend`, the VM agent can wait and press `G` to switch to legacy graphics. This is controlled by `ui.toggleLegacyGraphicsAfterEnteringGame` and `ui.legacyGraphicsToggleDelaySeconds` in `vm-agent.config.json`.
 

@@ -242,4 +242,60 @@ public sealed class FollowAutoPulsePolicyTests
                 FollowAutoPulsePolicy.IsolatedVantageResyncSamples + 1,
                 alreadyResyncedThisGame: true));
     }
+
+    // The observed failure: one bot took a "Connection Interrupted" after its join was already
+    // confirmed and landed back at the lobby. Its pulses report no count and no nametag - which
+    // classify as Wait - so the host counted it in the game for the whole session.
+    [Fact]
+    public void TwoConsecutiveOutOfGameReadsResyncTheDroppedBot()
+    {
+        var streak = FollowAutoPulsePolicy.NextOutOfGameStreak(currentStreak: 0, inGame: false);
+        Assert.Equal(1, streak);
+        Assert.False(FollowAutoPulsePolicy.ShouldResyncOutOfGameVantage(streak, resyncsThisGame: 0));
+
+        streak = FollowAutoPulsePolicy.NextOutOfGameStreak(streak, inGame: false);
+        Assert.Equal(FollowAutoPulsePolicy.OutOfGameVantageResyncSamples, streak);
+        Assert.True(FollowAutoPulsePolicy.ShouldResyncOutOfGameVantage(streak, resyncsThisGame: 0));
+    }
+
+    // A live in-game frame can misread as the lobby (the lobby thresholds can match outdoor
+    // scenery), so one such read must never cost a rejoin.
+    [Fact]
+    public void AnInGameReadClearsTheOutOfGameStreak()
+    {
+        Assert.Equal(
+            0,
+            FollowAutoPulsePolicy.NextOutOfGameStreak(
+                currentStreak: FollowAutoPulsePolicy.OutOfGameVantageResyncSamples - 1,
+                inGame: true));
+    }
+
+    // Load screens and degraded captures are not evidence either way, and a drop is often
+    // preceded by exactly such a frame - so they hold the streak rather than clearing it.
+    [Fact]
+    public void AnUnknownReadNeitherGrowsNorClearsTheOutOfGameStreak()
+    {
+        Assert.Equal(
+            1,
+            FollowAutoPulsePolicy.NextOutOfGameStreak(currentStreak: 1, inGame: null));
+        Assert.False(
+            FollowAutoPulsePolicy.ShouldResyncOutOfGameVantage(
+                FollowAutoPulsePolicy.NextOutOfGameStreak(currentStreak: 0, inGame: null),
+                resyncsThisGame: 0));
+    }
+
+    // A vantage that chronically misclassifies its own live game must not churn a rejoin every
+    // couple of pulses for the rest of the session.
+    [Fact]
+    public void OutOfGameResyncsAreCappedPerGame()
+    {
+        Assert.True(
+            FollowAutoPulsePolicy.ShouldResyncOutOfGameVantage(
+                FollowAutoPulsePolicy.OutOfGameVantageResyncSamples,
+                resyncsThisGame: FollowAutoPulsePolicy.MaxOutOfGameResyncsPerGame - 1));
+        Assert.False(
+            FollowAutoPulsePolicy.ShouldResyncOutOfGameVantage(
+                FollowAutoPulsePolicy.OutOfGameVantageResyncSamples,
+                resyncsThisGame: FollowAutoPulsePolicy.MaxOutOfGameResyncsPerGame));
+    }
 }

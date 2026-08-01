@@ -135,6 +135,42 @@ public static class FollowAutoPulsePolicy
         return !alreadyResyncedThisGame && missStreak >= IsolatedVantageResyncSamples;
     }
 
+    // A joined bot that is verifiably NOT in a game (its pulse reports the lobby, a character
+    // screen, or no client at all) has fallen out of the game the host still counts it in. The
+    // observed case is a post-join "Connection Interrupted": the join flow already confirmed
+    // entry, so its own retry loop never sees the drop, and every later pulse from that vantage
+    // is a null count that classifies as Wait - the bot sat in the lobby for the rest of the game
+    // while the monitor read "Bots in game: 7/7".
+    //
+    // Two consecutive reads, not one: DetectVisibleD2RState checks strict in-game HUD evidence
+    // before the lobby thresholds, but those thresholds can coincidentally match ordinary outdoor
+    // scenery (sitting_in_town.png), so a single in-game frame CAN misread as LobbyOrGame. An
+    // unknown/load-screen pulse (inGame == null) is not evidence either way and leaves the streak
+    // where it is rather than clearing it - a drop is often preceded by exactly such a frame.
+    public const int OutOfGameVantageResyncSamples = 2;
+
+    // Cap per account per game. A resync is a real leave/rejoin cycle, and a vantage whose
+    // classifier chronically reads its own live game as the lobby would otherwise churn one
+    // rejoin every couple of pulses forever. Beyond the cap the account keeps its (wrong or
+    // unfixable) place and the monitor says so, which is the pre-fix behaviour.
+    public const int MaxOutOfGameResyncsPerGame = 3;
+
+    public static int NextOutOfGameStreak(int currentStreak, bool? inGame)
+    {
+        return inGame switch
+        {
+            false => currentStreak + 1,
+            true => 0,
+            _ => currentStreak
+        };
+    }
+
+    public static bool ShouldResyncOutOfGameVantage(int outOfGameStreak, int resyncsThisGame)
+    {
+        return outOfGameStreak >= OutOfGameVantageResyncSamples
+            && resyncsThisGame < MaxOutOfGameResyncsPerGame;
+    }
+
     // Count-drop semantics compare against the highest player count actually observed, not just
     // the first seed: the seed pulse races the party still forming right after the last join
     // (and its cached-status fallback can serve a count from the PREVIOUS game), and a baseline

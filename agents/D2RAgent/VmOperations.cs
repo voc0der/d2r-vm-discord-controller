@@ -921,7 +921,7 @@ public sealed class VmOperations
                 await _commandGate.WaitAsync(cancellationToken);
                 try
                 {
-                    _ = SamplePartyMemberCount();
+                    _ = SamplePartyMembers();
                 }
                 finally
                 {
@@ -938,16 +938,18 @@ public sealed class VmOperations
     private CommandResult SamplePlayerCount(MenuCommandArgs args)
     {
         var templates = LoadLeaderTemplates();
-        var otherMembers = SamplePartyMemberCount();
+        var (otherMembers, visibleState) = SamplePartyMembers();
         if (otherMembers is null)
         {
             return CommandResult.Success(
-                "Player count is not available from the current screen.",
+                $"Player count is not available from the current screen ({visibleState}).",
                 new
                 {
                     playerCount = (int?)null,
                     lastPartyMemberCount = _lastPartyMemberCount,
                     lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
+                    visibleState = visibleState.ToString(),
+                    inGame = ClassifyPulseInGame(visibleState),
                     leaderBound = templates.Count > 0,
                     leaderPresent = (bool?)null,
                     leaderMatches = templates
@@ -978,6 +980,8 @@ public sealed class VmOperations
                 playerCount = otherMembers.Value + 1,
                 lastPartyMemberCount = otherMembers.Value,
                 lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
+                visibleState = visibleState.ToString(),
+                inGame = ClassifyPulseInGame(visibleState),
                 leaderBound = templates.Count > 0,
                 leaderPresent = aggregatePresent,
                 leaderSlot = bestMatch?.Slot,
@@ -1101,25 +1105,53 @@ public sealed class VmOperations
         return results;
     }
 
-    private int? SamplePartyMemberCount()
+    // A null count means "no party row to read", which used to be the whole answer - and that
+    // conflated two very different situations for follow-auto's watch. A client sitting at the
+    // lobby has verifiably fallen OUT of the game the host still counts it in (the observed
+    // case: a post-join "Connection Interrupted" drops one bot back to the lobby, the join flow's
+    // own retry never sees it because entry was already confirmed, and every later pulse from
+    // that vantage reads as an inconclusive null - so it sat out the rest of the game while the
+    // monitor still said 7/7 in game). A load screen or a failed capture, by contrast, is simply
+    // unknown and must never be acted on. Return the state alongside the count so the host can
+    // tell those apart.
+    private (int? Count, VisibleD2RState State) SamplePartyMembers()
     {
-        if (!_config.PartyMemberCountEnabled || !OperatingSystem.IsWindows() || !IsD2RRunning())
+        if (!_config.PartyMemberCountEnabled || !OperatingSystem.IsWindows())
         {
-            return null;
+            return (null, VisibleD2RState.Unknown);
+        }
+
+        if (!IsD2RRunning())
+        {
+            return (null, VisibleD2RState.NotRunning);
         }
 
         // The party portrait row is only meaningful in an actual game - sampling it from the
         // lobby/join-create form would just read whatever happens to be in that screen corner.
         var input = new WindowsInput();
-        if (DetectVisibleD2RState(input) != VisibleD2RState.InGame)
+        var visibleState = DetectVisibleD2RState(input);
+        if (visibleState != VisibleD2RState.InGame)
         {
-            return null;
+            return (null, visibleState);
         }
 
         _lastPartyMemberCount = CountOtherPartyMembers(input);
         _lastPartyMemberCountUtc = DateTimeOffset.UtcNow;
-        return _lastPartyMemberCount;
+        return (_lastPartyMemberCount, visibleState);
     }
+
+    // Only screens that D2R cannot possibly show from inside a game count as a definite "out of
+    // game". DiabloSplash and Unknown are the load-screen/degraded-capture states, so they stay
+    // null: the host treats null as "no evidence" and never resyncs a bot on their word.
+    private static bool? ClassifyPulseInGame(VisibleD2RState state) => state switch
+    {
+        VisibleD2RState.InGame => true,
+        VisibleD2RState.LobbyOrGame
+            or VisibleD2RState.CharacterScreen
+            or VisibleD2RState.OfflineCharacterScreen
+            or VisibleD2RState.NotRunning => false,
+        _ => null
+    };
 
     // Scans slots in order and stops at the first miss rather than checking all 8 unconditionally
     // - D2R fills slots left-to-right with no gaps (PartyMemberSlots), so the common case (a

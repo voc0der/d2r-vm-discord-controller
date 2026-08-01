@@ -5031,6 +5031,10 @@ public sealed class DiscordBot
         var midJoinRotation = 0;
         var currentGameActive = false;
         var isolatedAccountsResyncedThisGame = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Per-account rejoin attempts spent this game on "this vantage is verifiably at the menus".
+        // Lives out here, not in the watch: each resync re-enters the watch with fresh locals, so a
+        // counter held inside it could never cap anything.
+        var outOfGameResyncsThisGame = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         string? lastWaitingReport = null;
         var lastWaitingReportUtc = DateTimeOffset.MinValue;
         CancellationTokenSource? watchCts = null;
@@ -5123,6 +5127,7 @@ public sealed class DiscordBot
                         _followAutoGameNumber++;
                         currentGameActive = true;
                         isolatedAccountsResyncedThisGame.Clear();
+                        outOfGameResyncsThisGame.Clear();
                         var parkedNote = accountState.ParkedGameFullCount > 0
                             ? $" ({FormatParkedGameFullNote(accountState)})"
                             : "";
@@ -5139,6 +5144,7 @@ public sealed class DiscordBot
                         GetFollowAutoPlayerCountDropPollDelay,
                         accountState,
                         isolatedAccountsResyncedThisGame,
+                        outOfGameResyncsThisGame,
                         cancellationToken);
                     if (watchResult.IsolatedAccountKey is { } isolatedAccountKey)
                     {
@@ -5151,7 +5157,7 @@ public sealed class DiscordBot
                         if (!watchResult.AttemptTargetedLeave)
                         {
                             await UpdateFollowAutoMonitorAsync(
-                                $"Game #{_followAutoGameNumber}: {watchResult.Reason} {isolatedAccountKey} is marked recovery-pending and must complete the normal menu recovery after reconnecting; the healthy accounts remain in the current game.",
+                                $"Game #{_followAutoGameNumber}: {watchResult.Reason} {isolatedAccountKey} is marked recovery-pending and must complete the normal menu recovery and rejoin before the all-joined watch resumes; the healthy accounts remain in the current game.",
                                 joined: accountState.JoinedCount,
                                 total: accountState.CountExpectedAccounts(onlineAccountKeys));
                             idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
@@ -5229,6 +5235,7 @@ public sealed class DiscordBot
                     _followAutoGamesCompleted++;
                     currentGameActive = false;
                     isolatedAccountsResyncedThisGame.Clear();
+                    outOfGameResyncsThisGame.Clear();
                     // The game the parked accounts were shut out of is over; they resume the
                     // normal join scan for the next one alongside everyone else.
                     var unparkedAccounts = accountState.ClearGameFullParking();
@@ -5306,6 +5313,7 @@ public sealed class DiscordBot
                             _followAutoGamesCompleted++;
                             currentGameActive = false;
                             isolatedAccountsResyncedThisGame.Clear();
+                            outOfGameResyncsThisGame.Clear();
                         }
 
                         // The game everyone was parked out of is being abandoned; the rescan
@@ -6268,10 +6276,13 @@ public sealed class DiscordBot
         Func<TimeSpan> pollDelay,
         FollowAutoAccountState accountState,
         IReadOnlySet<string> isolatedAccountsResyncedThisGame,
+        IDictionary<string, int> outOfGameResyncsThisGame,
         CancellationToken cancellationToken)
     {
         var singleVantageMissStreak = 0;
         var isolatedMissStreaks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var outOfGameStreaks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var cappedOutOfGameReports = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var rotation = 0;
         var warnedCountDropWhileLeaderVisible = false;
         var lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
@@ -6294,6 +6305,41 @@ public sealed class DiscordBot
 
             var sample = await TryFetchFollowPulseAsync(rotation++, _followAutoLockedNametag, accountState.Joined);
             await TryLockNametagFromSampleAsync(sample);
+
+            // Before interpreting the leader signal, check whether this vantage is even in a
+            // game. A bot dropped back to the lobby after its join was already confirmed (a
+            // post-join "Connection Interrupted") reports nothing but null counts and null
+            // nametag reads, which classify as Wait - so it used to sit out the whole game while
+            // the monitor still counted it in. Nothing here can be confirmed by another VM: only
+            // this client can see its own screen, so the guard is consecutive reads instead.
+            if (sample.AccountKey is { } pulsedAccountKey)
+            {
+                outOfGameStreaks.TryGetValue(pulsedAccountKey, out var priorOutOfGameStreak);
+                var outOfGameStreak = FollowAutoPulsePolicy.NextOutOfGameStreak(
+                    priorOutOfGameStreak, sample.InGame);
+                outOfGameStreaks[pulsedAccountKey] = outOfGameStreak;
+                outOfGameResyncsThisGame.TryGetValue(pulsedAccountKey, out var priorResyncs);
+                if (FollowAutoPulsePolicy.ShouldResyncOutOfGameVantage(outOfGameStreak, priorResyncs))
+                {
+                    outOfGameResyncsThisGame[pulsedAccountKey] = priorResyncs + 1;
+                    return new FollowAutoGameWatchResult(
+                        $"{pulsedAccountKey} is at the menus, not in the game it was counted in "
+                            + $"({outOfGameStreak} consecutive checks; it was most likely dropped by a connection interruption after its join was confirmed).",
+                        pulsedAccountKey,
+                        // It is already out of the game - a save-exit would only burn its command
+                        // gate on a guaranteed failure. The normal join path takes it from here.
+                        AttemptTargetedLeave: false);
+                }
+
+                if (outOfGameStreak >= FollowAutoPulsePolicy.OutOfGameVantageResyncSamples
+                    && cappedOutOfGameReports.Add(pulsedAccountKey))
+                {
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Game #{_followAutoGameNumber}: {pulsedAccountKey} keeps reading as out of the game but has already used its "
+                            + $"{FollowAutoPulsePolicy.MaxOutOfGameResyncsPerGame} rejoin attempts this game, so it stays as-is. "
+                            + "If it is visibly in the game, its screen is being misclassified - check the VM's resolution (1366x768) and reference images.");
+                }
+            }
 
             // Only the session-locked nametag can drive the leave decision. Before a lock
             // exists (first game, nothing spotted yet), presence reads null and Classify falls
@@ -6700,6 +6746,10 @@ public sealed class DiscordBot
     // (offline during a bind) can never be asked about the wrong list index.
     private sealed record FollowLeaderMatch(string Fingerprint, bool? Present, int? Slot, double? Score);
 
+    // InGame is the sampling client's own screen, not the leader's: true/false only when the
+    // agent verifiably classified an in-game or a menu screen, null whenever it could not tell
+    // (load screen, degraded capture) or the agent predates the field. See
+    // FollowAutoPulsePolicy.NextOutOfGameStreak for what the watch does with a false.
     private sealed record FollowPulseSample(
         int? PlayerCount,
         bool LeaderBound,
@@ -6707,7 +6757,8 @@ public sealed class DiscordBot
         int? LeaderSlot,
         double? LeaderScore,
         string? AccountKey,
-        IReadOnlyList<FollowLeaderMatch> Matches);
+        IReadOnlyList<FollowLeaderMatch> Matches,
+        bool? InGame = null);
 
     private static string FormatParkedGameFullNote(FollowAutoAccountState accountState)
     {
@@ -6834,7 +6885,8 @@ public sealed class DiscordBot
                     TryGetInt(sampleData, "leaderSlot", out var leaderSlot) ? leaderSlot : null,
                     TryGetNullableDouble(sampleData, "leaderScore"),
                     accountKey,
-                    ParseLeaderMatches(sampleData));
+                    ParseLeaderMatches(sampleData),
+                    TryGetBoolean(sampleData, "inGame", out var inGame) ? inGame : null);
             }
         }
         catch (Exception ex)
