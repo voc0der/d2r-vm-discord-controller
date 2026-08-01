@@ -55,6 +55,27 @@ VM agents periodically push status to their local D2RHost:
 }
 ```
 
+`d2rVisibleState` carries one extra value that is not a pixel classification:
+`GraphicsDeviceFailure`, set when D2R's native `Failed to initialize graphics device` dialog is on
+screen. It comes with a `d2rGraphicsDeviceFailure` object so the failure is diagnosable without a
+screenshot:
+
+```json
+{
+  "detected": true,
+  "streak": 2,
+  "relaunchLimit": 5,
+  "needsVmPowerCycle": false,
+  "lastSeenUtc": "2026-08-01T14:28:00Z",
+  "detail": "\"Error\" (#32770) owned by D2R (pid 4812), OK button found"
+}
+```
+
+`streak` counts this incident's dismiss-and-relaunch attempts and `needsVmPowerCycle` reports that
+the agent has stopped retrying, which is the host's cue to power-cycle the guest. The object is
+omitted (null) when the dialog is absent and no incident is open. Agents that predate these fields
+omit both, which reads as "no graphics-device failure".
+
 ## Worker-to-Master Status
 
 A worker connects to the master with the same hello envelope, using its `nodeId` as the agent ID:
@@ -312,8 +333,8 @@ whose stored lists diverged can never be misread by index.
 `visibleState` is the sampling client's own screen (the `d2rVisibleState` classifier value) and
 `inGame` is its verdict about itself: `true` only for `InGame`, `false` for the screens D2R
 cannot show from inside a game (`LobbyOrGame`, `CharacterScreen`, `OfflineCharacterScreen`,
-`NotRunning`), and `null` for `DiabloSplash`/`Unknown` - a load screen or degraded capture is not
-evidence. Follow-auto's watch uses a `false` from a bot it counts as joined to rejoin that bot
+`NotRunning`, `GraphicsDeviceFailure`), and `null` for `DiabloSplash`/`Unknown` - a load screen or
+degraded capture is not evidence. Follow-auto's watch uses a `false` from a bot it counts as joined to rejoin that bot
 mid-game (a post-join "Connection Interrupted" drops one client back to the lobby, where every
 other field in this reply is a `null` that reads as "nothing to report"). Agents that predate
 these fields simply omit them, so an older agent never triggers that rejoin.

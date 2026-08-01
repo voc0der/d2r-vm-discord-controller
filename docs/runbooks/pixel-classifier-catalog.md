@@ -89,21 +89,29 @@ Measured 9x9 sample-grid margins from the reference captures:
 
 The Intel GPU-P `Failed to initialize graphics device` launch failure is intentionally outside
 the pixel classifier. Its position, DPI, theme, and black D2R background can vary, while the
-native dialog structure is stable. `WindowsProcessFinder` resolves the owner before reading
-window text, then requires all of these signals:
+native dialog structure is stable - and the screen behind it is pure black, which every pixel
+classifier reads as `Unknown` (indistinguishable from a load screen or a degraded capture).
 
-- top-level native dialog class `#32770`;
-- owning process matches a configured D2R process name;
-- exact top-level title `Error`;
-- child text contains `Failed to initialize graphics device`, case-insensitively; and
-- a native `Button` child with the standard `IDOK` control ID.
+`WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog` matches on **one** signal:
 
-`WindowsInput` dismisses only that verified target with a bounded `BM_CLICK`. The ready loop
-throttles the semantic probe rather than enumerating desktop windows on every 50-250ms startup
-input tick. Generic Error windows, wrong-process dialogs, lookalike text without `IDOK`, and the
-reference image by itself cannot authorize a click. The privacy-safe 408x157 reference crop is
-`1366x768/d2r_failed_to_initialize_graphics_device.png`; it documents the state but is not used
-for runtime matching.
+- the dialog's own caption or any child control's text contains `initialize graphics device`,
+  case-insensitively.
+
+Everything else - `#32770` class, owning process, the `Error` caption, an `IDOK` `Button` child -
+is context that gets reported, never a veto. Requiring all of them (the original design) meant
+any single drift made a plainly readable dialog undetectable, with no log line or status field to
+show it had been considered and rejected. Class and owner remain only as a cheap pre-filter over
+visible top-level windows: a window's children are enumerated when it is `#32770` **or** owned by
+a configured D2R process, so the probe still does not read every window on the desktop.
+
+`WindowsInput` dismisses the match with `BM_CLICK` on the identified button, then
+`WM_COMMAND`/`IDOK` to the dialog, then Enter plus `WM_CLOSE`, re-checking that window handle
+after each - a dismissal counts only when the dialog is gone. A match with no identifiable button is still reported (and still
+dismissible via the last two paths) instead of being discarded. The ready loop throttles the
+probe to once a second rather than enumerating desktop windows on every 50-250ms startup input
+tick; status collection and the idle monitor each probe once per pass. The privacy-safe 408x157
+reference crop is `1366x768/d2r_failed_to_initialize_graphics_device.png`; it documents the state
+but is not used for runtime matching.
 
 ## Detection priority order
 

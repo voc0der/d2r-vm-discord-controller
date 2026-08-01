@@ -40,6 +40,31 @@ Successful preparation also arms one host power transition in memory. If another
 
 This journal is deliberately local. A worker may shut down before the master, and either PC may boot first; the worker's local config, Hyper-V access, and SQLite database are sufficient to restore its guests.
 
+## Warmup failure ladder
+
+Follow-auto counts consecutive outer `menu_ready` failures per account (a successful warmup, or a
+live preflight proving warmup was unnecessary, resets that account to zero) and escalates in two
+stages:
+
+| Consecutive failures | Action |
+| --- | --- |
+| 5 | Power-cycle **that account's VM only**: `vm_stop`, confirm `Off`, `vm_start`, confirm `Running`, then wait for its agent to reconnect. The strike count restarts so the rebuilt guest gets a full budget. |
+| 5 more (after a cycle) | Restart the **physical node** that owns the account, via the VM-safe path above: record and stop its Running VMs, restart the host, restore only what it stopped, and resume the follow run. |
+
+VM first, node second, because one wedged guest is the common case - a client that cannot
+initialize its graphics device, a Battle.net install that will not repair - and rebooting the
+physical host for it takes every healthy sibling VM down too. A guest that comes back broken a
+second time is evidence the problem is below the guest, which is what the node restart is for.
+
+A VM cycle that cannot run at all (no `vmName` mapping, the owning worker offline, PowerShell
+refused) is recorded as unavailable **without** clearing the strikes, so the very next failure
+escalates straight to the node instead of retrying an impossible cycle. Both stages are per
+account: two accounts on one node each get their own VM cycle, while their node restart is
+latched so it happens once.
+
+The confirmation reads `State` from `vm_status`, accepting both the numeric `VMState` that
+`ConvertTo-Json` emits and a string, so a worker node on an older build still confirms correctly.
+
 ## Troubleshooting
 
 If the Discord command says VM preparation failed and the host stays awake:

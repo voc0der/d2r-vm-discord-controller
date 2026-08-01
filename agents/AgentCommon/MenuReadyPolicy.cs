@@ -42,7 +42,11 @@ public static class MenuReadyPolicy
             return visibleState switch
             {
                 "CharacterScreen" or "OfflineCharacterScreen" or "LobbyOrGame" or "InGame" => false,
-                "NotRunning" or "Unknown" or "DiabloSplash" => true,
+                // GraphicsDeviceFailure is reported with d2rRunning true - the failed client is
+                // still a live process sitting on its error dialog. Without naming it here it
+                // would fall through to the running-and-unknown default; it is listed
+                // explicitly because a ready pass is exactly what clears it.
+                "NotRunning" or "Unknown" or "DiabloSplash" or "GraphicsDeviceFailure" => true,
                 _ => true
             };
         }

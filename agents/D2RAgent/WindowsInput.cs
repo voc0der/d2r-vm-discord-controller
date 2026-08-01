@@ -13,7 +13,21 @@ internal enum MouseButton
 
 internal readonly record struct D2RGraphicsDeviceFailureDismissalResult(
     bool Detected,
-    bool DismissalSent);
+    bool DismissalSent,
+    int OwnerProcessId = 0,
+    string OwnerProcessName = "",
+    string DialogTitle = "",
+    string DialogClassName = "",
+    bool ActionButtonFound = false)
+{
+    public string Describe()
+    {
+        return Detected
+            ? $"\"{DialogTitle}\" ({DialogClassName}) owned by {OwnerProcessName} (pid {OwnerProcessId}), "
+                + $"OK button {(ActionButtonFound ? "found" : "not found")}"
+            : "none";
+    }
+}
 
 internal sealed class WindowsInput
 {
@@ -57,8 +71,13 @@ internal sealed class WindowsInput
     private const uint WmRButtonDown = 0x0204;
     private const uint WmRButtonUp = 0x0205;
     private const uint BmClick = 0x00F5;
+    private const uint WmCommand = 0x0111;
+    private const uint WmClose = 0x0010;
+    private const int BnClicked = 0;
+    private const int IdOk = 1;
     private const uint SmtoAbortIfHung = 0x0002;
     private const uint DialogActionTimeoutMs = 200;
+    private const int DialogDismissalSettleMs = 250;
     private const int InputHoldMilliseconds = 90;
     private const int InputGapMilliseconds = 35;
     private const int SwRestore = 9;
@@ -157,6 +176,21 @@ internal sealed class WindowsInput
         return true;
     }
 
+    /// <summary>
+    /// Reports whether D2R's graphics-initialization failure dialog is on screen, without
+    /// touching it. Used by status collection so the failure is visible fleet-wide even when no
+    /// launch or ready command is running.
+    /// </summary>
+    public D2RGraphicsDeviceFailureDismissalResult DetectD2RGraphicsDeviceFailureDialog(
+        IEnumerable<string> d2rProcessNames)
+    {
+        EnsureWindows();
+        var target = WindowsProcessFinder.FindD2RGraphicsDeviceFailureDialog(d2rProcessNames);
+        return target is null
+            ? new D2RGraphicsDeviceFailureDismissalResult(Detected: false, DismissalSent: false)
+            : Describe(target, dismissalSent: false);
+    }
+
     public D2RGraphicsDeviceFailureDismissalResult TryDismissD2RGraphicsDeviceFailureDialog(
         IEnumerable<string> d2rProcessNames)
     {
@@ -168,20 +202,77 @@ internal sealed class WindowsInput
             return new D2RGraphicsDeviceFailureDismissalResult(Detected: false, DismissalSent: false);
         }
 
-        // BM_CLICK targets the semantic IDOK control directly. It does not depend on the dialog
-        // being foreground or on a DPI-sensitive screen coordinate, and SendMessageTimeout keeps
-        // a wedged graphics-initialization dialog from hanging the ready loop that is repairing it.
-        var sent = SendMessageTimeout(
-            target.ActionButton.WindowHandle,
-            BmClick,
-            IntPtr.Zero,
-            IntPtr.Zero,
+        // Three escalating ways to press OK, because a "sent" message is not a dismissal. BM_CLICK
+        // targets the semantic IDOK control directly (no foreground requirement, no DPI-sensitive
+        // screen coordinate); WM_COMMAND/IDOK goes to the dialog itself and works even when the
+        // button control could not be identified; Enter is the last resort for a dialog that
+        // ignores both. SendMessageTimeout everywhere keeps a wedged dialog from hanging the
+        // ready loop that is repairing it. Success is defined as the dialog being GONE.
+        if (target.ActionButton is { } actionButton)
+        {
+            _ = SendMessageTimeout(
+                actionButton.WindowHandle,
+                BmClick,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                SmtoAbortIfHung,
+                DialogActionTimeoutMs,
+                out _);
+            if (IsDialogGone(target))
+            {
+                return Describe(target, dismissalSent: true);
+            }
+        }
+
+        var buttonHandle = target.ActionButton?.WindowHandle ?? IntPtr.Zero;
+        _ = SendMessageTimeout(
+            target.Dialog.WindowHandle,
+            WmCommand,
+            MakeCommandWParam(IdOk, BnClicked),
+            buttonHandle,
             SmtoAbortIfHung,
             DialogActionTimeoutMs,
             out _);
+        if (IsDialogGone(target))
+        {
+            return Describe(target, dismissalSent: true);
+        }
+
+        // Enter, then the title bar's own close command. For this dialog they are equivalent
+        // (a lone-OK message box closes on either), and WM_CLOSE does not depend on the dialog
+        // manager routing a posted keystroke to a focused child.
+        PostMessage(target.Dialog.WindowHandle, WmKeyDown, (IntPtr)VkReturn, IntPtr.Zero);
+        PostMessage(target.Dialog.WindowHandle, WmKeyUp, (IntPtr)VkReturn, IntPtr.Zero);
+        PostMessage(target.Dialog.WindowHandle, WmClose, IntPtr.Zero, IntPtr.Zero);
+        return Describe(target, dismissalSent: IsDialogGone(target));
+    }
+
+    // Checks the specific dialog window rather than re-scanning the desktop: this runs up to
+    // three times per dismissal, and "did THIS window go away" is both cheaper and exactly the
+    // question - a fresh identical dialog from the next failed launch is a different incident.
+    private static bool IsDialogGone(WindowDialogTarget target)
+    {
+        Thread.Sleep(DialogDismissalSettleMs);
+        return !IsWindow(target.Dialog.WindowHandle) || !IsWindowVisible(target.Dialog.WindowHandle);
+    }
+
+    private static D2RGraphicsDeviceFailureDismissalResult Describe(
+        WindowDialogTarget target,
+        bool dismissalSent)
+    {
         return new D2RGraphicsDeviceFailureDismissalResult(
             Detected: true,
-            DismissalSent: sent != IntPtr.Zero);
+            DismissalSent: dismissalSent,
+            OwnerProcessId: target.Dialog.ProcessId,
+            OwnerProcessName: target.Dialog.ProcessName,
+            DialogTitle: target.Dialog.Title,
+            DialogClassName: target.Dialog.ClassName,
+            ActionButtonFound: target.ActionButton is not null);
+    }
+
+    private static IntPtr MakeCommandWParam(int controlId, int notificationCode)
+    {
+        return (IntPtr)((notificationCode << 16) | (controlId & 0xFFFF));
     }
 
     public bool TryClickProcessWindowCenter(string processName)
@@ -1469,6 +1560,12 @@ internal sealed class WindowsInput
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostMessage(IntPtr windowHandle, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr windowHandle);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SendMessageTimeout(

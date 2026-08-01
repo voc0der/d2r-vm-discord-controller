@@ -98,6 +98,10 @@ public sealed class DiscordBot
     private const int FollowAutoPostLeaveCheckSeconds = 2;
     private static readonly TimeSpan FollowAutoNodeRecoveryTimeout = TimeSpan.FromMinutes(20);
     private static readonly TimeSpan FollowAutoNodeRecoveryPollInterval = TimeSpan.FromSeconds(2);
+    // Hyper-V transitions are fast; this only has to cover a guest that ignores the shutdown
+    // request long enough for Stop-VM -Force to turn it off the hard way.
+    private static readonly TimeSpan FollowAutoVmPowerStateTimeout = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan FollowAutoVmPowerStatePollInterval = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan FollowAutoLocalRestartFallbackDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan FollowAutoStopActionWindow = TimeSpan.FromMinutes(2);
     private readonly SemaphoreSlim _followAutoLock = new(1, 1);
@@ -5390,6 +5394,7 @@ public sealed class DiscordBot
                 var pendingByAccount = pending.ToDictionary(entry => entry.Key, StringComparer.OrdinalIgnoreCase);
                 var recoveryRequests = new Dictionary<string, FollowAutoNodeRecoveryRequest>(
                     StringComparer.OrdinalIgnoreCase);
+                var vmRecoveryRequests = new List<FollowAutoVmRecoveryRequest>();
                 foreach (var result in checkResults)
                 {
                     if (!pendingByAccount.TryGetValue(result.AccountKey, out var failedEntry))
@@ -5401,6 +5406,15 @@ public sealed class DiscordBot
                     if (result.WarmupOutcome == FollowWarmupOutcome.Failed)
                     {
                         var failure = warmupFailures.RecordFailure(result.AccountKey, nodeId);
+                        if (failure.VmRecoveryRequested)
+                        {
+                            vmRecoveryRequests.Add(new FollowAutoVmRecoveryRequest(
+                                nodeId,
+                                result.AccountKey,
+                                failedEntry.Value,
+                                failure.ConsecutiveFailures));
+                        }
+
                         if (failure.RecoveryRequested)
                         {
                             recoveryRequests[nodeId] = new FollowAutoNodeRecoveryRequest(
@@ -5416,6 +5430,44 @@ public sealed class DiscordBot
                         // not count as desktop-to-lobby warmup failures.
                         warmupFailures.RecordSuccess(result.AccountKey);
                     }
+                }
+
+                foreach (var request in vmRecoveryRequests
+                             .OrderBy(request => request.AccountKey, StringComparer.OrdinalIgnoreCase))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // Only this account's guest goes down, so only this account is held back
+                    // from the all-joined calculation while it rebuilds.
+                    accountState.BeginRecovery(request.AccountKey);
+                    idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                    lastWaitingReport = null;
+                    await UpdateFollowAutoMonitorAsync(
+                        $"{request.AccountKey} failed desktop-to-lobby warmup {request.ConsecutiveFailures} consecutive "
+                            + $"times. Powering its VM off and back on before considering a {request.NodeId} restart.",
+                        joined: accountState.JoinedCount,
+                        total: accountState.CountExpectedAccounts(onlineAccountKeys));
+
+                    var vmRecovery = await RecoverFollowAutoVmAsync(request, cancellationToken);
+                    if (vmRecovery.Ok)
+                    {
+                        warmupFailures.RecordVmRecovered(request.AccountKey, request.NodeId);
+                    }
+                    else
+                    {
+                        // Keep the strikes: the next failure escalates straight to the node
+                        // restart rather than retrying a cycle that has already proven impossible.
+                        warmupFailures.RecordVmRecoveryUnavailable(request.AccountKey, request.NodeId);
+                    }
+
+                    await UpdateFollowAutoMonitorAsync(
+                        vmRecovery.Ok
+                            ? $"{request.AccountKey}: {vmRecovery.Message} Follow-auto continues; five new consecutive "
+                                + $"warmup failures escalate to restarting {request.NodeId}."
+                            : $"{request.AccountKey}: VM power cycle failed: {vmRecovery.Message} The next warmup "
+                                + $"failure escalates to restarting {request.NodeId}.",
+                        joined: accountState.JoinedCount,
+                        total: accountState.CountExpectedAccounts(onlineAccountKeys));
                 }
 
                 if (recoveryRequests.Count > 0)
@@ -5687,6 +5739,188 @@ public sealed class DiscordBot
                 StringComparison.OrdinalIgnoreCase))
             .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    /// <summary>
+    /// Stops one account's VM, confirms Hyper-V reports it Off, starts it again, confirms it is
+    /// Running, and waits for its agent to reconnect. This is the escalation for a guest whose
+    /// client will not warm up - most often a D2R that cannot initialize its graphics device,
+    /// which no amount of in-guest relaunching fixes because the guest's display driver is what
+    /// is broken.
+    /// </summary>
+    private async Task<CommandResult> RecoverFollowAutoVmAsync(
+        FollowAutoVmRecoveryRequest request,
+        CancellationToken cancellationToken)
+    {
+        var vmName = string.IsNullOrWhiteSpace(request.Account.VmName)
+            ? request.Account.AgentId
+            : request.Account.VmName!;
+        if (string.IsNullOrWhiteSpace(vmName))
+        {
+            return CommandResult.Failure($"{request.AccountKey} has no VM name or agent id to power-cycle.");
+        }
+
+        var args = JsonSerializer.SerializeToElement(new { accountKey = request.AccountKey, vmName });
+
+        var stop = await SendVmPowerCommandAsync(request.Account, "vm_stop", args, cancellationToken);
+        if (!stop.Ok)
+        {
+            return CommandResult.Failure($"Stop-VM for {vmName} failed: {stop.Message}");
+        }
+
+        // Stop-VM -Force returns when Hyper-V says the guest is down, but a guest that ignores
+        // the shutdown request can leave it in Stopping. Confirm Off before starting: Start-VM
+        // against a VM that is not actually Off fails, and that failure would be reported as a
+        // completed recovery.
+        var off = await WaitForVmPowerStateAsync(request.Account, args, "Off", cancellationToken);
+        if (!off.Ok)
+        {
+            return CommandResult.Failure($"{vmName} did not confirm Off after Stop-VM: {off.Message}");
+        }
+
+        var start = await SendVmPowerCommandAsync(request.Account, "vm_start", args, cancellationToken);
+        if (!start.Ok)
+        {
+            return CommandResult.Failure($"{vmName} is Off, but Start-VM failed: {start.Message}");
+        }
+
+        var running = await WaitForVmPowerStateAsync(request.Account, args, "Running", cancellationToken);
+        if (!running.Ok)
+        {
+            return CommandResult.Failure($"{vmName} did not confirm Running after Start-VM: {running.Message}");
+        }
+
+        var deadline = DateTimeOffset.UtcNow + FollowAutoNodeRecoveryTimeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var onlineAccountKeys = GetAccountEntriesByConnectivity().Online
+                .Select(entry => entry.Key)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (onlineAccountKeys.Contains(request.AccountKey))
+            {
+                return CommandResult.Success(
+                    $"{vmName} was powered off, confirmed Off, started again, and its agent reconnected.");
+            }
+
+            await Task.Delay(FollowAutoNodeRecoveryPollInterval, cancellationToken);
+        }
+
+        return CommandResult.Failure(
+            $"{vmName} is Running again, but its agent did not reconnect within "
+                + $"{FollowAutoNodeRecoveryTimeout.TotalMinutes:N0} minutes.");
+    }
+
+    private async Task<CommandResult> SendVmPowerCommandAsync(
+        AccountConfig account,
+        string command,
+        JsonElement args,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _hyperV.HandleCommandAsync(
+                account,
+                new CommandRequest(Guid.NewGuid().ToString("N"), command, args),
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return CommandResult.Failure($"{command} threw: {ex.Message}");
+        }
+    }
+
+    private async Task<CommandResult> WaitForVmPowerStateAsync(
+        AccountConfig account,
+        JsonElement args,
+        string expectedState,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + FollowAutoVmPowerStateTimeout;
+        var lastObserved = "unknown";
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var status = await SendVmPowerCommandAsync(account, "vm_status", args, cancellationToken);
+            if (status.Ok && TryReadVmPowerState(status, out var state))
+            {
+                lastObserved = state;
+                if (string.Equals(state, expectedState, StringComparison.OrdinalIgnoreCase))
+                {
+                    return CommandResult.Success($"state {state}");
+                }
+            }
+            else if (!status.Ok)
+            {
+                lastObserved = status.Message;
+            }
+
+            await Task.Delay(FollowAutoVmPowerStatePollInterval, cancellationToken);
+        }
+
+        return CommandResult.Failure(
+            $"still {lastObserved} after {FollowAutoVmPowerStateTimeout.TotalSeconds:N0}s");
+    }
+
+    /// <summary>
+    /// Reads the VM state out of a <c>vm_status</c> result. Hyper-V's VMState serializes as a
+    /// number through ConvertTo-Json, and worker nodes running an older build still emit it that
+    /// way, so both shapes are accepted.
+    /// </summary>
+    internal static bool TryReadVmPowerState(CommandResult status, out string state)
+    {
+        state = "";
+        if (status.Data is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var json = JsonSerializer.SerializeToElement(status.Data);
+            if (!json.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            using var document = JsonDocument.Parse(output.GetString() ?? "");
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                if (root.GetArrayLength() == 0)
+                {
+                    return false;
+                }
+
+                root = root[0];
+            }
+
+            if (!root.TryGetProperty("State", out var stateProperty))
+            {
+                return false;
+            }
+
+            state = stateProperty.ValueKind switch
+            {
+                JsonValueKind.String => stateProperty.GetString() ?? "",
+                JsonValueKind.Number => stateProperty.GetInt32() switch
+                {
+                    2 => "Running",
+                    3 => "Off",
+                    6 => "Starting",
+                    _ => stateProperty.GetInt32().ToString()
+                },
+                _ => ""
+            };
+            return !string.IsNullOrWhiteSpace(state);
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
+        {
+            // Data is whatever the owning node put there (a local anonymous object, or a
+            // JsonElement relayed from a worker). An unreadable payload means "state unknown",
+            // never a crashed follow-auto run.
+            return false;
+        }
     }
 
     private async Task<FollowAutoNodeRecoveryResult> RecoverFollowAutoNodeAsync(
@@ -7589,6 +7823,12 @@ public sealed class DiscordBot
         bool RecoveryComplete,
         bool LocalRestartQueued,
         string Message);
+
+    private sealed record FollowAutoVmRecoveryRequest(
+        string NodeId,
+        string AccountKey,
+        AccountConfig Account,
+        int ConsecutiveFailures);
 
     private sealed record FollowAutoGameWatchResult(
         string Reason,

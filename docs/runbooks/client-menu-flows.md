@@ -103,24 +103,46 @@ driver work after another game launch:
 
 ![D2R failed to initialize graphics device](assets/d2r-ui/1366x768/d2r_failed_to_initialize_graphics_device.png)
 
-This is treated as a recoverable launch failure. During `menu_ready`, the agent requires all of
-the native dialog signals before acting: a `#32770` top-level window owned by a configured D2R
-process, exact title `Error`, child text containing `Failed to initialize graphics device`, and a
-standard `OK`/`IDOK` button. A generic Error window from another application, or another D2R
-error without that message, is left alone.
+This is treated as a recoverable launch failure. **The message body is the only match signal**:
+any visible top-level dialog whose own caption or whose child controls contain `initialize
+graphics device` (case-insensitive) is the failure, whatever process owns it, whatever its
+caption says, and whether or not it is a `#32770` window. The first version of this detector
+required a `#32770` class, an exact `Error` caption, a configured D2R owner process, and an
+`IDOK` button all at once, and a dialog that failed any single one of those was silently not
+detected at all. Class and owner survive only as a cheap pre-filter for which windows are worth
+reading (a window is examined when it is `#32770` *or* owned by a configured D2R process), and
+everything observed is reported rather than used as a veto. Another D2R error without that
+message is still left alone.
 
-For a verified match, the agent sends a bounded native button click to **OK**, waits three
-seconds, closes only a lingering failed D2R process if it did not exit with the dialog, then
-resends the ordinary D2R launch command. Normal startup clicks and keys are suppressed during
-that recovery step. This game-only retry is deliberately first-line because it often succeeds;
-reaching character select, the lobby, or a game completes the warmup normally and clears that
-account's consecutive warmup-failure count.
+For a match, the agent presses OK three escalating ways - `BM_CLICK` on the button, then
+`WM_COMMAND`/`IDOK` to the dialog (which works even when no button control could be identified),
+then Enter plus `WM_CLOSE` - and re-checks the dialog window after each: **success means the
+dialog is gone**, not that a message was accepted. It then waits three seconds, closes only a lingering failed D2R process if it did
+not exit with the dialog, and resends the ordinary D2R launch command. Normal startup clicks and
+keys are suppressed during that recovery step.
 
-The dialog itself is not counted as five failures. If retries still cannot make the whole
-`menu_ready` command reach a usable state, that command contributes one outer warmup failure.
-The existing follow-auto policy performs the VM-safe restart of the owning physical node after
-five consecutive failed warmups, restores only the VMs it stopped, and resumes the active follow
-run after the node and accounts return.
+Where this runs:
+
+- `menu_ready` probes once a second for the whole ready loop, and the launch path probes before
+  launching.
+- The **idle monitor** probes on every tick, so a client that fails initialization while nothing
+  is driving it - a crash mid-session, follow-auto stopped, a manually launched client left alone
+  - is still found and relaunched. Previously nothing outside a running launch/ready command ever
+  looked, so such a VM sat on the dialog indefinitely.
+- `/d2r status` reports it as `visible GraphicsDeviceFailure` plus a `d2rGraphicsDeviceFailure`
+  block naming the owning process, caption, class, and whether an OK button was found. A failure
+  nobody can see is indistinguishable from one that was never detected.
+
+Reaching character select, the lobby, or a game closes the incident (the splash deliberately does
+not: a client that renders its splash and then fails device initialization would otherwise reset
+the count on every relaunch and never escalate). Five dismiss-and-relaunch attempts inside 20 minutes exhaust it instead: the
+agent stops relaunching (the guest's display driver is what is broken, and another relaunch just
+reaches the same dialog), reports `needsVmPowerCycle`, and `menu_ready` fails naming the streak.
+That failure feeds the follow-auto ladder in
+[host-vm-power-lifecycle.md](host-vm-power-lifecycle.md#warmup-failure-ladder): five consecutive
+warmup failures power-cycle that account's own VM (stop, confirm `Off`, start, confirm `Running`,
+wait for its agent), and only an account that has already had its VM cycled escalates to
+restarting the whole physical node.
 
 ## Visual Anchors
 

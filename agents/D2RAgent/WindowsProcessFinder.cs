@@ -37,9 +37,13 @@ internal sealed record WindowDialogSnapshot(
     string Title,
     WindowControlSnapshot[] Children);
 
+// ActionButton is nullable on purpose. A dialog whose OK button cannot be identified is still a
+// confirmed graphics-device failure that has to be reported and can still be dismissed by other
+// means (WM_COMMAND/IDOK, Enter). The first version of this detector treated "no IDOK Button
+// child" as "not the dialog", which silently downgraded a recognized failure to nothing at all.
 internal sealed record WindowDialogTarget(
     WindowDialogSnapshot Dialog,
-    WindowControlSnapshot ActionButton);
+    WindowControlSnapshot? ActionButton);
 
 // EnumWindows + per-window GetWindowTitle (a SendMessage under the hood, up to 200ms each) is
 // the expensive part of detection. Every top-level caller in a single status collection
@@ -89,8 +93,13 @@ internal static class WindowsProcessFinder
 {
     private const string StandardDialogClass = "#32770";
     private const string StandardButtonClass = "Button";
-    private const string D2RGraphicsDeviceFailureTitle = "Error";
-    private const string D2RGraphicsDeviceFailureMessageFragment = "Failed to initialize graphics device";
+    // The message body is the only unforgeable evidence this dialog carries. The window title
+    // ("Error"), the owning process name, and the dialog class are all incidental to it, and the
+    // first version of this detector required an exact match on all three before it would even
+    // look at the text - so any drift in any one of them (a themed/task-dialog class, a launcher
+    // process owning the modal, a differently-capitalized caption) made a perfectly recognizable
+    // failure invisible. Match on the text; report everything else as context.
+    private const string D2RGraphicsDeviceFailureMessageFragment = "initialize graphics device";
     private const int IdOk = 1;
 
     public static WindowDialogTarget? FindD2RGraphicsDeviceFailureDialog(IEnumerable<string> processNames)
@@ -108,24 +117,19 @@ internal static class WindowsProcessFinder
                 continue;
             }
 
-            // This probe runs repeatedly while menu_ready is waiting for startup. Resolve the
-            // cheap PID/process identity first so unrelated desktop windows never receive a
-            // potentially blocking WM_GETTEXT request merely because they are visible.
+            // This probe runs repeatedly while menu_ready is waiting for startup, and once per
+            // status collection. Resolve the cheap PID/class identity first so unrelated desktop
+            // windows never receive a potentially blocking WM_GETTEXT request (or a child-window
+            // enumeration) merely because they are visible.
             var (pid, processName, sessionId) = ResolveWindowInfo(window);
-            if (pid == 0 || WindowsProcessIdentity.IsCurrentProcess(pid)
-                || !IsConfiguredProcessName(processName, normalizedProcessNames))
+            if (pid == 0 || WindowsProcessIdentity.IsCurrentProcess(pid))
             {
                 continue;
             }
 
             var className = GetWindowClassName(window);
-            if (!string.Equals(className, StandardDialogClass, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            var title = GetWindowTitle(window);
-            if (!string.Equals(title, D2RGraphicsDeviceFailureTitle, StringComparison.Ordinal))
+            var ownedByD2R = IsConfiguredProcessName(processName, normalizedProcessNames);
+            if (!ownedByD2R && !string.Equals(className, StandardDialogClass, StringComparison.Ordinal))
             {
                 continue;
             }
@@ -136,9 +140,9 @@ internal static class WindowsProcessFinder
                 sessionId,
                 window,
                 className,
-                title,
+                GetWindowTitle(window),
                 CaptureChildWindows(window));
-            var match = MatchD2RGraphicsDeviceFailureDialog(snapshot, normalizedProcessNames);
+            var match = MatchD2RGraphicsDeviceFailureDialog(snapshot);
             if (match is not null)
             {
                 return match;
@@ -148,27 +152,35 @@ internal static class WindowsProcessFinder
         return null;
     }
 
-    internal static WindowDialogTarget? MatchD2RGraphicsDeviceFailureDialog(
-        WindowDialogSnapshot dialog,
-        IEnumerable<string> processNames)
+    internal static WindowDialogTarget? MatchD2RGraphicsDeviceFailureDialog(WindowDialogSnapshot dialog)
     {
-        var normalizedProcessNames = WindowsProcessIdentity.NormalizeProcessNames(processNames);
-        if (!IsConfiguredProcessName(dialog.ProcessName, normalizedProcessNames)
-            || !string.Equals(dialog.ClassName, StandardDialogClass, StringComparison.Ordinal)
-            || !string.Equals(dialog.Title, D2RGraphicsDeviceFailureTitle, StringComparison.Ordinal)
-            || !dialog.Children.Any(child =>
-                child.Text.Contains(D2RGraphicsDeviceFailureMessageFragment, StringComparison.OrdinalIgnoreCase)))
+        var carriesFailureMessage = dialog.Title.Contains(
+                D2RGraphicsDeviceFailureMessageFragment,
+                StringComparison.OrdinalIgnoreCase)
+            || dialog.Children.Any(child =>
+                child.Text.Contains(D2RGraphicsDeviceFailureMessageFragment, StringComparison.OrdinalIgnoreCase));
+        if (!carriesFailureMessage)
         {
             return null;
         }
 
-        // IDOK is the stable semantic identity of the standard MessageBox action. Its rendered
-        // caption can vary by Windows language or include an accelerator marker, so class + ID
-        // is both stricter and more portable than comparing the visible button text.
-        var okButton = dialog.Children.FirstOrDefault(child =>
-            child.ControlId == IdOk
-            && string.Equals(child.ClassName, StandardButtonClass, StringComparison.OrdinalIgnoreCase));
-        return okButton is null ? null : new WindowDialogTarget(dialog, okButton);
+        // IDOK is the stable semantic identity of the standard MessageBox action: its rendered
+        // caption can vary by Windows language or carry an accelerator marker, so ID + class is
+        // more portable than the visible text. Fall back to the caption, then to any button at
+        // all - a dialog we can name but cannot click is still worth reporting, and the caller
+        // has keyboard fallbacks for it.
+        var buttons = dialog.Children
+            .Where(child => string.Equals(child.ClassName, StandardButtonClass, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var okButton = buttons.FirstOrDefault(child => child.ControlId == IdOk)
+            ?? buttons.FirstOrDefault(child => IsOkButtonText(child.Text))
+            ?? buttons.FirstOrDefault();
+        return new WindowDialogTarget(dialog, okButton);
+    }
+
+    private static bool IsOkButtonText(string text)
+    {
+        return string.Equals(text.Replace("&", ""), "OK", StringComparison.OrdinalIgnoreCase);
     }
 
     public static ProcessWindowTarget? FindWindowTargetByExactTitle(string title)
@@ -587,6 +599,12 @@ internal static class WindowsProcessFinder
         return windows;
     }
 
+    // Each child costs one cross-process WM_GETTEXT (bounded at 200ms, but still). A standard
+    // message box has a handful of controls; the cap only bites on a rich window that reached
+    // here by owning process, and keeps this scan's worst case bounded now that it also runs on
+    // the status path.
+    private const int MaxCapturedChildWindows = 32;
+
     private static WindowControlSnapshot[] CaptureChildWindows(IntPtr parentWindow)
     {
         var children = new List<WindowControlSnapshot>();
@@ -597,7 +615,7 @@ internal static class WindowsProcessFinder
                 GetDlgCtrlID(windowHandle),
                 GetWindowClassName(windowHandle),
                 GetWindowTitle(windowHandle)));
-            return true;
+            return children.Count < MaxCapturedChildWindows;
         }, IntPtr.Zero);
         return children.ToArray();
     }

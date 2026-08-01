@@ -53,6 +53,30 @@ If clients reach the lobby/character screen fine (proving Battle.net's own outbo
 
 Fixed at the deployment level, not in the agent's own detection/retry code: `scripts/install-vm-agent.ps1` creates/updates inbound firewall rules for Battle.net and D2R scoped to `-Profile Any`, so which profile NLA currently has the adapter in stops mattering for this traffic. Re-run the install script if `battleNetPath`/`d2rPath` changes, or if D2R/Battle.net get reinstalled at a different path.
 
+## 8. A detector that runs only inside a command, and reports nothing, cannot be told from a detector that never matched
+
+The `Failed to initialize graphics device` recovery shipped in v0.2.225 and the same VM was found
+sitting on the same dialog the next morning. Nothing about the outcome said which of these it was:
+
+- the dialog was never looked at (nothing was running that probes for it),
+- the dialog was looked at and rejected (one of four required signals did not match), or
+- the dialog was dismissed and the relaunch failed the same way again.
+
+That ambiguity was the bug, ahead of any Win32 detail. The detector lived only in `LaunchD2RAsync`
+and the `menu_ready` nudge loop, so nothing probed while no command was running; it required the
+`#32770` class, an exact `Error` caption, a configured D2R owner process, **and** an `IDOK` button
+before it would even read the message, so any single drift silently produced "no dialog here"; and
+its only trace anywhere was one checkpoint on a successful dismissal, so `/d2r status` showed
+`d2rRunning true, d2rVisibleState Unknown` - identical to a load screen.
+
+The general rule: **any recovery detector needs a state that shows up in status whether or not it
+fired, and a trigger that does not depend on a command already running.** For this one, status now
+reports `visible GraphicsDeviceFailure` plus a `d2rGraphicsDeviceFailure` block (owning process,
+caption, class, whether an OK button was found, how many dismiss-and-relaunch attempts this
+incident has spent), the idle monitor probes on every tick, and the match is on the message text
+alone with everything else demoted to reported context. If this dialog is ever missed again, the
+status block distinguishes "not seen" from "seen and unclickable" without needing a screenshot.
+
 ## Deployment basics (from `scripts/install-vm-agent.ps1`)
 
 The scheduled task is created with `-AtLogOn`, `LogonType Interactive`, `RunLevel Highest`, bound to whichever account ran the install script. If VMs are cloned from a template, re-run the install script per clone as that clone's actual interactive account, or the task's bound user won't match who's actually logged in.

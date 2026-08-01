@@ -24,6 +24,9 @@ public sealed class MenuReadyPolicyTests
     [InlineData("""{"d2rRunning":true,"d2rVisibleState":"Unknown","d2rActivityState":"LobbyOrGame"}""")]
     [InlineData("""{"d2rRunning":true,"d2rVisibleState":"DiabloSplash","d2rActivityState":"LobbyOrGame"}""")]
     [InlineData("""{"d2rRunning":true,"d2rVisibleState":"NotRunning","d2rActivityState":"LobbyOrGame"}""")]
+    // The failed-graphics client is a live process on an error dialog, so d2rRunning stays true.
+    // A ready pass is what dismisses that dialog and relaunches, so it must not be skipped.
+    [InlineData("""{"d2rRunning":true,"d2rVisibleState":"GraphicsDeviceFailure","d2rActivityState":"LobbyOrGame"}""")]
     public void ReadyFirstRunsWhenD2RIsNotKnownMenuReady(string? statusJson)
     {
         Assert.True(MenuReadyPolicy.ShouldRunReadyFirstFromStatusJson(

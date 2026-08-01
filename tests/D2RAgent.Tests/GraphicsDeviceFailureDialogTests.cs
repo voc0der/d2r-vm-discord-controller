@@ -15,16 +15,17 @@ public sealed class GraphicsDeviceFailureDialogTests
     {
         var dialog = CreateDialog();
 
-        var match = WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog, ["D2R"]);
+        var match = WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog);
 
         Assert.NotNull(match);
         Assert.Same(dialog, match.Dialog);
-        Assert.Equal(new IntPtr(103), match.ActionButton.WindowHandle);
+        Assert.NotNull(match.ActionButton);
+        Assert.Equal(new IntPtr(103), match.ActionButton!.WindowHandle);
         Assert.Equal(1, match.ActionButton.ControlId);
     }
 
     [Fact]
-    public void SemanticMatcherNormalizesConfiguredOwnerAndIgnoresMessageCaseAndWrapping()
+    public void SemanticMatcherIgnoresMessageCaseAndWrapping()
     {
         var dialog = CreateDialog(
             processName: "D2R_5_ALT.exe",
@@ -38,36 +39,26 @@ public sealed class GraphicsDeviceFailureDialogTests
                 new WindowControlSnapshot(new IntPtr(103), 1, "button", "&OK")
             ]);
 
-        var match = WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(
-            dialog,
-            [@"C:\Games\D2R_5_ALT.exe"]);
-
-        Assert.NotNull(match);
+        Assert.NotNull(WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog));
     }
 
-    [Fact]
-    public void SemanticMatcherRejectsGenericErrorFromAnotherProcess()
-    {
-        var dialog = CreateDialog(processName: "notepad");
-
-        var match = WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog, ["D2R"]);
-
-        Assert.Null(match);
-    }
-
+    // The failure this fixes: the message body is the evidence, and requiring the owning process,
+    // the dialog class and the exact "Error" caption to all match first is what made a dialog we
+    // could plainly read invisible to the agent.
     [Theory]
-    [InlineData("Dialog", "Error")]
-    [InlineData("#32770", "error")]
-    [InlineData("#32770", "Warning")]
-    public void SemanticMatcherRequiresStandardDialogClassAndExactErrorTitle(
+    [InlineData("notepad", "#32770", "Error")]
+    [InlineData("D2R", "Dialog", "Error")]
+    [InlineData("D2R", "#32770", "error")]
+    [InlineData("D2R", "#32770", "Diablo II: Resurrected")]
+    [InlineData("Diablo II Resurrected Launcher", "#32770", "")]
+    public void SemanticMatcherAcceptsAnyOwnerClassAndCaptionCarryingTheMessage(
+        string processName,
         string className,
         string title)
     {
-        var dialog = CreateDialog(className: className, title: title);
+        var dialog = CreateDialog(processName: processName, className: className, title: title);
 
-        var match = WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog, ["D2R"]);
-
-        Assert.Null(match);
+        Assert.NotNull(WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog));
     }
 
     [Fact]
@@ -80,26 +71,48 @@ public sealed class GraphicsDeviceFailureDialogTests
                 new WindowControlSnapshot(new IntPtr(103), 1, "Button", "OK")
             ]);
 
-        var match = WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog, ["D2R"]);
-
-        Assert.Null(match);
+        Assert.Null(WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog));
     }
 
-    [Theory]
-    [InlineData(2, "Button")]
-    [InlineData(1, "Static")]
-    public void SemanticMatcherRequiresButtonClassWithIdOk(int controlId, string className)
+    [Fact]
+    public void SemanticMatcherFallsBackToTheOkCaptionWhenIdOkIsMissing()
     {
         var dialog = CreateDialog(
             children:
             [
                 new WindowControlSnapshot(new IntPtr(102), -1, "Static", FailureMessage),
-                new WindowControlSnapshot(new IntPtr(103), controlId, className, "OK")
+                new WindowControlSnapshot(new IntPtr(103), 7, "Button", "&OK")
             ]);
 
-        var match = WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog, ["D2R"]);
+        var match = WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog);
 
-        Assert.Null(match);
+        Assert.NotNull(match);
+        Assert.Equal(new IntPtr(103), match.ActionButton!.WindowHandle);
+    }
+
+    // A dialog with no recognizable button is still a confirmed graphics-device failure. Reporting
+    // it (with no action button) lets the caller fall back to WM_COMMAND/Enter and lets status say
+    // what is on screen; treating it as "no match" is how a real failure went unseen.
+    [Fact]
+    public void SemanticMatcherReportsTheDialogEvenWithNoButtonToClick()
+    {
+        var dialog = CreateDialog(
+            children: [new WindowControlSnapshot(new IntPtr(102), -1, "Static", FailureMessage)]);
+
+        var match = WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog);
+
+        Assert.NotNull(match);
+        Assert.Null(match.ActionButton);
+    }
+
+    [Fact]
+    public void SemanticMatcherReadsTheMessageFromTheCaptionToo()
+    {
+        var dialog = CreateDialog(
+            title: "D2R: failed to initialize graphics device",
+            children: [new WindowControlSnapshot(new IntPtr(103), 1, "Button", "OK")]);
+
+        Assert.NotNull(WindowsProcessFinder.MatchD2RGraphicsDeviceFailureDialog(dialog));
     }
 
     [Fact]

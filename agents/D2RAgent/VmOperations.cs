@@ -41,6 +41,12 @@ public sealed class VmOperations
     private const int ReadyStartupProcessCheckIntervalMs = 1000;
     private const int GraphicsDeviceFailureProbeIntervalMs = 1000;
     private const int GraphicsDeviceFailureRestartDelaySeconds = 3;
+    // Dismiss-and-relaunch attempts allowed inside one incident before this agent stops trying
+    // and asks (through status) for a VM power cycle instead.
+    internal const int GraphicsDeviceFailureRelaunchLimit = 5;
+    private const int GraphicsDeviceFailureIncidentWindowMinutes = 20;
+    private const int GraphicsDeviceFailureGiveUpLogMinutes = 5;
+    private const int GraphicsDeviceFailureProbeBoundMs = 2000;
     private const int ReadyStartupSampleGrid = 5;
     private const int MenuSampleGrid = 9;
     // The "Game is full" discriminator reads thin single-line dialog text; the default 9-grid
@@ -128,6 +134,14 @@ public sealed class VmOperations
     private DateTimeOffset? _lastPartyMemberCountUtc;
     private string? _lastCommandCheckpoint;
     private DateTimeOffset? _lastCommandCheckpointUtc;
+    // Consecutive graphics-initialization failures inside one incident, guarded by
+    // _activityLock. A dismissal + relaunch that lands back on the same dialog is not progress:
+    // the guest's display driver is what is broken, and only a VM power cycle clears it. The
+    // streak is what tells the host when to stop asking this agent to try again.
+    private int _graphicsDeviceFailureStreak;
+    private DateTimeOffset? _lastGraphicsDeviceFailureUtc;
+    private string? _lastGraphicsDeviceFailureDetail;
+    private DateTimeOffset? _lastGraphicsDeviceFailureGiveUpLogUtc;
     private DateTimeOffset? _detailedStatusBackoffUntilUtc;
     private DateTimeOffset _nextInGameHudSampleAt = DateTimeOffset.MinValue;
     private bool _lastInGameHudResult;
@@ -236,6 +250,7 @@ public sealed class VmOperations
             battleNetRunning,
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
+            d2rGraphicsDeviceFailure = DescribeGraphicsDeviceFailure(visibleState),
             d2rProcessDiscovery = OperatingSystem.IsWindows() ? WindowsProcessFinder.Discover(GetD2RProcessNames(), windowScanCache) : null,
             // Gating this on d2rRunning blacked out the one field (foregroundProcessName) that
             // would show what's actually focused/visible when process-name matching itself is
@@ -290,6 +305,7 @@ public sealed class VmOperations
             battleNetRunning,
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
+            d2rGraphicsDeviceFailure = DescribeGraphicsDeviceFailure(visibleState),
             d2rProcessDiscovery = new ProcessDiscoverySnapshot(GetD2RProcessNames(), [], []),
             d2rInput = (InputDiagnostics?)null,
             lastInputAction = _lastInputAction,
@@ -463,7 +479,7 @@ public sealed class VmOperations
         if (graphicsDeviceFailure.Detected && !graphicsDeviceFailure.DismissalSent)
         {
             return CommandResult.Failure(
-                "Detected D2R's failed-to-initialize-graphics dialog, but its OK button did not accept the dismissal. The failed process was left untouched; retry the launch command.");
+                $"Detected D2R's failed-to-initialize-graphics dialog ({graphicsDeviceFailure.Describe()}), but it survived OK, WM_COMMAND, Enter and Close. The failed process was left untouched; retry the launch command.");
         }
 
         var recoveredGraphicsDeviceFailure = graphicsDeviceFailure.DismissalSent;
@@ -553,15 +569,16 @@ public sealed class VmOperations
             return dismissal;
         }
 
+        RecordGraphicsDeviceFailureSighting(dismissal);
         if (!dismissal.DismissalSent)
         {
             MarkCommandCheckpoint(
-                "Detected D2R's failed-to-initialize-graphics dialog, but its OK button did not accept the dismissal; leaving the process untouched for a later retry.");
+                $"Detected D2R's failed-to-initialize-graphics dialog ({dismissal.Describe()}), but OK, WM_COMMAND, Enter and Close all left it on screen.");
             return dismissal;
         }
 
         MarkCommandCheckpoint(
-            "Detected D2R's failed-to-initialize-graphics dialog; clicked OK and waiting before relaunch.");
+            $"Detected D2R's failed-to-initialize-graphics dialog ({dismissal.Describe()}); dismissed it and waiting before relaunch.");
         await Task.Delay(TimeSpan.FromSeconds(GraphicsDeviceFailureRestartDelaySeconds), cancellationToken);
 
         // Clicking OK normally terminates the failed D2R process. If Intel's fragile graphics
@@ -576,6 +593,189 @@ public sealed class VmOperations
         }
 
         return dismissal;
+    }
+
+    /// <summary>
+    /// Records one sighting of the graphics-initialization dialog. Sightings inside
+    /// <see cref="GraphicsDeviceFailureIncidentWindowMinutes"/> of each other belong to the same
+    /// incident and accumulate; a longer quiet gap (or any confirmed-healthy client) starts over.
+    /// </summary>
+    private int RecordGraphicsDeviceFailureSighting(D2RGraphicsDeviceFailureDismissalResult dismissal)
+    {
+        lock (_activityLock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var withinIncident = _lastGraphicsDeviceFailureUtc is { } last
+                && now - last < TimeSpan.FromMinutes(GraphicsDeviceFailureIncidentWindowMinutes);
+            _graphicsDeviceFailureStreak = withinIncident ? _graphicsDeviceFailureStreak + 1 : 1;
+            _lastGraphicsDeviceFailureUtc = now;
+            _lastGraphicsDeviceFailureDetail = dismissal.Describe();
+            return _graphicsDeviceFailureStreak;
+        }
+    }
+
+    private void ClearGraphicsDeviceFailureStreak()
+    {
+        lock (_activityLock)
+        {
+            _graphicsDeviceFailureStreak = 0;
+            _lastGraphicsDeviceFailureGiveUpLogUtc = null;
+        }
+    }
+
+    private bool ShouldLogGraphicsDeviceFailureGiveUp()
+    {
+        lock (_activityLock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_lastGraphicsDeviceFailureGiveUpLogUtc is { } last
+                && now - last < TimeSpan.FromMinutes(GraphicsDeviceFailureGiveUpLogMinutes))
+            {
+                return false;
+            }
+
+            _lastGraphicsDeviceFailureGiveUpLogUtc = now;
+            return true;
+        }
+    }
+
+    private (int Streak, DateTimeOffset? LastUtc, string? Detail) GetGraphicsDeviceFailureSnapshot()
+    {
+        lock (_activityLock)
+        {
+            return (_graphicsDeviceFailureStreak, _lastGraphicsDeviceFailureUtc, _lastGraphicsDeviceFailureDetail);
+        }
+    }
+
+    /// <summary>
+    /// True once this VM has failed graphics initialization enough times in one incident that
+    /// relaunching the client again is pointless. The host escalates to a VM power cycle.
+    /// </summary>
+    private bool IsGraphicsDeviceFailureExhausted()
+    {
+        lock (_activityLock)
+        {
+            return _graphicsDeviceFailureStreak >= GraphicsDeviceFailureRelaunchLimit
+                && _lastGraphicsDeviceFailureUtc is { } last
+                && DateTimeOffset.UtcNow - last < TimeSpan.FromMinutes(GraphicsDeviceFailureIncidentWindowMinutes);
+        }
+    }
+
+    /// <summary>
+    /// Status view of the graphics-initialization incident: whether the dialog is on screen right
+    /// now, how many dismiss-and-relaunch attempts this agent has already spent on it, and whether
+    /// it has given up and needs the host to power-cycle the VM. Null when there is nothing to say.
+    /// </summary>
+    private object? DescribeGraphicsDeviceFailure(VisibleD2RState visibleState)
+    {
+        var (streak, lastUtc, detail) = GetGraphicsDeviceFailureSnapshot();
+        var detected = visibleState == VisibleD2RState.GraphicsDeviceFailure;
+        if (!detected && streak == 0)
+        {
+            return null;
+        }
+
+        return new
+        {
+            detected,
+            streak,
+            relaunchLimit = GraphicsDeviceFailureRelaunchLimit,
+            needsVmPowerCycle = IsGraphicsDeviceFailureExhausted(),
+            lastSeenUtc = lastUtc,
+            detail
+        };
+    }
+
+    private string FormatGraphicsDeviceFailureSuffix()
+    {
+        var (streak, _, detail) = GetGraphicsDeviceFailureSnapshot();
+        if (streak == 0)
+        {
+            return "";
+        }
+
+        // "Recovery attempts", not "failures": an undismissable dialog is one failure that this
+        // agent tried to clear N times, and both roads end at the same VM power cycle.
+        return IsGraphicsDeviceFailureExhausted()
+            ? $" This incident has spent all {streak} graphics-device recovery attempts ({detail}); the guest's display driver is not recovering and this VM needs a power cycle."
+            : $" Graphics-device recovery attempts in this incident: {streak} ({detail}).";
+    }
+
+    // Bounded because this now runs on the status path. The scan's own cross-process text reads
+    // are individually capped (SendMessageTimeout + SMTO_ABORTIFHUNG), but status collection is
+    // exactly where one slow Win32 call has wedged this agent before - see
+    // detection-and-status-troubleshooting.md #4 - so the whole probe gets a ceiling too, and a
+    // timeout reads as "no dialog" rather than delaying the status reply.
+    private D2RGraphicsDeviceFailureDismissalResult DetectGraphicsDeviceFailureDialog()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return default;
+        }
+
+        try
+        {
+            return TryRunBounded(
+                () => new WindowsInput().DetectD2RGraphicsDeviceFailureDialog(GetD2RProcessNames()),
+                GraphicsDeviceFailureProbeBoundMs,
+                fallback: default);
+        }
+        catch (Exception)
+        {
+            return default;
+        }
+    }
+
+    /// <summary>
+    /// Clears and relaunches from the graphics-initialization dialog outside any command. The
+    /// launch and ready paths only probe while they are running, so a client that fails
+    /// initialization while nothing is driving it (a crash mid-session, follow-auto stopped,
+    /// a manual launch left alone) used to sit on this modal indefinitely with no detection,
+    /// no report, and no recovery. The idle monitor already runs unconditionally; this makes it
+    /// the one place that always notices.
+    /// </summary>
+    private async Task RecoverGraphicsDeviceFailureIfPresentAsync(
+        Action<string> log,
+        CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var input = new WindowsInput();
+        var detected = input.DetectD2RGraphicsDeviceFailureDialog(GetD2RProcessNames());
+        if (!detected.Detected)
+        {
+            return;
+        }
+
+        if (IsGraphicsDeviceFailureExhausted())
+        {
+            // The dialog stays on screen until the host power-cycles the VM, and this monitor
+            // ticks every few seconds - say it once every few minutes instead of filling the log
+            // with the same line. (After the incident window lapses with no new sighting, the
+            // budget resets and the agent tries again on its own.)
+            if (ShouldLogGraphicsDeviceFailureGiveUp())
+            {
+                log($"Graphics-device failure watchdog: all {GetGraphicsDeviceFailureSnapshot().Streak} recovery "
+                    + $"attempts spent ({detected.Describe()}); not relaunching again - this guest needs a VM power cycle.");
+            }
+
+            return;
+        }
+
+        var dismissal = await TryDismissGraphicsDeviceFailureAndWaitAsync(input, cancellationToken);
+        if (!dismissal.DismissalSent)
+        {
+            log($"Graphics-device failure watchdog: could not dismiss the dialog ({dismissal.Describe()}).");
+            return;
+        }
+
+        var launch = TrySendD2RLaunchCommand();
+        var streak = GetGraphicsDeviceFailureSnapshot().Streak;
+        log($"Graphics-device failure watchdog: dismissed the dialog (failure {streak} of "
+            + $"{GraphicsDeviceFailureRelaunchLimit} this incident) and relaunched D2R: {launch.Message}");
     }
 
     private async Task PrepareDesktopForD2RLaunchAsync(bool battleNetWasRunning, CancellationToken cancellationToken)
@@ -727,6 +927,7 @@ public sealed class VmOperations
                 {
                     await QuitIfCharacterScreenIdleAsync(log ?? (_ => { }), cancellationToken);
                     await QuitIfStuckLoadScreenAsync(log ?? (_ => { }), cancellationToken);
+                    await RecoverGraphicsDeviceFailureIfPresentAsync(log ?? (_ => { }), cancellationToken);
                 }
                 finally
                 {
@@ -1149,7 +1350,10 @@ public sealed class VmOperations
         VisibleD2RState.LobbyOrGame
             or VisibleD2RState.CharacterScreen
             or VisibleD2RState.OfflineCharacterScreen
-            or VisibleD2RState.NotRunning => false,
+            or VisibleD2RState.NotRunning
+            // A client sitting on the graphics-initialization dialog has no rendered game at
+            // all - that is evidence, not a degraded capture.
+            or VisibleD2RState.GraphicsDeviceFailure => false,
         _ => null
     };
 
@@ -1287,7 +1491,7 @@ public sealed class VmOperations
         if (!ready.Ready)
         {
             return CommandResult.Failure(
-                $"{FormatCharacterScreenReadyFailure(ready, input)} Initial launch result: {launch.Message}. Ready loop sent {ready.LaunchAttempts} retry launch command(s), clicked Battle.net Play {ready.PlayClicks} time(s), and dismissed {ready.GraphicsDeviceFailureDismissals} failed-to-initialize-graphics dialog(s). Last launch result: {ready.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
+                $"{FormatCharacterScreenReadyFailure(ready, input)} Initial launch result: {launch.Message}. Ready loop sent {ready.LaunchAttempts} retry launch command(s), clicked Battle.net Play {ready.PlayClicks} time(s), and dismissed {ready.GraphicsDeviceFailureDismissals} failed-to-initialize-graphics dialog(s).{FormatGraphicsDeviceFailureSuffix()} Last launch result: {ready.LastLaunchMessage}.{FormatD2RProcessDiscoverySuffix()}",
                 await CollectStatusAsync(cancellationToken));
         }
 
@@ -3494,6 +3698,13 @@ public sealed class VmOperations
                 null,
                 activity.LastLobbyOrGameInteractionUtc,
                 "Detected Diablo splash screen."),
+            // Explicit rather than falling through to "keep the previous activity": a client that
+            // crashed out of a game onto this dialog would otherwise keep reporting LobbyOrGame.
+            VisibleD2RState.GraphicsDeviceFailure => new ActivitySnapshot(
+                D2RActivityState.Unknown,
+                null,
+                activity.LastLobbyOrGameInteractionUtc,
+                "Detected D2R's failed-to-initialize-graphics-device dialog."),
             VisibleD2RState.Unknown => activity.State == D2RActivityState.Unknown
                 ? activity
                 : new ActivitySnapshot(
@@ -3528,6 +3739,7 @@ public sealed class VmOperations
             nameof(VisibleD2RState.NotRunning) => VisibleD2RState.NotRunning,
             nameof(VisibleD2RState.LobbyOrGame) => VisibleD2RState.LobbyOrGame,
             nameof(VisibleD2RState.InGame) => VisibleD2RState.InGame,
+            nameof(VisibleD2RState.GraphicsDeviceFailure) => VisibleD2RState.GraphicsDeviceFailure,
             _ => FallbackProcessOnlyVisibleState()
         };
     }
@@ -3550,6 +3762,17 @@ public sealed class VmOperations
             var unsupported = d2rRunning ? VisibleD2RState.Unknown : VisibleD2RState.NotRunning;
             RecordObservedFrame(unsupported.ToString());
             return unsupported;
+        }
+
+        // Checked before any pixel sampling: this modal renders over a black screen that every
+        // pixel classifier reads as Unknown, which is indistinguishable from a load screen or a
+        // degraded capture. Naming it here is what puts it in /d2r status (visible
+        // GraphicsDeviceFailure) and what makes MenuReadyPolicy run a ready pass instead of
+        // assuming a client that is never coming up on its own.
+        if (DetectGraphicsDeviceFailureDialog().Detected)
+        {
+            RecordObservedFrame(VisibleD2RState.GraphicsDeviceFailure.ToString());
+            return VisibleD2RState.GraphicsDeviceFailure;
         }
 
         try
@@ -4028,6 +4251,25 @@ public sealed class VmOperations
         {
             state.NextGraphicsDeviceFailureProbeAt = now
                 + TimeSpan.FromMilliseconds(GraphicsDeviceFailureProbeIntervalMs);
+
+            // Once this incident has burned its relaunch budget, another dismiss-and-relaunch is
+            // just a faster way to reach the same dialog. Stop driving the client (but keep
+            // suppressing the generic bursts, which cannot help either) and let ready fail with
+            // the streak in its message, so the host escalates to a VM power cycle.
+            if (IsGraphicsDeviceFailureExhausted()
+                && input.DetectD2RGraphicsDeviceFailureDialog(GetD2RProcessNames()).Detected)
+            {
+                // Fail the whole ready command now instead of idling out its multi-minute
+                // timeout. The host escalates on consecutive ready failures, and waiting out
+                // five full timeouts before power-cycling a VM that is provably not coming back
+                // would leave the account down for half an hour.
+                state.GraphicsDeviceFailureExhausted = true;
+                MarkCommandCheckpoint(
+                    $"Graphics-device failure has repeated {GetGraphicsDeviceFailureSnapshot().Streak} times in this incident; "
+                        + "no further relaunch attempts - this guest needs a VM power cycle.");
+                return true;
+            }
+
             var graphicsDeviceFailure = await TryDismissGraphicsDeviceFailureAndWaitAsync(input, cancellationToken);
             var graphicsDeviceFailureAction = ClassifyGraphicsDeviceFailureReadyAction(graphicsDeviceFailure);
             if (graphicsDeviceFailureAction != GraphicsDeviceFailureReadyAction.None)
@@ -4227,6 +4469,11 @@ public sealed class VmOperations
 
             var repairUiActive = keepLaunchAlive
                 && await NudgeD2RLaunchDuringReadyAsync(input, launchNudges, cancellationToken);
+            if (launchNudges.GraphicsDeviceFailureExhausted)
+            {
+                return Result(false, nudges, lastState, skipSeconds);
+            }
+
             if (repairUiActive)
             {
                 // The generic center-click/G startup bursts are safe inside D2R, but not over
@@ -4353,6 +4600,11 @@ public sealed class VmOperations
 
             var repairUiActive = keepLaunchAlive
                 && await NudgeD2RLaunchDuringReadyAsync(input, launchNudges, cancellationToken);
+            if (launchNudges.GraphicsDeviceFailureExhausted)
+            {
+                return Result(false, nudges, lastState, timeoutSeconds);
+            }
+
             if (repairUiActive)
             {
                 // Dedicated Battle.net repair input ran (or is waiting on its next safe step).
@@ -4430,6 +4682,11 @@ public sealed class VmOperations
 
             var repairUiActive = keepLaunchAlive
                 && await NudgeD2RLaunchDuringReadyAsync(input, launchNudges, cancellationToken);
+            if (launchNudges.GraphicsDeviceFailureExhausted)
+            {
+                return Result(false, nudges, lastState, timeoutSeconds);
+            }
+
             if (repairUiActive)
             {
                 // Dedicated Battle.net repair input ran (or is waiting on its next safe step).
@@ -4821,6 +5078,26 @@ public sealed class VmOperations
         {
             _unknownFrameSinceUtc = null;
         }
+
+        // Any frame that proves the client rendered something real closes the graphics-device
+        // incident: the driver initialized, so the next failure (if there ever is one) is a new
+        // incident with its own relaunch budget rather than an inherited exhausted one.
+        if (IsHealthyRenderedFrame(frame))
+        {
+            ClearGraphicsDeviceFailureStreak();
+        }
+    }
+
+    // Deliberately excludes DiabloSplash: a client that renders its splash and then fails device
+    // initialization would reset the incident on every relaunch, so the streak could never reach
+    // the limit and the VM would never be power-cycled. Only a screen the client cannot reach
+    // without a working renderer counts.
+    private static bool IsHealthyRenderedFrame(string frame)
+    {
+        return frame == nameof(VisibleD2RState.CharacterScreen)
+            || frame == nameof(VisibleD2RState.OfflineCharacterScreen)
+            || frame == nameof(VisibleD2RState.LobbyOrGame)
+            || frame == nameof(VisibleD2RState.InGame);
     }
 
     private void RecordClassifierBreakdown(string breakdown)
@@ -7603,7 +7880,8 @@ public sealed class VmOperations
         CharacterScreen,
         OfflineCharacterScreen,
         LobbyOrGame,
-        InGame
+        InGame,
+        GraphicsDeviceFailure
     }
 
     private enum ReadyScreenState
@@ -7699,6 +7977,7 @@ public sealed class VmOperations
         public int LaunchAttempts { get; set; }
         public int PlayClicks { get; set; }
         public int GraphicsDeviceFailureDismissals { get; set; }
+        public bool GraphicsDeviceFailureExhausted { get; set; }
         public string LastLaunchMessage { get; set; } = "(none)";
         public required BattleNetInstallRepairState BattleNetRepair { get; init; }
     }
