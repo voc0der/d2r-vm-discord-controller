@@ -6,8 +6,21 @@ namespace D2RHost;
 
 public sealed class AppDb
 {
+    // Long enough to ride out another process finishing a write, short enough that a caller on a
+    // Discord interaction's three-second clock still fails fast rather than hanging on a
+    // database some abandoned process never released.
+    private static readonly TimeSpan BusyTimeout = TimeSpan.FromSeconds(2);
+
     private readonly string _connectionString;
     private readonly object _lock = new();
+
+    /// <summary>
+    /// The journal mode the database file actually ended up in, which is "wal" unless the switch
+    /// could not be made. Anything else means writes still fsync twice per commit and readers
+    /// block writers - worth saying out loud at startup rather than discovering from a command
+    /// that took three seconds to answer.
+    /// </summary>
+    public string JournalMode { get; private set; } = "unknown";
 
     public AppDb(HostConfig config)
     {
@@ -17,9 +30,17 @@ public sealed class AppDb
             Directory.CreateDirectory(directory);
         }
 
+        // DefaultTimeout caps Microsoft.Data.Sqlite's own retry loop, which sits on top of
+        // busy_timeout and defaults to 30 seconds - so without this a contended write blocks its
+        // caller for half a minute no matter what the pragma says. It only bounds time spent
+        // waiting for a lock, never a statement that is genuinely running.
+        // Floored at one second deliberately: DefaultTimeout is expressed in whole seconds and
+        // zero means "wait forever", so a sub-second BusyTimeout here would turn the cap off
+        // rather than tighten it.
         _connectionString = new SqliteConnectionStringBuilder
         {
-            DataSource = config.DatabasePath
+            DataSource = config.DatabasePath,
+            DefaultTimeout = Math.Max(1, (int)BusyTimeout.TotalSeconds)
         }.ToString();
 
         Initialize();
@@ -470,6 +491,24 @@ public sealed class AppDb
         lock (_lock)
         {
             using var connection = OpenConnection();
+
+            // journal_mode is a property of the file, not of the connection, so this converts a
+            // database an older build created in rollback mode once and every later connection
+            // inherits it. It has to run before any table statement opens a transaction.
+            //
+            // Switching to WAL needs a brief exclusive lock, so it is a no-op whenever anything
+            // else already has this file open - and SQLite reports that as success, returning
+            // "wal" while leaving the file in rollback mode. Read the mode back on a separate
+            // statement instead of trusting the assignment, and record what actually took so a
+            // host that quietly failed to convert can say so rather than looking healthy.
+            using (var journal = connection.CreateCommand())
+            {
+                journal.CommandText = "pragma journal_mode = wal;";
+                journal.ExecuteScalar();
+            }
+
+            JournalMode = ReadEffectiveJournalMode();
+
             using var command = connection.CreateCommand();
             command.CommandText = """
                 create table if not exists agent_status (
@@ -535,10 +574,51 @@ public sealed class AppDb
         }
     }
 
+    /// <summary>
+    /// Reads the journal mode out of the file itself. It has to be a connection that has not run
+    /// the assignment: the one that did reports the mode it asked for even when the switch was
+    /// refused, and a pooled handle reports whatever it was told last, so this one opts out of
+    /// the pool to get an honest answer.
+    /// </summary>
+    private string ReadEffectiveJournalMode()
+    {
+        try
+        {
+            var verifyConnectionString = new SqliteConnectionStringBuilder(_connectionString)
+            {
+                Pooling = false
+            }.ToString();
+            using var connection = new SqliteConnection(verifyConnectionString);
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "pragma journal_mode;";
+            return (command.ExecuteScalar() as string ?? "unknown").ToLowerInvariant();
+        }
+        catch (SqliteException)
+        {
+            // This value only feeds a startup log line. Opening a second connection to answer a
+            // diagnostic question must never be the reason the host fails to start.
+            return "unknown";
+        }
+    }
+
+    /// <summary>
+    /// Every public method here opens its own connection under <see cref="_lock"/>, so the cost
+    /// of a single write is paid by whoever is waiting on that lock - including Discord command
+    /// handlers, which have three seconds to acknowledge before Discord reports "The application
+    /// did not respond". Under the rollback journal SQLite fsyncs twice per write, which on a
+    /// host busy power-cycling a guest is exactly the stall that budget cannot absorb. WAL plus
+    /// synchronous=normal removes the per-write fsync (a power loss can cost the last few
+    /// commits, never the file), and busy_timeout replaces an instant SQLITE_BUSY throw with a
+    /// bounded wait when another process - a host mid-self-update - still holds the database.
+    /// </summary>
     private SqliteConnection OpenConnection()
     {
         var connection = new SqliteConnection(_connectionString);
         connection.Open();
+        using var pragmas = connection.CreateCommand();
+        pragmas.CommandText = $"pragma busy_timeout = {(int)BusyTimeout.TotalMilliseconds}; pragma synchronous = normal;";
+        pragmas.ExecuteNonQuery();
         return connection;
     }
 }

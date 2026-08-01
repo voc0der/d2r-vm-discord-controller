@@ -77,6 +77,69 @@ incident has spent), the idle monitor probes on every tick, and the match is on 
 alone with everything else demoted to reported context. If this dialog is ever missed again, the
 status block distinguishes "not seen" from "seen and unclickable" without needing a screenshot.
 
+## 9. "The application did not respond" on a slash command
+
+Discord shows this when nothing acknowledged the interaction within three seconds. It says nothing
+about whether the command would have worked - the host may never have seen it. `logs/log.0` on the
+master, next to `d2r-host.config.json`, carries Discord.NET's own gateway logging and separates the
+three cases:
+
+- `Server missed last heartbeat` / `Disconnected` / `Reconnecting` - the gateway link dropped and
+  the interaction was never delivered. Nothing host-side to fix; it heals on reconnect.
+- `A SlashCommandExecuted handler is blocking the gateway task` - the host had the interaction and
+  was too slow. Discord.NET runs handlers inline on the gateway task and processes dispatches one
+  at a time, so a single slow handler makes every interaction queued behind it fail the same way -
+  which is why these arrive in bursts rather than alone.
+- Neither line - the interaction never arrived at all.
+
+Every command must therefore acknowledge **before** doing any work, including work that looks
+cheap. A synchronous SQLite call is the one kind of "instant" work that can block for seconds when
+the host is busy elsewhere - powering a guest off and on, which the warmup ladder now does on its
+own. An audit of every entry point found these answering second:
+
+- `/d2r follow` and `/d2r quit` ran `_db.ClearFollowAutoResumeIntent()` first.
+- `/d2r game set|show|clear` is nothing but database calls and never deferred at all.
+- `/d2r join`, `/d2r join-all`, `/d2r create-game`, `/d2r create-game-all` and both template
+  buttons resolve the stored game through `_db.GetActiveGame()`; `join-all` also writes it back
+  with `_db.SetActiveGame()` before answering.
+- `/d2r config stagger|notifications` wrote the config file to disk first.
+- The quick-start buttons stripped their own buttons - a REST round-trip - before answering.
+
+The join/create ones are worth a second look, because the call sites looked fine: the resolver was
+passed straight into `RunVmCommandAsync(...)`, which defers as its first statement. C# evaluates
+an argument expression before the call it belongs to, so the database read still happened first.
+Those branches now acknowledge and resolve into a local. **Acknowledging inside the callee does
+not protect work done in its argument list.**
+
+Acknowledge through `EnsureAcknowledgedAsync`, not `DeferAsync` directly. It is idempotent, so a
+caller can acknowledge before its own pre-flight work and still hand off to a runner that would
+otherwise defer again (deferring twice throws). It also picks the right form: on a button,
+`DeferAsync` acknowledges as DeferredUpdateMessage, which makes the *clicked message* the original
+response - so the eventual reply overwrites the follow-auto monitor or the quick-action prompt the
+button sits on. `DeferLoadingAsync` posts a separate ephemeral response instead. Handlers that
+genuinely mean to replace their own message (the follow-auto stop actions) still defer themselves,
+and `EnsureAcknowledgedAsync` leaves that choice alone. A handler that acknowledges up front must
+also answer on every branch: falling out of a switch now leaves the interaction spinning rather
+than failing fast, which is why `HandleGameAsync` throws on an unknown subcommand.
+
+The database side is fixed too: `AppDb` runs in WAL with `synchronous=normal`, so a write no longer
+fsyncs per commit and a reader no longer blocks it. Two things about that are worth knowing.
+`busy_timeout` alone is not enough - Microsoft.Data.Sqlite wraps it in its own retry loop bounded
+by `CommandTimeout`, 30 seconds by default, so the connection string sets `DefaultTimeout` to match.
+And the switch to WAL needs a brief exclusive lock, which it cannot get while another process still
+has the file open; SQLite reports that refusal as success, and the connection that ran the pragma
+will answer `wal` either way. `AppDb.JournalMode` re-reads the mode on a separate unpooled
+connection for that reason, and startup logs a line if the host is running on anything but WAL.
+
+One consequence of capping the retry: a contended write now throws after ~2s instead of retrying
+for 30. That is the right trade for a command handler, but not for the agent websocket receive
+loop, whose only handler for an unexpected exception is to log it and drop the connection - a lost
+VM agent link would look exactly like the agent going offline on its own. Persisted agent status
+is a cache that is replayed at startup, never the live view, so `AgentRegistry.PersistAgentStatus`
+swallows and logs a failed write instead. Keep that split in mind when adding database calls: a
+write on a connection-handling path should be best-effort, a write a command's correctness depends
+on should not be.
+
 ## Deployment basics (from `scripts/install-vm-agent.ps1`)
 
 The scheduled task is created with `-AtLogOn`, `LogonType Interactive`, `RunLevel Highest`, bound to whichever account ran the install script. If VMs are cloned from a template, re-run the install script per clone as that clone's actual interactive account, or the task's bound user won't match who's actually logged in.

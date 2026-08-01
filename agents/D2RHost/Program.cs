@@ -89,6 +89,19 @@ try
     }
 
     var app = builder.Build();
+    var db = app.Services.GetRequiredService<AppDb>();
+    if (db.JournalMode != "wal")
+    {
+        // Not fatal - the host runs fine on the rollback journal, just with an fsync on every
+        // write, which is what puts a Discord command handler at risk of missing its
+        // three-second acknowledgement deadline. The usual cause is another process still
+        // holding the database file.
+        LogStartup(
+            $"The host database is in journal mode '{db.JournalMode}', not WAL. Writes will fsync "
+                + "per commit and may stall Discord commands; check whether another host process "
+                + "still has the database open.");
+    }
+
     var vmLifecycle = app.Services.GetRequiredService<VmPowerLifecycleCoordinator>();
     var initialVmRestore = await vmLifecycle.RestorePendingAsync();
     if (!initialVmRestore.Complete)

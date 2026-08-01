@@ -143,7 +143,17 @@ public sealed class AgentRegistry
                 && current.TryDetachSocket(socket))
             {
                 FailPendingCommands(current.Id, socket);
-                _db.MarkAgentDisconnected(current.Id);
+                try
+                {
+                    _db.MarkAgentDisconnected(current.Id);
+                }
+                catch (Exception ex)
+                {
+                    // Throwing out of a finally would replace whatever actually killed the
+                    // connection with a database error, losing the real cause.
+                    _logger.LogWarning(ex, "Could not record the disconnect for {AgentId}.", current.Id);
+                }
+
                 _logger.LogWarning("Agent disconnected: {AgentId}", agentId);
                 ConnectivityChanged?.Invoke();
             }
@@ -422,7 +432,7 @@ public sealed class AgentRegistry
             }
         }
 
-        _db.UpsertAgentStatus(connected.Id, connected.Kind, connected: true, connected.LastStatusJson ?? "{}");
+        PersistAgentStatus(connected.Id, connected.Kind, connected: true, connected.LastStatusJson ?? "{}");
 
         if (existingSocket is not null && !ReferenceEquals(existingSocket, socket))
         {
@@ -581,7 +591,7 @@ public sealed class AgentRegistry
             && ReferenceEquals(current, agent)
             && current.HasSocket(socket))
         {
-            _db.UpsertAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
+            PersistAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
         }
 
         if (previousConnectivity is not null)
@@ -732,7 +742,27 @@ public sealed class AgentRegistry
             && ReferenceEquals(current, agent)
             && current.HasSocket(socket))
         {
-            _db.UpsertAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
+            PersistAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
+        }
+    }
+
+    /// <summary>
+    /// Persisted status is a cache that <see cref="LoadPersistedAgentStatuses"/> replays at
+    /// startup, never the live view - the live view is <see cref="_agents"/>. So a write that
+    /// fails must not travel: these calls sit on the agent's websocket receive loop, whose only
+    /// handler for an unexpected exception is to log it and let the connection go. Losing a VM
+    /// agent's link because a row could not be written would be a far worse outcome than the
+    /// stale row, and it would look exactly like the agent dropping out on its own.
+    /// </summary>
+    private void PersistAgentStatus(string agentId, string kind, bool connected, string payloadJson)
+    {
+        try
+        {
+            _db.UpsertAgentStatus(agentId, kind, connected, payloadJson);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not persist status for {AgentId}; the live view is unaffected.", agentId);
         }
     }
 

@@ -727,21 +727,26 @@ public sealed class DiscordBot
         }
     }
 
+    // Both acknowledge before resolving: Resolve*Input reads the stored game from the database,
+    // and a click gets the same three seconds a slash command does.
     private async Task HandleTemplateCreateButtonAsync(SocketMessageComponent component)
     {
+        await EnsureAcknowledgedAsync(component);
         var context = SlashContext.FromComponent(component, "create-game");
         await QueueCreateGameAllAsync(context, ResolveCreateGameAllInput(context), watch: false);
     }
 
     private async Task HandleTemplateJoinButtonAsync(SocketMessageComponent component)
     {
+        await EnsureAcknowledgedAsync(component);
         var context = SlashContext.FromComponent(component, "join");
         var game = ResolveJoinAllInput(context);
         if (game is null)
         {
-            await RespondWithMetricsAsync(
+            await SetInitialCommandResponseAsync(
                 context,
-                "Nothing to join: no recent game and no template set.");
+                "Nothing to join: no recent game and no template set.",
+                ephemeral: true);
             return;
         }
 
@@ -782,8 +787,12 @@ public sealed class DiscordBot
         return builder.Build();
     }
 
+    // These four acknowledge before stripping the buttons: ClearQuickStartButtonsAsync edits a
+    // message over REST, which is a network round-trip Discord's three-second budget for the
+    // click should not be paying for.
     private async Task HandleStartupFollowButtonAsync(SocketMessageComponent component)
     {
+        await EnsureAcknowledgedAsync(component);
         await ClearQuickStartButtonsAsync(component);
         await StartFollowAutoAsync(
             SlashContext.FromComponent(component, "follow"),
@@ -794,18 +803,21 @@ public sealed class DiscordBot
 
     private async Task HandleStartupReadyButtonAsync(SocketMessageComponent component)
     {
+        await EnsureAcknowledgedAsync(component);
         await ClearQuickStartButtonsAsync(component);
         await QueueReadyAllAsync(SlashContext.FromComponent(component, "ready"));
     }
 
     private async Task HandleStartupQuitButtonAsync(SocketMessageComponent component)
     {
+        await EnsureAcknowledgedAsync(component);
         await ClearQuickStartButtonsAsync(component);
         await QueueQuitAllAsync(SlashContext.FromComponent(component, "quit"), "quick-start quit button was pressed");
     }
 
     private async Task HandleStartupSleepButtonAsync(SocketMessageComponent component)
     {
+        await EnsureAcknowledgedAsync(component);
         await ClearQuickStartButtonsAsync(component);
         await RunQuitAllThenSleepAsync(SlashContext.FromComponent(component, "system"));
     }
@@ -1168,14 +1180,20 @@ public sealed class DiscordBot
             return;
         }
 
+        // The Resolve*Input helpers all read the stored game out of the database, and an argument
+        // expression is evaluated before the call it belongs to - so passing one straight into
+        // RunVmCommandAsync would do that read before the deferral inside it. Acknowledge first
+        // and resolve into a local instead.
         if (subcommand == "join-all" || (subcommand == "join" && ShouldRunAll(context)))
         {
+            await EnsureAcknowledgedAsync(context);
             var game = ResolveJoinAllInput(context);
             if (game is null)
             {
-                await RespondWithMetricsAsync(
+                await SetInitialCommandResponseAsync(
                     context,
-                    "Nothing to join: no recent game and no template set. Pass name, or set one with /d2r game set or /d2r template.");
+                    "Nothing to join: no recent game and no template set. Pass name, or set one with /d2r game set or /d2r template.",
+                    ephemeral: true);
                 return;
             }
 
@@ -1186,12 +1204,15 @@ public sealed class DiscordBot
         if (subcommand == "join" && !ShouldRunAll(context))
         {
             var (accountKey, account) = RequireAccount(context.GetRequiredString("account"));
-            await RunVmCommandAsync(context, account, "menu_join_game", BuildMenuArgs(accountKey, account, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
+            await EnsureAcknowledgedAsync(context);
+            var joinGame = ResolveGameInput(context);
+            await RunVmCommandAsync(context, account, "menu_join_game", BuildMenuArgs(accountKey, account, joinGame, context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
             return;
         }
 
         if (subcommand == "create-game-all" || (subcommand == "create-game" && ShouldRunAll(context)))
         {
+            await EnsureAcknowledgedAsync(context);
             await QueueCreateGameAllAsync(context, ResolveCreateGameAllInput(context), watch: context.GetBool("watch") ?? false);
             return;
         }
@@ -1199,7 +1220,9 @@ public sealed class DiscordBot
         if (subcommand == "create-game" && !ShouldRunAll(context))
         {
             var (accountKey, account) = RequireAccount(context.GetRequiredString("account"));
-            await RunVmCommandAsync(context, account, "menu_create_game", BuildMenuArgs(accountKey, account, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
+            await EnsureAcknowledgedAsync(context);
+            var createGame = ResolveGameInput(context);
+            await RunVmCommandAsync(context, account, "menu_create_game", BuildMenuArgs(accountKey, account, createGame, context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
             return;
         }
 
@@ -1259,6 +1282,9 @@ public sealed class DiscordBot
         if (subcommand == "quit" && !ShouldRunAll(context))
         {
             var (accountKey, account) = RequireAccount(context.GetRequiredString("account"));
+            // Cancelling follow-auto writes to the database, so acknowledge ahead of it rather
+            // than relying on the deferral inside RunVmCommandAsync further down.
+            await EnsureAcknowledgedAsync(context);
             await CancelJoinAutoIfRunningAsync($"quit was called for {accountKey}");
             var followAutoCancel = await CancelFollowAutoIfRunningAsync($"quit was called for {accountKey}");
             QueueFollowAutoStopSignal(followAutoCancel.RunId);
@@ -1338,6 +1364,9 @@ public sealed class DiscordBot
                 return;
             case "quit":
                 // See the quit-all gate-wait comment above - same risk for a single account.
+                // Acknowledge before the cancel, which writes to the database; see the other
+                // single-account quit branch above.
+                await EnsureAcknowledgedAsync(context);
                 await CancelJoinAutoIfRunningAsync($"quit was called for {singleAccountKey}");
                 var followAutoCancel = await CancelFollowAutoIfRunningAsync($"quit was called for {singleAccountKey}");
                 QueueFollowAutoStopSignal(followAutoCancel.RunId);
@@ -1355,11 +1384,17 @@ public sealed class DiscordBot
             case "play":
                 await RunVmCommandAsync(context, singleAccount, "menu_play", BuildMenuArgs(singleAccountKey, singleAccount, null, context), TimeSpan.FromSeconds(300), readyFirstIfNotMenuReady: true);
                 return;
+            // Acknowledge before ResolveGameInput for the same argument-evaluation reason as the
+            // join/create branches above: it reads the stored game from the database.
             case "join-game":
-                await RunVmCommandAsync(context, singleAccount, "menu_join_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
+                await EnsureAcknowledgedAsync(context);
+                var joinGameInput = ResolveGameInput(context);
+                await RunVmCommandAsync(context, singleAccount, "menu_join_game", BuildMenuArgs(singleAccountKey, singleAccount, joinGameInput, context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
                 return;
             case "create-game":
-                await RunVmCommandAsync(context, singleAccount, "menu_create_game", BuildMenuArgs(singleAccountKey, singleAccount, ResolveGameInput(context), context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
+                await EnsureAcknowledgedAsync(context);
+                var createGameInput = ResolveGameInput(context);
+                await RunVmCommandAsync(context, singleAccount, "menu_create_game", BuildMenuArgs(singleAccountKey, singleAccount, createGameInput, context), TimeSpan.FromSeconds(210), readyFirstIfNotMenuReady: true);
                 return;
             case "follow":
                 if (context.GetBool("watch") == true)
@@ -1451,6 +1486,12 @@ public sealed class DiscordBot
         // command) is mid-attempt on. A real run showed quit_d2r failing for 2/3 accounts
         // with "exceeded agent-side timeout of 25s" while join-auto was actively retrying a
         // join in the background - the gate was always going to free up, just not within 30s.
+        //
+        // Acknowledge first: the follow-auto cancel below writes to the database, and the
+        // connectivity snapshot QueueAllCommandsAsync takes is not free either. Callers that
+        // already deferred (the follow-auto stop buttons, which mean to replace their own
+        // message) keep the acknowledgement they chose.
+        await EnsureAcknowledgedAsync(context);
         await CancelJoinAutoIfRunningAsync(cancelReason);
         var followAutoCancel = await CancelFollowAutoIfRunningAsync(cancelReason);
         QueueFollowAutoStopSignal(followAutoCancel.RunId);
@@ -1498,8 +1539,13 @@ public sealed class DiscordBot
         });
     }
 
+    // Every branch here is a database round-trip and nothing else, which is exactly why this
+    // handler never deferred - and exactly why it has to. A synchronous SQLite call is the one
+    // kind of "instant" work that can block for seconds when the host is busy elsewhere, and
+    // until it returns nothing has answered Discord.
     private async Task HandleGameAsync(SlashContext context)
     {
+        await EnsureAcknowledgedAsync(context);
         switch (context.SubcommandName)
         {
             case "set":
@@ -1509,16 +1555,28 @@ public sealed class DiscordBot
                     context.GetString("difficulty"),
                     BlankToNull(context.GetString("notes")),
                     context.Command.User.Id.ToString());
-                await RespondWithMetricsAsync(context, $"Stored current game:\n{FormatActiveGame(game)}");
+                await SetInitialCommandResponseAsync(context, $"Stored current game:\n{FormatActiveGame(game)}", ephemeral: true);
                 return;
             case "show":
                 var stored = _db.GetActiveGame();
-                await RespondWithMetricsAsync(context, stored is null ? "No current game is stored." : FormatActiveGame(stored));
+                await SetInitialCommandResponseAsync(
+                    context,
+                    stored is null ? "No current game is stored." : FormatActiveGame(stored),
+                    ephemeral: true);
                 return;
             case "clear":
                 var cleared = _db.ClearActiveGame();
-                await RespondWithMetricsAsync(context, cleared ? "Cleared the stored game." : "No current game was stored.");
+                await SetInitialCommandResponseAsync(
+                    context,
+                    cleared ? "Cleared the stored game." : "No current game was stored.",
+                    ephemeral: true);
                 return;
+            default:
+                // Now that this handler acknowledges up front, falling out of the switch would
+                // leave the interaction deferred forever. Throwing reaches OnSlashCommandAsync,
+                // which edits the deferred response into the error - same as HandleVmAsync.
+                throw new InvalidOperationException(
+                    $"Unsupported game subcommand: {context.SubcommandName}");
         }
     }
 
@@ -1699,10 +1757,13 @@ public sealed class DiscordBot
 
     private async Task SaveConfigAndRespawnAsync(SlashContext context, string message)
     {
+        // Writing the config file is disk I/O on the gateway task, so acknowledge ahead of it.
+        await EnsureAcknowledgedAsync(context);
         HostConfigLoader.Save(_runtime.ConfigPath, _config);
-        await RespondWithMetricsAsync(
+        await SetInitialCommandResponseAsync(
             context,
-            $"{message}\nSaved `{_runtime.ConfigPath}`. Respawning host.");
+            $"{message}\nSaved `{_runtime.ConfigPath}`. Respawning host.",
+            ephemeral: true);
         QueueHostRespawn();
     }
 
@@ -1769,7 +1830,7 @@ public sealed class DiscordBot
         AccountConfig account,
         object args)
     {
-        await context.Command.DeferAsync(ephemeral: true);
+        await EnsureAcknowledgedAsync(context);
         QueueDiscordWork(context, "menu_join_friend", async () =>
         {
             var watchCts = new CancellationTokenSource();
@@ -1802,7 +1863,10 @@ public sealed class DiscordBot
         TimeSpan? timeout = null,
         bool readyFirstIfNotMenuReady = false)
     {
-        await context.Command.DeferAsync(ephemeral: true);
+        // EnsureAcknowledgedAsync, not DeferAsync: a caller that had its own pre-flight work to do
+        // (quit cancels follow-auto first) acknowledges before that work, and deferring twice
+        // throws.
+        await EnsureAcknowledgedAsync(context);
         QueueDiscordWork(context, commandName, () => RunVmCommandDeferredAsync(
             context,
             account,
@@ -1867,7 +1931,7 @@ public sealed class DiscordBot
 
     private async Task RunScreenshotAsync(SlashContext context, AccountConfig account, object args)
     {
-        await context.Command.DeferAsync(ephemeral: true);
+        await EnsureAcknowledgedAsync(context);
         QueueDiscordWork(context, "screenshot", () => RunScreenshotDeferredAsync(context, account, args));
     }
 
@@ -1944,10 +2008,11 @@ public sealed class DiscordBot
         var offlineEntries = connectivity.Offline;
         if (entries.Length == 0)
         {
-            await RespondWithMetricsAsync(
+            await SetInitialCommandResponseAsync(
                 context,
                 "No online accounts are available for create-game-all."
-                    + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents));
+                    + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents),
+                ephemeral: true);
             return;
         }
 
@@ -1956,13 +2021,17 @@ public sealed class DiscordBot
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
         var readyFirstCount = entries.Count(entry => ShouldRunReadyFirst(entry.Value));
 
-        await RespondWithMetricsAsync(
+        // SetInitialCommandResponseAsync, not RespondWithMetricsAsync: every caller acknowledges
+        // before resolving the game name out of the database, so the interaction already has a
+        // response to edit by the time this runs.
+        await SetInitialCommandResponseAsync(
             context,
             $"Queued create-game-all for {entries.Length} online account(s). {creator.Key} will create {game.GameName}; "
                 + $"{entries.Length} account(s) will warm up with {staggerSeconds}s stagger; "
                 + $"{joiners.Length} joiner(s) will prepare Join Game while {creator.Key} creates."
                 + FormatReadyFirstSuffix(readyFirstCount)
-                + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents));
+                + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents),
+            ephemeral: true);
 
         await StartGameSessionAsync(
             context,
@@ -2843,26 +2912,29 @@ public sealed class DiscordBot
         var offlineEntries = connectivity.Offline;
         if (entries.Length == 0)
         {
-            await RespondWithMetricsAsync(
+            await SetInitialCommandResponseAsync(
                 context,
                 "No online accounts are available for join-all."
-                    + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents));
+                    + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents),
+                ephemeral: true);
             return;
         }
 
         // So a later plain join-all/create-game-all (no flags) sees what this run actually
         // joined - the game already exists by definition, so this is true regardless of whether
-        // every account's join below succeeds.
+        // every account's join below succeeds. This is a synchronous database write, which is why
+        // both callers acknowledge before they get here.
         _db.SetActiveGame(game.GameName, game.Password, game.Difficulty, notes: "join-all", context.Command.User.Id.ToString());
 
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
         var readyFirstCount = entries.Count(entry => ShouldRunReadyFirst(entry.Value));
-        await RespondWithMetricsAsync(
+        await SetInitialCommandResponseAsync(
             context,
             $"Queued join-all for {entries.Length} online account(s) into {game.GameName} with {staggerSeconds}s stagger."
                 + " Accounts will prepare Join Game first, then submit."
                 + FormatReadyFirstSuffix(readyFirstCount)
-                + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents));
+                + FormatOfflineSkipSuffix(offlineEntries, connectivity.ConnectedUnaddressableAgents),
+            ephemeral: true);
 
         await StartGameSessionAsync(
             context,
@@ -4445,6 +4517,17 @@ public sealed class DiscordBot
 
     private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout)
     {
+        // Acknowledge before anything else. Discord.NET runs this handler inline on the gateway
+        // task and Discord discards the interaction if nothing answers within three seconds -
+        // and this was the one command family that did its work first and answered second, over
+        // a synchronous SQLite write (_db.ClearFollowAutoResumeIntent) that a host busy
+        // power-cycling a guest can stall past that budget. Every other command already defers
+        // first; follow only got away with it because the work looked cheap. The failure was not
+        // confined to the slow call either: the gateway task processes dispatches one at a time,
+        // so whatever queued behind it was reported as "The application did not respond" too.
+        // Awaiting the deferral also moves the rest of this method off the gateway task.
+        await EnsureAcknowledgedAsync(context);
+
         var options = new FollowAutoRunOptions(
             context.Command.Channel,
             delaySeconds,
@@ -4457,9 +4540,10 @@ public sealed class DiscordBot
         var start = await TryBeginFollowAutoRunAsync();
         if (start is null)
         {
-            await RespondWithMetricsAsync(
+            await SetInitialCommandResponseAsync(
                 context,
-                "follow auto:true is already running. Use /d2r follow auto:false first.");
+                "follow auto:true is already running. Use /d2r follow auto:false first.",
+                ephemeral: true);
             return;
         }
 
@@ -4467,13 +4551,63 @@ public sealed class DiscordBot
         // completed. The active run will write a fresh intent if it later needs local recovery.
         _db.ClearFollowAutoResumeIntent();
 
-        await RespondWithMetricsAsync(
+        await SetInitialCommandResponseAsync(
             context,
             $"follow-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay between checks" : "")}. I posted one live status message in this channel."
                 + (watch ? " Watch diagnostics are enabled." : ""),
             ephemeral: true);
 
         QueueFollowAutoRun(options, start);
+    }
+
+    /// <summary>
+    /// Acknowledges an interaction that is about to do work before it can answer, so Discord's
+    /// three-second deadline is met no matter how long that work takes. Safe to call on a path
+    /// that may already have been acknowledged upstream.
+    /// </summary>
+    /// <remarks>
+    /// A component interaction must not use <c>DeferAsync</c> here: that acknowledges as
+    /// DeferredUpdateMessage, which makes the original response the clicked message itself, so
+    /// the eventual reply would overwrite the follow-auto monitor or the quick-action prompt the
+    /// button sits on. DeferLoadingAsync posts a separate ephemeral response instead - the same
+    /// thing the RespondAsync these paths used to reach produced. Callers that deliberately want
+    /// the clicked message replaced still defer themselves before getting here, and this then
+    /// leaves their choice alone.
+    /// </remarks>
+    private static Task EnsureAcknowledgedAsync(SocketInteraction interaction)
+    {
+        return ChooseAcknowledgement(
+            interaction.HasResponded,
+            isComponent: interaction is SocketMessageComponent) switch
+        {
+            InteractionAcknowledgement.DeferAsNewEphemeralReply =>
+                interaction.DeferAsync(ephemeral: true),
+            InteractionAcknowledgement.DeferComponentWithoutClaimingItsMessage =>
+                ((SocketMessageComponent)interaction).DeferLoadingAsync(ephemeral: true),
+            _ => Task.CompletedTask
+        };
+    }
+
+    /// <summary>
+    /// The acknowledgement rule, split out from the Discord.NET call so it can be asserted: a
+    /// component that has not answered yet must be deferred the way that leaves the message it
+    /// was clicked on alone, and anything already answered must be left entirely alone.
+    /// </summary>
+    internal static InteractionAcknowledgement ChooseAcknowledgement(bool hasResponded, bool isComponent)
+    {
+        if (hasResponded)
+        {
+            return InteractionAcknowledgement.None;
+        }
+
+        return isComponent
+            ? InteractionAcknowledgement.DeferComponentWithoutClaimingItsMessage
+            : InteractionAcknowledgement.DeferAsNewEphemeralReply;
+    }
+
+    private static Task EnsureAcknowledgedAsync(SlashContext context)
+    {
+        return EnsureAcknowledgedAsync(context.Command);
     }
 
     private async Task<FollowAutoRunStart?> TryBeginFollowAutoRunAsync(
@@ -4532,8 +4666,11 @@ public sealed class DiscordBot
 
     private async Task HandleFollowAutoStopFollowButtonAsync(SocketMessageComponent component)
     {
-        // No DeferAsync here: StartFollowAutoAsync responds to the interaction itself, same
-        // as the FollowAutoStartButtonId path.
+        // No DeferAsync here, unlike its sibling stop-action buttons: those mean to replace their
+        // own message, this one does not. EnsureAcknowledgedAsync picks the acknowledgement form
+        // that leaves the message this button sits on alone, and it runs ahead of the button
+        // strip below because that strip is a REST round-trip.
+        await EnsureAcknowledgedAsync(component);
         await ClearFollowAutoStopActionButtonsAsync(component.Message);
         await StartFollowAutoAsync(
             SlashContext.FromComponent(component, "follow"),
@@ -4558,6 +4695,9 @@ public sealed class DiscordBot
 
     private async Task RunQuitAllThenSleepAsync(SlashContext context)
     {
+        // Same reason as QueueQuitAllAsync: the cancel below is a database write, and this whole
+        // method runs before anything answers the button that started it.
+        await EnsureAcknowledgedAsync(context);
         await CancelJoinAutoIfRunningAsync("follow-auto sleep button was pressed");
         var followAutoCancel = await CancelFollowAutoIfRunningAsync("follow-auto sleep button was pressed");
         QueueFollowAutoStopSignal(followAutoCancel.RunId);
@@ -7946,4 +8086,29 @@ public sealed class DiscordBot
                 ?? throw new InvalidOperationException($"{name} is required.");
         }
     }
+}
+
+/// <summary>
+/// How an interaction should be acknowledged before its handler starts working. Discord discards
+/// an interaction that nothing answers within three seconds, and Discord.NET runs handlers inline
+/// on the gateway task, so a handler that works first and answers second can fail its own command
+/// and every interaction queued behind it.
+/// </summary>
+internal enum InteractionAcknowledgement
+{
+    /// <summary>Already acknowledged upstream - acknowledging again throws.</summary>
+    None,
+
+    /// <summary>
+    /// Defer as a new ephemeral reply, which is what a slash command's DeferAsync produces.
+    /// </summary>
+    DeferAsNewEphemeralReply,
+
+    /// <summary>
+    /// Defer a button press without making the clicked message the interaction's original
+    /// response. A component's DeferAsync acknowledges as DeferredUpdateMessage, which would put
+    /// the eventual reply on top of the follow-auto monitor or the quick-action prompt the button
+    /// sits on; DeferLoadingAsync posts a separate ephemeral response instead.
+    /// </summary>
+    DeferComponentWithoutClaimingItsMessage
 }
