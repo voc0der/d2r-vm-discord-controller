@@ -128,8 +128,10 @@ the gamma screen:
 ```
 
 `settings_repair` takes `{ "settingsContent": "...", "settingsSourceAgentId": "d2r-hc-01" }`. The
-receiving agent validates the payload (real JSON, an object, at least 3 properties, 64 bytes to
-512 KB - deliberately schema-free, since D2R's key names change across game patches), quits D2R,
+receiving agent validates the payload (real JSON, an object, at least 3 properties, and 2 KB to
+512 KB - a known-good file on this fleet is 4 KB and anything under 2 KB is corrupt or truncated,
+which makes size the sharpest check here; the key names themselves are deliberately not checked,
+since D2R changes them across game patches), quits D2R,
 waits `settingsRepairSettleSeconds` for the client's own exit write to land, backs the existing file
 up next to itself as `Settings.json.<timestamp>.bak`, and writes the donor copy through a temp file
 plus rename. It fails rather than writing if the client is still running. It does not relaunch - the

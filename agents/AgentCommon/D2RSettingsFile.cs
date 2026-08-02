@@ -25,9 +25,12 @@ public static class D2RSettingsFile
     public const string SettingsFileName = "Settings.json";
     public const string SettingsFolderName = "Diablo II Resurrected";
     private const string SavedGamesFolderName = "Saved Games";
-    // A real Settings.json is ~1-3 KB. These bound what this agent will accept as a donor payload
-    // so a truncated or wrong-file transfer can never overwrite a working client's settings.
-    private const int MinPlausibleContentLength = 64;
+    // A known-good Settings.json on this fleet measures 4 KB, and anything under 2 KB is wrong -
+    // operator-confirmed, not inferred. That makes size the sharpest check available here: a
+    // truncated write (the suspected corruption) fails it, and so does any file that parses fine
+    // but is not this file. The ceiling is loose by comparison; it only exists so a wrong-file
+    // transfer cannot push megabytes through the command tunnel.
+    private const int MinPlausibleContentLength = 2 * 1024;
     private const int MaxPlausibleContentLength = 512 * 1024;
     private const int MinPlausiblePropertyCount = 3;
 
@@ -159,7 +162,8 @@ public static class D2RSettingsFile
 
         if (content.Length < MinPlausibleContentLength)
         {
-            reason = $"content is only {content.Length} characters, below the {MinPlausibleContentLength} minimum for a real settings file";
+            reason = $"content is only {content.Length} characters; a real settings file is ~4 KB and anything "
+                + $"under {MinPlausibleContentLength} is corrupt or truncated";
             return false;
         }
 
