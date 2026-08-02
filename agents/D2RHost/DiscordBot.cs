@@ -50,6 +50,11 @@ public sealed class DiscordBot
     private static readonly TimeSpan SettingsExportCommandTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan SettingsRepairCommandTimeout = TimeSpan.FromSeconds(90);
     private const int MaxSettingsDonorAttempts = 3;
+    // Slow on purpose. A reset settings file is rare, agents report it on every heartbeat, and the
+    // per-account rate limit means a client that keeps coming back broken is not retried anyway -
+    // so there is nothing to gain from sweeping often, and a repair closes a live client.
+    private static readonly TimeSpan SettingsRepairSweepInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan SettingsRepairFirstSweepDelay = TimeSpan.FromMinutes(2);
     private const int JoinAutoDefaultIdleMinutes = 60;
 
     private readonly HostConfig _config;
@@ -217,6 +222,95 @@ public sealed class DiscordBot
         await _client.LoginAsync(TokenType.Bot, _config.DiscordToken);
         await _client.StartAsync();
         _ = Task.Run(RunHostWakeMonitorAsync);
+        _ = Task.Run(RunSettingsRepairSweepAsync);
+    }
+
+    /// <summary>
+    /// Repairs any VM that reports a reset Settings.json, whether or not follow-auto is running.
+    /// </summary>
+    /// <remarks>
+    /// The repair used to hang off follow-auto's warmup-failure path alone, so a client that reset
+    /// its settings outside a run sat on the gamma calibration screen indefinitely - visible in
+    /// /d2r status, and fixed by nothing. Agents report the state on every heartbeat, so a sweep
+    /// over the fleet's last status is all it takes to make the recovery autonomous. The per-account
+    /// rate limit is shared with the follow-auto path, so the two cannot double up on one client.
+    /// </remarks>
+    private async Task RunSettingsRepairSweepAsync()
+    {
+        await Task.Delay(SettingsRepairFirstSweepDelay);
+        while (true)
+        {
+            try
+            {
+                await SweepSettingsRepairsAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "The D2R settings repair sweep failed.");
+            }
+
+            await Task.Delay(SettingsRepairSweepInterval);
+        }
+    }
+
+    internal async Task<int> SweepSettingsRepairsAsync(CancellationToken cancellationToken)
+    {
+        var repaired = 0;
+        foreach (var (accountKey, account) in _registry.Accounts
+                     .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var agent = _registry.GetAgent(account.AgentId);
+            if (agent?.Connected != true
+                || !SettingsRepairPolicy.NeedsDonorSettings(agent.LastStatusJson))
+            {
+                continue;
+            }
+
+            var repair = await TryRepairSettingsFromFleetAsync(
+                accountKey, account, agent.LastStatusJson, cancellationToken);
+            if (repair is null)
+            {
+                continue;
+            }
+
+            if (!repair.Ok)
+            {
+                _logger.LogWarning(
+                    "Sweep could not repair {AccountKey}'s D2R settings: {Message}", accountKey, repair.Message);
+                continue;
+            }
+
+            repaired++;
+            // The client was closed to replace the file, so something has to start it again. Inside
+            // follow-auto the run's own next cycle does that; here there is nothing else to do it.
+            var readied = await SendReadyAfterSettingsRepairAsync(account, cancellationToken);
+            _notifications.Enqueue(
+                $"{FormatAccountDisplayName(accountKey, account)}: D2R had reset its own Settings.json (first-run gamma "
+                    + $"screen). Replaced it from {repair.DonorAccountKey} and restarted the client: {readied}");
+        }
+
+        return repaired;
+    }
+
+    private async Task<string> SendReadyAfterSettingsRepairAsync(
+        AccountConfig account,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _registry.SendCommandAsync(
+                account.AgentId,
+                "menu_ready",
+                new { },
+                ReadyCommandTimeout,
+                cancellationToken);
+            return result.Ok ? "client is ready again." : $"the follow-up ready failed ({result.Message}).";
+        }
+        catch (Exception ex)
+        {
+            return $"the follow-up ready failed ({ex.Message}).";
+        }
     }
 
     // A pulse that takes minutes longer than requested means the process was suspended - the
@@ -5210,9 +5304,14 @@ public sealed class DiscordBot
         _followAutoGamesCompleted = 0;
         _followAutoJoined = 0;
         _followAutoTotal = 0;
-        Volatile.Write(ref _followAutoTargetBots, FollowAutoRosterPolicy.ClampTarget(targetBotCount));
-        Volatile.Write(ref _followAutoBenchedCount, 0);
-        Volatile.Write(ref _followAutoOnlineCount, 0);
+        var target = FollowAutoRosterPolicy.ClampTarget(targetBotCount);
+        Volatile.Write(ref _followAutoTargetBots, target);
+        // Seeded from the fleet rather than left at zero: the monitor and its +1 button are built
+        // from these the moment the message is posted, and a zero online count reads as "no spare
+        // VM" - so +1 was missing for the first cycle of every run.
+        var online = GetAccountEntriesByConnectivity().Online.Length;
+        Volatile.Write(ref _followAutoOnlineCount, online);
+        Volatile.Write(ref _followAutoBenchedCount, Math.Max(online - target, 0));
         FollowAutoLivePlayerCount = null;
         _followAutoRosterGate.Reset();
         _followAutoMetricsEnabled = metricsEnabled;
@@ -6631,10 +6730,13 @@ public sealed class DiscordBot
             .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        // Forget every benched account's state first, in game or not: a benched account that was
-        // recovery-pending would otherwise hold the all-joined watch hostage forever, since
-        // nothing is going to drive its recovery any more.
-        accountState.Bench(benchedSet);
+        // Benched accounts that are NOT in the game are dropped from run state immediately. That
+        // matters most for recovery-pending ones: nothing is going to drive their recovery once
+        // they are off the roster, so leaving them there would hold the all-joined watch forever.
+        var benchedOutOfGame = benchedSet
+            .Where(accountKey => !benchedInGame.Contains(accountKey, StringComparer.OrdinalIgnoreCase))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        accountState.Bench(benchedOutOfGame);
 
         if (benchedInGame.Length == 0)
         {
@@ -6649,25 +6751,55 @@ public sealed class DiscordBot
             onlyAccounts: benchedInGame.ToHashSet(StringComparer.OrdinalIgnoreCase),
             cancellationToken);
 
-        // A leave that failed leaves a client sitting in the leader's game that the run has just
-        // stopped tracking - the party is one bigger than the operator asked for and nothing else
-        // will notice. It cannot be retried from here (the account is off the roster now), so it
-        // has to be said out loud.
-        var failedLeaves = leaveResults
-            .Where(result => !result.Ok)
-            .Select(result => $"{result.AccountKey} ({result.Message})")
-            .ToArray();
-        if (failedLeaves.Length > 0)
+        // Only confirmed leavers are dropped. An account whose Save and Exit failed is still
+        // sitting in the leader's game, so it stays in the run's joined set and this runs again on
+        // the next cycle - forgetting it here would leave a bot in the game that the run has
+        // stopped tracking and nothing would ever take out.
+        var left = leaveResults
+            .Where(result => result.Ok)
+            .Select(result => result.AccountKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        accountState.Bench(left);
+
+        var retrying = new List<string>();
+        var abandoned = new List<string>();
+        foreach (var failure in leaveResults.Where(result => !result.Ok))
         {
-            _logger.LogWarning(
-                "Benched account(s) could not leave the game and may still be in it: {Failures}",
-                string.Join("; ", failedLeaves));
-            await UpdateFollowAutoMonitorAsync(
-                $"Bot count lowered to {roster.TargetBotCount}, but {string.Join("; ", failedLeaves)} could not leave "
-                    + "and may still be in the game. Use /d2r save-exit for that account if it stays.");
+            if (accountState.ShouldRetryBenchLeave(failure.AccountKey))
+            {
+                retrying.Add($"{failure.AccountKey} ({failure.Message})");
+                continue;
+            }
+
+            // Out of attempts. Release it so the all-joined watch - which requires the joined set
+            // to match the active roster exactly - is not held up by a client that cannot leave.
+            accountState.Bench(new HashSet<string>([failure.AccountKey], StringComparer.OrdinalIgnoreCase));
+            abandoned.Add($"{failure.AccountKey} ({failure.Message})");
         }
 
-        return benchedInGame;
+        if (retrying.Count > 0)
+        {
+            _logger.LogWarning(
+                "Benched account(s) could not leave the game; keeping them tracked so the next cycle retries: {Failures}",
+                string.Join("; ", retrying));
+            await UpdateFollowAutoMonitorAsync(
+                $"Bot count lowered to {roster.TargetBotCount}, but {string.Join("; ", retrying)} could not leave "
+                    + "the game yet; retrying on the next cycle.");
+        }
+
+        if (abandoned.Count > 0)
+        {
+            _logger.LogWarning(
+                "Benched account(s) failed {Attempts} leave attempts and may still be in the game: {Failures}",
+                FollowAutoAccountState.MaxBenchLeaveAttempts,
+                string.Join("; ", abandoned));
+            await UpdateFollowAutoMonitorAsync(
+                $"{string.Join("; ", abandoned)} failed {FollowAutoAccountState.MaxBenchLeaveAttempts} leave attempts "
+                    + "and may still be in the game. Follow-auto has stopped waiting on it; quit that client manually "
+                    + "if it stays.");
+        }
+
+        return left.OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     private async Task<FollowAutoCheckResult> RunFollowAutoCheckEntryAsync(

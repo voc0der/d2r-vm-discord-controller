@@ -59,6 +59,8 @@ The check runs **last** in every detection chain, after every state a client can
 3. `settings_export` reads the donor's file; `settings_repair` closes the broken client, waits `settingsRepairSettleSeconds` (default 5) for D2R's own exit write to land, backs the old file up, and writes the donor's copy through a temp file plus rename. The host then re-readies the client. Both ends refuse a file under 2 KB: a known-good one on this fleet is 4 KB, so size catches a truncated write - the suspected cause - even when it still parses as JSON.
 4. Two repairs per account per 30 minutes. A client that keeps coming back corrupt falls through to the ordinary escalation instead of becoming a repair loop.
 
+Two things trigger this. A failed `menu_ready` during follow-auto repairs inline and retries the warmup, and independently of that the host sweeps the fleet every 5 minutes for any VM reporting `needsDonorSettings`, repairs it, and re-readies the client - so a settings reset outside a follow-auto run is still fixed on its own. Both share the same per-account rate limit, so they cannot double up on one client.
+
 The transfer is master-side because the donor and the broken VM can be on different physical nodes; the file rides the existing agent-command tunnel as a command argument.
 
 **Operator view.** `/d2r status` prints `settings RESET BY D2R (first-run gamma screen; needs a donor Settings.json)` for an affected client. The full picture is in the `d2rSettingsRepair` status block (see [protocol.md](../protocol.md)).

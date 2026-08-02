@@ -817,7 +817,23 @@ public sealed class VmOperations
         }
 
         var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
-        var readable = D2RSettingsFile.TryRead(path, out var snapshot, out var readError);
+        // Only read the file while something is actually wrong. Keying this on repairsApplied too
+        // meant every status collection for the rest of the process re-read and hashed a 4 KB file
+        // to report a repair that had already succeeded.
+        D2RSettingsSnapshot? settingsFile = null;
+        string? settingsError = null;
+        if (detected || sightings > 0)
+        {
+            if (D2RSettingsFile.TryRead(path, out var snapshot, out var readError))
+            {
+                settingsFile = snapshot;
+            }
+            else
+            {
+                settingsError = readError;
+            }
+        }
+
         return new
         {
             detected,
@@ -831,11 +847,11 @@ public sealed class VmOperations
             firstSeenUtc = firstUtc,
             lastSeenUtc = lastUtc,
             settingsPath = path,
-            settingsReadable = readable,
-            settingsSha256 = readable ? snapshot.Sha256 : null,
-            settingsLength = readable ? snapshot.Length : (long?)null,
-            settingsLastWriteUtc = readable ? snapshot.LastWriteUtc : null,
-            settingsError = readable ? null : readError,
+            settingsReadable = settingsFile is not null,
+            settingsSha256 = settingsFile?.Sha256,
+            settingsLength = settingsFile?.Length,
+            settingsLastWriteUtc = settingsFile?.LastWriteUtc,
+            settingsError,
             repairsApplied,
             lastRepairUtc,
             lastRepairMessage
@@ -5393,7 +5409,33 @@ public sealed class VmOperations
         // invented for the settings file it just reset, which is how a bad resolution gets
         // baked in and takes every pixel classifier on this VM with it.
         MarkCommandCheckpoint("ready loop stopped: D2R is on the first-run gamma calibration screen (settings reset)");
+        ConfirmGammaCalibrationBeforeAbandoningReady();
         return result();
+    }
+
+    /// <summary>
+    /// Takes the second look the repair needs, right here, instead of leaving it to a later pass.
+    /// </summary>
+    /// <remarks>
+    /// The host only acts on <c>needsDonorSettings</c>, which requires
+    /// <see cref="GammaCalibrationConfirmSightings"/> sightings. The ready loop aborts on the
+    /// first one, so a client whose gamma screen appeared during this pass would report just one
+    /// sighting and wait a whole follow-auto cycle for its second - a client that is going nowhere
+    /// on its own, delayed by the very check meant to protect it. Re-sampling costs seven small
+    /// regions and keeps the two-look rule intact: this is a genuinely independent read, and a
+    /// screen that has changed underneath simply fails it and clears the streak.
+    /// </remarks>
+    private void ConfirmGammaCalibrationBeforeAbandoningReady()
+    {
+        if (!OperatingSystem.IsWindows() || IsSettingsRepairConfirmed())
+        {
+            return;
+        }
+
+        var confirmed = IsGammaCalibrationScreen(new WindowsInput(), windowRelative: false);
+        RecordObservedFrame(confirmed
+            ? nameof(VisibleD2RState.GammaCalibration)
+            : nameof(VisibleD2RState.Unknown));
     }
 
     // Deliberately excludes DiabloSplash: a client that renders its splash and then fails device

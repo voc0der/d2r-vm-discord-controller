@@ -16,10 +16,16 @@ internal sealed class FollowAutoAccountState
     /// </summary>
     public const int MaxGameFullAttempts = 4;
 
+    /// <summary>
+    /// Save and Exit attempts a benched account gets before the run stops tracking it regardless.
+    /// </summary>
+    public const int MaxBenchLeaveAttempts = 3;
+
     private readonly HashSet<string> _joined = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _recoveryPending = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _parkedGameFull = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _gameFullStrikes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _benchLeaveFailures = new(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlySet<string> Joined => _joined;
 
@@ -121,7 +127,32 @@ internal sealed class FollowAutoAccountState
             _recoveryPending.Remove(accountKey);
             _parkedGameFull.Remove(accountKey);
             _gameFullStrikes.Remove(accountKey);
+            _benchLeaveFailures.Remove(accountKey);
         }
+    }
+
+    /// <summary>
+    /// Records that a benched account could not leave the game. Returns whether the run should keep
+    /// it tracked and retry next cycle, or give up and forget it.
+    /// </summary>
+    /// <remarks>
+    /// Keeping it tracked is what makes the retry possible, but it also keeps it in the joined set,
+    /// and the all-joined watch requires joined to equal the active roster exactly - so a client
+    /// that can never leave (wedged, which is usually why the leave failed) would stall the whole
+    /// run. The retry is therefore bounded: after <see cref="MaxBenchLeaveAttempts"/> the account is
+    /// released so the fleet keeps moving, with the operator told it may still be in the game.
+    /// </remarks>
+    public bool ShouldRetryBenchLeave(string accountKey)
+    {
+        _benchLeaveFailures.TryGetValue(accountKey, out var priorAttempts);
+        var attempts = priorAttempts + 1;
+        if (attempts >= MaxBenchLeaveAttempts)
+        {
+            return false;
+        }
+
+        _benchLeaveFailures[accountKey] = attempts;
+        return true;
     }
 
     public string[] BeginRecoveryForOfflineJoined(IReadOnlySet<string> onlineAccountKeys)
