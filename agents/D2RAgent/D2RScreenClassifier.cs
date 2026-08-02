@@ -305,7 +305,7 @@ internal static class D2RScreenClassifier
     // which reads bright on every in-game reference capture (dark ratio 0.28-0.90, never
     // >= 0.98) - even the dimmed modern-graphics Save and Exit captures and the night-time
     // party_glitch captures fail here, so a live game can never satisfy the full set.
-    public static readonly LoadScreenSurroundRegion[] LoadScreenSurroundRegions =
+    public static readonly ScreenSampleRegion[] LoadScreenSurroundRegions =
     [
         new(0.10, 0.10, 0.14, 0.12),
         new(0.90, 0.10, 0.14, 0.12),
@@ -328,6 +328,85 @@ internal static class D2RScreenClassifier
             && stats.DarkRatio >= 0.98;
     }
 
+    // D2R's first-run "Gamma Calibration" screen, which it shows on the way from the intro
+    // videos to character select when it has decided Settings.json is unusable and rewritten it
+    // from defaults. The client never advances past it on its own, so recognizing it is what
+    // separates "this VM's settings file is corrupt" from a generic Unknown frame.
+    //
+    // The anchor is the 11-swatch greyscale ramp across the middle of the screen, sampled as
+    // five patches left to right. Deliberately NOT the Diablo head above it: that logo is
+    // rendered at whatever the current gamma is (the screen's instruction is literally "adjust
+    // so the logo is barely visible"), so its brightness is the one thing on this screen
+    // guaranteed to vary. The ramp varies too, but its SHAPE does not - it stays monotonic with
+    // a wide span at every gamma setting. Measured on gamma_calibration_settings_reset.png
+    // remapped from gamma 0.35 to 3.0: patch luminances stay strictly increasing throughout and
+    // the span never drops below 170 (222 at the captured setting).
+    //
+    // Margins against every other reference capture (90 of them, see
+    // GammaCalibrationScreenTests): not one is monotonic across these five patches at all, and
+    // the widest span any of them produces is 40.4 against this screen's 222.2. The black flanks
+    // either side of the ramp are the secondary confirmation - 32 captures have them (intro and
+    // load screens, which are mostly black), but none of those has the ramp.
+    public const double GammaRampPatchWidthRatio = 0.035;
+    public const double GammaRampPatchHeightRatio = 0.045;
+    private const double GammaRampCenterY = 0.657;
+
+    public static readonly ScreenSampleRegion[] GammaCalibrationRampPatches =
+    [
+        new(0.285, GammaRampCenterY, GammaRampPatchWidthRatio, GammaRampPatchHeightRatio),
+        new(0.395, GammaRampCenterY, GammaRampPatchWidthRatio, GammaRampPatchHeightRatio),
+        new(0.500, GammaRampCenterY, GammaRampPatchWidthRatio, GammaRampPatchHeightRatio),
+        new(0.610, GammaRampCenterY, GammaRampPatchWidthRatio, GammaRampPatchHeightRatio),
+        new(0.720, GammaRampCenterY, GammaRampPatchWidthRatio, GammaRampPatchHeightRatio)
+    ];
+
+    // The ramp spans x 0.250-0.750 exactly; these sit clear of both ends on the same row.
+    public static readonly ScreenSampleRegion GammaCalibrationLeftFlank = new(0.10, GammaRampCenterY, 0.14, 0.06);
+    public static readonly ScreenSampleRegion GammaCalibrationRightFlank = new(0.90, GammaRampCenterY, 0.14, 0.06);
+
+    public static bool IsGammaCalibrationScreen(
+        IReadOnlyList<ScreenRegionStats> rampPatches,
+        ScreenRegionStats leftFlank,
+        ScreenRegionStats rightFlank)
+    {
+        // Samples > 0 everywhere for the same reason the stuck-load-screen watchdog demands it:
+        // a bounded-sampling timeout returns empty stats, and "couldn't read the screen" must
+        // never be able to satisfy a check that quits and rewrites a live client's settings.
+        if (rampPatches.Count < 4 || rampPatches.Any(patch => patch.Samples <= 0))
+        {
+            return false;
+        }
+
+        for (var index = 1; index < rampPatches.Count; index++)
+        {
+            if (rampPatches[index].AverageLuminance - rampPatches[index - 1].AverageLuminance <= GammaRampMinStep)
+            {
+                return false;
+            }
+        }
+
+        var span = rampPatches[^1].AverageLuminance - rampPatches[0].AverageLuminance;
+        return span > GammaRampMinSpan
+            && rampPatches[0].AverageLuminance < GammaRampMaxDarkEnd
+            && rampPatches[^1].AverageLuminance > GammaRampMinBrightEnd
+            && IsGammaCalibrationFlank(leftFlank)
+            && IsGammaCalibrationFlank(rightFlank);
+    }
+
+    // A step floor rather than 0 keeps a shallow gradient (a dim scene lit from one side) from
+    // reading as a ramp, but stays under the 4.9 minimum measured at the darkest gamma remap.
+    private const double GammaRampMinStep = 2.0;
+    private const double GammaRampMinSpan = 100.0;
+    private const double GammaRampMaxDarkEnd = 110.0;
+    private const double GammaRampMinBrightEnd = 140.0;
+
+    private static bool IsGammaCalibrationFlank(ScreenRegionStats stats)
+    {
+        return stats.Samples > 0
+            && stats.AverageLuminance < 12
+            && stats.DarkRatio >= 0.95;
+    }
+
     private static bool IsCharacterMenuButtonRegion(ScreenRegionStats stats)
     {
         return stats.AverageLuminance > 40
@@ -336,7 +415,7 @@ internal static class D2RScreenClassifier
     }
 }
 
-internal readonly record struct LoadScreenSurroundRegion(
+internal readonly record struct ScreenSampleRegion(
     double CenterX,
     double CenterY,
     double WidthRatio,

@@ -11,7 +11,8 @@ public enum ReferenceVisibleState
     CharacterScreen,
     OfflineCharacterScreen,
     LobbyOrGame,
-    InGame
+    InGame,
+    GammaCalibration
 }
 
 // Mirrors VmOperations.ReadyScreenState - distinct from ReferenceVisibleState because the
@@ -28,7 +29,8 @@ public enum ReferenceReadyState
     CharacterScreen,
     LobbyOrGame,
     InGame,
-    CannotJoinCurrentCharacterDialog
+    CannotJoinCurrentCharacterDialog,
+    GammaCalibration
 }
 
 // Replicates VmOperations.DetectVisibleD2RState/DetectReadyScreenState's exact region
@@ -74,8 +76,15 @@ internal static class ReferenceCaptureClassifier
             return ReferenceVisibleState.LobbyOrGame;
         }
 
-        return IsInGameReady(capture)
-            ? ReferenceVisibleState.InGame
+        if (IsInGameReady(capture))
+        {
+            return ReferenceVisibleState.InGame;
+        }
+
+        // Mirrors VmOperations.DetectVisibleD2RState: checked last, after every state a client can
+        // leave on its own.
+        return IsGammaCalibrationScreen(capture)
+            ? ReferenceVisibleState.GammaCalibration
             : ReferenceVisibleState.Unknown;
     }
 
@@ -128,7 +137,26 @@ internal static class ReferenceCaptureClassifier
             return ReferenceReadyState.CannotJoinCurrentCharacterDialog;
         }
 
-        return ReferenceReadyState.Unknown;
+        return IsGammaCalibrationScreen(capture)
+            ? ReferenceReadyState.GammaCalibration
+            : ReferenceReadyState.Unknown;
+    }
+
+    // Mirrors VmOperations.IsGammaCalibrationScreen: the five ramp patches and the two black
+    // flanks either side of the ramp, at the same coordinates and the same sample grid.
+    public static bool IsGammaCalibrationScreen(string capture)
+    {
+        var ramp = D2RScreenClassifier.GammaCalibrationRampPatches
+            .Select(patch => Sample(capture, new UiPoint(patch.CenterX, patch.CenterY), patch.WidthRatio, patch.HeightRatio))
+            .ToArray();
+        var leftFlank = SampleRegion(capture, D2RScreenClassifier.GammaCalibrationLeftFlank);
+        var rightFlank = SampleRegion(capture, D2RScreenClassifier.GammaCalibrationRightFlank);
+        return D2RScreenClassifier.IsGammaCalibrationScreen(ramp, leftFlank, rightFlank);
+    }
+
+    private static ScreenRegionStats SampleRegion(string capture, ScreenSampleRegion region)
+    {
+        return Sample(capture, new UiPoint(region.CenterX, region.CenterY), region.WidthRatio, region.HeightRatio);
     }
 
     public static bool IsDiabloSplashScreen(string capture)

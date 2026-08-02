@@ -13,6 +13,10 @@ internal sealed class MenuCommandArgs
     public string? Fingerprint { get; set; }
     public bool? Append { get; set; }
     public long? FollowAutoRunId { get; set; }
+    // settings_repair: the donor VM's Settings.json, verbatim, and who it came from (for logs and
+    // for the repaired agent's own status).
+    public string? SettingsContent { get; set; }
+    public string? SettingsSourceAgentId { get; set; }
 
     public static MenuCommandArgs From(JsonElement element)
     {
@@ -31,6 +35,8 @@ internal sealed class MenuCommandArgs
         args.Fingerprint = TryGetString(element, "fingerprint");
         args.Append = TryGetBool(element, "append");
         args.FollowAutoRunId = TryGetLong(element, "followAutoRunId");
+        args.SettingsContent = TryGetString(element, "settingsContent");
+        args.SettingsSourceAgentId = TryGetString(element, "settingsSourceAgentId");
         return args;
     }
 

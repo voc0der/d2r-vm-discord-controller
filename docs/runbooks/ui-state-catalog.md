@@ -14,6 +14,7 @@ Coordinates for click/sample targets in these states are centralized in [automat
 | Battle.net existing-game folder chooser | `assets/d2r-ui/1366x768/battlenet_choose_install_folder.png` | Exact-title native dialog where the validated directory containing `D2R.exe` is typed and selected. |
 | Battle.net existing-install scan confirmation | `assets/d2r-ui/1366x768/battlenet_start_install_scan.png` | Start Install registers/scans the validated existing files. It is clicked once only after this repair submitted the folder. |
 | D2R graphics-device initialization failure | `assets/d2r-ui/1366x768/d2r_failed_to_initialize_graphics_device.png` | Recoverable Intel GPU-P launch failure, matched on the dialog text alone. Reported as `visible GraphicsDeviceFailure`; the agent dismisses it and retries the launch (also from the idle monitor), and gives up after five tries in 20 minutes so the host power-cycles the VM. |
+| D2R first-run gamma calibration | `assets/d2r-ui/1366x768/gamma_calibration_settings_reset.png` | D2R reset its own `Settings.json` and is treating this launch as a first run. Appears after the intro videos, on the way to character select, and **only** when the settings file was corrupt. The client never advances past it. Reported as `visible GammaCalibration`; the ready loop stops on sight and the host replaces the file from a healthy fleet member. See [Settings.json corruption](#settingsjson-corruption) below. |
 | First intro video | `assets/d2r-ui/first_intro_video.jpg` | First full-screen startup video after D2R launches. |
 | First intro logo | `assets/d2r-ui/first_intro_video_end.jpg` | Blizzard logo at the end of the first startup video. |
 | Second intro video | `assets/d2r-ui/second_intro.jpg` | Diablo II startup/title animation before the final splash. |
@@ -36,6 +37,31 @@ Coordinates for click/sample targets in these states are centralized in [automat
 | Follow-auto pending client in game | `assets/d2r-ui/1366x768/follow_auto_pending_modern_ingame.png` | Modern-graphics in-game HUD from the stale-game recovery case; strict HUD confirmation leads to Save and Exit before a later rejoin cycle. |
 | Save and Exit | `assets/d2r-ui/save_and_exit_resurrected.jpg` | Resurrected graphics pause menu. |
 | Save and Exit Legacy | `assets/d2r-ui/save_and_exit_legacy.jpg` | Legacy graphics pause menu. |
+
+## Settings.json corruption
+
+**Symptom.** A client gets through the intro videos, and where it should land on character select it stops on **Gamma Calibration** instead. It stays there. Every `menu_ready` times out, and because the client is a live process rendering a real screen, nothing upstream can tell this apart from a slow launch.
+
+**Cause.** D2R rewrites `%USERPROFILE%\Saved Games\Diablo II Resurrected\Settings.json` on exit and regenerates it from defaults whenever it decides the file is unusable. A guest losing power mid-write is the leading suspect for how it becomes unusable; the cause is not confirmed, which is why each repair keeps a timestamped `.bak` of the file it replaced - that backup is the only surviving evidence of what a corrupted one looks like. Observed 2026-08-02 on exactly one VM.
+
+**Why it is expensive.** Before detection existed, this fell through to the ordinary warmup escalation: five failed readies, then a VM power cycle, then five more, then a restart of the whole physical node - taking every healthy sibling VM on that node down with it. None of it can work, because the problem is a file.
+
+**Detection.** The anchor is the 11-swatch greyscale ramp across the middle of the screen, sampled as five patches left to right at y 0.657 (x 0.285/0.395/0.500/0.610/0.720, each 0.035 x 0.045), plus the black flanks either side of it at x 0.10 and 0.90. The patches must be strictly increasing with a span over 100.
+
+Deliberately **not** the Diablo head above the ramp: this screen's own instruction is "adjust so the logo is barely visible", so logo brightness is the one thing here guaranteed to vary. The ramp's brightness varies too, but its *shape* does not - remapping the capture across the full slider range (gamma 0.35 to 3.0) keeps the patches strictly increasing with a span never below 170, against 222 at the captured setting. Margins against the rest of the asset library: not one other capture is even monotonic across those five patches, and the widest span any of them produces is 40.4. Pinned by `GammaCalibrationScreenTests`, which sweeps every full-page capture rather than a hand-picked list.
+
+The check runs **last** in every detection chain, after every state a client can leave on its own, so it costs nothing on the hot path.
+
+**Repair.** Detection alone is not enough - the file has to come from somewhere, and every VM in the fleet runs the same client configuration:
+
+1. The agent needs two sightings before it sets `needsDonorSettings` (the repair closes a live client and overwrites a file, so one look is not enough). The ready loop stops the moment it sees the screen: its input bursts include Enter/Space, which is the Continue button, and clicking Continue would commit the defaults D2R just invented - including a resolution every pixel classifier here is calibrated against.
+2. The host picks a donor. A donor must have **positively reached character select or past it** (`CharacterScreen`, `LobbyOrGame`, `InGame`), preferring lobby/in-game clients since those got furthest on their settings. Anything stuck earlier - splash, an intro frame, an unrecognized frame, the graphics-device dialog, not running at all - is treated as broken too, because a client that has not started successfully is no evidence that the file it started from is good. `OfflineCharacterScreen` is excluded for the same reason one step later: character select reached, but login never completed. `settingsDonorAccountKey` in the host config only sets which *eligible* donor is tried first.
+3. `settings_export` reads the donor's file; `settings_repair` closes the broken client, waits `settingsRepairSettleSeconds` (default 5) for D2R's own exit write to land, backs the old file up, and writes the donor's copy through a temp file plus rename. The host then re-readies the client.
+4. Two repairs per account per 30 minutes. A client that keeps coming back corrupt falls through to the ordinary escalation instead of becoming a repair loop.
+
+The transfer is master-side because the donor and the broken VM can be on different physical nodes; the file rides the existing agent-command tunnel as a command argument.
+
+**Operator view.** `/d2r status` prints `settings RESET BY D2R (first-run gamma screen; needs a donor Settings.json)` for an affected client. The full picture is in the `d2rSettingsRepair` status block (see [protocol.md](../protocol.md)).
 
 Private captures:
 

@@ -28,6 +28,7 @@
   "allowedVmNamePrefixes": [
     "d2r-"
   ],
+  "settingsDonorAccountKey": null,
   "agents": {
     "d2r-hc-01": {
       "kind": "vm",

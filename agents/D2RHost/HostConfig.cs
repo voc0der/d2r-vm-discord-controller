@@ -35,6 +35,11 @@ public sealed class HostConfig
     public string PowerShellPath { get; set; } = "powershell.exe";
     public int PowerShellTimeoutSeconds { get; set; } = 90;
     public string[] AllowedVmNamePrefixes { get; set; } = [];
+    // Account whose Settings.json is copied onto a VM whose own file D2R has reset (the first-run
+    // gamma calibration screen). Null picks the first connected, uncorrupted account by key. This
+    // only sets the order candidates are tried in - a configured donor that is offline or itself
+    // broken is skipped rather than blocking the repair.
+    public string? SettingsDonorAccountKey { get; set; }
     public Dictionary<string, HostAgentConfig> Agents { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, AccountConfig> Accounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

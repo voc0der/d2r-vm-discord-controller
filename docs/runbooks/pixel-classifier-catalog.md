@@ -85,6 +85,43 @@ Measured 9x9 sample-grid margins from the reference captures:
   `stdDev=101.6`, `bright=0.272`, `dark=0.716`. Every other repair reference rejects the
   combined confirmation gate.
 
+## First-run gamma calibration (settings reset)
+
+Detects that D2R reset its own `Settings.json` and is treating this launch as a first run - the
+client stops here on the way from the intro videos to character select and never advances. Full
+symptom, cause, and repair flow in
+[ui-state-catalog.md](ui-state-catalog.md#settingsjson-corruption).
+
+| Function | Regions (screen center, width x height ratio) | Threshold |
+| --- | --- | --- |
+| `IsGammaCalibrationScreen` | Ramp patches `0.285,0.657`, `0.395,0.657`, `0.500,0.657`, `0.610,0.657`, `0.720,0.657`, each `0.035x0.045`; flanks `0.10,0.657` and `0.90,0.657`, each `0.14x0.06` | Every patch `Samples > 0`; each patch's `AverageLuminance` more than `2.0` above the one to its left; span (last minus first) `> 100`; first `< 110`; last `> 140`. Both flanks `Samples > 0`, `AverageLuminance < 12`, `DarkRatio >= 0.95`. |
+
+The anchor is the screen's 11-swatch greyscale ramp, which spans exactly x `0.250-0.750`. The
+Diablo head above it is deliberately unused: the screen's own instruction is "adjust so the logo is
+barely visible", so logo brightness is the one thing here guaranteed to vary with the setting being
+calibrated.
+
+Measured 9x9 sample-grid values on `1366x768/gamma_calibration_settings_reset.png`: patches
+`7.8 / 63.2 / 117.7 / 174.7 / 230.0` (min step `54.5`, span `222.2`), both flanks `lum=0.0`,
+`dark=1.00`. The ramp is a drawn staircase, so density barely matters - the same patches read
+`5.0 / 64.9 / 117.7 / 175.3 / 230.0` at the ready loop's 5x5 grid and
+`6.5 / 63.7 / 117.8 / 174.4 / 230.0` at 17x17.
+
+Robustness and false-positive margins, both pinned by `GammaCalibrationScreenTests`:
+
+- Remapping the capture across the full gamma-slider range (0.35 to 3.0) keeps the patches strictly
+  increasing at every setting. Span never falls below `170.8`; the minimum step falls as low as
+  `4.9` at gamma 0.35, which is why the step floor is `2.0` and the span does the real work.
+- Across all 90 full-page reference captures, **not one** is monotonic across these five patches,
+  and the widest span any of them reaches is `40.4` (`character_skeleton_selected.jpg`) against this
+  screen's `222.2`. The 32 captures that do have black flanks are intro and load screens, none of
+  which has a ramp.
+- Empty stats (a bounded-sampling timeout) reject, like every other watchdog here: "could not read
+  the screen" must never satisfy a check that closes a live client and rewrites its settings.
+
+The check runs last in every detection chain - after every state a client can leave on its own - so
+it adds nothing to the hot path.
+
 ## Native graphics-device failure dialog (not pixel-classified)
 
 The Intel GPU-P `Failed to initialize graphics device` launch failure is intentionally outside

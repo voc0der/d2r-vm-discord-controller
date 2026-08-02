@@ -76,6 +76,65 @@ the agent has stopped retrying, which is the host's cue to power-cycle the guest
 omitted (null) when the dialog is absent and no incident is open. Agents that predate these fields
 omit both, which reads as "no graphics-device failure".
 
+`d2rVisibleState` carries a second such value: `GammaCalibration`, set when D2R has reset its own
+`Settings.json` and stopped on its first-run gamma screen instead of reaching character select (see
+[ui-state-catalog.md](runbooks/ui-state-catalog.md#settingsjson-corruption)). It comes with a
+`d2rSettingsRepair` object:
+
+```json
+{
+  "detected": true,
+  "state": "GammaCalibration",
+  "sightings": 2,
+  "confirmSightings": 2,
+  "needsDonorSettings": true,
+  "repairEnabled": true,
+  "firstSeenUtc": "2026-08-02T13:20:00Z",
+  "lastSeenUtc": "2026-08-02T13:24:00Z",
+  "settingsPath": "C:\\Users\\d2r\\Saved Games\\Diablo II Resurrected\\Settings.json",
+  "settingsReadable": false,
+  "settingsSha256": null,
+  "settingsLength": null,
+  "settingsLastWriteUtc": null,
+  "settingsError": "... is not usable as a settings donor: root object has only 1 property ...",
+  "repairsApplied": 0,
+  "lastRepairUtc": null,
+  "lastRepairMessage": null
+}
+```
+
+`needsDonorSettings` is the flag the host acts on: the screen has been seen `confirmSightings` times
+in a row and this agent has repair enabled. `detected` alone (one sighting) is enough to keep a VM
+out of the donor pool but not to overwrite anything. The object is omitted (null) when the client is
+healthy and no repair has ever been applied; agents that predate it omit it, which reads the same.
+
+## Settings Repair Commands
+
+Two VM-agent commands move a settings file between fleet members. Both are master-orchestrated,
+because the donor and the broken VM can sit on different physical nodes.
+
+`settings_export` takes no arguments and returns the caller's settings file verbatim. It bypasses
+the agent's UI command gate (it only reads a file) and refuses if the exporting client is itself on
+the gamma screen:
+
+```json
+{
+  "path": "C:\\Users\\d2r\\Saved Games\\Diablo II Resurrected\\Settings.json",
+  "content": "{ ... }",
+  "sha256": "9f2c...",
+  "length": 1042,
+  "lastWriteUtc": "2026-07-30T22:14:03Z"
+}
+```
+
+`settings_repair` takes `{ "settingsContent": "...", "settingsSourceAgentId": "d2r-hc-01" }`. The
+receiving agent validates the payload (real JSON, an object, at least 3 properties, 64 bytes to
+512 KB - deliberately schema-free, since D2R's key names change across game patches), quits D2R,
+waits `settingsRepairSettleSeconds` for the client's own exit write to land, backs the existing file
+up next to itself as `Settings.json.<timestamp>.bak`, and writes the donor copy through a temp file
+plus rename. It fails rather than writing if the client is still running. It does not relaunch - the
+host issues `menu_ready` afterwards, so retry and escalation stay in one place.
+
 ## Worker-to-Master Status
 
 A worker connects to the master with the same hello envelope, using its `nodeId` as the agent ID:

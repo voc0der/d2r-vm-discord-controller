@@ -42,6 +42,19 @@ public sealed class VmAgentConfig : AgentConfig
     public int PartyMemberCountIntervalSeconds { get; set; } = 30;
     public string PowerShellPath { get; set; } = "powershell.exe";
     public int ScreenshotTimeoutSeconds { get; set; } = 30;
+    // D2R regenerates Settings.json from defaults whenever it decides the file is unusable, and
+    // then stops on its first-run Gamma Calibration screen instead of reaching character select -
+    // one VM's settings die, that client is stuck, and no amount of relaunching or power-cycling
+    // fixes it. When enabled, this agent reports the state and accepts a healthy fleet member's
+    // settings file (settings_repair) to overwrite its own with.
+    public bool SettingsRepairEnabled { get; set; } = true;
+    // Null resolves %USERPROFILE%\Saved Games\Diablo II Resurrected\Settings.json through the
+    // Saved Games known folder. Set it when that folder has been relocated.
+    public string? D2RSettingsPath { get; set; }
+    // How long to let the closed client's final write to Settings.json land before overwriting it.
+    // D2R writes that file on exit, so replacing it too early just gets the repair overwritten;
+    // waiting long here stalls a fleet-wide recovery, so this stays a few seconds, not minutes.
+    public int SettingsRepairSettleSeconds { get; set; } = 5;
     public D2RUiAutomationConfig Ui { get; set; } = new();
 }
 

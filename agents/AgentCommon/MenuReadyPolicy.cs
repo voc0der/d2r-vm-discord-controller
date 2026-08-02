@@ -47,6 +47,12 @@ public static class MenuReadyPolicy
                 // would fall through to the running-and-unknown default; it is listed
                 // explicitly because a ready pass is exactly what clears it.
                 "NotRunning" or "Unknown" or "DiabloSplash" or "GraphicsDeviceFailure" => true,
+                // GammaCalibration is also reported with d2rRunning true, and a ready pass will
+                // NOT clear it (the client stays on that screen until its settings file is
+                // replaced). It still runs one: the ready command is what reports the state back
+                // with the evidence the host needs to pick a donor, and it now stops on sight
+                // rather than pumping input at the Continue button.
+                "GammaCalibration" => true,
                 _ => true
             };
         }

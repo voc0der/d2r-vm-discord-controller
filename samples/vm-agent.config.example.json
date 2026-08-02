@@ -23,6 +23,9 @@
   "idleQuitCheckSeconds": 60,
   "powerShellPath": "powershell.exe",
   "screenshotTimeoutSeconds": 30,
+  "settingsRepairEnabled": true,
+  "d2rSettingsPath": null,
+  "settingsRepairSettleSeconds": 5,
   "ui": {
     "stepDelayMs": 350,
     "longDelayMs": 1500,

@@ -96,6 +96,13 @@ public sealed class VmOperations
     // while the screen has already been unrecognizable past the stuck threshold. The fallback
     // is false ("not confirmed"), so a timeout can only delay the quit, never cause one.
     private const int StuckLoadScreenSampleBoundMs = 2500;
+    // Seven small captures, and the fallback is false, so a timeout reads as "not the gamma
+    // screen" - the repair path stays unarmed rather than firing off a bad read.
+    private const int GammaCalibrationSampleBoundMs = 1500;
+    // Consecutive gamma-calibration sightings required before this agent reports that it needs a
+    // donor settings file. The screen is static and the detector has enormous margins, but the
+    // repair quits a live client and overwrites its settings, so it waits for a second look.
+    private const int GammaCalibrationConfirmSightings = 2;
 
     private readonly VmAgentConfig _config;
     private readonly MachineTelemetrySampler _telemetry = new();
@@ -146,6 +153,14 @@ public sealed class VmOperations
     private DateTimeOffset _nextInGameHudSampleAt = DateTimeOffset.MinValue;
     private bool _lastInGameHudResult;
     private long _followAutoStoppedThroughRunId;
+    // Consecutive first-run gamma-calibration sightings (D2R reset its own Settings.json), guarded
+    // by _activityLock. Cleared only by a frame past character select - see RecordObservedFrame.
+    private int _gammaCalibrationSightings;
+    private DateTimeOffset? _firstGammaCalibrationUtc;
+    private DateTimeOffset? _lastGammaCalibrationUtc;
+    private int _settingsRepairsApplied;
+    private DateTimeOffset? _lastSettingsRepairUtc;
+    private string? _lastSettingsRepairMessage;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
@@ -251,6 +266,7 @@ public sealed class VmOperations
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
             d2rGraphicsDeviceFailure = DescribeGraphicsDeviceFailure(visibleState),
+            d2rSettingsRepair = DescribeSettingsRepair(visibleState),
             d2rProcessDiscovery = OperatingSystem.IsWindows() ? WindowsProcessFinder.Discover(GetD2RProcessNames(), windowScanCache) : null,
             // Gating this on d2rRunning blacked out the one field (foregroundProcessName) that
             // would show what's actually focused/visible when process-name matching itself is
@@ -306,6 +322,7 @@ public sealed class VmOperations
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
             d2rGraphicsDeviceFailure = DescribeGraphicsDeviceFailure(visibleState),
+            d2rSettingsRepair = DescribeSettingsRepair(visibleState),
             d2rProcessDiscovery = new ProcessDiscoverySnapshot(GetD2RProcessNames(), [], []),
             d2rInput = (InputDiagnostics?)null,
             lastInputAction = _lastInputAction,
@@ -401,6 +418,15 @@ public sealed class VmOperations
             return FollowStopAuto(MenuCommandArgs.From(request.Args));
         }
 
+        // settings_export only reads a file - no D2R interaction at all - and it is issued to a
+        // HEALTHY donor VM while some other VM is broken. Queueing it behind that donor's own
+        // long-running menu command would make one wedged client's repair wait on an unrelated
+        // client's automation.
+        if (string.Equals(request.Command, "settings_export", StringComparison.OrdinalIgnoreCase))
+        {
+            return ExportSettings();
+        }
+
         await _commandGate.WaitAsync(cancellationToken);
         try
         {
@@ -435,8 +461,107 @@ public sealed class VmOperations
             "menu_follow_bind_game" => FollowBindInGameCapture(MenuCommandArgs.From(request.Args)),
             "menu_follow_auto_check" => await FollowAutoCheckAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_save_exit" => await SaveAndExitAsync(cancellationToken),
+            "settings_repair" => await RepairSettingsAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             _ => CommandResult.Failure($"Unsupported VM command: {request.Command}")
         };
+    }
+
+    /// <summary>
+    /// Hands this VM's Settings.json to the host so it can be copied onto a fleet member whose own
+    /// copy D2R has reset. Refuses if this client is itself on the gamma screen: a donor has to be
+    /// a client whose settings demonstrably still work.
+    /// </summary>
+    private CommandResult ExportSettings()
+    {
+        if (GetGammaCalibrationSnapshot().Sightings > 0)
+        {
+            return CommandResult.Failure(
+                "This client is on D2R's first-run gamma calibration screen, so its own settings file is the broken one; it cannot be a donor.");
+        }
+
+        var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
+        if (!D2RSettingsFile.TryRead(path, out var snapshot, out var error))
+        {
+            return CommandResult.Failure(error);
+        }
+
+        return CommandResult.Success(
+            $"Exported {snapshot.Length} characters from {snapshot.Path}.",
+            new
+            {
+                path = snapshot.Path,
+                content = snapshot.Content,
+                sha256 = snapshot.Sha256,
+                length = snapshot.Length,
+                lastWriteUtc = snapshot.LastWriteUtc
+            });
+    }
+
+    /// <summary>
+    /// Replaces this VM's Settings.json with a healthy fleet member's copy. D2R owns that file
+    /// while it runs and rewrites it on exit, so the client is closed first and the write waits
+    /// <see cref="VmAgentConfig.SettingsRepairSettleSeconds"/> for that final write to land -
+    /// otherwise the repair is simply overwritten by the very client that corrupted it.
+    /// Relaunching is left to the host, which owns retry and escalation.
+    /// </summary>
+    private async Task<CommandResult> RepairSettingsAsync(MenuCommandArgs args, CancellationToken cancellationToken)
+    {
+        if (!_config.SettingsRepairEnabled)
+        {
+            return CommandResult.Failure("settingsRepairEnabled is false in this agent's config; refusing to replace Settings.json.");
+        }
+
+        var content = args.SettingsContent;
+        if (!D2RSettingsFile.IsPlausibleSettingsJson(content, out var reason))
+        {
+            return CommandResult.Failure($"Refusing the donor settings payload: {reason}.");
+        }
+
+        var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
+        var quit = await QuitD2RAsync(cancellationToken);
+        var settle = TimeSpan.FromSeconds(Math.Clamp(_config.SettingsRepairSettleSeconds, 0, 30));
+        if (settle > TimeSpan.Zero)
+        {
+            await Task.Delay(settle, cancellationToken);
+        }
+
+        if (IsD2RRunning())
+        {
+            return CommandResult.Failure(
+                $"D2R is still running after the quit attempt ({quit.Message}); not replacing Settings.json while the client owns it.");
+        }
+
+        if (!D2RSettingsFile.TryReplace(path, content!, out var backupPath, out var writeError))
+        {
+            return CommandResult.Failure(writeError);
+        }
+
+        // The corrupted state is cleared as far as this agent knows, but the proof is the client
+        // reaching character select on the next launch - so the sighting count resets and the
+        // detector gets to make that call again from scratch.
+        ClearGammaCalibrationSightings();
+        var message = $"Replaced {path} with {content!.Length} characters"
+            + (string.IsNullOrWhiteSpace(args.SettingsSourceAgentId) ? "" : $" from {args.SettingsSourceAgentId}")
+            + (string.IsNullOrWhiteSpace(backupPath) ? "" : $"; previous file kept at {backupPath}")
+            + $". Client was closed first: {quit.Message}";
+        lock (_activityLock)
+        {
+            _settingsRepairsApplied++;
+            _lastSettingsRepairUtc = DateTimeOffset.UtcNow;
+            _lastSettingsRepairMessage = message;
+        }
+
+        return CommandResult.Success(
+            message,
+            new
+            {
+                path,
+                backupPath = string.IsNullOrWhiteSpace(backupPath) ? null : backupPath,
+                sha256 = D2RSettingsFile.Sha256(content),
+                length = content.Length,
+                sourceAgentId = args.SettingsSourceAgentId,
+                settleSeconds = settle.TotalSeconds
+            });
     }
 
     private async Task<CommandResult> SelfUpdateAsync(CancellationToken cancellationToken)
@@ -666,6 +791,47 @@ public sealed class VmOperations
     /// now, how many dismiss-and-relaunch attempts this agent has already spent on it, and whether
     /// it has given up and needs the host to power-cycle the VM. Null when there is nothing to say.
     /// </summary>
+    /// <summary>
+    /// Status view of a settings-file failure: whether this client is sitting on D2R's first-run
+    /// gamma calibration screen (which means it reset its own Settings.json), and what repair this
+    /// agent has already accepted. Null when there is nothing to say, so agents and hosts that
+    /// predate this field read alike.
+    /// </summary>
+    private object? DescribeSettingsRepair(VisibleD2RState visibleState)
+    {
+        var (sightings, firstUtc, lastUtc) = GetGammaCalibrationSnapshot();
+        var detected = visibleState == VisibleD2RState.GammaCalibration;
+        if (!detected && sightings == 0 && _settingsRepairsApplied == 0)
+        {
+            return null;
+        }
+
+        var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
+        var readable = D2RSettingsFile.TryRead(path, out var snapshot, out var readError);
+        return new
+        {
+            detected,
+            state = detected ? nameof(VisibleD2RState.GammaCalibration) : "None",
+            sightings,
+            confirmSightings = GammaCalibrationConfirmSightings,
+            // The flag the host acts on. Repairs are opt-out per VM, and one sighting is not
+            // enough - see IsSettingsRepairConfirmed.
+            needsDonorSettings = detected && IsSettingsRepairConfirmed(),
+            repairEnabled = _config.SettingsRepairEnabled,
+            firstSeenUtc = firstUtc,
+            lastSeenUtc = lastUtc,
+            settingsPath = path,
+            settingsReadable = readable,
+            settingsSha256 = readable ? snapshot.Sha256 : null,
+            settingsLength = readable ? snapshot.Length : (long?)null,
+            settingsLastWriteUtc = readable ? snapshot.LastWriteUtc : null,
+            settingsError = readable ? null : readError,
+            repairsApplied = _settingsRepairsApplied,
+            lastRepairUtc = _lastSettingsRepairUtc,
+            lastRepairMessage = _lastSettingsRepairMessage
+        };
+    }
+
     private object? DescribeGraphicsDeviceFailure(VisibleD2RState visibleState)
     {
         var (streak, lastUtc, detail) = GetGraphicsDeviceFailureSnapshot();
@@ -1486,6 +1652,19 @@ public sealed class VmOperations
                     ? ready.LastLaunchMessage
                     : detectorReady.LastLaunchMessage
             };
+        }
+
+        if (!ready.Ready && ready.LastState == ReadyScreenState.GammaCalibration)
+        {
+            // Named separately from the generic ready timeout because the operator response is
+            // completely different: nothing about this client's launch is wrong, and relaunching
+            // or power-cycling the VM will not change it. Its Settings.json needs replacing, and
+            // the status payload carries everything the host needs to do that (d2rSettingsRepair).
+            return CommandResult.Failure(
+                "D2R is stopped on its first-run gamma calibration screen, which means it reset its own Settings.json. "
+                    + "Relaunching cannot clear this; the file has to be replaced from a healthy fleet member "
+                    + $"(see d2rSettingsRepair in this status). Initial launch result: {launch.Message}.",
+                await CollectStatusAsync(cancellationToken));
         }
 
         if (!ready.Ready)
@@ -3835,6 +4014,14 @@ public sealed class VmOperations
             return VisibleD2RState.InGame;
         }
 
+        // Last, because it is the only state here that means "this client is not coming back
+        // without a file being replaced" - everything above is a screen the client can leave on
+        // its own, so none of them should ever have to wait behind this check.
+        if (IsGammaCalibrationScreen(input, windowRelative: false))
+        {
+            return VisibleD2RState.GammaCalibration;
+        }
+
         RecordClassifierBreakdown(TryRunBounded(() => ComputeVisibleStateClassifierBreakdown(input, MenuSampleGrid, abandonWhenCommandActive: true), ClassifierBreakdownBoundMs, ""));
         return VisibleD2RState.Unknown;
     }
@@ -4464,6 +4651,12 @@ public sealed class VmOperations
                     return Result(true, nudges, lastState, skipSeconds);
                 }
 
+                if (state == ReadyScreenState.GammaCalibration)
+                {
+                    return AbandonReadyLoopForGammaCalibration(
+                        () => Result(false, nudges, lastState, skipSeconds));
+                }
+
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
@@ -4595,6 +4788,12 @@ public sealed class VmOperations
                     return Result(true, nudges, lastState, timeoutSeconds);
                 }
 
+                if (lastState == ReadyScreenState.GammaCalibration)
+                {
+                    return AbandonReadyLoopForGammaCalibration(
+                        () => Result(false, nudges, lastState, timeoutSeconds));
+                }
+
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
             }
 
@@ -4675,6 +4874,12 @@ public sealed class VmOperations
                     }
 
                     return Result(true, nudges, lastState, timeoutSeconds);
+                }
+
+                if (lastState == ReadyScreenState.GammaCalibration)
+                {
+                    return AbandonReadyLoopForGammaCalibration(
+                        () => Result(false, nudges, lastState, timeoutSeconds));
                 }
 
                 nextDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(ReadyStartupDetectionIntervalMs);
@@ -5086,6 +5291,67 @@ public sealed class VmOperations
         {
             ClearGraphicsDeviceFailureStreak();
         }
+
+        if (frame == nameof(VisibleD2RState.GammaCalibration))
+        {
+            RecordGammaCalibrationSighting();
+        }
+        else if (IsHealthyRenderedFrame(frame))
+        {
+            // Only a screen past character select clears it. Deliberately not DiabloSplash or
+            // Unknown: the client passes through both on its way TO the gamma screen, and
+            // clearing there would reset the confirm count on every single pass.
+            ClearGammaCalibrationSightings();
+        }
+    }
+
+    /// <summary>
+    /// Counts consecutive gamma-calibration sightings. The repair this arms quits a live client
+    /// and overwrites its settings file, so it takes <see cref="GammaCalibrationConfirmSightings"/>
+    /// separate looks at the screen, not one.
+    /// </summary>
+    private void RecordGammaCalibrationSighting()
+    {
+        lock (_activityLock)
+        {
+            _gammaCalibrationSightings++;
+            _lastGammaCalibrationUtc = DateTimeOffset.UtcNow;
+            _firstGammaCalibrationUtc ??= _lastGammaCalibrationUtc;
+        }
+    }
+
+    private void ClearGammaCalibrationSightings()
+    {
+        lock (_activityLock)
+        {
+            _gammaCalibrationSightings = 0;
+            _firstGammaCalibrationUtc = null;
+            _lastGammaCalibrationUtc = null;
+        }
+    }
+
+    private (int Sightings, DateTimeOffset? FirstUtc, DateTimeOffset? LastUtc) GetGammaCalibrationSnapshot()
+    {
+        lock (_activityLock)
+        {
+            return (_gammaCalibrationSightings, _firstGammaCalibrationUtc, _lastGammaCalibrationUtc);
+        }
+    }
+
+    internal bool IsSettingsRepairConfirmed()
+    {
+        return _config.SettingsRepairEnabled
+            && GetGammaCalibrationSnapshot().Sightings >= GammaCalibrationConfirmSightings;
+    }
+
+    private T AbandonReadyLoopForGammaCalibration<T>(Func<T> result)
+    {
+        // Every remaining nudge in the plan would land on this screen, and the burst includes
+        // Enter/Space - which is the Continue button. Clicking Continue accepts the defaults D2R
+        // invented for the settings file it just reset, which is how a bad resolution gets
+        // baked in and takes every pixel classifier on this VM with it.
+        MarkCommandCheckpoint("ready loop stopped: D2R is on the first-run gamma calibration screen (settings reset)");
+        return result();
     }
 
     // Deliberately excludes DiabloSplash: a client that renders its splash and then fails device
@@ -6088,6 +6354,15 @@ public sealed class VmOperations
             return ReadyScreenState.CannotJoinCurrentCharacterDialog;
         }
 
+        // Checked last (see IsGammaCalibrationScreen). Recognizing it here is what stops the ready
+        // loop pumping intro-skip clicks and title keys at a screen whose Continue button would
+        // just commit the defaults D2R invented.
+        if (IsGammaCalibrationScreen(input, windowRelative: false, sampleGrid)
+            || IsGammaCalibrationScreen(input, windowRelative: true, sampleGrid))
+        {
+            return ReadyScreenState.GammaCalibration;
+        }
+
         return ReadyScreenState.Unknown;
     }
 
@@ -6188,6 +6463,11 @@ public sealed class VmOperations
             return ReadyScreenState.CannotJoinCurrentCharacterDialog;
         }
 
+        if (IsGammaCalibrationScreen(input, windowRelative: false, sampleGrid))
+        {
+            return ReadyScreenState.GammaCalibration;
+        }
+
         return ReadyScreenState.Unknown;
     }
 
@@ -6224,6 +6504,11 @@ public sealed class VmOperations
         if (IsCannotJoinCurrentCharacterDialogOpen(input))
         {
             return ReadyScreenState.CannotJoinCurrentCharacterDialog;
+        }
+
+        if (IsGammaCalibrationScreen(input, windowRelative: true, sampleGrid))
+        {
+            return ReadyScreenState.GammaCalibration;
         }
 
         return ReadyScreenState.Unknown;
@@ -6660,6 +6945,53 @@ public sealed class VmOperations
         }
 
         return D2RScreenClassifier.IsInGameHudFrame(evidence.ActionHud, evidence.BottomHud, evidence.CenterHud);
+    }
+
+    // D2R's first-run Gamma Calibration screen: the client decided Settings.json was unusable,
+    // rewrote it from defaults, and now stops here on the way from the intro videos to character
+    // select. It never advances on its own, so every menu_ready times out, follow-auto burns its
+    // whole escalation ladder (VM power cycle, then a node restart) on a client whose problem is
+    // a file, and the fleet stalls on one VM. See docs/runbooks/ui-state-catalog.md.
+    //
+    // Seven small samples, so it is checked last in every detection chain - after the states that
+    // matter on the hot path have all had their turn - rather than adding cost to the common case.
+    private bool IsGammaCalibrationScreen(WindowsInput input, bool windowRelative, int sampleGrid = MenuSampleGrid)
+    {
+        return TryRunBounded(
+            () =>
+            {
+                var ramp = D2RScreenClassifier.GammaCalibrationRampPatches
+                    .Select(patch => SampleD2RRegion(
+                        input,
+                        new AgentCommon.UiPoint(patch.CenterX, patch.CenterY),
+                        patch.WidthRatio,
+                        patch.HeightRatio,
+                        windowRelative,
+                        sampleGrid))
+                    .ToArray();
+                var leftFlank = SampleGammaCalibrationFlank(
+                    input, D2RScreenClassifier.GammaCalibrationLeftFlank, windowRelative, sampleGrid);
+                var rightFlank = SampleGammaCalibrationFlank(
+                    input, D2RScreenClassifier.GammaCalibrationRightFlank, windowRelative, sampleGrid);
+                return D2RScreenClassifier.IsGammaCalibrationScreen(ramp, leftFlank, rightFlank);
+            },
+            GammaCalibrationSampleBoundMs,
+            fallback: false);
+    }
+
+    private ScreenRegionStats SampleGammaCalibrationFlank(
+        WindowsInput input,
+        ScreenSampleRegion region,
+        bool windowRelative,
+        int sampleGrid)
+    {
+        return SampleD2RRegion(
+            input,
+            new AgentCommon.UiPoint(region.CenterX, region.CenterY),
+            region.WidthRatio,
+            region.HeightRatio,
+            windowRelative,
+            sampleGrid);
     }
 
     private ScreenRegionStats SampleD2RRegion(
@@ -7881,7 +8213,8 @@ public sealed class VmOperations
         OfflineCharacterScreen,
         LobbyOrGame,
         InGame,
-        GraphicsDeviceFailure
+        GraphicsDeviceFailure,
+        GammaCalibration
     }
 
     private enum ReadyScreenState
@@ -7894,7 +8227,8 @@ public sealed class VmOperations
         CharacterScreen,
         LobbyOrGame,
         InGame,
-        CannotJoinCurrentCharacterDialog
+        CannotJoinCurrentCharacterDialog,
+        GammaCalibration
     }
 
     internal enum GameEntryWaitResult

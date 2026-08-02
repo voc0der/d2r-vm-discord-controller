@@ -43,6 +43,10 @@ public sealed class DiscordBot
     // the character screen on its own. 420s gives real headroom above that budget.
     private static readonly TimeSpan ReadyCommandTimeout = TimeSpan.FromSeconds(420);
     private static readonly TimeSpan JoinPrepareCommandTimeout = TimeSpan.FromSeconds(35);
+    // Both settings commands are file work, not UI automation: reading a few KB, or closing the
+    // client and writing a few KB. The repair budget covers the agent's own quit-and-settle wait.
+    private static readonly TimeSpan SettingsExportCommandTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan SettingsRepairCommandTimeout = TimeSpan.FromSeconds(90);
     private const int JoinAutoDefaultIdleMinutes = 60;
 
     private readonly HostConfig _config;
@@ -55,6 +59,10 @@ public sealed class DiscordBot
     private readonly FollowTemplateStore _followTemplates;
     private readonly ILogger<DiscordBot> _logger;
     private readonly MachineTelemetrySampler _hostTelemetry = new();
+    // Per-account rate limit for replacing a VM's Settings.json from a fleet donor. Lives on the
+    // bot, not on a follow-auto run, because the corruption survives runs - a fresh run must not
+    // hand a client that already came back broken another two attempts.
+    private readonly SettingsRepairTracker _settingsRepairs = new();
     private readonly DiscordSocketClient _client;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
     private readonly SemaphoreSlim _notificationLock = new(1, 1);
@@ -5569,6 +5577,10 @@ public sealed class DiscordBot
                         // menu_ready was unnecessary. Failures later in the friend/join check do
                         // not count as desktop-to-lobby warmup failures.
                         warmupFailures.RecordSuccess(result.AccountKey);
+                        // A client that warms up again is proof its settings file is good now, so
+                        // a future corruption starts with a full repair budget instead of
+                        // inheriting the spent one from this incident.
+                        _settingsRepairs.RecordRecovered(result.AccountKey);
                     }
                 }
 
@@ -6280,6 +6292,116 @@ public sealed class DiscordBot
             .ToArray();
     }
 
+    /// <summary>
+    /// Replaces one account's corrupted Settings.json with a healthy fleet member's copy, then
+    /// re-readies the client. Returns null when nothing was attempted (not corrupt, rate-limited,
+    /// or no eligible donor), so callers can fall through to the ordinary warmup escalation.
+    /// </summary>
+    /// <remarks>
+    /// The transfer is master-side on purpose: the donor and the broken VM can sit on different
+    /// physical nodes, and only the master can address both. The file rides the existing
+    /// agent-command tunnel (master to worker to VM) as a command argument - a few KB of JSON.
+    /// </remarks>
+    private async Task<SettingsRepairAttempt?> TryRepairSettingsFromFleetAsync(
+        string accountKey,
+        AccountConfig account,
+        string? statusJson,
+        CancellationToken cancellationToken)
+    {
+        if (!SettingsRepairPolicy.NeedsDonorSettings(statusJson))
+        {
+            return null;
+        }
+
+        if (!_settingsRepairs.TryBeginRepair(accountKey, DateTimeOffset.UtcNow, out var blockedReason))
+        {
+            _logger.LogWarning("Settings repair for {AccountKey} skipped: {Reason}", accountKey, blockedReason);
+            return new SettingsRepairAttempt(false, accountKey, DonorAccountKey: null, blockedReason);
+        }
+
+        var donorOrder = SettingsRepairPolicy.SelectDonorOrder(
+            accountKey,
+            _registry.Accounts.Select(entry =>
+            {
+                var agent = _registry.GetAgent(entry.Value.AgentId);
+                return new SettingsDonorCandidate(
+                    entry.Key,
+                    agent?.Connected == true,
+                    agent?.LastStatusJson);
+            }),
+            _config.SettingsDonorAccountKey);
+
+        if (donorOrder.Count == 0)
+        {
+            return new SettingsRepairAttempt(
+                false,
+                accountKey,
+                DonorAccountKey: null,
+                "no healthy donor: every other client is offline, itself corrupt, or has not reached character select.");
+        }
+
+        var donorFailures = new List<string>();
+        foreach (var donorKey in donorOrder)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_registry.Accounts.TryGetValue(donorKey, out var donor))
+            {
+                continue;
+            }
+
+            string donorContent;
+            try
+            {
+                var export = await _registry.SendCommandAsync(
+                    donor.AgentId, "settings_export", args: null, SettingsExportCommandTimeout, cancellationToken);
+                if (!export.Ok || export.Data is not { } exportData
+                    || !TryGetString(exportData, "content", out donorContent))
+                {
+                    donorFailures.Add($"{donorKey}: {export.Message}");
+                    continue;
+                }
+            }
+            catch (Exception ex)
+            {
+                donorFailures.Add($"{donorKey}: {ex.Message}");
+                continue;
+            }
+
+            CommandResultInfo repair;
+            try
+            {
+                repair = await _registry.SendCommandAsync(
+                    account.AgentId,
+                    "settings_repair",
+                    new { settingsContent = donorContent, settingsSourceAgentId = donor.AgentId },
+                    SettingsRepairCommandTimeout,
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                return new SettingsRepairAttempt(false, accountKey, donorKey, ex.Message);
+            }
+
+            if (!repair.Ok)
+            {
+                return new SettingsRepairAttempt(false, accountKey, donorKey, repair.Message);
+            }
+
+            _logger.LogWarning(
+                "Replaced {AccountKey}'s D2R settings from {DonorKey}: {Message}",
+                accountKey,
+                donorKey,
+                repair.Message);
+            return new SettingsRepairAttempt(true, accountKey, donorKey, repair.Message);
+        }
+
+        return new SettingsRepairAttempt(
+            false,
+            accountKey,
+            DonorAccountKey: null,
+            $"no fleet member could export its settings ({string.Join("; ", donorFailures)}).");
+    }
+
     private async Task<FollowAutoCheckResult> RunFollowAutoCheckEntryAsync(
         FollowAutoRunOptions options,
         KeyValuePair<string, AccountConfig> entry,
@@ -6306,11 +6428,60 @@ public sealed class DiscordBot
 
         if (readyResult?.Ok == false)
         {
-            return new FollowAutoCheckResult(
-                accountKey,
-                FollowAutoCheckOutcome.CheckFailure,
-                $"ready failed before follow-auto check: {readyResult.Message}",
-                FollowWarmupOutcome.Failed);
+            // A ready failure whose status says the client reset its own Settings.json is not a
+            // warmup failure at all - relaunching, power-cycling the VM, and restarting the node
+            // would each fail in turn, in that order, over many minutes. Replace the file from a
+            // healthy fleet member and give ready one more attempt before recording a strike.
+            var repair = await TryRepairSettingsFromFleetAsync(
+                accountKey, account, readyResult.Data?.GetRawText(), cancellationToken);
+            if (repair is { Ok: true })
+            {
+                try
+                {
+                    readyResult = await SendReadyIfNotMenuReadyAsync(account, args);
+                }
+                catch (Exception ex)
+                {
+                    return new FollowAutoCheckResult(
+                        accountKey,
+                        FollowAutoCheckOutcome.CheckFailure,
+                        $"replaced corrupt D2R settings from {repair.DonorAccountKey}, but the retried ready failed: "
+                            + FormatExceptionWithAccountStatus(ex, accountKey, account),
+                        FollowWarmupOutcome.Failed);
+                }
+
+                if (readyResult?.Ok == false)
+                {
+                    return new FollowAutoCheckResult(
+                        accountKey,
+                        FollowAutoCheckOutcome.CheckFailure,
+                        $"replaced corrupt D2R settings from {repair.DonorAccountKey}, but the retried ready failed: "
+                            + readyResult.Message,
+                        FollowWarmupOutcome.Failed);
+                }
+
+                _logger.LogWarning(
+                    "{AccountKey} recovered after its D2R settings were replaced from {DonorKey}.",
+                    accountKey,
+                    repair.DonorAccountKey);
+            }
+            else if (repair is not null)
+            {
+                return new FollowAutoCheckResult(
+                    accountKey,
+                    FollowAutoCheckOutcome.CheckFailure,
+                    $"D2R reset this client's Settings.json (first-run gamma calibration screen) and it could not be "
+                        + $"repaired from the fleet: {repair.Message} Original ready failure: {readyResult.Message}",
+                    FollowWarmupOutcome.Failed);
+            }
+            else
+            {
+                return new FollowAutoCheckResult(
+                    accountKey,
+                    FollowAutoCheckOutcome.CheckFailure,
+                    $"ready failed before follow-auto check: {readyResult.Message}",
+                    FollowWarmupOutcome.Failed);
+            }
         }
 
         CommandResultInfo result;
@@ -7516,11 +7687,17 @@ public sealed class DiscordBot
         var checkpoint = TryReadCheckpointSummary(statusJson, out var checkpointSummary)
             ? $", at {checkpointSummary}"
             : "";
+        // Shown only while corrupt. "visible GammaCalibration" alone does not say what to do about
+        // it, and this is the one state where relaunching, power-cycling, and restarting the node
+        // are all guaranteed to fail.
+        var settings = SettingsRepairPolicy.IsSettingsCorrupt(statusJson)
+            ? ", settings RESET BY D2R (first-run gamma screen; needs a donor Settings.json)"
+            : "";
         var version = string.IsNullOrWhiteSpace(agent.Version)
             ? ""
             : $", version {AgentVersion.Display(agent.Version)}";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}{checkpoint}, seen {lastSeen}";
+        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{settings}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}{checkpoint}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)
@@ -7939,6 +8116,12 @@ public sealed class DiscordBot
         FollowAutoCheckOutcome Outcome,
         string Message,
         FollowWarmupOutcome WarmupOutcome = FollowWarmupOutcome.Succeeded);
+
+    private sealed record SettingsRepairAttempt(
+        bool Ok,
+        string AccountKey,
+        string? DonorAccountKey,
+        string Message);
 
     private sealed record FollowAutoRunOptions(
         IMessageChannel Channel,

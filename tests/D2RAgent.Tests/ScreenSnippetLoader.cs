@@ -22,6 +22,23 @@ internal static class ScreenSnippetLoader
         return ScreenRegionStatsCalculator.FromPixels(EnumerateGridPixels(image, sampleGrid));
     }
 
+    /// <summary>
+    /// Every full-page reference capture, by the file name FullCaptureRegionSampler resolves:
+    /// the 1366x768 PNGs plus the older JPGs one directory up. Enumerating rather than listing
+    /// means a detector added later is checked against captures added later, with no list to
+    /// forget to update.
+    /// </summary>
+    public static IReadOnlyList<string> EnumerateFullCaptureNames()
+    {
+        var assets = Path.Combine(FindRepoRoot(), "docs", "runbooks", "assets", "d2r-ui");
+        return Directory.EnumerateFiles(Path.Combine(assets, "1366x768"), "*.png")
+            .Concat(Directory.EnumerateFiles(assets, "*.jpg"))
+            .Select(Path.GetFileName)
+            .OfType<string>()
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     private static IEnumerable<(byte Red, byte Green, byte Blue)> EnumerateGridPixels(Image<Rgba32> image, int grid)
     {
         for (var yIndex = 0; yIndex < grid; yIndex++)
@@ -38,6 +55,11 @@ internal static class ScreenSnippetLoader
 
     private static string FindSnippetsDirectory()
     {
+        return Path.Combine(FindRepoRoot(), "docs", "runbooks", "assets", "d2r-ui", "1366x768", "snippets");
+    }
+
+    private static string FindRepoRoot()
+    {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "D2ROps.sln")))
         {
@@ -49,6 +71,6 @@ internal static class ScreenSnippetLoader
             throw new DirectoryNotFoundException("Could not locate repo root (D2ROps.sln) from test base directory.");
         }
 
-        return Path.Combine(directory.FullName, "docs", "runbooks", "assets", "d2r-ui", "1366x768", "snippets");
+        return directory.FullName;
     }
 }

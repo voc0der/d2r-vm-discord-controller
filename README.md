@@ -298,6 +298,24 @@ That avoids trying to start `D2R.exe` directly, which usually just lands back at
 
 By default, a VM agent quits D2R with Alt+F4 after 30 minutes at the character screen without lobby/game interaction. Tune that with `idleQuitEnabled`, `idleQuitMinutes`, and `idleQuitCheckSeconds` in `vm-agent.config.json`.
 
+### Settings.json corruption and repair
+
+D2R rewrites `%USERPROFILE%\Saved Games\Diablo II Resurrected\Settings.json` on exit and regenerates it from defaults whenever it decides the file is unusable. A client whose settings file that happened to gets through the intro videos and then stops on D2R's first-run **Gamma Calibration** screen instead of reaching character select, and it stays there - every `menu_ready` times out, and the ordinary escalation (relaunch, VM power cycle, node restart) cannot help, because the problem is a file.
+
+The fleet repairs itself: the agent recognizes that screen, the host copies `Settings.json` from a healthy fleet member onto the broken VM, and re-readies it. A donor has to have positively reached character select or beyond - a client stuck anywhere earlier is treated as broken too. Full detail, including why the detector uses the greyscale ramp rather than the Diablo logo, is in [ui-state-catalog.md](docs/runbooks/ui-state-catalog.md#settingsjson-corruption).
+
+Agent config (`vm-agent.config.json`):
+
+```json
+"settingsRepairEnabled": true,
+"d2rSettingsPath": null,
+"settingsRepairSettleSeconds": 5
+```
+
+Host config (`d2r-host.config.json`) takes `"settingsDonorAccountKey": null` - name an account to try it as donor first, or leave null to use the healthiest connected client. A configured donor that is offline or itself broken is skipped rather than blocking the repair.
+
+Each repair keeps the file it replaced as `Settings.json.<timestamp>.bak` beside the original. Nothing prunes those, on purpose: what a corrupted file actually looks like is still an open question, and those backups are the only evidence.
+
 4. Install the scheduled task from an elevated PowerShell prompt inside the VM after the config exists:
 
 ```powershell
