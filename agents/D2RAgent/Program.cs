@@ -45,10 +45,6 @@ internal static class Program
                 CancellationToken.None);
 
             var operations = new VmOperations(config, args);
-            // Before anything launches D2R: the game rewrites Settings.json on exit, so the lock
-            // has to be in place while the client is still down, not after it has already
-            // reset the file.
-            operations.EnsureD2RSettingsProtected(Console.WriteLine);
             var client = new AgentClient<VmAgentConfig>(
                 config,
                 "vm",

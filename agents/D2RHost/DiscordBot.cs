@@ -2701,50 +2701,6 @@ public sealed class DiscordBot
         }
     }
 
-    /// <summary>
-    /// Summarizes the agent's Settings.json lock only when the file is unprotected. A locked file
-    /// is the expected state and would just add noise to every status line.
-    /// </summary>
-    internal static bool TryReadUnprotectedSettingsSummary(string? json, out string value)
-    {
-        value = "";
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            if (!document.RootElement.TryGetProperty("d2rSettingsProtection", out var protection)
-                || protection.ValueKind != JsonValueKind.Object)
-            {
-                return false;
-            }
-
-            if (TryGetBoolean(protection, "readOnly", out var readOnly) && readOnly)
-            {
-                return false;
-            }
-
-            var outcome = TryGetString(protection, "outcome", out var outcomeValue) ? outcomeValue : "unknown";
-            // Skipped means the operator turned the guard off on this VM, not that it broke.
-            if (string.Equals(outcome, "Skipped", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            value = TryGetString(protection, "message", out var message)
-                ? $"NOT LOCKED ({outcome}: {message})"
-                : $"NOT LOCKED ({outcome})";
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
     private static bool TryReadStatusBool(string? json, string propertyName, out bool value)
     {
         value = false;
@@ -7560,17 +7516,11 @@ public sealed class DiscordBot
         var checkpoint = TryReadCheckpointSummary(statusJson, out var checkpointSummary)
             ? $", at {checkpointSummary}"
             : "";
-        // Only when the settings file is NOT locked. A silent failure here reads as a healthy VM
-        // right up until D2R resets its own graphics settings and every pixel classifier on this
-        // VM starts disagreeing with the fleet.
-        var settings = TryReadUnprotectedSettingsSummary(statusJson, out var settingsSummary)
-            ? $", settings {settingsSummary}"
-            : "";
         var version = string.IsNullOrWhiteSpace(agent.Version)
             ? ""
             : $", version {AgentVersion.Display(agent.Version)}";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}{checkpoint}{settings}, seen {lastSeen}";
+        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}{checkpoint}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)
