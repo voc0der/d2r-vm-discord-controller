@@ -31,7 +31,7 @@ public static class DiscordSlashCommands
                     Sub("play", "Select character and click Play", Account(), CharacterSlot()),
                     Sub("join", "Join a game, or auto-join template games when auto is true", OptionalAccount(), AllFlag(), JoinAutoFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Delay(), IdleMinutes(), JoinAutoWatch()),
                     Sub("create-game", "Create one game, or create and join across all accounts", OptionalAccount(), AllFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
-                    Sub("follow", "Follow the bound friend, bind a friend, or join by visible row", OptionalAccount(), AllFlag(), CharacterSlot(), FriendRow(), FollowBind(), FollowBindInGame(), FollowAutoFlag(), Delay(), IdleMinutes(), Watch()),
+                    Sub("follow", "Follow the bound friend, bind a friend, or join by visible row", OptionalAccount(), AllFlag(), CharacterSlot(), FriendRow(), FollowBind(), FollowBindInGame(), FollowAutoFlag(), FollowBots(), Delay(), IdleMinutes(), Watch()),
                     Sub("save-exit", "Open the in-game menu and click Save and Exit", OptionalAccount(), AllFlag()),
                     Sub("template", "Set the create/join auto-naming template", RequiredGameName(), Password()),
                     Sub("restart", "Respawn D2RHost so startup self-update can apply"),
@@ -264,6 +264,19 @@ public static class DiscordSlashCommands
             .WithDescription("Start (true) or stop (false) auto-following the bound friend across all accounts")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
+    }
+
+    // Bots, not players: D2R caps a game at 8 and the leader being followed holds one of those
+    // slots, so 7 fills the game. The -1 / +1 buttons on the live monitor change this mid-run.
+    private static SlashCommandOptionBuilder FollowBots()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("bots")
+            .WithDescription("How many bots to put in the leader's game, 1-7; default 7 (a full 8-player game)")
+            .WithType(ApplicationCommandOptionType.Integer)
+            .WithRequired(false)
+            .WithMinValue(1)
+            .WithMaxValue(7);
     }
 
     private static SlashCommandOptionBuilder JoinAutoFlag()

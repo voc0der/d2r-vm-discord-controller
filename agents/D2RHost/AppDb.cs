@@ -400,10 +400,12 @@ public sealed class AppDb
             command.CommandText = """
                 insert into follow_auto_resume (
                   id, channel_id, delay_seconds, watch, idle_minutes, metrics_enabled,
-                  character_slot, friend_row, recovery_account_keys, reason, recorded_utc)
+                  character_slot, friend_row, recovery_account_keys, reason, recorded_utc,
+                  target_bot_count)
                 values (
                   'current', $channel_id, $delay_seconds, $watch, $idle_minutes, $metrics_enabled,
-                  $character_slot, $friend_row, $recovery_account_keys, $reason, $recorded_utc)
+                  $character_slot, $friend_row, $recovery_account_keys, $reason, $recorded_utc,
+                  $target_bot_count)
                 on conflict(id) do update set
                   channel_id = excluded.channel_id,
                   delay_seconds = excluded.delay_seconds,
@@ -414,7 +416,8 @@ public sealed class AppDb
                   friend_row = excluded.friend_row,
                   recovery_account_keys = excluded.recovery_account_keys,
                   reason = excluded.reason,
-                  recorded_utc = excluded.recorded_utc
+                  recorded_utc = excluded.recorded_utc,
+                  target_bot_count = excluded.target_bot_count
                 """;
             command.Parameters.AddWithValue("$channel_id", intent.ChannelId.ToString());
             command.Parameters.AddWithValue("$delay_seconds", intent.DelaySeconds);
@@ -428,6 +431,7 @@ public sealed class AppDb
                 JsonSerializer.Serialize(intent.RecoveryAccountKeys));
             command.Parameters.AddWithValue("$reason", intent.Reason);
             command.Parameters.AddWithValue("$recorded_utc", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$target_bot_count", intent.TargetBotCount);
             command.ExecuteNonQuery();
         }
     }
@@ -440,7 +444,7 @@ public sealed class AppDb
             using var command = connection.CreateCommand();
             command.CommandText = """
                 select channel_id, delay_seconds, watch, idle_minutes, metrics_enabled,
-                       character_slot, friend_row, recovery_account_keys, reason
+                       character_slot, friend_row, recovery_account_keys, reason, target_bot_count
                 from follow_auto_resume
                 where id = 'current'
                 """;
@@ -471,7 +475,8 @@ public sealed class AppDb
                 reader.IsDBNull(5) ? null : reader.GetInt32(5),
                 reader.IsDBNull(6) ? null : reader.GetInt32(6),
                 recoveryAccountKeys,
-                reader.GetString(8));
+                reader.GetString(8),
+                reader.IsDBNull(9) ? FollowAutoRosterPolicy.DefaultBotCount : reader.GetInt32(9));
         }
     }
 
@@ -572,6 +577,33 @@ public sealed class AppDb
                 """;
             command.ExecuteNonQuery();
         }
+
+        // Added after the table shipped, so an existing database needs the column bolted on. A
+        // resume that lost the operator's chosen bot count would silently put the fleet back to a
+        // full game after a node restart.
+        AddColumnIfMissing(
+            "follow_auto_resume",
+            "target_bot_count",
+            $"integer not null default {FollowAutoRosterPolicy.DefaultBotCount}");
+    }
+
+    private void AddColumnIfMissing(string table, string column, string definition)
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var existing = connection.CreateCommand();
+            existing.CommandText = $"select 1 from pragma_table_info('{table}') where name = $column";
+            existing.Parameters.AddWithValue("$column", column);
+            if (existing.ExecuteScalar() is not null)
+            {
+                return;
+            }
+
+            using var alter = connection.CreateCommand();
+            alter.CommandText = $"alter table {table} add column {column} {definition}";
+            alter.ExecuteNonQuery();
+        }
     }
 
     /// <summary>
@@ -639,7 +671,10 @@ public sealed record FollowAutoResumeIntent(
     int? CharacterSlot,
     int? FriendRow,
     IReadOnlyList<string> RecoveryAccountKeys,
-    string Reason);
+    string Reason,
+    // Carried across the restart so a resumed run keeps the party size the operator chose. A row
+    // written before this column existed reads as the default.
+    int TargetBotCount = FollowAutoRosterPolicy.DefaultBotCount);
 
 /// <summary>
 /// The fleet-wide follow bind: the friend-row fingerprint every agent matches in its friends

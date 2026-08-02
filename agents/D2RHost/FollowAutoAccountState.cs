@@ -31,6 +31,16 @@ internal sealed class FollowAutoAccountState
 
     public int ParkedGameFullCount => _parkedGameFull.Count;
 
+    /// <summary>
+    /// Every account already committed to the current game - in it, recovering back into it, or
+    /// parked holding its place. The roster keeps these accounts' slots when it recomputes, so a
+    /// VM that comes online mid-run fills an empty slot instead of displacing a live client.
+    /// </summary>
+    public IReadOnlySet<string> Incumbents => _joined
+        .Concat(_recoveryPending)
+        .Concat(_parkedGameFull)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
     public bool MarkJoined(string accountKey)
     {
         _recoveryPending.Remove(accountKey);
@@ -96,6 +106,22 @@ internal sealed class FollowAutoAccountState
     public void ClearJoined()
     {
         _joined.Clear();
+    }
+
+    /// <summary>
+    /// Drops accounts the roster no longer wants from every piece of run state. Recovery-pending
+    /// matters most: a benched account that stayed recovery-pending would block the all-joined
+    /// watch forever, because nothing is going to drive its recovery once it is off the roster.
+    /// </summary>
+    public void Bench(IReadOnlySet<string> benchedAccountKeys)
+    {
+        foreach (var accountKey in benchedAccountKeys)
+        {
+            _joined.Remove(accountKey);
+            _recoveryPending.Remove(accountKey);
+            _parkedGameFull.Remove(accountKey);
+            _gameFullStrikes.Remove(accountKey);
+        }
     }
 
     public string[] BeginRecoveryForOfflineJoined(IReadOnlySet<string> onlineAccountKeys)

@@ -21,6 +21,8 @@ public sealed class DiscordBot
     private const string FollowAutoStopFollowButtonId = "d2r:follow:auto-stop:follow";
     private const string FollowAutoStopQuitButtonId = "d2r:follow:auto-stop:quit";
     private const string FollowAutoStopSleepButtonId = "d2r:follow:auto-stop:sleep";
+    private const string FollowAutoRemoveBotButtonId = "d2r:follow:bots:remove";
+    private const string FollowAutoAddBotButtonId = "d2r:follow:bots:add";
     private const string GameSessionLeaveButtonId = "d2r:session:leave";
     private const string GameSessionQuitButtonId = "d2r:session:quit";
     private const string StartupFollowButtonId = "d2r:startup:follow";
@@ -112,6 +114,17 @@ public sealed class DiscordBot
     private static readonly TimeSpan FollowAutoVmPowerStatePollInterval = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan FollowAutoLocalRestartFallbackDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan FollowAutoStopActionWindow = TimeSpan.FromMinutes(2);
+    // How many bots the active run should put in the leader's game. Written by the -1 / +1 buttons
+    // from the gateway task and read by the run loop, so every access goes through Volatile/
+    // Interlocked rather than a lock - it is one int, and a cycle that reads a value one press
+    // stale simply applies it on the next pass a few seconds later.
+    private int _followAutoTargetBots = FollowAutoRosterPolicy.DefaultBotCount;
+    private int _followAutoBenchedCount;
+    private int _followAutoOnlineCount;
+    // Last player count any fleet account could read, used to keep +1 from trying to add a bot to
+    // a game that is already full. Null until a sample lands.
+    private int? _followAutoLivePlayerCount;
+    private readonly FollowAutoRosterAdjustmentGate _followAutoRosterGate = new();
     private readonly SemaphoreSlim _followAutoLock = new(1, 1);
     private readonly object _followAutoStopActionSync = new();
     private CancellationTokenSource? _followAutoCts;
@@ -398,7 +411,8 @@ public sealed class DiscordBot
                 intent.CharacterSlot,
                 intent.FriendRow,
                 intent.RecoveryAccountKeys,
-                intent.Reason);
+                intent.Reason,
+                FollowAutoRosterPolicy.ClampTarget(intent.TargetBotCount));
 
             // The one-shot is consumed only after the in-memory run has been installed. A crash
             // before this point leaves the intent available to the next process start.
@@ -700,6 +714,12 @@ public sealed class DiscordBot
                 case FollowAutoStopSleepButtonId:
                     await HandleFollowAutoStopSleepButtonAsync(component);
                     return;
+                case FollowAutoRemoveBotButtonId:
+                    await HandleFollowAutoBotCountButtonAsync(component, delta: -1);
+                    return;
+                case FollowAutoAddBotButtonId:
+                    await HandleFollowAutoBotCountButtonAsync(component, delta: +1);
+                    return;
                 case GameSessionLeaveButtonId:
                     await QueueSaveExitAllAsync(SlashContext.FromComponent(component, "save-exit"));
                     return;
@@ -907,12 +927,28 @@ public sealed class DiscordBot
             .Build();
     }
 
-    private static MessageComponent BuildFollowAutoMonitorComponents(bool running)
+    private MessageComponent BuildFollowAutoMonitorComponents(bool running)
     {
         var builder = new ComponentBuilder();
-        if (running)
+        if (!running)
         {
-            builder.WithButton("Stop", FollowAutoStopButtonId, ButtonStyle.Danger);
+            return builder.Build();
+        }
+
+        builder.WithButton("Stop", FollowAutoStopButtonId, ButtonStyle.Danger);
+
+        // -1 is offered whenever there is a bot to give up. +1 only when there is a benched VM to
+        // promote AND the live game has a free slot - offering a button that cannot work is worse
+        // than not offering it, since the operator cannot tell a rejected press from a slow one.
+        var target = Volatile.Read(ref _followAutoTargetBots);
+        builder.WithButton(
+            "-1",
+            FollowAutoRemoveBotButtonId,
+            ButtonStyle.Secondary,
+            disabled: !FollowAutoRosterPolicy.CanRemoveBot(target));
+        if (FollowAutoRosterPolicy.CanAddBot(target, _followAutoOnlineCount, _followAutoLivePlayerCount))
+        {
+            builder.WithButton("+1 VM", FollowAutoAddBotButtonId, ButtonStyle.Success);
         }
 
         return builder.Build();
@@ -4523,7 +4559,12 @@ public sealed class DiscordBot
         await ModifyOriginalResponseWithMetricsAsync(context, message);
     }
 
-    private async Task StartFollowAutoAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout)
+    private async Task StartFollowAutoAsync(
+        SlashContext context,
+        int delaySeconds,
+        bool watch,
+        TimeSpan idleTimeout,
+        int? targetBotCount = null)
     {
         // Acknowledge before anything else. Discord.NET runs this handler inline on the gateway
         // task and Discord discards the interaction if nothing answers within three seconds -
@@ -4536,6 +4577,8 @@ public sealed class DiscordBot
         // Awaiting the deferral also moves the rest of this method off the gateway task.
         await EnsureAcknowledgedAsync(context);
 
+        var bots = FollowAutoRosterPolicy.ClampTarget(
+            targetBotCount ?? context.GetInt("bots") ?? FollowAutoRosterPolicy.DefaultBotCount);
         var options = new FollowAutoRunOptions(
             context.Command.Channel,
             delaySeconds,
@@ -4544,7 +4587,8 @@ public sealed class DiscordBot
             context.MetricsEnabled,
             context.GetInt("character-slot"),
             context.GetInt("friend-row"),
-            InitialRecoveryAccountKeys: []);
+            InitialRecoveryAccountKeys: [],
+            TargetBotCount: bots);
         var start = await TryBeginFollowAutoRunAsync();
         if (start is null)
         {
@@ -4561,7 +4605,9 @@ public sealed class DiscordBot
 
         await SetInitialCommandResponseAsync(
             context,
-            $"follow-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay between checks" : "")}. I posted one live status message in this channel."
+            $"follow-auto started with {bots} bot(s), a {bots + 1}-player game with the leader"
+                + $"{(delaySeconds > 0 ? $", and a {delaySeconds}s delay between checks" : "")}. "
+                + "I posted one live status message in this channel; its -1 / +1 buttons change the bot count mid-run."
                 + (watch ? " Watch diagnostics are enabled." : ""),
             ephemeral: true);
 
@@ -4649,6 +4695,11 @@ public sealed class DiscordBot
         _ = Task.Run(() => RunFollowAutoLoopAsync(options, start.RunId, start.Cts.Token));
     }
 
+    private bool IsFollowAutoRunning()
+    {
+        return Volatile.Read(ref _followAutoCts) is not null;
+    }
+
     private async Task StopFollowAutoAsync(SlashContext context)
     {
         await context.Command.DeferAsync(ephemeral: true);
@@ -4692,6 +4743,77 @@ public sealed class DiscordBot
         await component.DeferAsync(ephemeral: true);
         await ClearFollowAutoStopActionButtonsAsync(component.Message);
         await QueueQuitAllAsync(SlashContext.FromComponent(component, "quit"), "follow-auto quit button was pressed");
+    }
+
+    /// <summary>
+    /// The live monitor's -1 / +1 buttons. They only move the run's target; the run loop applies it
+    /// on its next cycle - benching leavers or letting the join path pick up a promoted VM - so a
+    /// press never blocks the gateway on a client operation.
+    /// </summary>
+    private async Task HandleFollowAutoBotCountButtonAsync(SocketMessageComponent component, int delta)
+    {
+        await EnsureAcknowledgedAsync(component);
+
+        if (!IsFollowAutoRunning())
+        {
+            await component.FollowupAsync("follow-auto is not running, so there is no bot count to change.", ephemeral: true);
+            return;
+        }
+
+        // Each press moves a real client in or out of a live game and takes a cycle to land, so a
+        // double-click has to be refused rather than queued.
+        if (!_followAutoRosterGate.TryAdjust(DateTimeOffset.UtcNow, out var retryAfter))
+        {
+            await component.FollowupAsync(
+                $"The bot count changed moments ago; give it {Math.Ceiling(retryAfter.TotalSeconds):N0}s to take effect first.",
+                ephemeral: true);
+            return;
+        }
+
+        var current = Volatile.Read(ref _followAutoTargetBots);
+        if (delta > 0
+            && !FollowAutoRosterPolicy.CanAddBot(current, _followAutoOnlineCount, _followAutoLivePlayerCount))
+        {
+            await component.FollowupAsync(FormatFollowAutoAddBotRefusal(current), ephemeral: true);
+            return;
+        }
+
+        var target = FollowAutoRosterPolicy.ClampTarget(current + delta);
+        if (target == current)
+        {
+            await component.FollowupAsync(
+                $"Bot count is already at its {(delta > 0 ? "maximum" : "minimum")} of {current}.",
+                ephemeral: true);
+            return;
+        }
+
+        Volatile.Write(ref _followAutoTargetBots, target);
+        _logger.LogInformation(
+            "follow-auto bot count changed from {Previous} to {Target} by button.", current, target);
+        await UpdateFollowAutoMonitorAsync(
+            target > current
+                ? $"Bot count raised to {target}; the next cycle brings one more VM into the game."
+                : $"Bot count lowered to {target}; one VM leaves the game and waits warm at the lobby.");
+        await component.FollowupAsync(
+            $"Bot count set to {target} (a {target + 1}-player game with the leader).",
+            ephemeral: true);
+    }
+
+    private string FormatFollowAutoAddBotRefusal(int target)
+    {
+        if (target >= FollowAutoRosterPolicy.MaxBotCount)
+        {
+            return $"Already at {FollowAutoRosterPolicy.MaxBotCount} bots - with the leader that is a full "
+                + $"{FollowAutoRosterPolicy.MaxPlayersPerGame}-player game.";
+        }
+
+        if (target >= _followAutoOnlineCount)
+        {
+            return $"No spare VM to add: {_followAutoOnlineCount} account(s) are online and all of them are already on the roster.";
+        }
+
+        return $"The game is full ({_followAutoLivePlayerCount}/{FollowAutoRosterPolicy.MaxPlayersPerGame} players); "
+            + "a freed slot belongs to whoever left it, not to a waiting bot.";
     }
 
     private async Task HandleFollowAutoStopSleepButtonAsync(SocketMessageComponent component)
@@ -5055,13 +5177,18 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task StartFollowAutoMonitorAsync(IMessageChannel channel, bool metricsEnabled)
+    private async Task StartFollowAutoMonitorAsync(IMessageChannel channel, bool metricsEnabled, int targetBotCount)
     {
         _followAutoStartedUtc = DateTimeOffset.UtcNow;
         _followAutoGameNumber = 0;
         _followAutoGamesCompleted = 0;
         _followAutoJoined = 0;
         _followAutoTotal = 0;
+        Volatile.Write(ref _followAutoTargetBots, FollowAutoRosterPolicy.ClampTarget(targetBotCount));
+        _followAutoBenchedCount = 0;
+        _followAutoOnlineCount = 0;
+        _followAutoLivePlayerCount = null;
+        _followAutoRosterGate.Reset();
         _followAutoMetricsEnabled = metricsEnabled;
         try
         {
@@ -5150,11 +5277,18 @@ public sealed class DiscordBot
         var title = _followAutoGameNumber > 0
             ? $"follow-auto monitor - Game #{_followAutoGameNumber}"
             : "follow-auto monitor";
+        var target = Volatile.Read(ref _followAutoTargetBots);
+        var benched = _followAutoBenchedCount > 0 ? $", {_followAutoBenchedCount} benched" : "";
         var lines = new List<string>
         {
             title,
             $"Status: {status}",
             $"Bots in game: {_followAutoJoined}/{_followAutoTotal}",
+            // The target is what the buttons change, and it is not the same number as either of
+            // the two above: joined lags it while a VM is still warming up, and total counts only
+            // the roster. Spelling out the resulting party size avoids the bots-vs-players
+            // ambiguity that makes "7" mean two different things.
+            $"Bot count: {target} of {_followAutoOnlineCount} VM(s) online{benched} - a {target + 1}-player game with the leader",
             $"Games completed: {_followAutoGamesCompleted}",
             $"Session elapsed: {FormatElapsed(elapsed)}"
         };
@@ -5203,7 +5337,7 @@ public sealed class DiscordBot
                 watchCts.Token);
         }
 
-        await StartFollowAutoMonitorAsync(channel, options.MetricsEnabled);
+        await StartFollowAutoMonitorAsync(channel, options.MetricsEnabled, options.TargetBotCount);
         if (!string.IsNullOrWhiteSpace(options.ResumeReason))
         {
             await UpdateFollowAutoMonitorAsync(
@@ -5252,10 +5386,34 @@ public sealed class DiscordBot
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var (online, _) = GetAccountEntriesByConnectivity();
+                var (allOnline, _) = GetAccountEntriesByConnectivity();
+                // The roster is resolved fresh every cycle against whoever is reachable right now,
+                // so a worker node that connects mid-run contributes its VMs the moment they are
+                // available - they fill whatever slots the target has left open, without
+                // displacing a bot already in the leader's game.
+                var roster = FollowAutoRosterPolicy.ResolveRoster(
+                    allOnline.Select(entry => entry.Key),
+                    Volatile.Read(ref _followAutoTargetBots),
+                    accountState.Incumbents);
+                var benchedNowJoined = await BenchFollowAutoAccountsAsync(
+                    roster, accountState, options, cancellationToken);
+                var online = allOnline
+                    .Where(entry => roster.ActiveSet.Contains(entry.Key))
+                    .ToArray();
                 var onlineAccountKeys = online
                     .Select(entry => entry.Key)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                _followAutoBenchedCount = roster.Benched.Count;
+                _followAutoOnlineCount = allOnline.Length;
+                if (benchedNowJoined.Length > 0)
+                {
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Bot count lowered to {roster.TargetBotCount}: {string.Join(", ", benchedNowJoined)} left the game and "
+                            + "will wait warm at the lobby.",
+                        joined: accountState.JoinedCount,
+                        total: accountState.CountExpectedAccounts(onlineAccountKeys));
+                }
+
                 var newlyOfflineJoinedAccounts = accountState.BeginRecoveryForOfflineJoined(onlineAccountKeys);
                 if (currentGameActive)
                 {
@@ -5274,6 +5432,10 @@ public sealed class DiscordBot
                 {
                     var initialPulse = await TryFetchFollowPulseAsync(rotation: 0, _followAutoLockedNametag, accountState.Joined);
                     await TryLockNametagFromSampleAsync(initialPulse);
+                    // Feeds the +1 button: a full game's free slot belongs to whoever left it.
+                    // Deliberately only overwritten when a sample actually read a count, so a
+                    // degraded read leaves the last known value rather than reopening the button.
+                    _followAutoLivePlayerCount = initialPulse.PlayerCount ?? _followAutoLivePlayerCount;
                     if (!currentGameActive)
                     {
                         _followAutoGameNumber++;
@@ -6107,7 +6269,10 @@ public sealed class DiscordBot
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
                     .ToArray(),
-                $"{request.TriggerAccountKey} reached {request.ConsecutiveFailures} consecutive warmup failures on {request.NodeId}"));
+                $"{request.TriggerAccountKey} reached {request.ConsecutiveFailures} consecutive warmup failures on {request.NodeId}",
+                // The live target, not the one the run started with: a restart must not undo a
+                // bot count the operator changed with the buttons since.
+                Volatile.Read(ref _followAutoTargetBots)));
         }
 
         CommandResult restart;
@@ -6400,6 +6565,53 @@ public sealed class DiscordBot
             accountKey,
             DonorAccountKey: null,
             $"no fleet member could export its settings ({string.Join("; ", donorFailures)}).");
+    }
+
+    /// <summary>
+    /// Takes accounts the roster no longer wants out of the current game: Save and Exit for any
+    /// that are actually in it, then drop them from the run's state so the all-joined watch stops
+    /// expecting them. Returns the accounts that had to leave a live game, for the monitor.
+    /// </summary>
+    /// <remarks>
+    /// Benched clients are left warm at the lobby rather than quit. A later +1 then only has to
+    /// join a game, which takes seconds, instead of cold-starting Battle.net and clicking through
+    /// the intro and character select.
+    /// </remarks>
+    private async Task<string[]> BenchFollowAutoAccountsAsync(
+        FollowAutoRoster roster,
+        FollowAutoAccountState accountState,
+        FollowAutoRunOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (roster.Benched.Count == 0)
+        {
+            return [];
+        }
+
+        var benchedSet = roster.BenchedSet;
+        var benchedInGame = accountState.Joined
+            .Where(benchedSet.Contains)
+            .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        // Forget every benched account's state first, in game or not: a benched account that was
+        // recovery-pending would otherwise hold the all-joined watch hostage forever, since
+        // nothing is going to drive its recovery any more.
+        accountState.Bench(benchedSet);
+
+        if (benchedInGame.Length == 0)
+        {
+            return [];
+        }
+
+        await LeaveAllJoinAutoAsync(
+            options.Channel,
+            $"bot count lowered to {roster.TargetBotCount}",
+            postResult: false,
+            options.MetricsEnabled,
+            onlyAccounts: benchedInGame.ToHashSet(StringComparer.OrdinalIgnoreCase),
+            cancellationToken);
+        return benchedInGame;
     }
 
     private async Task<FollowAutoCheckResult> RunFollowAutoCheckEntryAsync(
@@ -8132,7 +8344,8 @@ public sealed class DiscordBot
         int? CharacterSlot,
         int? FriendRow,
         IReadOnlyList<string> InitialRecoveryAccountKeys,
-        string? ResumeReason = null);
+        string? ResumeReason = null,
+        int TargetBotCount = FollowAutoRosterPolicy.DefaultBotCount);
 
     private sealed record FollowAutoRunStart(long RunId, CancellationTokenSource Cts);
 
