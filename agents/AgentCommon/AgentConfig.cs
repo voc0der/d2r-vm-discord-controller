@@ -42,6 +42,15 @@ public sealed class VmAgentConfig : AgentConfig
     public int PartyMemberCountIntervalSeconds { get; set; } = 30;
     public string PowerShellPath { get; set; } = "powershell.exe";
     public int ScreenshotTimeoutSeconds { get; set; } = 30;
+    // D2R rewrites its own Settings.json on exit and regenerates it at defaults whenever it
+    // decides the file is unusable, which silently undoes the resolution/graphics setup every
+    // pixel classifier here is calibrated against. The agent marks the file read-only once at
+    // startup so the game can read it but never write it back. Turn this off only when the
+    // settings file is meant to be game-writable on this VM.
+    public bool ProtectD2RSettings { get; set; } = true;
+    // Null resolves %USERPROFILE%\Saved Games\Diablo II Resurrected\Settings.json through the
+    // Saved Games known folder. Set it when that folder has been relocated.
+    public string? D2RSettingsPath { get; set; }
     public D2RUiAutomationConfig Ui { get; set; } = new();
 }
 

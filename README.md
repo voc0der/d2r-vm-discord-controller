@@ -298,6 +298,23 @@ That avoids trying to start `D2R.exe` directly, which usually just lands back at
 
 By default, a VM agent quits D2R with Alt+F4 after 30 minutes at the character screen without lobby/game interaction. Tune that with `idleQuitEnabled`, `idleQuitMinutes`, and `idleQuitCheckSeconds` in `vm-agent.config.json`.
 
+### D2R settings protection
+
+D2R rewrites `%USERPROFILE%\Saved Games\Diablo II Resurrected\Settings.json` when it exits, and regenerates it at defaults whenever it decides the file is unusable. On a fleet VM that silently undoes the display/graphics setup every pixel classifier here is calibrated against - including the pinned 1366x768 resolution - with nothing in any log to say it happened.
+
+So on startup, once per process and before it can launch anything, the VM agent marks that file read-only. D2R still reads it; it just cannot write it back. Two config knobs:
+
+```json
+"protectD2RSettings": true,
+"d2rSettingsPath": null
+```
+
+`d2rSettingsPath` is only needed when the Saved Games folder has been relocated - otherwise the agent resolves it through the Saved Games known folder. Set `protectD2RSettings` to `false` on a VM where the settings file is meant to stay game-writable.
+
+To change settings deliberately: close D2R, clear the read-only checkbox (or `attrib -R "$env:USERPROFILE\Saved Games\Diablo II Resurrected\Settings.json"`), edit, then restart the agent - it re-locks the file on its next start.
+
+The lock is applied once at startup, not re-checked on a timer, so `/d2r status` reports the file *only when it is not locked*, as `settings NOT LOCKED (<outcome>: <reason>)`. `Missing` there means D2R has never written the file as this user: run the client once, then restart the agent.
+
 4. Install the scheduled task from an elevated PowerShell prompt inside the VM after the config exists:
 
 ```powershell

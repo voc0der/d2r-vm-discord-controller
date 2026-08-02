@@ -23,6 +23,8 @@
   "idleQuitCheckSeconds": 60,
   "powerShellPath": "powershell.exe",
   "screenshotTimeoutSeconds": 30,
+  "protectD2RSettings": true,
+  "d2rSettingsPath": null,
   "ui": {
     "stepDelayMs": 350,
     "longDelayMs": 1500,

@@ -76,6 +76,27 @@ the agent has stopped retrying, which is the host's cue to power-cycle the guest
 omitted (null) when the dialog is absent and no incident is open. Agents that predate these fields
 omit both, which reads as "no graphics-device failure".
 
+`d2rSettingsProtection` reports the startup lock on D2R's `Settings.json` (see README, "D2R settings
+protection"). It is written once, at agent startup, and repeated verbatim in every later status:
+
+```json
+{
+  "outcome": "MadeReadOnly",
+  "ok": true,
+  "path": "C:\\Users\\d2r\\Saved Games\\Diablo II Resurrected\\Settings.json",
+  "readOnly": true,
+  "lastWriteUtc": "2026-07-30T22:14:03Z",
+  "length": 1042,
+  "message": "Marked ... read-only; D2R can no longer overwrite it.",
+  "checkedAtUtc": "2026-08-02T09:00:11Z"
+}
+```
+
+`outcome` is `MadeReadOnly`, `AlreadyReadOnly`, `Missing` (D2R has not written the file yet),
+`Failed`, or `Skipped` (guard disabled, or not Windows). `/d2r status` prints this only when
+`readOnly` is false and the outcome is not `Skipped`, so a healthy lock stays silent. Agents that
+predate the field omit it, which also reads as nothing to report.
+
 ## Worker-to-Master Status
 
 A worker connects to the master with the same hello envelope, using its `nodeId` as the agent ID:

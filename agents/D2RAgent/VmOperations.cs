@@ -146,11 +146,67 @@ public sealed class VmOperations
     private DateTimeOffset _nextInGameHudSampleAt = DateTimeOffset.MinValue;
     private bool _lastInGameHudResult;
     private long _followAutoStoppedThroughRunId;
+    // Result of the one-shot startup settings-file lock, kept only so status can show it. Null
+    // until EnsureD2RSettingsProtected runs.
+    private D2RSettingsProtectionResult? _settingsProtection;
+    private DateTimeOffset? _settingsProtectionUtc;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
         _config = config;
         _restartArgs = restartArgs ?? [];
+    }
+
+    /// <summary>
+    /// Marks D2R's Settings.json read-only, once per agent process, so the game cannot rewrite it
+    /// (see <see cref="D2RSettingsFileGuard"/>). Repeat calls return the first result instead of
+    /// touching the file again, so "first load only" holds no matter who calls it.
+    /// </summary>
+    public D2RSettingsProtectionResult EnsureD2RSettingsProtected(Action<string>? log = null)
+    {
+        lock (_activityLock)
+        {
+            if (_settingsProtection is { } existing)
+            {
+                return existing;
+            }
+        }
+
+        var result = D2RSettingsFileGuard.Protect(_config, log);
+        lock (_activityLock)
+        {
+            _settingsProtection ??= result;
+            _settingsProtectionUtc ??= DateTimeOffset.UtcNow;
+            return _settingsProtection;
+        }
+    }
+
+    private object? DescribeSettingsProtection()
+    {
+        D2RSettingsProtectionResult? result;
+        DateTimeOffset? checkedAt;
+        lock (_activityLock)
+        {
+            result = _settingsProtection;
+            checkedAt = _settingsProtectionUtc;
+        }
+
+        if (result is null)
+        {
+            return null;
+        }
+
+        return new
+        {
+            outcome = result.Outcome.ToString(),
+            ok = result.Ok,
+            path = result.SettingsPath,
+            readOnly = result.ReadOnly,
+            lastWriteUtc = result.LastWriteUtc,
+            length = result.Length,
+            message = result.Message,
+            checkedAtUtc = checkedAt
+        };
     }
 
     public Task<object> GetStatusAsync(CancellationToken cancellationToken)
@@ -251,6 +307,7 @@ public sealed class VmOperations
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
             d2rGraphicsDeviceFailure = DescribeGraphicsDeviceFailure(visibleState),
+            d2rSettingsProtection = DescribeSettingsProtection(),
             d2rProcessDiscovery = OperatingSystem.IsWindows() ? WindowsProcessFinder.Discover(GetD2RProcessNames(), windowScanCache) : null,
             // Gating this on d2rRunning blacked out the one field (foregroundProcessName) that
             // would show what's actually focused/visible when process-name matching itself is
@@ -306,6 +363,7 @@ public sealed class VmOperations
             d2rRunning,
             d2rVisibleState = visibleState.ToString(),
             d2rGraphicsDeviceFailure = DescribeGraphicsDeviceFailure(visibleState),
+            d2rSettingsProtection = DescribeSettingsProtection(),
             d2rProcessDiscovery = new ProcessDiscoverySnapshot(GetD2RProcessNames(), [], []),
             d2rInput = (InputDiagnostics?)null,
             lastInputAction = _lastInputAction,
