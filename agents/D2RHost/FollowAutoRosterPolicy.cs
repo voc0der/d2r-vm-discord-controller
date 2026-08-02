@@ -111,9 +111,17 @@ internal sealed record FollowAutoRoster(
     IReadOnlyList<string> Benched,
     int TargetBotCount)
 {
-    public IReadOnlySet<string> ActiveSet => Active.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    // Built once, not per access: these are read inside per-account filters, where a computed
+    // property would allocate a fresh set for every candidate it tested.
+    private readonly Lazy<IReadOnlySet<string>> _activeSet = new(
+        () => Active.ToHashSet(StringComparer.OrdinalIgnoreCase));
 
-    public IReadOnlySet<string> BenchedSet => Benched.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    private readonly Lazy<IReadOnlySet<string>> _benchedSet = new(
+        () => Benched.ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+    public IReadOnlySet<string> ActiveSet => _activeSet.Value;
+
+    public IReadOnlySet<string> BenchedSet => _benchedSet.Value;
 }
 
 /// <summary>

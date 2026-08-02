@@ -49,6 +49,7 @@ public sealed class DiscordBot
     // client and writing a few KB. The repair budget covers the agent's own quit-and-settle wait.
     private static readonly TimeSpan SettingsExportCommandTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan SettingsRepairCommandTimeout = TimeSpan.FromSeconds(90);
+    private const int MaxSettingsDonorAttempts = 3;
     private const int JoinAutoDefaultIdleMinutes = 60;
 
     private readonly HostConfig _config;
@@ -122,8 +123,25 @@ public sealed class DiscordBot
     private int _followAutoBenchedCount;
     private int _followAutoOnlineCount;
     // Last player count any fleet account could read, used to keep +1 from trying to add a bot to
-    // a game that is already full. Null until a sample lands.
-    private int? _followAutoLivePlayerCount;
+    // a game that is already full. Written by the run loop, read by the gateway task, so it is a
+    // plain int with a sentinel rather than an int? - Nullable<int> is two fields and carries no
+    // atomicity guarantee, which is exactly the tear that would let a reader see "known" paired
+    // with a stale count.
+    private const int UnknownPlayerCount = -1;
+    private int _followAutoLivePlayerCountOrUnknown = UnknownPlayerCount;
+
+    private int? FollowAutoLivePlayerCount
+    {
+        get
+        {
+            var value = Volatile.Read(ref _followAutoLivePlayerCountOrUnknown);
+            return value == UnknownPlayerCount ? null : value;
+        }
+        set => Volatile.Write(
+            ref _followAutoLivePlayerCountOrUnknown,
+            value ?? UnknownPlayerCount);
+    }
+
     private readonly FollowAutoRosterAdjustmentGate _followAutoRosterGate = new();
     private readonly SemaphoreSlim _followAutoLock = new(1, 1);
     private readonly object _followAutoStopActionSync = new();
@@ -946,7 +964,7 @@ public sealed class DiscordBot
             FollowAutoRemoveBotButtonId,
             ButtonStyle.Secondary,
             disabled: !FollowAutoRosterPolicy.CanRemoveBot(target));
-        if (FollowAutoRosterPolicy.CanAddBot(target, _followAutoOnlineCount, _followAutoLivePlayerCount))
+        if (FollowAutoRosterPolicy.CanAddBot(target, Volatile.Read(ref _followAutoOnlineCount), FollowAutoLivePlayerCount))
         {
             builder.WithButton("+1 VM", FollowAutoAddBotButtonId, ButtonStyle.Success);
         }
@@ -4605,7 +4623,7 @@ public sealed class DiscordBot
 
         await SetInitialCommandResponseAsync(
             context,
-            $"follow-auto started with {bots} bot(s), a {bots + 1}-player game with the leader"
+            $"follow-auto started with {bots} bot(s), {FormatPartySize(bots)} with the leader"
                 + $"{(delaySeconds > 0 ? $", and a {delaySeconds}s delay between checks" : "")}. "
                 + "I posted one live status message in this channel; its -1 / +1 buttons change the bot count mid-run."
                 + (watch ? " Watch diagnostics are enabled." : ""),
@@ -4772,7 +4790,7 @@ public sealed class DiscordBot
 
         var current = Volatile.Read(ref _followAutoTargetBots);
         if (delta > 0
-            && !FollowAutoRosterPolicy.CanAddBot(current, _followAutoOnlineCount, _followAutoLivePlayerCount))
+            && !FollowAutoRosterPolicy.CanAddBot(current, Volatile.Read(ref _followAutoOnlineCount), FollowAutoLivePlayerCount))
         {
             await component.FollowupAsync(FormatFollowAutoAddBotRefusal(current), ephemeral: true);
             return;
@@ -4795,8 +4813,15 @@ public sealed class DiscordBot
                 ? $"Bot count raised to {target}; the next cycle brings one more VM into the game."
                 : $"Bot count lowered to {target}; one VM leaves the game and waits warm at the lobby.");
         await component.FollowupAsync(
-            $"Bot count set to {target} (a {target + 1}-player game with the leader).",
+            $"Bot count set to {target} ({FormatPartySize(target)} with the leader).",
             ephemeral: true);
+    }
+
+    // "a 8-player game" reads badly in the one case that matters most - the default, full game.
+    internal static string FormatPartySize(int botCount)
+    {
+        var players = botCount + 1;
+        return $"{(players == 8 ? "an" : "a")} {players}-player game";
     }
 
     private string FormatFollowAutoAddBotRefusal(int target)
@@ -4807,12 +4832,13 @@ public sealed class DiscordBot
                 + $"{FollowAutoRosterPolicy.MaxPlayersPerGame}-player game.";
         }
 
-        if (target >= _followAutoOnlineCount)
+        var online = Volatile.Read(ref _followAutoOnlineCount);
+        if (target >= online)
         {
-            return $"No spare VM to add: {_followAutoOnlineCount} account(s) are online and all of them are already on the roster.";
+            return $"No spare VM to add: {online} account(s) are online and all of them are already on the roster.";
         }
 
-        return $"The game is full ({_followAutoLivePlayerCount}/{FollowAutoRosterPolicy.MaxPlayersPerGame} players); "
+        return $"The game is full ({FollowAutoLivePlayerCount}/{FollowAutoRosterPolicy.MaxPlayersPerGame} players); "
             + "a freed slot belongs to whoever left it, not to a waiting bot.";
     }
 
@@ -5185,9 +5211,9 @@ public sealed class DiscordBot
         _followAutoJoined = 0;
         _followAutoTotal = 0;
         Volatile.Write(ref _followAutoTargetBots, FollowAutoRosterPolicy.ClampTarget(targetBotCount));
-        _followAutoBenchedCount = 0;
-        _followAutoOnlineCount = 0;
-        _followAutoLivePlayerCount = null;
+        Volatile.Write(ref _followAutoBenchedCount, 0);
+        Volatile.Write(ref _followAutoOnlineCount, 0);
+        FollowAutoLivePlayerCount = null;
         _followAutoRosterGate.Reset();
         _followAutoMetricsEnabled = metricsEnabled;
         try
@@ -5278,7 +5304,13 @@ public sealed class DiscordBot
             ? $"follow-auto monitor - Game #{_followAutoGameNumber}"
             : "follow-auto monitor";
         var target = Volatile.Read(ref _followAutoTargetBots);
-        var benched = _followAutoBenchedCount > 0 ? $", {_followAutoBenchedCount} benched" : "";
+        var online = Volatile.Read(ref _followAutoOnlineCount);
+        var benchedCount = Volatile.Read(ref _followAutoBenchedCount);
+        var benched = benchedCount > 0 ? $", {benchedCount} benched" : "";
+        // Rostered is deliberately its own number rather than being folded into the target: with
+        // fewer VMs online than the target, "7 of 3 online" reads as a contradiction, when what is
+        // actually true is that 7 are wanted and only 3 can be supplied right now.
+        var rostered = Math.Max(online - benchedCount, 0);
         var lines = new List<string>
         {
             title,
@@ -5288,7 +5320,7 @@ public sealed class DiscordBot
             // the two above: joined lags it while a VM is still warming up, and total counts only
             // the roster. Spelling out the resulting party size avoids the bots-vs-players
             // ambiguity that makes "7" mean two different things.
-            $"Bot count: {target} of {_followAutoOnlineCount} VM(s) online{benched} - a {target + 1}-player game with the leader",
+            $"Bot target: {target} - {FormatPartySize(target)} with the leader ({rostered} of {online} VM(s) rostered{benched})",
             $"Games completed: {_followAutoGamesCompleted}",
             $"Session elapsed: {FormatElapsed(elapsed)}"
         };
@@ -5403,8 +5435,9 @@ public sealed class DiscordBot
                 var onlineAccountKeys = online
                     .Select(entry => entry.Key)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                _followAutoBenchedCount = roster.Benched.Count;
-                _followAutoOnlineCount = allOnline.Length;
+                // Read by the gateway task when it builds the monitor's buttons.
+                Volatile.Write(ref _followAutoBenchedCount, roster.Benched.Count);
+                Volatile.Write(ref _followAutoOnlineCount, allOnline.Length);
                 if (benchedNowJoined.Length > 0)
                 {
                     await UpdateFollowAutoMonitorAsync(
@@ -5435,7 +5468,7 @@ public sealed class DiscordBot
                     // Feeds the +1 button: a full game's free slot belongs to whoever left it.
                     // Deliberately only overwritten when a sample actually read a count, so a
                     // degraded read leaves the last known value rather than reopening the button.
-                    _followAutoLivePlayerCount = initialPulse.PlayerCount ?? _followAutoLivePlayerCount;
+                    FollowAutoLivePlayerCount = initialPulse.PlayerCount ?? FollowAutoLivePlayerCount;
                     if (!currentGameActive)
                     {
                         _followAutoGameNumber++;
@@ -6506,7 +6539,11 @@ public sealed class DiscordBot
         }
 
         var donorFailures = new List<string>();
-        foreach (var donorKey in donorOrder)
+        // Capped because this runs inside one account's follow-auto warmup check: an unbounded walk
+        // of a large fleet could spend donorCount x SettingsExportCommandTimeout there, and a
+        // healthy fleet answers on the first candidate. If the first few cannot export, the problem
+        // is not "try more of them".
+        foreach (var donorKey in donorOrder.Take(MaxSettingsDonorAttempts))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!_registry.Accounts.TryGetValue(donorKey, out var donor))
@@ -6604,13 +6641,32 @@ public sealed class DiscordBot
             return [];
         }
 
-        await LeaveAllJoinAutoAsync(
+        var leaveResults = await LeaveAllJoinAutoAsync(
             options.Channel,
             $"bot count lowered to {roster.TargetBotCount}",
             postResult: false,
             options.MetricsEnabled,
             onlyAccounts: benchedInGame.ToHashSet(StringComparer.OrdinalIgnoreCase),
             cancellationToken);
+
+        // A leave that failed leaves a client sitting in the leader's game that the run has just
+        // stopped tracking - the party is one bigger than the operator asked for and nothing else
+        // will notice. It cannot be retried from here (the account is off the roster now), so it
+        // has to be said out loud.
+        var failedLeaves = leaveResults
+            .Where(result => !result.Ok)
+            .Select(result => $"{result.AccountKey} ({result.Message})")
+            .ToArray();
+        if (failedLeaves.Length > 0)
+        {
+            _logger.LogWarning(
+                "Benched account(s) could not leave the game and may still be in it: {Failures}",
+                string.Join("; ", failedLeaves));
+            await UpdateFollowAutoMonitorAsync(
+                $"Bot count lowered to {roster.TargetBotCount}, but {string.Join("; ", failedLeaves)} could not leave "
+                    + "and may still be in the game. Use /d2r save-exit for that account if it stays.");
+        }
+
         return benchedInGame;
     }
 

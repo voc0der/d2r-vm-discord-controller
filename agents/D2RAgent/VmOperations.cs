@@ -800,8 +800,18 @@ public sealed class VmOperations
     private object? DescribeSettingsRepair(VisibleD2RState visibleState)
     {
         var (sightings, firstUtc, lastUtc) = GetGammaCalibrationSnapshot();
+        int repairsApplied;
+        DateTimeOffset? lastRepairUtc;
+        string? lastRepairMessage;
+        lock (_activityLock)
+        {
+            repairsApplied = _settingsRepairsApplied;
+            lastRepairUtc = _lastSettingsRepairUtc;
+            lastRepairMessage = _lastSettingsRepairMessage;
+        }
+
         var detected = visibleState == VisibleD2RState.GammaCalibration;
-        if (!detected && sightings == 0 && _settingsRepairsApplied == 0)
+        if (!detected && sightings == 0 && repairsApplied == 0)
         {
             return null;
         }
@@ -826,9 +836,9 @@ public sealed class VmOperations
             settingsLength = readable ? snapshot.Length : (long?)null,
             settingsLastWriteUtc = readable ? snapshot.LastWriteUtc : null,
             settingsError = readable ? null : readError,
-            repairsApplied = _settingsRepairsApplied,
-            lastRepairUtc = _lastSettingsRepairUtc,
-            lastRepairMessage = _lastSettingsRepairMessage
+            repairsApplied,
+            lastRepairUtc,
+            lastRepairMessage
         };
     }
 
@@ -1510,7 +1520,7 @@ public sealed class VmOperations
     // Only screens that D2R cannot possibly show from inside a game count as a definite "out of
     // game". DiabloSplash and Unknown are the load-screen/degraded-capture states, so they stay
     // null: the host treats null as "no evidence" and never resyncs a bot on their word.
-    private static bool? ClassifyPulseInGame(VisibleD2RState state) => state switch
+    internal static bool? ClassifyPulseInGame(VisibleD2RState state) => state switch
     {
         VisibleD2RState.InGame => true,
         VisibleD2RState.LobbyOrGame
@@ -1518,8 +1528,10 @@ public sealed class VmOperations
             or VisibleD2RState.OfflineCharacterScreen
             or VisibleD2RState.NotRunning
             // A client sitting on the graphics-initialization dialog has no rendered game at
-            // all - that is evidence, not a degraded capture.
-            or VisibleD2RState.GraphicsDeviceFailure => false,
+            // all - that is evidence, not a degraded capture. The first-run gamma screen is the
+            // same kind of evidence: the client is at a startup prompt, definitively not in a game.
+            or VisibleD2RState.GraphicsDeviceFailure
+            or VisibleD2RState.GammaCalibration => false,
         _ => null
     };
 
@@ -3884,6 +3896,14 @@ public sealed class VmOperations
                 null,
                 activity.LastLobbyOrGameInteractionUtc,
                 "Detected D2R's failed-to-initialize-graphics-device dialog."),
+            // Same reasoning as the dialog above: a client that restarted into the first-run gamma
+            // screen must not keep reporting the LobbyOrGame it was in before, which would make
+            // both the idle watchdog and MenuReadyPolicy treat it as a healthy client.
+            VisibleD2RState.GammaCalibration => new ActivitySnapshot(
+                D2RActivityState.Unknown,
+                null,
+                activity.LastLobbyOrGameInteractionUtc,
+                "Detected D2R's first-run gamma calibration screen; this client reset its own settings."),
             VisibleD2RState.Unknown => activity.State == D2RActivityState.Unknown
                 ? activity
                 : new ActivitySnapshot(
@@ -3909,19 +3929,33 @@ public sealed class VmOperations
             return FallbackProcessOnlyVisibleState();
         }
 
-        return _lastObservedFrame switch
-        {
-            nameof(ReadyScreenState.DiabloSplash) => VisibleD2RState.DiabloSplash,
-            nameof(ReadyScreenState.CharacterMenu) => VisibleD2RState.CharacterScreen,
-            nameof(ReadyScreenState.CharacterScreen) => VisibleD2RState.CharacterScreen,
-            nameof(ReadyScreenState.OfflineCharacterScreen) => VisibleD2RState.OfflineCharacterScreen,
-            nameof(VisibleD2RState.NotRunning) => VisibleD2RState.NotRunning,
-            nameof(VisibleD2RState.LobbyOrGame) => VisibleD2RState.LobbyOrGame,
-            nameof(VisibleD2RState.InGame) => VisibleD2RState.InGame,
-            nameof(VisibleD2RState.GraphicsDeviceFailure) => VisibleD2RState.GraphicsDeviceFailure,
-            _ => FallbackProcessOnlyVisibleState()
-        };
+        return MapObservedFrameToVisibleState(_lastObservedFrame) ?? FallbackProcessOnlyVisibleState();
     }
+
+    /// <summary>
+    /// Translates a recorded frame name into the visible state a process-only status should report.
+    /// Null means there is no mapping and the caller should fall back to activity-based guessing.
+    /// </summary>
+    /// <remarks>
+    /// Load-bearing, not cosmetic. Every menu command runs under the command gate, so the status a
+    /// command attaches to its own result is always the process-only one - this table is what
+    /// decides whether a state the detector genuinely saw survives into that payload. The gamma
+    /// screen was missing here at first, which silently made the host's automatic settings repair
+    /// (whose only trigger is exactly that payload) impossible to fire.
+    /// </remarks>
+    internal static VisibleD2RState? MapObservedFrameToVisibleState(string? frame) => frame switch
+    {
+        nameof(ReadyScreenState.DiabloSplash) => VisibleD2RState.DiabloSplash,
+        nameof(ReadyScreenState.CharacterMenu) => VisibleD2RState.CharacterScreen,
+        nameof(ReadyScreenState.CharacterScreen) => VisibleD2RState.CharacterScreen,
+        nameof(ReadyScreenState.OfflineCharacterScreen) => VisibleD2RState.OfflineCharacterScreen,
+        nameof(VisibleD2RState.NotRunning) => VisibleD2RState.NotRunning,
+        nameof(VisibleD2RState.LobbyOrGame) => VisibleD2RState.LobbyOrGame,
+        nameof(VisibleD2RState.InGame) => VisibleD2RState.InGame,
+        nameof(VisibleD2RState.GraphicsDeviceFailure) => VisibleD2RState.GraphicsDeviceFailure,
+        nameof(VisibleD2RState.GammaCalibration) => VisibleD2RState.GammaCalibration,
+        _ => null
+    };
 
     private VisibleD2RState FallbackProcessOnlyVisibleState()
     {
@@ -4843,6 +4877,14 @@ public sealed class VmOperations
 
             await Task.Delay(plan.IntroClickDelayMs, cancellationToken);
         }
+
+        // The title-key phase shares nextDetectionAt with the intro phase above, so without this
+        // its first iteration can send a burst on a detection up to ReadyStartupDetectionIntervalMs
+        // old. That burst contains Space and Enter, which on the gamma calibration screen is the
+        // Continue button - one press accepts the defaults D2R invented when it reset the settings
+        // file, including a resolution every pixel classifier is calibrated against. A screen that
+        // appeared inside that window has to be seen before anything is sent at it.
+        nextDetectionAt = DateTimeOffset.UtcNow;
 
         for (var i = 0; i < plan.TitleScreenKeyPressCount && DateTimeOffset.UtcNow < deadline; i++)
         {
@@ -8204,7 +8246,7 @@ public sealed class VmOperations
         LobbyOrGame
     }
 
-    private enum VisibleD2RState
+    internal enum VisibleD2RState
     {
         NotRunning,
         Unknown,
@@ -8217,7 +8259,7 @@ public sealed class VmOperations
         GammaCalibration
     }
 
-    private enum ReadyScreenState
+    internal enum ReadyScreenState
     {
         Unknown,
         DiabloSplash,

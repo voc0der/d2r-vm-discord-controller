@@ -71,6 +71,49 @@ public sealed class FollowAutoRosterTests
         Assert.Empty(afterWorkerConnected.Benched);
     }
 
+    // The scenario in full: a run starts while only 5 VMs are reachable, then a worker node
+    // connects bringing 2 more. With the default target of 7, both newcomers must be pulled in -
+    // this is why ClampTarget deliberately does not clamp to the online count. A target that
+    // followed the outage down to 5 could never climb back, and the extra capacity would sit idle
+    // for the rest of the session.
+    [Fact]
+    public void AWorkerNodeArrivingWithTwoMoreVmsFillsTheDefaultTarget()
+    {
+        var beforeWorker = FollowAutoRosterPolicy.ResolveRoster(
+            ["hc1", "hc2", "hc3", "hc4", "hc5"],
+            FollowAutoRosterPolicy.DefaultBotCount);
+        Assert.Equal(5, beforeWorker.Active.Count);
+        Assert.Empty(beforeWorker.Benched);
+
+        var afterWorker = FollowAutoRosterPolicy.ResolveRoster(
+            ["hc1", "hc2", "hc3", "hc4", "hc5", "hc6", "hc7"],
+            FollowAutoRosterPolicy.DefaultBotCount,
+            incumbents: new HashSet<string>(
+                ["hc1", "hc2", "hc3", "hc4", "hc5"],
+                StringComparer.OrdinalIgnoreCase));
+
+        Assert.Equal(["hc1", "hc2", "hc3", "hc4", "hc5", "hc6", "hc7"], afterWorker.Active);
+        Assert.Empty(afterWorker.Benched);
+    }
+
+    // The other half of that scenario, and the reason the two are not the same: an operator who
+    // explicitly asked for 5 bots keeps 5. The newcomers are benched, not drafted.
+    [Fact]
+    public void AnExplicitBotCountIsNotRaisedByNewCapacity()
+    {
+        var afterWorker = FollowAutoRosterPolicy.ResolveRoster(
+            ["hc1", "hc2", "hc3", "hc4", "hc5", "hc6", "hc7"],
+            targetBotCount: 5,
+            incumbents: new HashSet<string>(
+                ["hc1", "hc2", "hc3", "hc4", "hc5"],
+                StringComparer.OrdinalIgnoreCase));
+
+        Assert.Equal(["hc1", "hc2", "hc3", "hc4", "hc5"], afterWorker.Active);
+        Assert.Equal(["hc6", "hc7"], afterWorker.Benched);
+        // ...and +1 is offered, because there is now a spare VM to promote.
+        Assert.True(FollowAutoRosterPolicy.CanAddBot(5, onlineAccountCount: 7, livePlayerCount: 6));
+    }
+
     // The dangerous version of the same event: the newcomer sorts EARLIER than a bot already in
     // the leader's game. Ordering purely by key would kick a live client to swap in an
     // alphabetically luckier one.
@@ -155,6 +198,29 @@ public sealed class FollowAutoRosterTests
         Assert.False(gate.TryAdjust(start.AddSeconds(1), out var retryAfter));
         Assert.InRange(retryAfter, TimeSpan.FromSeconds(1), FollowAutoRosterAdjustmentGate.MinimumInterval);
         Assert.True(gate.TryAdjust(start + FollowAutoRosterAdjustmentGate.MinimumInterval, out _));
+    }
+
+    // The sets are read inside per-account filters. A recomputed property there allocated a fresh
+    // HashSet for every candidate it tested; this pins that one roster hands out one set.
+    [Fact]
+    public void RosterSetsAreBuiltOnce()
+    {
+        var roster = FollowAutoRosterPolicy.ResolveRoster(["hc1", "hc2", "hc3"], targetBotCount: 2);
+
+        Assert.Same(roster.ActiveSet, roster.ActiveSet);
+        Assert.Same(roster.BenchedSet, roster.BenchedSet);
+        Assert.True(roster.ActiveSet.Contains("HC1"));
+        Assert.True(roster.BenchedSet.Contains("HC3"));
+    }
+
+    // "a 8-player game" is the one that would show up constantly, since 7 bots is the default.
+    [Theory]
+    [InlineData(7, "an 8-player game")]
+    [InlineData(6, "a 7-player game")]
+    [InlineData(1, "a 2-player game")]
+    public void PartySizeReadsCorrectly(int bots, string expected)
+    {
+        Assert.Equal(expected, DiscordBot.FormatPartySize(bots));
     }
 
     [Fact]
