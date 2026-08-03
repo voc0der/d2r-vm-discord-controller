@@ -9,13 +9,14 @@ namespace D2RAgent;
 // first and never reordering or leaving gaps - confirmed by the 1/2/3-member references all
 // landing on the exact same slot 1 box (190,26)-(248,77) at the same 72px pitch between slots.
 //
-// Slots 4-8 are extrapolated from that confirmed pitch, not directly observed - a max party in
-// D2R is 8, but only 0-3 references exist so far. If party member detection looks wrong above 3,
+// Slots 4-7 are extrapolated from that confirmed pitch, not directly observed - a max party in
+// D2R is 8 including the observing character, so at most 7 OTHER portraits can be visible. Only
+// 0-3 references exist so far. If party member detection looks wrong above 3,
 // capture 4_party_members.png etc. and re-check these constants before assuming the detection
 // logic itself is broken.
 internal static class PartyMemberSlots
 {
-    public const int MaxSlots = 8;
+    public const int MaxSlots = 7;
 
     // Present slots measured 0.44-0.59 on this ratio across all 6 confirmed-present samples
     // (slots 1-3 in 1/2/3_party_members.png); every absent slot measured exactly 0.0. 0.3 sits

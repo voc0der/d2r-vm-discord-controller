@@ -58,7 +58,7 @@ public sealed class DiscordSlashCommandsTests
 
         Assert.Equal(ApplicationCommandOptionType.Integer, bindInGame.Type);
         Assert.Equal(0, bindInGame.MinValue);
-        Assert.Equal(8, bindInGame.MaxValue);
+        Assert.Equal(7, bindInGame.MaxValue);
     }
 
     [Fact]

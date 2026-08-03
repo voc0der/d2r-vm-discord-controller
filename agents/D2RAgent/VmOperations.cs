@@ -2164,10 +2164,10 @@ public sealed class VmOperations
         _ => null
     };
 
-    // Scans slots in order and stops at the first miss rather than checking all 8 unconditionally
+    // Scans slots in order and stops at the first miss rather than checking all 7 unconditionally
     // - D2R fills slots left-to-right with no gaps (PartyMemberSlots), so the common case (a
     // handful of accounts, not a full 8-player lobby) samples only as many regions as there are
-    // actual members instead of always paying for 8.
+    // actual members instead of always paying for 7.
     private int CountOtherPartyMembers(WindowsInput input)
     {
         for (var slot = 1; slot <= PartyMemberSlots.MaxSlots; slot++)
@@ -2968,7 +2968,7 @@ public sealed class VmOperations
     }
 
     // Issue #25 follow-up: capture the party-bar name mask at the requested visible position
-    // (1-8, counted left to right; the vantage character itself never appears in its own party
+    // (1-7, counted left to right; the vantage character itself never appears in its own party
     // bar). This must run from inside an actual game - unlike FollowBindCaptureAsync there is no
     // navigation to do, because the party bar only exists in-game; the operator lines the game
     // up first (typically their own bot game where the member layout is known) and tells us

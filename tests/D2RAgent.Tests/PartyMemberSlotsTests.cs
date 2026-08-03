@@ -57,6 +57,7 @@ public sealed class PartyMemberSlotsTests
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
+    [InlineData(8)]
     [InlineData(9)]
     [InlineData(int.MaxValue)]
     public void OutOfRangeSlotIndexThrows(int slotIndex)
@@ -65,10 +66,10 @@ public sealed class PartyMemberSlotsTests
     }
 
     [Fact]
-    public void MaxSlotsIsEight()
+    public void MaxSlotsIsSevenOtherPartyMembers()
     {
-        Assert.Equal(8, PartyMemberSlots.MaxSlots);
-        // Should not throw - 8 is in range.
+        Assert.Equal(7, PartyMemberSlots.MaxSlots);
+        // Should not throw - 7 is in range.
         PartyMemberSlots.GetSlotTopEdgeCenter(PartyMemberSlots.MaxSlots);
     }
 
@@ -111,6 +112,7 @@ public sealed class PartyMemberSlotsTests
 
     [Theory]
     [InlineData(0)]
+    [InlineData(8)]
     [InlineData(9)]
     public void OutOfRangeNameBandSlotIndexThrows(int slotIndex)
     {

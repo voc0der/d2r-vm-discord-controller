@@ -257,10 +257,11 @@ end to end).
 | 1 | `(190,26)`-`(248,77)`, 58x51 | center `(219, 29)`, 58x6 |
 | 2 | `(262,26)`-`(320,77)` | center `(291, 29)`, 58x6 |
 | 3 | `(334,26)`-`(390,77)` | center `(363, 29)`, 58x6 |
-| N (1-8) | left = 190 + (N-1)*72 | left = box left, same width/height |
+| N (1-7) | left = 190 + (N-1)*72 | left = box left, same width/height |
 
-Slots 4-8 are extrapolated from the confirmed 72px pitch between slots 1-3, not directly observed
-- a full D2R party is 8, but only 0-3 references exist so far. If counts above 3 look wrong,
+Slots 4-7 are extrapolated from the confirmed 72px pitch between slots 1-3, not directly observed
+- a full D2R party is 8 including the observing character, so only 7 other portraits can appear;
+only 0-3 references exist so far. If counts above 3 look wrong,
 capture `party_members_4.png` etc. and recheck `PartyMemberSlots` before assuming the detection
 logic is broken.
 

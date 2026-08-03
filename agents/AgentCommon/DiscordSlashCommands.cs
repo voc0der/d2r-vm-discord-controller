@@ -250,11 +250,11 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("bind-in-game")
-            .WithDescription("Bind the party-bar name at position 1-8 as a leader nametag (repeat per alt); 0 clears all")
+            .WithDescription("Bind the party-bar name at position 1-7 as a leader nametag (repeat per alt); 0 clears all")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(0)
-            .WithMaxValue(8);
+            .WithMaxValue(7);
     }
 
     private static SlashCommandOptionBuilder FollowAutoFlag()

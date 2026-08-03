@@ -384,7 +384,7 @@ Game-oriented menu commands accept optional args such as:
 
 `menu_follow_bind` captures a friends-drawer name fingerprint from the selected `friendRow`;
 `menu_follow_bind_game` captures an in-game party-bar name mask from the visible portrait at
-`partyPosition` (1-8, counted left to right on the vantage account's screen). Both reply with a
+`partyPosition` (1-7, counted left to right on the vantage account's screen). Both reply with a
 `fingerprint` string that the host distributes to every online agent via `follow_set_template` /
 `follow_set_leader_template` (`{ "fingerprint": "..." }`); the agents persist them next to the
 executable as `follow-template.txt` and `leader-template.txt`.
