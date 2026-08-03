@@ -86,8 +86,21 @@ public static class D2RSettingsFile
         {
             try
             {
-                return System.IO.Path.GetFullPath(
-                    Environment.ExpandEnvironmentVariables(configuredPath.Trim()));
+                var trimmed = configuredPath.Trim();
+                if (trimmed.IndexOf('\0') >= 0
+                    || trimmed.IndexOfAny(System.IO.Path.GetInvalidPathChars()) >= 0)
+                {
+                    return null;
+                }
+
+                var expanded = Environment.ExpandEnvironmentVariables(trimmed);
+                if (expanded.IndexOf('\0') >= 0
+                    || expanded.IndexOfAny(System.IO.Path.GetInvalidPathChars()) >= 0)
+                {
+                    return null;
+                }
+
+                return System.IO.Path.GetFullPath(expanded);
             }
             catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
             {
@@ -261,6 +274,12 @@ public static class D2RSettingsFile
 
         try
         {
+            if (settingsPath.IndexOf('\0') >= 0
+                || settingsPath.IndexOfAny(System.IO.Path.GetInvalidPathChars()) >= 0)
+            {
+                return null;
+            }
+
             return $"{System.IO.Path.GetFullPath(settingsPath)}{RepairStateSuffix}";
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)

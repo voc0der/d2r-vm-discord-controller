@@ -113,7 +113,7 @@ public sealed class TryRunBoundedTests
     [Fact]
     public async Task FailsFastInsteadOfSpawningAnotherThreadOnceConcurrencyCapIsSaturated()
     {
-        const int capacity = 32; // must match VmOperations.MaxConcurrentBoundedCalls
+        const int capacity = VmOperations.MaxConcurrentBoundedCalls;
         using var allStarted = new CountdownEvent(capacity);
         using var release = new ManualResetEventSlim(false);
 
@@ -155,6 +155,20 @@ public sealed class TryRunBoundedTests
             var warmupWinner = await Task.WhenAny(warmupAll, Task.Delay(TimeSpan.FromSeconds(10)));
             Assert.Same(warmupAll, warmupWinner); // "Thread-pool warmup tasks did not finish."
         }
+
+        // A timed-out sibling returns before its queued background action necessarily starts.
+        // On a loaded Windows runner that action can begin late and keep its semaphore slot past
+        // the fixed six-second grace above. Wait for the actual admission gate to drain instead
+        // of assuming Task.Run scheduling latency; otherwise those legitimate lingering calls
+        // make this test launch only 30/32 saturators and report a false cap failure.
+        var drainDeadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        while (VmOperations.AvailableBoundedCallSlots != capacity
+            && DateTimeOffset.UtcNow < drainDeadline)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(50));
+        }
+
+        Assert.Equal(capacity, VmOperations.AvailableBoundedCallSlots);
 
         // Dedicated OS threads for the dispatch side, not Task.Run, so the 32 saturating calls
         // don't have to compete with their own 32 *inner* TryRunBounded-spawned tasks for pool

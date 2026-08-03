@@ -4911,8 +4911,9 @@ public sealed class VmOperations
     // know why the underlying call hangs: once MaxConcurrentBoundedCalls slots are held by calls
     // that haven't returned yet, further calls fail fast with the fallback instead of spawning
     // another thread that will never come back either.
-    private const int MaxConcurrentBoundedCalls = 32;
+    internal const int MaxConcurrentBoundedCalls = 32;
     private static readonly SemaphoreSlim BoundedCallSlots = new(MaxConcurrentBoundedCalls, MaxConcurrentBoundedCalls);
+    internal static int AvailableBoundedCallSlots => BoundedCallSlots.CurrentCount;
 
     // Pulled out of TryPrepareD2RForInputBounded so the bounding behavior itself - not the
     // Win32 focus call - can be regression-tested without a Windows host. The bug this guards
