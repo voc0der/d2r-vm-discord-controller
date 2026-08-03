@@ -22,7 +22,11 @@ public sealed record WorkerNodeStatus(
     IReadOnlyList<string>? Alerts = null,
     // Explicit and fail-closed. A current master will not infer support from a version string,
     // and an older worker that omits this field cannot receive any physical-host power action.
-    bool VmSafeHostPowerTransitions = false);
+    bool VmSafeHostPowerTransitions = false,
+    // A safety-sensitive nested command can be bound to the exact VM-agent connection whose
+    // status authorized it. Older workers ignore the forwarded generation, so the master must
+    // require this explicit capability before tunneling such a command.
+    bool GenerationBoundAgentCommands = false);
 
 /// <summary>
 /// Public metadata and the current connection snapshot for one worker-local agent.

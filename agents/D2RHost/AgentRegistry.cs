@@ -138,22 +138,39 @@ public sealed class AgentRegistry
         }
         finally
         {
-            if (agentId is not null
-                && _agents.TryGetValue(agentId, out var current)
-                && current.TryDetachSocket(socket))
+            ConnectedAgent? disconnected = null;
+            if (agentId is not null)
             {
-                FailPendingCommands(current.Id, socket);
-                try
+                // Registration and detachment share the same linearization barrier as the final
+                // command-send check. A replacement connection can therefore be either before or
+                // after a send/detach, never invisibly between its generation check and dispatch.
+                lock (_registrationLock)
                 {
-                    _db.MarkAgentDisconnected(current.Id);
+                    if (_agents.TryGetValue(agentId, out var current)
+                        && current.TryDetachSocket(socket))
+                    {
+                        disconnected = current;
+                        try
+                        {
+                            // Keep this write inside the registration barrier. If a new connection
+                            // registers afterwards, its connected write is guaranteed to follow;
+                            // if it registered first, the identity check above skips this stale
+                            // disconnect entirely.
+                            _db.MarkAgentDisconnected(current.Id);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Throwing out of a finally would replace whatever actually killed the
+                            // connection with a database error, losing the real cause.
+                            _logger.LogWarning(ex, "Could not record the disconnect for {AgentId}.", current.Id);
+                        }
+                    }
                 }
-                catch (Exception ex)
-                {
-                    // Throwing out of a finally would replace whatever actually killed the
-                    // connection with a database error, losing the real cause.
-                    _logger.LogWarning(ex, "Could not record the disconnect for {AgentId}.", current.Id);
-                }
+            }
 
+            if (disconnected is not null)
+            {
+                FailPendingCommands(disconnected.Id, socket);
                 _logger.LogWarning("Agent disconnected: {AgentId}", agentId);
                 ConnectivityChanged?.Invoke();
             }
@@ -308,15 +325,28 @@ public sealed class AgentRegistry
                 return await pending.Task;
             }
 
-            if (!_agents.TryGetValue(agentId, out var current)
-                || !ReferenceEquals(current, agent)
-                || !agent.HasSocket(socket)
-                || !IsConnected(agent, DateTimeOffset.UtcNow))
+            ValueTask sendOperation;
+            lock (_registrationLock)
             {
-                throw new InvalidOperationException($"Agent \"{agentId}\" disconnected or its heartbeat became stale before the command was sent.");
+                if (!_agents.TryGetValue(agentId, out var current)
+                    || !ReferenceEquals(current, agent)
+                    || !agent.HasSocket(socket)
+                    || !IsConnected(agent, DateTimeOffset.UtcNow))
+                {
+                    throw new InvalidOperationException($"Agent \"{agentId}\" disconnected or its heartbeat became stale before the command was sent.");
+                }
+
+                // Starting the socket write is the command's generation linearization point.
+                // RegisterAgent and disconnect detach use this same barrier, so neither can swap
+                // the authenticated generation after the check but before dispatch begins.
+                sendOperation = socket.SendAsync(
+                    payload.AsMemory(),
+                    WebSocketMessageType.Text,
+                    true,
+                    timeoutCts.Token);
             }
 
-            await socket.SendAsync(payload, WebSocketMessageType.Text, true, timeoutCts.Token);
+            await sendOperation;
         }
         catch
         {
@@ -404,13 +434,16 @@ public sealed class AgentRegistry
     private void RegisterAgent(WebSocket socket, HelloMessage hello)
     {
         var configured = _config.Agents[hello.AgentId];
-        var now = DateTimeOffset.UtcNow;
         ConnectedAgent? existing;
         ConnectedAgent connected;
         WebSocket? existingSocket;
         lock (_registrationLock)
         {
             _agents.TryGetValue(hello.AgentId, out existing);
+            // ConnectedAt is the public generation token used to bind destructive commands to the
+            // status that authorized them. Concurrent hellos can share a clock tick, so force each
+            // replacement strictly forward while holding the registration barrier.
+            var now = NextConnectionGeneration(DateTimeOffset.UtcNow, existing?.ConnectedAt);
             connected = new ConnectedAgent(
                 hello.AgentId,
                 hello.AgentKind,
@@ -430,9 +463,12 @@ public sealed class AgentRegistry
             {
                 existing!.TryDetachSocket(existingSocket);
             }
-        }
 
-        PersistAgentStatus(connected.Id, connected.Kind, connected: true, connected.LastStatusJson ?? "{}");
+            // Keep the persisted connected bit in the same generation order as disconnect. A
+            // socket can close immediately after registration; writing this after releasing the
+            // barrier would let a late "connected" overwrite that newer disconnect in SQLite.
+            PersistAgentStatus(connected.Id, connected.Kind, connected: true, connected.LastStatusJson ?? "{}");
+        }
 
         if (existingSocket is not null && !ReferenceEquals(existingSocket, socket))
         {
@@ -445,6 +481,15 @@ public sealed class AgentRegistry
 
         _logger.LogInformation("Agent authenticated: {AgentId}", hello.AgentId);
         ConnectivityChanged?.Invoke();
+    }
+
+    internal static DateTimeOffset NextConnectionGeneration(
+        DateTimeOffset observedUtc,
+        DateTimeOffset? previousGeneration)
+    {
+        return previousGeneration is { } previous && observedUtc <= previous
+            ? previous.AddTicks(1)
+            : observedUtc;
     }
 
     private void QueueSelfUpdateAfterAuthentication(string agentId, string agentKind, string? version)
@@ -577,20 +622,22 @@ public sealed class AgentRegistry
 
     private void UpdateStatus(string agentId, WebSocket socket, JsonElement root)
     {
-        if (!_agents.TryGetValue(agentId, out var agent) || !agent.HasSocket(socket))
-        {
-            return;
-        }
-
         var statusJson = root.GetProperty("status").GetRawText();
-        var previousConnectivity = string.Equals(agent.Kind, "host", StringComparison.OrdinalIgnoreCase)
-            ? GetAdvertisedAgentConnectivity(agent.LastStatusJson)
-            : null;
-        agent.UpdateStatus(DateTimeOffset.UtcNow, statusJson);
-        if (_agents.TryGetValue(agentId, out var current)
-            && ReferenceEquals(current, agent)
-            && current.HasSocket(socket))
+        string? previousConnectivity;
+        lock (_registrationLock)
         {
+            if (!_agents.TryGetValue(agentId, out var agent) || !agent.HasSocket(socket))
+            {
+                return;
+            }
+
+            previousConnectivity = string.Equals(agent.Kind, "host", StringComparison.OrdinalIgnoreCase)
+                ? GetAdvertisedAgentConnectivity(agent.LastStatusJson)
+                : null;
+            agent.UpdateStatus(DateTimeOffset.UtcNow, statusJson);
+            // Validation, live mutation, and the connected cache write are one generation
+            // transaction. An old socket cannot validate, let disconnect persist false, then
+            // overwrite that newer state (or a replacement payload) with connected=true.
             PersistAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
         }
 
@@ -732,16 +779,14 @@ public sealed class AgentRegistry
 
     private void UpdateStatusJson(string agentId, WebSocket socket, string statusJson)
     {
-        if (!_agents.TryGetValue(agentId, out var agent) || !agent.HasSocket(socket))
+        lock (_registrationLock)
         {
-            return;
-        }
+            if (!_agents.TryGetValue(agentId, out var agent) || !agent.HasSocket(socket))
+            {
+                return;
+            }
 
-        agent.UpdateStatus(DateTimeOffset.UtcNow, statusJson);
-        if (_agents.TryGetValue(agentId, out var current)
-            && ReferenceEquals(current, agent)
-            && current.HasSocket(socket))
-        {
+            agent.UpdateStatus(DateTimeOffset.UtcNow, statusJson);
             PersistAgentStatus(agent.Id, agent.Kind, connected: true, statusJson);
         }
     }

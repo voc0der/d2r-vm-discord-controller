@@ -155,10 +155,15 @@ internal sealed class FollowAutoAccountState
         return true;
     }
 
-    public string[] BeginRecoveryForOfflineJoined(IReadOnlySet<string> onlineAccountKeys)
+    /// <summary>
+    /// Moves joined accounts whose agents are genuinely disconnected into recovery. The supplied
+    /// set must describe fleet connectivity, not the active roster: a connected account can be
+    /// deliberately benched while still tracked as joined for bounded Save-and-Exit retries.
+    /// </summary>
+    public string[] BeginRecoveryForOfflineJoined(IReadOnlySet<string> connectedAccountKeys)
     {
         var offlineJoined = _joined
-            .Where(accountKey => !onlineAccountKeys.Contains(accountKey))
+            .Where(accountKey => !connectedAccountKeys.Contains(accountKey))
             .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         BeginRecovery(offlineJoined);

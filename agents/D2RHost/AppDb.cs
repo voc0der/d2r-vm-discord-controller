@@ -401,11 +401,11 @@ public sealed class AppDb
                 insert into follow_auto_resume (
                   id, channel_id, delay_seconds, watch, idle_minutes, metrics_enabled,
                   character_slot, friend_row, recovery_account_keys, reason, recorded_utc,
-                  target_bot_count)
+                  target_bot_count, recovery_generation)
                 values (
                   'current', $channel_id, $delay_seconds, $watch, $idle_minutes, $metrics_enabled,
                   $character_slot, $friend_row, $recovery_account_keys, $reason, $recorded_utc,
-                  $target_bot_count)
+                  $target_bot_count, $recovery_generation)
                 on conflict(id) do update set
                   channel_id = excluded.channel_id,
                   delay_seconds = excluded.delay_seconds,
@@ -417,7 +417,8 @@ public sealed class AppDb
                   recovery_account_keys = excluded.recovery_account_keys,
                   reason = excluded.reason,
                   recorded_utc = excluded.recorded_utc,
-                  target_bot_count = excluded.target_bot_count
+                  target_bot_count = excluded.target_bot_count,
+                  recovery_generation = excluded.recovery_generation
                 """;
             command.Parameters.AddWithValue("$channel_id", intent.ChannelId.ToString());
             command.Parameters.AddWithValue("$delay_seconds", intent.DelaySeconds);
@@ -432,6 +433,7 @@ public sealed class AppDb
             command.Parameters.AddWithValue("$reason", intent.Reason);
             command.Parameters.AddWithValue("$recorded_utc", DateTimeOffset.UtcNow.ToString("O"));
             command.Parameters.AddWithValue("$target_bot_count", intent.TargetBotCount);
+            command.Parameters.AddWithValue("$recovery_generation", intent.RecoveryGeneration);
             command.ExecuteNonQuery();
         }
     }
@@ -444,7 +446,8 @@ public sealed class AppDb
             using var command = connection.CreateCommand();
             command.CommandText = """
                 select channel_id, delay_seconds, watch, idle_minutes, metrics_enabled,
-                       character_slot, friend_row, recovery_account_keys, reason, target_bot_count
+                       character_slot, friend_row, recovery_account_keys, reason, target_bot_count,
+                       recovery_generation
                 from follow_auto_resume
                 where id = 'current'
                 """;
@@ -476,7 +479,8 @@ public sealed class AppDb
                 reader.IsDBNull(6) ? null : reader.GetInt32(6),
                 recoveryAccountKeys,
                 reader.GetString(8),
-                reader.IsDBNull(9) ? FollowAutoRosterPolicy.DefaultBotCount : reader.GetInt32(9));
+                reader.IsDBNull(9) ? FollowAutoRosterPolicy.DefaultBotCount : reader.GetInt32(9),
+                reader.IsDBNull(10) ? 0 : reader.GetInt64(10));
         }
     }
 
@@ -488,6 +492,25 @@ public sealed class AppDb
             using var command = connection.CreateCommand();
             command.CommandText = "delete from follow_auto_resume where id = 'current'";
             command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Consumes only the resume row that belongs to the caller's recovery generation. A delayed
+    /// fallback must never erase a replacement row written by a later run.
+    /// </summary>
+    public bool ClearFollowAutoResumeIntent(long expectedRecoveryGeneration)
+    {
+        lock (_lock)
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                delete from follow_auto_resume
+                where id = 'current' and recovery_generation = $recovery_generation
+                """;
+            command.Parameters.AddWithValue("$recovery_generation", expectedRecoveryGeneration);
+            return command.ExecuteNonQuery() == 1;
         }
     }
 
@@ -585,6 +608,12 @@ public sealed class AppDb
             "follow_auto_resume",
             "target_bot_count",
             $"integer not null default {FollowAutoRosterPolicy.DefaultBotCount}");
+        // A delayed in-process fallback must only consume the exact restart record that scheduled
+        // it. Without a generation, an older timer can see and erase a later run's replacement row.
+        AddColumnIfMissing(
+            "follow_auto_resume",
+            "recovery_generation",
+            "integer not null default 0");
     }
 
     private void AddColumnIfMissing(string table, string column, string definition)
@@ -674,7 +703,11 @@ public sealed record FollowAutoResumeIntent(
     string Reason,
     // Carried across the restart so a resumed run keeps the party size the operator chose. A row
     // written before this column existed reads as the default.
-    int TargetBotCount = FollowAutoRosterPolicy.DefaultBotCount);
+    int TargetBotCount = FollowAutoRosterPolicy.DefaultBotCount,
+    // Identifies the in-process run that scheduled a local-restart fallback. It is deliberately
+    // ignored by normal startup resume; only a still-alive predecessor timer uses it to prove the
+    // durable row has not since been replaced by another run.
+    long RecoveryGeneration = 0);
 
 /// <summary>
 /// The fleet-wide follow bind: the friend-row fingerprint every agent matches in its friends

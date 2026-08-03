@@ -88,6 +88,7 @@ omit both, which reads as "no graphics-device failure".
   "sightings": 2,
   "confirmSightings": 2,
   "needsDonorSettings": true,
+  "needsReadyAfterSettingsRepair": false,
   "repairEnabled": true,
   "firstSeenUtc": "2026-08-02T13:20:00Z",
   "lastSeenUtc": "2026-08-02T13:24:00Z",
@@ -99,7 +100,14 @@ omit both, which reads as "no graphics-device failure".
   "settingsError": "... is not usable as a settings donor: root object has only 1 property ...",
   "repairsApplied": 0,
   "lastRepairUtc": null,
-  "lastRepairMessage": null
+  "lastRepairMessage": null,
+  "journalPhase": null,
+  "repairBlocked": false,
+  "repairJournalError": null,
+  "repairJournalWarning": null,
+  "incidentRepairAttempts": 0,
+  "incidentFirstRepairUtc": null,
+  "incidentLastRepairUtc": null
 }
 ```
 
@@ -107,6 +115,35 @@ omit both, which reads as "no graphics-device failure".
 in a row and this agent has repair enabled. `detected` alone (one sighting) is enough to keep a VM
 out of the donor pool but not to overwrite anything. The object is omitted (null) when the client is
 healthy and no repair has ever been applied; agents that predate it omit it, which reads the same.
+`journalPhase` is `Prepared` after an attempt has been charged and flushed to disk but before the
+donor copy is known to have completed. `needsDonorSettings` remains true in that phase even across an
+agent/VM restart, so the same donor operation can be retried within budget. It changes to `Ready`
+after the copy succeeds; then `needsReadyAfterSettingsRepair` remains true and the agent refuses a
+duplicate `settings_repair` while it waits for proof from the relaunched client. A newly restarted
+master therefore retries `menu_ready` without spending or dispatching another settings copy. If
+that relaunch instead confirms Gamma again, the agent durably returns `Ready` to `Prepared` without
+resetting the incident budget, making the second and final bounded donor attempt reachable. The VM
+agent persists both phases beside the settings file as
+`Settings.json.d2rops-repair-state.json` using a flush-and-rename atomic write, so the agent
+auto-update that normally follows a master restart cannot erase the pending work.
+
+`incidentRepairAttempts` is the number of replacement attempts durably dispatched in the
+still-unresolved incident, not merely successful copies. The attempt count and first/last timestamps
+are written in `Prepared` before D2R is quit or the destination file is touched, closing the crash
+window that could otherwise grant an uncounted replay. A fresh master rehydrates its two-attempt
+rate-limit budget from these fields, rebasing their age against the payload's own `timeUtc` rather
+than comparing VM and master clocks. The agent expires the count and timestamps after the same
+30-minute incident window (and rewrites the sidecar) while retaining whichever phase is active.
+Only a healthy rendered frame removes the sidecar and closes the incident.
+
+If that sidecar exists but cannot be read or validated, `repairBlocked` is true and
+`repairJournalError` explains why. The agent fails closed: it suppresses menu input and rejects
+`settings_repair` because it cannot safely guess whether a destructive copy already happened.
+Missing sidecars are normal. An operator can remove the invalid sidecar or replace it with a valid
+one; subsequent status/command handling detects that recovery. `repairJournalWarning` instead
+reports a non-blocking durability problem where the agent still has a known safe in-memory phase
+(for example, the donor copy completed and memory is `Ready`, but rewriting durable `Ready` failed,
+leaving the already-flushed `Prepared` retry state on disk).
 
 ## Settings Repair Commands
 
@@ -122,7 +159,7 @@ the gamma screen:
   "path": "C:\\Users\\d2r\\Saved Games\\Diablo II Resurrected\\Settings.json",
   "content": "{ ... }",
   "sha256": "9f2c...",
-  "length": 1042,
+  "length": 4096,
   "lastWriteUtc": "2026-07-30T22:14:03Z"
 }
 ```
@@ -131,11 +168,26 @@ the gamma screen:
 receiving agent validates the payload (real JSON, an object, at least 3 properties, and 2 KB to
 512 KB - a known-good file on this fleet is 4 KB and anything under 2 KB is corrupt or truncated,
 which makes size the sharpest check here; the key names themselves are deliberately not checked,
-since D2R changes them across game patches), quits D2R,
-waits `settingsRepairSettleSeconds` for the client's own exit write to land, backs the existing file
-up next to itself as `Settings.json.<timestamp>.bak`, and writes the donor copy through a temp file
-plus rename. It fails rather than writing if the client is still running. It does not relaunch - the
-host issues `menu_ready` afterwards, so retry and escalation stay in one place.
+since D2R changes them across game patches). If D2R is running, the command freshly revalidates the
+Gamma screen in both screen-relative and window-relative coordinates before doing anything. A
+stopped client requires either a confirmed Gamma incident or an existing `Prepared` retry latch.
+For a running client, authorization is bound to its exact PID plus process start time before and
+after the Gamma probe. Graceful close and any hard-kill fallback target only that captured process
+generation; if it exits and a new D2R generation appears, repair fails closed and leaves the new
+client untouched. A final generation scan also requires D2R to remain stopped before the atomic
+settings replacement.
+The agent then increments the incident attempt count and durably writes `Prepared` **before** it
+quits D2R. Every command result after that durability point, including a later failure, returns
+`settingsRepairAttemptCharged: true` and the authoritative `incidentRepairAttempts` count. The host
+does not spend its matching budget before dispatch, so a reconnect or generation/precondition
+rejection that never reaches this durability point remains free. It waits
+`settingsRepairSettleSeconds` for the client's own exit write to land, verifies the process is
+stopped, backs the existing file up next to itself as
+`Settings.json.<timestamp>-<unique-id>.bak`, and writes the donor copy through a flushed temp file
+plus rename. Afterward it atomically rewrites the journal as `Ready`. It fails rather than writing
+if the live Gamma recheck fails, the client remains running, the journal is blocked, the attempt
+budget is exhausted, or `Ready` already forbids a duplicate. It does not relaunch - the host issues
+`menu_ready` afterwards, so retry and escalation stay in one place.
 
 ## Worker-to-Master Status
 
@@ -165,6 +217,7 @@ The worker sends a heartbeat containing physical-host telemetry and its local, n
     "capturedAtUtc": "2026-07-21T12:00:00Z",
     "vmCommandTimeoutSeconds": 90,
     "vmSafeHostPowerTransitions": true,
+    "generationBoundAgentCommands": true,
     "machineTelemetry": {
       "memoryTotalBytes": 68719476736,
       "memoryAvailableBytes": 34359738368,
@@ -204,7 +257,7 @@ The worker sends a heartbeat containing physical-host telemetry and its local, n
 }
 ```
 
-Worker heartbeats never serialize either the worker-to-master secret or local VM-agent secrets. `nodeHeartbeatSeconds` controls their interval (clamped to 5-300 seconds by the link). The receiver treats `agentOfflineAfterSeconds` as a minimum and extends it when needed for the authenticated client-advertised interval plus bounded status-collection jitter. Each remote VM's `connected` value is trusted from the worker that evaluated it against that worker's clock and policy. `vmCommandTimeoutSeconds` advertises the worker-owned Hyper-V command budget, capped by the 15-minute worker safety limit. `vmSafeHostPowerTransitions` explicitly says this worker implements the durable state-check/stop/restore transaction; absence, `false`, or a non-boolean value means unsupported.
+Worker heartbeats never serialize either the worker-to-master secret or local VM-agent secrets. `nodeHeartbeatSeconds` controls their interval (clamped to 5-300 seconds by the link). The receiver treats `agentOfflineAfterSeconds` as a minimum and extends it when needed for the authenticated client-advertised interval plus bounded status-collection jitter. Each remote VM's `connected` value is trusted from the worker that evaluated it against that worker's clock and policy. `vmCommandTimeoutSeconds` advertises the worker-owned Hyper-V command budget, capped by the 15-minute worker safety limit. `vmSafeHostPowerTransitions` explicitly says this worker implements the durable state-check/stop/restore transaction; absence, `false`, or a non-boolean value means unsupported. `generationBoundAgentCommands` says the worker enforces `expectedAgentConnectedAt` on a nested VM command. A current master fails a generation-bound command closed when that capability is absent, false, malformed, stale, or advertised only by an older worker connection; update the worker before retrying.
 
 Account keys, VM-agent IDs, and node/host-agent IDs must be globally unique, case-insensitively. The master combines advertised worker inventory with its local configuration. A disconnected or stale worker makes all of its advertised VM agents unavailable; a stale local VM-agent snapshot affects only that agent. Fleet orchestration skips unavailable accounts and continues with other nodes.
 
@@ -225,12 +278,13 @@ The master tunnels a VM-agent command through its owning worker with `agent_comm
       "accountKey": "hc3",
       "vmName": "d2r-hc-03"
     },
-    "timeoutMs": 60000
+    "timeoutMs": 60000,
+    "expectedAgentConnectedAt": "2026-07-21T11:50:00Z"
   }
 }
 ```
 
-The worker validates the nested request and sends it through its local VM-agent registry. It returns the nested result in the normal `command_result` envelope. If the worker or local VM agent is offline/stale, the command fails without affecting other fleet targets.
+The worker validates the nested request and sends it through its local VM-agent registry. When `expectedAgentConnectedAt` is present, the worker verifies that exact VM-agent connection again at dispatch; a reconnect invalidates the command instead of letting status from an old process authorize an action on its successor. It returns the nested result in the normal `command_result` envelope. If the worker or local VM agent is offline/stale, the command fails without affecting other fleet targets.
 
 The worker also accepts these physical-host commands from the master:
 

@@ -58,6 +58,39 @@ public sealed class WorkerVmSafeHostPowerCapabilityTests
     }
 
     [Theory]
+    [InlineData(true, true, true, true, true)]
+    [InlineData(true, true, false, true, false)]
+    [InlineData(true, false, true, true, false)]
+    [InlineData(false, true, true, true, false)]
+    [InlineData(true, true, true, false, false)]
+    public void GenerationBoundCommandsRequireCapabilityFromTheCurrentWorkerConnection(
+        bool connected,
+        bool hasConnectionGeneration,
+        bool statusReceivedOnCurrentConnection,
+        bool advertisedCapability,
+        bool expected)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var worker = new AgentSnapshot(
+            "server-b",
+            "host",
+            "Server B",
+            "server-b-host",
+            "development-build",
+            connected,
+            ConnectedAt: hasConnectionGeneration ? now : null,
+            LastSeenAt: now,
+            LastStatusJson: "{\"generationBoundAgentCommands\":true}",
+            StatusReceivedAt: statusReceivedOnCurrentConnection ? now : null);
+
+        Assert.Equal(
+            expected,
+            FleetRegistry.IsCurrentWorkerGenerationBoundAgentCommandsCapable(
+                worker,
+                advertisedCapability));
+    }
+
+    [Theory]
     [InlineData(HostSystemPowerAction.Sleep)]
     [InlineData(HostSystemPowerAction.Shutdown)]
     [InlineData(HostSystemPowerAction.Restart)]

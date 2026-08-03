@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace AgentCommon;
 
@@ -11,6 +12,40 @@ public sealed record D2RSettingsSnapshot(
     string Sha256,
     long Length,
     DateTimeOffset? LastWriteUtc);
+
+/// <summary>
+/// Crash-safe state for one settings-repair incident. It deliberately lives beside Settings.json
+/// rather than in host memory: the VM agent is commonly restarted by auto-update immediately after
+/// a master restart, and a successful copy must still be followed by a client relaunch after both
+/// processes have gone away.
+/// </summary>
+public enum D2RSettingsRepairPhase
+{
+    /// <summary>An attempt was charged durably, but Settings.json is not known to have been replaced.</summary>
+    Prepared,
+
+    /// <summary>Settings.json was replaced and the client must render a healthy frame.</summary>
+    Ready
+}
+
+public enum D2RSettingsRepairStateReadResult
+{
+    Missing,
+    Loaded,
+    Invalid
+}
+
+public sealed record D2RSettingsRepairState(
+    [property: JsonRequired] int SchemaVersion,
+    [property: JsonRequired] D2RSettingsRepairPhase Phase,
+    [property: JsonRequired] int AttemptCount,
+    DateTimeOffset? FirstAttemptUtc,
+    DateTimeOffset? LastAttemptUtc)
+{
+    public const int CurrentSchemaVersion = 2;
+    public const int MaxAttemptsPerIncident = 2;
+    public static readonly TimeSpan IncidentWindow = TimeSpan.FromMinutes(30);
+}
 
 /// <summary>
 /// Reads and replaces D2R's <c>Settings.json</c>. The file lives at
@@ -33,6 +68,13 @@ public static class D2RSettingsFile
     private const int MinPlausibleContentLength = 2 * 1024;
     private const int MaxPlausibleContentLength = 512 * 1024;
     private const int MinPlausiblePropertyCount = 3;
+    private const string RepairStateSuffix = ".d2rops-repair-state.json";
+
+    private static readonly JsonSerializerOptions RepairStateJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
 
     // FOLDERID_SavedGames. Saved Games is relocatable, so the known-folder path is the reliable
     // answer and %USERPROFILE%\Saved Games is only the fallback.
@@ -42,7 +84,15 @@ public static class D2RSettingsFile
     {
         if (!string.IsNullOrWhiteSpace(configuredPath))
         {
-            return System.IO.Path.GetFullPath(Environment.ExpandEnvironmentVariables(configuredPath.Trim()));
+            try
+            {
+                return System.IO.Path.GetFullPath(
+                    Environment.ExpandEnvironmentVariables(configuredPath.Trim()));
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                return null;
+            }
         }
 
         var savedGames = ResolveSavedGamesRoot();
@@ -95,13 +145,16 @@ public static class D2RSettingsFile
     /// <summary>
     /// Replaces the settings file with <paramref name="content"/>, keeping a timestamped backup of
     /// whatever was there. The backup is the only surviving evidence of what a corrupted file
-    /// looked like, which is the open question behind this whole repair path.
+    /// looked like, which is the open question behind this whole repair path. When supplied,
+    /// <paramref name="preCommitCheck"/> runs after the backup and donor temp file are flushed but
+    /// immediately before the atomic rename; refusing or throwing leaves the destination unchanged.
     /// </summary>
     public static bool TryReplace(
         string? path,
         string content,
         out string backupPath,
-        out string error)
+        out string error,
+        Func<(bool Allowed, string Error)>? preCommitCheck = null)
     {
         backupPath = "";
         if (!IsPlausibleSettingsJson(content, out var reason))
@@ -116,9 +169,11 @@ public static class D2RSettingsFile
             return false;
         }
 
+        string? temporaryPath = null;
         try
         {
             var file = new FileInfo(path);
+            temporaryPath = $"{file.FullName}.d2rops-tmp";
             if (file.Directory is { Exists: false } directory)
             {
                 directory.Create();
@@ -126,16 +181,52 @@ public static class D2RSettingsFile
 
             if (file.Exists)
             {
-                backupPath = $"{file.FullName}.{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.bak";
-                File.Copy(file.FullName, backupPath, overwrite: true);
+                // Repairs can be retried in the same second (and a manual repair can race the
+                // host). A seconds-only name with overwrite=true silently destroyed the first
+                // forensic copy. The high-resolution timestamp is useful to humans; the random
+                // suffix plus CreateNew makes preserving every prior file an atomic guarantee.
+                backupPath = $"{file.FullName}.{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss.fffffff}-{Guid.NewGuid():N}.bak";
+                using var source = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var backup = new FileStream(backupPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                source.CopyTo(backup);
+                backup.Flush(flushToDisk: true);
             }
 
             // Write-then-rename, not a direct overwrite. A guest that loses power mid-write is the
             // leading suspect for how the file gets corrupted in the first place, so the repair
             // itself must not have that same failure mode: the rename either happens or it does
             // not, and the old file survives until it does.
-            var temporaryPath = $"{file.FullName}.d2rops-tmp";
-            File.WriteAllText(temporaryPath, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.Create,
+                       FileAccess.Write,
+                       FileShare.None))
+            {
+                using (var writer = new StreamWriter(
+                           stream,
+                           new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                           bufferSize: 4096,
+                           leaveOpen: true))
+                {
+                    writer.Write(content);
+                    writer.Flush();
+                }
+
+                stream.Flush(flushToDisk: true);
+            }
+
+            if (preCommitCheck is not null)
+            {
+                var (allowed, preCommitError) = preCommitCheck();
+                if (!allowed)
+                {
+                    error = string.IsNullOrWhiteSpace(preCommitError)
+                        ? "The pre-commit safety check refused to replace the settings file."
+                        : preCommitError;
+                    return false;
+                }
+            }
+
             File.Move(temporaryPath, file.FullName, overwrite: true);
             error = "";
             return true;
@@ -143,6 +234,191 @@ public static class D2RSettingsFile
         catch (Exception ex)
         {
             error = $"Could not write {path}: {ex.Message}";
+            return false;
+        }
+        finally
+        {
+            try
+            {
+                if (temporaryPath is not null)
+                {
+                    File.Delete(temporaryPath);
+                }
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    /// <summary>The journal path associated with a resolved Settings.json path.</summary>
+    public static string? ResolveRepairStatePath(string? settingsPath)
+    {
+        if (string.IsNullOrWhiteSpace(settingsPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return $"{System.IO.Path.GetFullPath(settingsPath)}{RepairStateSuffix}";
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Loads a previously persisted unresolved repair incident.</summary>
+    public static bool TryReadRepairState(
+        string? settingsPath,
+        out D2RSettingsRepairState state,
+        out string error)
+    {
+        return ReadRepairState(settingsPath, out state, out error)
+            == D2RSettingsRepairStateReadResult.Loaded;
+    }
+
+    /// <summary>
+    /// Distinguishes a normal missing journal from an unreadable or invalid one. Callers must fail
+    /// closed on <see cref="D2RSettingsRepairStateReadResult.Invalid"/> because guessing whether a
+    /// prior destructive replacement completed can either duplicate a copy or strand the client.
+    /// </summary>
+    public static D2RSettingsRepairStateReadResult ReadRepairState(
+        string? settingsPath,
+        out D2RSettingsRepairState state,
+        out string error)
+    {
+        state = default!;
+        var statePath = ResolveRepairStatePath(settingsPath);
+        if (statePath is null)
+        {
+            error = "Could not resolve the settings-repair state path.";
+            return D2RSettingsRepairStateReadResult.Invalid;
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<D2RSettingsRepairState>(
+                File.ReadAllText(statePath),
+                RepairStateJsonOptions);
+            if (!IsValidRepairState(parsed, out error))
+            {
+                error = $"Could not use {statePath}: {error}";
+                return D2RSettingsRepairStateReadResult.Invalid;
+            }
+
+            state = parsed!;
+            error = "";
+            return D2RSettingsRepairStateReadResult.Loaded;
+        }
+        catch (FileNotFoundException)
+        {
+            error = $"{statePath} does not exist.";
+            return D2RSettingsRepairStateReadResult.Missing;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            error = $"{statePath} does not exist.";
+            return D2RSettingsRepairStateReadResult.Missing;
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not read {statePath}: {ex.Message}";
+            return D2RSettingsRepairStateReadResult.Invalid;
+        }
+    }
+
+    /// <summary>
+    /// Atomically persists an unresolved repair incident. The temporary file is flushed to disk
+    /// before rename so a guest restart cannot leave a valid-looking journal with partial JSON.
+    /// </summary>
+    public static bool TryWriteRepairState(
+        string? settingsPath,
+        D2RSettingsRepairState state,
+        out string error)
+    {
+        if (!IsValidRepairState(state, out error))
+        {
+            return false;
+        }
+
+        var statePath = ResolveRepairStatePath(settingsPath);
+        if (statePath is null)
+        {
+            error = "Could not resolve the settings-repair state path.";
+            return false;
+        }
+
+        var temporaryPath = $"{statePath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            var directory = System.IO.Path.GetDirectoryName(statePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var json = JsonSerializer.Serialize(state, RepairStateJsonOptions);
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None))
+            {
+                using (var writer = new StreamWriter(
+                           stream,
+                           new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                           bufferSize: 1024,
+                           leaveOpen: true))
+                {
+                    writer.Write(json);
+                    writer.Flush();
+                }
+
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temporaryPath, statePath, overwrite: true);
+            error = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not persist {statePath}: {ex.Message}";
+            return false;
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(temporaryPath);
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    /// <summary>Deletes the unresolved-incident journal after a healthy rendered frame.</summary>
+    public static bool TryClearRepairState(string? settingsPath, out string error)
+    {
+        var statePath = ResolveRepairStatePath(settingsPath);
+        if (statePath is null)
+        {
+            error = "Could not resolve the settings-repair state path.";
+            return false;
+        }
+
+        try
+        {
+            File.Delete(statePath);
+            error = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not clear {statePath}: {ex.Message}";
             return false;
         }
     }
@@ -207,6 +483,61 @@ public static class D2RSettingsFile
     public static string Sha256(string content)
     {
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
+    }
+
+    private static bool IsValidRepairState(D2RSettingsRepairState? state, out string error)
+    {
+        if (state is null)
+        {
+            error = "state JSON was empty.";
+            return false;
+        }
+
+        if (state.SchemaVersion != D2RSettingsRepairState.CurrentSchemaVersion)
+        {
+            error = $"unsupported schema version {state.SchemaVersion}.";
+            return false;
+        }
+
+        if (!Enum.IsDefined(state.Phase))
+        {
+            error = $"unknown repair phase {state.Phase}.";
+            return false;
+        }
+
+        if (state.AttemptCount < 0)
+        {
+            error = "attemptCount cannot be negative.";
+            return false;
+        }
+
+        if (state.AttemptCount == 0)
+        {
+            if (state.FirstAttemptUtc is not null || state.LastAttemptUtc is not null)
+            {
+                error = "an expired attempt budget cannot retain first/last attempt timestamps.";
+                return false;
+            }
+
+            error = "";
+            return true;
+        }
+
+        if (state.FirstAttemptUtc is not { } first
+            || state.LastAttemptUtc is not { } last)
+        {
+            error = "firstAttemptUtc and lastAttemptUtc are required.";
+            return false;
+        }
+
+        if (first > last)
+        {
+            error = "firstAttemptUtc cannot be later than lastAttemptUtc.";
+            return false;
+        }
+
+        error = "";
+        return true;
     }
 
     private static string? ResolveSavedGamesRoot()

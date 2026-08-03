@@ -28,7 +28,9 @@ public sealed class FollowAutoResumeIntentTests : IDisposable
             CharacterSlot: 2,
             FriendRow: 3,
             RecoveryAccountKeys: ["hc1", "hc2"],
-            Reason: "hc1 reached five warmup failures");
+            Reason: "hc1 reached five warmup failures",
+            TargetBotCount: 4,
+            RecoveryGeneration: 4242);
 
         new AppDb(config).SaveFollowAutoResumeIntent(expected);
         var restartedDatabase = new AppDb(config);
@@ -44,10 +46,55 @@ public sealed class FollowAutoResumeIntentTests : IDisposable
         Assert.Equal(expected.FriendRow, actual.FriendRow);
         Assert.Equal(expected.RecoveryAccountKeys, actual.RecoveryAccountKeys);
         Assert.Equal(expected.Reason, actual.Reason);
+        Assert.Equal(expected.TargetBotCount, actual.TargetBotCount);
+        Assert.Equal(expected.RecoveryGeneration, actual.RecoveryGeneration);
 
         restartedDatabase.ClearFollowAutoResumeIntent();
 
         Assert.Null(new AppDb(config).GetFollowAutoResumeIntent());
+    }
+
+    [Fact]
+    public void DelayedFallbackCannotConsumeAReplacementRunsIntent()
+    {
+        var original = NewIntent(recoveryGeneration: 41);
+        var replacement = NewIntent(recoveryGeneration: 42);
+
+        Assert.True(DiscordBot.IsExpectedFollowAutoResumeIntent(41, original));
+        Assert.False(DiscordBot.IsExpectedFollowAutoResumeIntent(41, replacement));
+        Assert.False(DiscordBot.IsExpectedFollowAutoResumeIntent(41, null));
+    }
+
+    [Fact]
+    public void ConditionalConsumeLeavesANewerRecoveryGenerationIntact()
+    {
+        Directory.CreateDirectory(_directory);
+        var db = new AppDb(new HostConfig
+        {
+            DisableDiscord = true,
+            DatabasePath = Path.Combine(_directory, "host.sqlite")
+        });
+        db.SaveFollowAutoResumeIntent(NewIntent(recoveryGeneration: 42));
+
+        Assert.False(db.ClearFollowAutoResumeIntent(expectedRecoveryGeneration: 41));
+        Assert.Equal(42, db.GetFollowAutoResumeIntent()!.RecoveryGeneration);
+        Assert.True(db.ClearFollowAutoResumeIntent(expectedRecoveryGeneration: 42));
+        Assert.Null(db.GetFollowAutoResumeIntent());
+    }
+
+    private static FollowAutoResumeIntent NewIntent(long recoveryGeneration)
+    {
+        return new FollowAutoResumeIntent(
+            ChannelId: 1,
+            DelaySeconds: 0,
+            Watch: false,
+            IdleMinutes: 30,
+            MetricsEnabled: false,
+            CharacterSlot: null,
+            FriendRow: null,
+            RecoveryAccountKeys: [],
+            Reason: "test",
+            RecoveryGeneration: recoveryGeneration);
     }
 
     public void Dispose()

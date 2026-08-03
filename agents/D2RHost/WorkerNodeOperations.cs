@@ -119,7 +119,8 @@ public sealed class WorkerNodeOperations
                 10,
                 MaximumCommandDurationSeconds),
             DrainAlerts(),
-            VmSafeHostPowerTransitions: true));
+            VmSafeHostPowerTransitions: true,
+            GenerationBoundAgentCommands: true));
     }
 
     public async Task<CommandResult> HandleCommandAsync(
@@ -219,13 +220,15 @@ public sealed class WorkerNodeOperations
         var nestedCommand = RequireString(args, "command");
         var nestedArgs = ReadNestedArgs(args);
         var timeout = ReadAgentCommandTimeout(args);
+        var expectedAgentConnectedAt = ReadExpectedAgentConnectedAt(args);
 
         var result = await _registry.SendCommandAsync(
             agentId,
             nestedCommand,
             nestedArgs,
             timeout,
-            cancellationToken);
+            cancellationToken,
+            expectedConnectedAt: expectedAgentConnectedAt);
 
         return new CommandResult(result.Ok, result.Message, result.Data);
     }
@@ -313,6 +316,24 @@ public sealed class WorkerNodeOperations
         }
 
         return timeout;
+    }
+
+    private static DateTimeOffset? ReadExpectedAgentConnectedAt(JsonElement args)
+    {
+        if (!TryGetProperty(args, "expectedAgentConnectedAt", out var property)
+            || property.ValueKind is JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (property.ValueKind != JsonValueKind.String
+            || !property.TryGetDateTimeOffset(out var connectedAt))
+        {
+            throw new WorkerCommandValidationException(
+                "agent_command args.expectedAgentConnectedAt must be an ISO-8601 timestamp or null.");
+        }
+
+        return connectedAt;
     }
 
     private static string RequireString(JsonElement args, string propertyName)

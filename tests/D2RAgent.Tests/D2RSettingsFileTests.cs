@@ -7,6 +7,17 @@ namespace D2RAgent.Tests;
 // works must never end up with a worse Settings.json than it started with.
 public sealed class D2RSettingsFileTests
 {
+    [Fact]
+    public void InvalidConfiguredPathsFailClosedWithoutEscapingPathExceptions()
+    {
+        Assert.Null(D2RSettingsFile.ResolveSettingsPath("bad\0path"));
+        Assert.Null(D2RSettingsFile.ResolveRepairStatePath("bad\0path"));
+        Assert.Equal(
+            D2RSettingsRepairStateReadResult.Invalid,
+            D2RSettingsFile.ReadRepairState("bad\0path", out _, out var error));
+        Assert.Contains("Could not resolve", error, StringComparison.Ordinal);
+    }
+
     // A known-good Settings.json on this fleet is 4 KB, and the operator's rule is that anything
     // under 2 KB is wrong - which is most of what the plausibility gate is enforcing, so the
     // fixture has to be realistically sized rather than a token three-key object. The bulk here is
@@ -28,6 +39,32 @@ public sealed class D2RSettingsFileTests
         // because) the file it holds is one this gate would refuse to write.
         Assert.True(File.Exists(backupPath));
         Assert.Equal(CorruptShortSettings, File.ReadAllText(backupPath));
+    }
+
+    [Fact]
+    public void RapidRetriesKeepEveryPriorFileInADistinctBackup()
+    {
+        using var settings = new TempSettings(CorruptShortSettings);
+        var secondSettings = RealisticSettings.Replace("\"Gamma\": 1.0", "\"Gamma\": 1.2");
+
+        Assert.True(D2RSettingsFile.TryReplace(
+            settings.SettingsPath,
+            RealisticSettings,
+            out var firstBackup,
+            out _));
+        Assert.True(D2RSettingsFile.TryReplace(
+            settings.SettingsPath,
+            secondSettings,
+            out var secondBackup,
+            out _));
+
+        Assert.NotEqual(firstBackup, secondBackup);
+        Assert.Equal(CorruptShortSettings, File.ReadAllText(firstBackup));
+        Assert.Equal(RealisticSettings, File.ReadAllText(secondBackup));
+        Assert.Equal(secondSettings, File.ReadAllText(settings.SettingsPath));
+        Assert.Equal(2, Directory.GetFiles(
+            Path.GetDirectoryName(settings.SettingsPath)!,
+            $"{D2RSettingsFile.SettingsFileName}.*.bak").Length);
     }
 
     // The operator's rule, measured on a real fleet file: a good one is 4 KB and anything under
@@ -73,6 +110,38 @@ public sealed class D2RSettingsFileTests
         // the leading suspect for the corruption; a leftover temp file would mean the rename
         // never happened.
         Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(settings.SettingsPath)!, "*.d2rops-tmp"));
+    }
+
+    [Fact]
+    public void PreCommitRefusalLeavesTheDestinationUnchanged()
+    {
+        using var settings = new TempSettings(CorruptShortSettings);
+        var directory = Path.GetDirectoryName(settings.SettingsPath)!;
+        var sawFlushedTemporaryFile = false;
+        var sawBackup = false;
+
+        var replaced = D2RSettingsFile.TryReplace(
+            settings.SettingsPath,
+            RealisticSettings,
+            out var backupPath,
+            out var error,
+            preCommitCheck: () =>
+            {
+                sawFlushedTemporaryFile = File.Exists($"{settings.SettingsPath}.d2rops-tmp");
+                sawBackup = Directory.GetFiles(
+                    directory,
+                    $"{D2RSettingsFile.SettingsFileName}.*.bak").Length == 1;
+                return (false, "A new D2R process generation appeared at commit.");
+            });
+
+        Assert.False(replaced);
+        Assert.True(sawFlushedTemporaryFile);
+        Assert.True(sawBackup);
+        Assert.Contains("new D2R process generation", error);
+        Assert.Equal(CorruptShortSettings, File.ReadAllText(settings.SettingsPath));
+        Assert.True(File.Exists(backupPath));
+        Assert.Equal(CorruptShortSettings, File.ReadAllText(backupPath));
+        Assert.Empty(Directory.GetFiles(directory, "*.d2rops-tmp"));
     }
 
     [Fact]
@@ -186,6 +255,43 @@ public sealed class D2RSettingsFileTests
         Assert.Contains("d2rSettingsPath", readError);
         Assert.False(D2RSettingsFile.TryReplace(null, RealisticSettings, out _, out var writeError));
         Assert.Contains("d2rSettingsPath", writeError);
+    }
+
+    [Fact]
+    public void RepairJournalReadDistinguishesMissingFromInvalid()
+    {
+        using var settings = new TempSettings(RealisticSettings);
+
+        Assert.Equal(
+            D2RSettingsRepairStateReadResult.Missing,
+            D2RSettingsFile.ReadRepairState(settings.SettingsPath, out _, out _));
+
+        var statePath = D2RSettingsFile.ResolveRepairStatePath(settings.SettingsPath)!;
+        File.WriteAllText(statePath, "{ not-json");
+
+        Assert.Equal(
+            D2RSettingsRepairStateReadResult.Invalid,
+            D2RSettingsFile.ReadRepairState(settings.SettingsPath, out _, out var error));
+        Assert.Contains("Could not read", error);
+    }
+
+    [Fact]
+    public void RepairJournalRequiresExplicitPhaseAndAttemptCount()
+    {
+        using var settings = new TempSettings(RealisticSettings);
+        var statePath = D2RSettingsFile.ResolveRepairStatePath(settings.SettingsPath)!;
+        File.WriteAllText(
+            statePath,
+            $$"""
+              {
+                "schemaVersion": {{D2RSettingsRepairState.CurrentSchemaVersion}}
+              }
+              """);
+
+        Assert.Equal(
+            D2RSettingsRepairStateReadResult.Invalid,
+            D2RSettingsFile.ReadRepairState(settings.SettingsPath, out _, out var error));
+        Assert.Contains("missing required properties", error, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

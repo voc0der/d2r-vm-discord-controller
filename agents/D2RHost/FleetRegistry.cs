@@ -184,12 +184,21 @@ public sealed class FleetRegistry
             && node is { Connected: true, ConnectedAt: not null, StatusReceivedAt: not null };
     }
 
+    internal static bool IsCurrentWorkerGenerationBoundAgentCommandsCapable(
+        AgentSnapshot? node,
+        bool advertisedCapability)
+    {
+        return advertisedCapability
+            && node is { Connected: true, ConnectedAt: not null, StatusReceivedAt: not null };
+    }
+
     public async Task<CommandResultInfo> SendCommandAsync(
         string agentId,
         string command,
         object? args = null,
         TimeSpan? timeout = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? expectedAgentConnectedAt = null)
     {
         var fleet = BuildSnapshot();
         if (!fleet.Agents.TryGetValue(agentId, out var agent))
@@ -205,10 +214,22 @@ public sealed class FleetRegistry
             throw new InvalidOperationException($"Agent \"{agentId}\"{nodeSuffix} is offline.");
         }
 
+        if (expectedAgentConnectedAt is not null && agent.ConnectedAt != expectedAgentConnectedAt)
+        {
+            throw new InvalidOperationException(
+                $"Agent \"{agentId}\" reconnected after the command was authorized; fresh status is required.");
+        }
+
         if (!fleet.AgentNodes.TryGetValue(agentId, out var nodeId)
             || IsLocalNode(nodeId))
         {
-            return await _localRegistry.SendCommandAsync(agentId, command, args, timeout, cancellationToken);
+            return await _localRegistry.SendCommandAsync(
+                agentId,
+                command,
+                args,
+                timeout,
+                cancellationToken,
+                expectedConnectedAt: expectedAgentConnectedAt);
         }
 
         var node = _localRegistry.GetAgent(nodeId);
@@ -216,6 +237,20 @@ public sealed class FleetRegistry
         {
             throw new InvalidOperationException($"D2RHost worker \"{nodeId}\" is offline.");
         }
+
+        if (expectedAgentConnectedAt is not null)
+        {
+            var inventory = TryParseWorkerInventory(nodeId, node.LastStatusJson);
+            if (!IsCurrentWorkerGenerationBoundAgentCommandsCapable(
+                    node,
+                    inventory?.GenerationBoundAgentCommands == true))
+            {
+                throw new InvalidOperationException(
+                    $"D2RHost worker \"{nodeId}\" has not advertised generation-bound agent commands on its current connection; update the worker before retrying this safety-sensitive command.");
+            }
+        }
+
+        var expectedWorkerConnectedAt = node.ConnectedAt;
 
         var nestedTimeout = timeout ?? TimeSpan.FromSeconds(60);
         var nestedTimeoutMs = (int)Math.Clamp(nestedTimeout.TotalMilliseconds, 1, int.MaxValue);
@@ -228,10 +263,12 @@ public sealed class FleetRegistry
                 agentId,
                 command,
                 args = args ?? new { },
-                timeoutMs = nestedTimeoutMs
+                timeoutMs = nestedTimeoutMs,
+                expectedAgentConnectedAt
             },
             outerTimeout,
-            cancellationToken);
+            cancellationToken,
+            expectedConnectedAt: expectedWorkerConnectedAt);
 
         return new CommandResultInfo(
             agentId,
@@ -477,7 +514,8 @@ public sealed class FleetRegistry
                 agents,
                 accounts,
                 ReadInt(root, "vmCommandTimeoutSeconds"),
-                ReadBooleanCapability(root, "vmSafeHostPowerTransitions"));
+                ReadBooleanCapability(root, "vmSafeHostPowerTransitions"),
+                ReadBooleanCapability(root, "generationBoundAgentCommands"));
         }
         catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
         {
@@ -557,7 +595,8 @@ public sealed class FleetRegistry
         IReadOnlyList<WorkerAgentInventory> Agents,
         IReadOnlyList<WorkerAccountInventory> Accounts,
         int? VmCommandTimeoutSeconds,
-        bool VmSafeHostPowerTransitions);
+        bool VmSafeHostPowerTransitions,
+        bool GenerationBoundAgentCommands);
 
     private sealed record WorkerAgentInventory(
         string Id,

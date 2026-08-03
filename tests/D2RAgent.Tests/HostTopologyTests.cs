@@ -12,6 +12,22 @@ public sealed class HostTopologyTests
     private const string ValidSecret = "test-secret-1234";
 
     [Fact]
+    public void ConnectionGenerationStrictlyAdvancesWhenConcurrentHellosShareAClockTick()
+    {
+        var previous = new DateTimeOffset(2026, 8, 2, 12, 0, 0, TimeSpan.Zero);
+
+        Assert.Equal(
+            previous.AddTicks(1),
+            AgentRegistry.NextConnectionGeneration(previous, previous));
+        Assert.Equal(
+            previous.AddTicks(1),
+            AgentRegistry.NextConnectionGeneration(previous.AddTicks(-1), previous));
+        Assert.Equal(
+            previous.AddTicks(2),
+            AgentRegistry.NextConnectionGeneration(previous.AddTicks(2), previous));
+    }
+
+    [Fact]
     public void ProgrammaticFirewallConfigUsesSecureRuntimeMetadataDefaults()
     {
         var firewall = new WindowsFirewallConfig();
@@ -624,7 +640,9 @@ public sealed class HostTopologyTests
         Assert.Single(status.Accounts);
         Assert.Equal(90, status.VmCommandTimeoutSeconds);
         Assert.True(status.VmSafeHostPowerTransitions);
+        Assert.True(status.GenerationBoundAgentCommands);
         Assert.Contains("\"vmSafeHostPowerTransitions\":true", json, StringComparison.Ordinal);
+        Assert.Contains("\"generationBoundAgentCommands\":true", json, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -659,6 +677,28 @@ public sealed class HostTopologyTests
 
         Assert.False(result.Ok);
         Assert.Equal("agent_command args must be a JSON object.", result.Message);
+    }
+
+    [Fact]
+    public async Task WorkerRejectsMalformedExpectedAgentConnectionGeneration()
+    {
+        using var fixture = new WorkerOperationsFixture();
+        var request = new CommandRequest(
+            "test-command",
+            "agent_command",
+            JsonSerializer.SerializeToElement(new
+            {
+                agentId = "d2r-hc-01",
+                command = "settings_export",
+                args = new { },
+                timeoutMs = 20_000,
+                expectedAgentConnectedAt = "not-a-timestamp"
+            }));
+
+        var result = await fixture.Operations.HandleCommandAsync(request, CancellationToken.None);
+
+        Assert.False(result.Ok);
+        Assert.Contains("expectedAgentConnectedAt must be an ISO-8601 timestamp", result.Message);
     }
 
     [Fact]

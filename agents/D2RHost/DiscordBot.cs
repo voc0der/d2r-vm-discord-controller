@@ -71,6 +71,8 @@ public sealed class DiscordBot
     // bot, not on a follow-auto run, because the corruption survives runs - a fresh run must not
     // hand a client that already came back broken another two attempts.
     private readonly SettingsRepairTracker _settingsRepairs = new();
+    private CancellationTokenSource? _settingsRepairSweepCts;
+    private Task? _settingsRepairSweepTask;
     private readonly DiscordSocketClient _client;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
     private readonly SemaphoreSlim _notificationLock = new(1, 1);
@@ -120,38 +122,21 @@ public sealed class DiscordBot
     private static readonly TimeSpan FollowAutoVmPowerStatePollInterval = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan FollowAutoLocalRestartFallbackDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan FollowAutoStopActionWindow = TimeSpan.FromMinutes(2);
-    // How many bots the active run should put in the leader's game. Written by the -1 / +1 buttons
-    // from the gateway task and read by the run loop, so every access goes through Volatile/
-    // Interlocked rather than a lock - it is one int, and a cycle that reads a value one press
-    // stale simply applies it on the next pass a few seconds later.
-    private int _followAutoTargetBots = FollowAutoRosterPolicy.DefaultBotCount;
-    private int _followAutoBenchedCount;
-    private int _followAutoOnlineCount;
-    // Last player count any fleet account could read, used to keep +1 from trying to add a bot to
-    // a game that is already full. Written by the run loop, read by the gateway task, so it is a
-    // plain int with a sentinel rather than an int? - Nullable<int> is two fields and carries no
-    // atomicity guarantee, which is exactly the tear that would let a reader see "known" paired
-    // with a stale count.
-    private const int UnknownPlayerCount = -1;
-    private int _followAutoLivePlayerCountOrUnknown = UnknownPlayerCount;
-
-    private int? FollowAutoLivePlayerCount
-    {
-        get
-        {
-            var value = Volatile.Read(ref _followAutoLivePlayerCountOrUnknown);
-            return value == UnknownPlayerCount ? null : value;
-        }
-        set => Volatile.Write(
-            ref _followAutoLivePlayerCountOrUnknown,
-            value ?? UnknownPlayerCount);
-    }
+    // How many bots the active run should put in the leader's game. This also provides the
+    // restart-journal barrier: once local recovery is armed a button change cannot land after the
+    // persisted snapshot and disappear when the host comes back.
+    private readonly FollowAutoTargetControl _followAutoTarget = new();
+    private FollowAutoRosterAvailability _followAutoRosterAvailability = new(
+        FollowAutoRosterPolicy.DefaultBotCount,
+        OnlineAccountCount: 0,
+        ConnectedBenchedCount: 0);
+    // Per-game high-water rather than the latest count: a low/degraded later vantage must not
+    // reopen +1 after this game was observed full. Confirmed advancement resets it.
+    private readonly FollowAutoPlayerCountHighWater _followAutoLivePlayers = new();
 
     private readonly FollowAutoRosterAdjustmentGate _followAutoRosterGate = new();
-    private readonly SemaphoreSlim _followAutoLock = new(1, 1);
+    private readonly FollowAutoLifecycle _followAutoLifecycle = new(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     private readonly object _followAutoStopActionSync = new();
-    private CancellationTokenSource? _followAutoCts;
-    private string? _followAutoStopReason;
     private bool _followAutoStopActionsRequested;
     private CancellationTokenSource? _followAutoStopActionCts;
     private long _followAutoStopActionPromptId;
@@ -162,9 +147,10 @@ public sealed class DiscordBot
     private int _followAutoJoined;
     private int _followAutoTotal;
     private bool _followAutoMetricsEnabled;
-    private long _followAutoRunSequence = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    private long _followAutoCurrentRunId;
-    private int _followAutoResumeInProgress;
+    // Redundant generic Ready probes are coalesced, while exact fallbacks wait and are never
+    // dropped. A startup attempt can spend two minutes resolving a channel while an exact local-
+    // restart fallback becomes due; the latter must run afterwards against the fresh journal.
+    private readonly SemaphoreSlim _followAutoResumeGate = new(1, 1);
 
     // Multi-alt bind-in-game: the serialized nametag fingerprint this follow-auto run locked
     // onto, decided by the first pulse of the run that verifiably sees one of the bound
@@ -213,6 +199,13 @@ public sealed class DiscordBot
 
     public async Task StartAsync()
     {
+        // Settings repair is a fleet/master responsibility, not a Discord feature. Start it before
+        // the headless-mode return so masters with disableDiscord=true still recover their VMs.
+        _settingsRepairSweepCts ??= new CancellationTokenSource();
+        _settingsRepairSweepTask ??= Task.Run(
+            () => RunSettingsRepairSweepAsync(_settingsRepairSweepCts.Token),
+            CancellationToken.None);
+
         if (_config.DisableDiscord)
         {
             _logger.LogWarning("Discord is disabled.");
@@ -222,7 +215,6 @@ public sealed class DiscordBot
         await _client.LoginAsync(TokenType.Bot, _config.DiscordToken);
         await _client.StartAsync();
         _ = Task.Run(RunHostWakeMonitorAsync);
-        _ = Task.Run(RunSettingsRepairSweepAsync);
     }
 
     /// <summary>
@@ -235,21 +227,40 @@ public sealed class DiscordBot
     /// over the fleet's last status is all it takes to make the recovery autonomous. The per-account
     /// rate limit is shared with the follow-auto path, so the two cannot double up on one client.
     /// </remarks>
-    private async Task RunSettingsRepairSweepAsync()
+    private async Task RunSettingsRepairSweepAsync(CancellationToken cancellationToken)
     {
-        await Task.Delay(SettingsRepairFirstSweepDelay);
-        while (true)
+        try
+        {
+            await Task.Delay(SettingsRepairFirstSweepDelay, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await SweepSettingsRepairsAsync(CancellationToken.None);
+                await SweepSettingsRepairsAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "The D2R settings repair sweep failed.");
             }
 
-            await Task.Delay(SettingsRepairSweepInterval);
+            try
+            {
+                await Task.Delay(SettingsRepairSweepInterval, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
         }
     }
 
@@ -261,14 +272,53 @@ public sealed class DiscordBot
         {
             cancellationToken.ThrowIfCancellationRequested();
             var agent = _registry.GetAgent(account.AgentId);
-            if (agent?.Connected != true
-                || !SettingsRepairPolicy.NeedsDonorSettings(agent.LastStatusJson))
+            if (!HasStatusFromCurrentAgentConnection(agent))
             {
                 continue;
             }
 
+            _settingsRepairs.ObserveCurrentStatus(
+                accountKey,
+                agent!.LastStatusJson,
+                DateTimeOffset.UtcNow);
+            var recovery = _settingsRepairs.RecoveryFor(accountKey);
+            if (recovery.Stage == SettingsRecoveryStage.None)
+            {
+                continue;
+            }
+
+            if (recovery.Stage == SettingsRecoveryStage.ReadyRequired)
+            {
+                var readyRetry = await SendReadyAfterSettingsRepairAsync(accountKey, account, cancellationToken);
+                if (readyRetry.Ok)
+                {
+                    var donorDescription = string.IsNullOrWhiteSpace(recovery.DonorAccountKey)
+                        ? "a fleet donor"
+                        : recovery.DonorAccountKey;
+                    _notifications.Enqueue(
+                        $"{FormatAccountDisplayName(accountKey, account)}: restarted successfully after its Settings.json "
+                            + $"was replaced from {donorDescription}.");
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Sweep could not restart {AccountKey} after settings repair: {Message}",
+                        accountKey,
+                        readyRetry.Message);
+                }
+
+                continue;
+            }
+
             var repair = await TryRepairSettingsFromFleetAsync(
-                accountKey, account, agent.LastStatusJson, cancellationToken);
+                accountKey,
+                account,
+                agent.LastStatusJson,
+                DateTimeOffset.UtcNow,
+                agent.ConnectedAt,
+                agent.StatusReceivedAt,
+                SettingsRepairPolicy.RepairEvidenceToken(agent.LastStatusJson),
+                cancellationToken);
             if (repair is null)
             {
                 continue;
@@ -281,19 +331,33 @@ public sealed class DiscordBot
                 continue;
             }
 
+            if (!repair.CopyApplied)
+            {
+                if (_settingsRepairs.RecoveryFor(accountKey).Stage == SettingsRecoveryStage.ReadyRequired)
+                {
+                    var resumedReady = await SendReadyAfterSettingsRepairAsync(accountKey, account, cancellationToken);
+                    _notifications.Enqueue(
+                        $"{FormatAccountDisplayName(accountKey, account)}: resumed a settings repair that had already "
+                            + $"copied successfully: {resumedReady.Message}");
+                }
+
+                continue;
+            }
+
             repaired++;
-            // The client was closed to replace the file, so something has to start it again. Inside
-            // follow-auto the run's own next cycle does that; here there is nothing else to do it.
-            var readied = await SendReadyAfterSettingsRepairAsync(account, cancellationToken);
+            // A failed ready leaves the tracker in ReadyRequired. The next sweep retries only this
+            // phase, without copying the file again or consuming another replacement attempt.
+            var readied = await SendReadyAfterSettingsRepairAsync(accountKey, account, cancellationToken);
             _notifications.Enqueue(
                 $"{FormatAccountDisplayName(accountKey, account)}: D2R had reset its own Settings.json (first-run gamma "
-                    + $"screen). Replaced it from {repair.DonorAccountKey} and restarted the client: {readied}");
+                    + $"screen). Replaced it from {repair.DonorAccountKey} and restarted the client: {readied.Message}");
         }
 
         return repaired;
     }
 
-    private async Task<string> SendReadyAfterSettingsRepairAsync(
+    private async Task<SettingsReadyAttempt> SendReadyAfterSettingsRepairAsync(
+        string accountKey,
         AccountConfig account,
         CancellationToken cancellationToken)
     {
@@ -305,12 +369,64 @@ public sealed class DiscordBot
                 new { },
                 ReadyCommandTimeout,
                 cancellationToken);
-            return result.Ok ? "client is ready again." : $"the follow-up ready failed ({result.Message}).";
+            if (!result.Ok)
+            {
+                var failedStatusJson = result.Data?.GetRawText();
+                if (SettingsRepairPolicy.NeedsDonorSettings(failedStatusJson))
+                {
+                    // A genuinely new post-copy gamma frame means the donor copy did not recover
+                    // this client. ObserveCurrentStatus also restores the agent's durable copy
+                    // budget when this is the first status seen after a master restart.
+                    _settingsRepairs.ObserveCurrentStatus(
+                        accountKey,
+                        failedStatusJson,
+                        DateTimeOffset.UtcNow);
+                }
+
+                return new SettingsReadyAttempt(false, $"the follow-up ready failed ({result.Message}).");
+            }
+
+            // menu_ready success is positive proof that the copied file works. It also completes
+            // standalone sweep recovery; follow-auto has an additional proof point later, but
+            // should not be required to reset this incident's budget.
+            _settingsRepairs.RecordRecovered(accountKey);
+            return new SettingsReadyAttempt(true, "client is ready again.");
         }
         catch (Exception ex)
         {
-            return $"the follow-up ready failed ({ex.Message}).";
+            return new SettingsReadyAttempt(false, $"the follow-up ready failed ({ex.Message}).");
         }
+    }
+
+    internal static bool HasStatusFromCurrentAgentConnection(AgentSnapshot? agent)
+    {
+        // AgentRegistry retains LastStatusJson for diagnostics across reconnects, but resets
+        // StatusReceivedAt until the new authenticated connection supplies its own status frame.
+        return agent is { Connected: true, ConnectedAt: not null, StatusReceivedAt: not null };
+    }
+
+    internal static bool TryGetAgentChargedSettingsRepairAttempt(
+        CommandResultInfo result,
+        out int? durableAttemptCount)
+    {
+        durableAttemptCount = null;
+        if (result.Data is { ValueKind: JsonValueKind.Object } data)
+        {
+            if (TryGetInt(data, "incidentRepairAttempts", out var attempts) && attempts > 0)
+            {
+                durableAttemptCount = attempts;
+            }
+
+            if (TryGetBoolean(data, "settingsRepairAttemptCharged", out var charged))
+            {
+                return charged;
+            }
+        }
+
+        // Compatibility with agents released before the explicit marker: a successful repair
+        // necessarily got past Prepared and completed the copy. Failures without the marker are
+        // deliberately free because they can be generation/precondition rejections.
+        return result.Ok;
     }
 
     // A pulse that takes minutes longer than requested means the process was suspended - the
@@ -418,6 +534,25 @@ public sealed class DiscordBot
 
     public async Task StopAsync()
     {
+        if (_settingsRepairSweepCts is { } sweepCts)
+        {
+            sweepCts.Cancel();
+            if (_settingsRepairSweepTask is { } sweepTask)
+            {
+                try
+                {
+                    await sweepTask;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
+            sweepCts.Dispose();
+            _settingsRepairSweepCts = null;
+            _settingsRepairSweepTask = null;
+        }
+
         if (_config.DisableDiscord)
         {
             return;
@@ -453,14 +588,24 @@ public sealed class DiscordBot
 
         PostStartupMessageOnce();
         await FlushUpdateNotificationsAsync();
-        _ = Task.Run(TryResumeFollowAutoAsync);
+        _ = Task.Run(() => TryResumeFollowAutoAsync());
     }
 
-    private async Task TryResumeFollowAutoAsync()
+    private async Task TryResumeFollowAutoAsync(long? expectedRecoveryGeneration = null)
     {
-        if (Interlocked.CompareExchange(ref _followAutoResumeInProgress, 1, 0) != 0)
+        if (expectedRecoveryGeneration is null)
         {
-            return;
+            // Ready can fire repeatedly while Discord reconnects. Those generic startup probes are
+            // interchangeable, so coalesce them instead of queueing N identical 120-second channel
+            // lookups ahead of a recovery fallback. An exact fallback below is never dropped.
+            if (!await _followAutoResumeGate.WaitAsync(0))
+            {
+                return;
+            }
+        }
+        else
+        {
+            await _followAutoResumeGate.WaitAsync();
         }
 
         try
@@ -468,6 +613,14 @@ public sealed class DiscordBot
             var intent = _db.GetFollowAutoResumeIntent();
             if (intent is null)
             {
+                return;
+            }
+
+            if (expectedRecoveryGeneration is { } expectedGeneration
+                && !IsExpectedFollowAutoResumeIntent(expectedGeneration, intent))
+            {
+                // A delayed fallback belongs to one exact local-restart transaction. A newer row
+                // is somebody else's recovery and must be left untouched.
                 return;
             }
 
@@ -496,13 +649,24 @@ public sealed class DiscordBot
                 return;
             }
 
-            var start = await TryBeginFollowAutoRunAsync(requireRecordedResumeIntent: true);
+            var start = await TryBeginFollowAutoRunAsync(
+                intent.RecoveryGeneration,
+                waitForPredecessorRunId: expectedRecoveryGeneration);
             if (start is null)
             {
-                if (_db.GetFollowAutoResumeIntent() is null)
+                var currentIntent = _db.GetFollowAutoResumeIntent();
+                if (currentIntent is null)
                 {
                     _logger.LogInformation(
                         "The recorded follow-auto resume was cleared before it started; automatic resume was skipped.");
+                    return;
+                }
+
+
+                if (!IsExpectedFollowAutoResumeIntent(intent.RecoveryGeneration, currentIntent))
+                {
+                    _logger.LogInformation(
+                        "The recorded follow-auto resume was replaced by a newer recovery while the old channel was resolving; leaving the newer intent intact.");
                     return;
                 }
 
@@ -510,26 +674,49 @@ public sealed class DiscordBot
                 // process restart would unexpectedly launch a second run.
                 _logger.LogWarning(
                     "Discarding the recorded follow-auto resume intent because a follow-auto run is already active.");
-                _db.ClearFollowAutoResumeIntent();
+                _db.ClearFollowAutoResumeIntent(intent.RecoveryGeneration);
                 return;
             }
 
-            var options = new FollowAutoRunOptions(
-                channel,
-                Math.Max(intent.DelaySeconds, 0),
-                intent.Watch,
-                TimeSpan.FromMinutes(Math.Max(intent.IdleMinutes, 1)),
-                intent.MetricsEnabled,
-                intent.CharacterSlot,
-                intent.FriendRow,
-                intent.RecoveryAccountKeys,
-                intent.Reason,
-                FollowAutoRosterPolicy.ClampTarget(intent.TargetBotCount));
+            var queued = false;
+            try
+            {
+                var options = new FollowAutoRunOptions(
+                    channel,
+                    Math.Max(intent.DelaySeconds, 0),
+                    intent.Watch,
+                    TimeSpan.FromMinutes(Math.Max(intent.IdleMinutes, 1)),
+                    intent.MetricsEnabled,
+                    intent.CharacterSlot,
+                    intent.FriendRow,
+                    intent.RecoveryAccountKeys,
+                    intent.Reason,
+                    FollowAutoRosterPolicy.ClampTarget(intent.TargetBotCount));
 
-            // The one-shot is consumed only after the in-memory run has been installed. A crash
-            // before this point leaves the intent available to the next process start.
-            _db.ClearFollowAutoResumeIntent();
-            QueueFollowAutoRun(options, start);
+                // The one-shot is consumed only after the in-memory run has been installed. A
+                // crash before this point leaves the intent available to the next process start.
+                // Conditional deletion closes the delayed-fallback race: a replacement row that
+                // appears during channel resolution belongs to a later run and is never consumed.
+                if (!_db.ClearFollowAutoResumeIntent(intent.RecoveryGeneration))
+                {
+                    _logger.LogInformation(
+                        "The recorded follow-auto resume changed before it could be consumed; automatic resume was skipped.");
+                    return;
+                }
+
+                start.Token.ThrowIfCancellationRequested();
+                QueueFollowAutoRun(options, start);
+                queued = true;
+            }
+            finally
+            {
+                if (!queued)
+                {
+                    // An installed lease with no loop can never unwind itself.
+                    await _followAutoLifecycle.CompleteUnwindAsync(start);
+                }
+            }
+
             _logger.LogInformation(
                 "Resumed follow-auto after host recovery in Discord channel {ChannelId}; recovery accounts: {Accounts}.",
                 channel.Id,
@@ -541,7 +728,7 @@ public sealed class DiscordBot
         }
         finally
         {
-            Interlocked.Exchange(ref _followAutoResumeInProgress, 0);
+            _followAutoResumeGate.Release();
         }
     }
 
@@ -1052,13 +1239,15 @@ public sealed class DiscordBot
         // -1 is offered whenever there is a bot to give up. +1 only when there is a benched VM to
         // promote AND the live game has a free slot - offering a button that cannot work is worse
         // than not offering it, since the operator cannot tell a rejected press from a slow one.
-        var target = Volatile.Read(ref _followAutoTargetBots);
+        var target = _followAutoTarget.TargetBotCount;
+        var availability = Volatile.Read(ref _followAutoRosterAvailability);
         builder.WithButton(
             "-1",
             FollowAutoRemoveBotButtonId,
             ButtonStyle.Secondary,
-            disabled: !FollowAutoRosterPolicy.CanRemoveBot(target));
-        if (FollowAutoRosterPolicy.CanAddBot(target, Volatile.Read(ref _followAutoOnlineCount), FollowAutoLivePlayerCount))
+            disabled: _followAutoTarget.LocalRestartArmed || !FollowAutoRosterPolicy.CanRemoveBot(target));
+        if (!_followAutoTarget.LocalRestartArmed
+            && availability.CanAddBot(target, _followAutoLivePlayers.Value))
         {
             builder.WithButton("+1 VM", FollowAutoAddBotButtonId, ButtonStyle.Success);
         }
@@ -4711,19 +4900,32 @@ public sealed class DiscordBot
             return;
         }
 
-        // An explicit new run supersedes any stale one-shot intent left by a reboot that never
-        // completed. The active run will write a fresh intent if it later needs local recovery.
-        _db.ClearFollowAutoResumeIntent();
+        var queued = false;
+        try
+        {
+            // An explicit new run supersedes any stale one-shot intent left by a reboot that never
+            // completed. The active run will write a fresh intent if it later needs local recovery.
+            _db.ClearFollowAutoResumeIntent();
 
-        await SetInitialCommandResponseAsync(
-            context,
-            $"follow-auto started with {bots} bot(s), {FormatPartySize(bots)} with the leader"
-                + $"{(delaySeconds > 0 ? $", and a {delaySeconds}s delay between checks" : "")}. "
-                + "I posted one live status message in this channel; its -1 / +1 buttons change the bot count mid-run."
-                + (watch ? " Watch diagnostics are enabled." : ""),
-            ephemeral: true);
+            await SetInitialCommandResponseAsync(
+                context,
+                $"follow-auto started with {bots} bot(s), {FormatPartySize(bots)} with the leader"
+                    + $"{(delaySeconds > 0 ? $", and a {delaySeconds}s delay between checks" : "")}. "
+                    + "I posted one live status message in this channel; its -1 / +1 buttons change the bot count mid-run."
+                    + (watch ? " Watch diagnostics are enabled." : ""),
+                ephemeral: true);
 
-        QueueFollowAutoRun(options, start);
+            QueueFollowAutoRun(options, start);
+            queued = true;
+        }
+        finally
+        {
+            if (!queued)
+            {
+                // An installed lease with no loop can never unwind itself.
+                await _followAutoLifecycle.CompleteUnwindAsync(start);
+            }
+        }
     }
 
     /// <summary>
@@ -4776,49 +4978,76 @@ public sealed class DiscordBot
         return EnsureAcknowledgedAsync(context.Command);
     }
 
-    private async Task<FollowAutoRunStart?> TryBeginFollowAutoRunAsync(
-        bool requireRecordedResumeIntent = false)
+    private async Task<FollowAutoRunLease?> TryBeginFollowAutoRunAsync(
+        long? requiredResumeGeneration = null,
+        long? waitForPredecessorRunId = null)
     {
-        await _followAutoLock.WaitAsync();
-        try
-        {
-            if (_followAutoCts is not null
-                || (requireRecordedResumeIntent && _db.GetFollowAutoResumeIntent() is null))
+        return await _followAutoLifecycle.TryBeginAsync(
+            () => requiredResumeGeneration is not { } required
+                || IsExpectedFollowAutoResumeIntent(required, _db.GetFollowAutoResumeIntent()),
+            () =>
             {
-                return null;
-            }
-
-            var cts = new CancellationTokenSource();
-            _followAutoCts = cts;
-            var runId = ++_followAutoRunSequence;
-            _followAutoCurrentRunId = runId;
-            _followAutoLockedNametag = null;
-            _followAutoLockedNametagOrdinal = null;
-            return new FollowAutoRunStart(runId, cts);
-        }
-        finally
-        {
-            _followAutoLock.Release();
-        }
+                // A run with no monitor message cannot consume this legacy process-global flag.
+                // Initialization runs under the lifecycle state gate, so this reset cannot erase
+                // a concurrent Stop belonging to the newly installed lease.
+                SetFollowAutoStopActionsRequested(false);
+                _followAutoLockedNametag = null;
+                _followAutoLockedNametagOrdinal = null;
+            },
+            waitForActiveRunId: waitForPredecessorRunId);
     }
 
-    private void QueueFollowAutoRun(FollowAutoRunOptions options, FollowAutoRunStart start)
+    private void QueueFollowAutoRun(FollowAutoRunOptions options, FollowAutoRunLease run)
     {
-        _ = Task.Run(() => RunFollowAutoLoopAsync(options, start.RunId, start.Cts.Token));
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await RunFollowAutoLoopAsync(options, run);
+            }
+            finally
+            {
+                // Signal only after RunFollowAutoLoopAsync has returned completely. A waiting new
+                // run cannot install while any predecessor monitor/global cleanup is still live.
+                await _followAutoLifecycle.CompleteUnwindAsync(run);
+            }
+        });
     }
 
     private bool IsFollowAutoRunning()
     {
-        return Volatile.Read(ref _followAutoCts) is not null;
+        return _followAutoLifecycle.IsRunning;
     }
 
     private async Task StopFollowAutoAsync(SlashContext context)
     {
+        var stopComponent = context.Command as SocketMessageComponent;
+        var expectedRun = stopComponent is null
+            ? null
+            : await _followAutoLifecycle.TryCaptureMonitorRunAsync(stopComponent.Message.Id);
+
         await context.Command.DeferAsync(ephemeral: true);
+        if (stopComponent is not null && expectedRun is null)
+        {
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                "That Stop control belongs to an older follow-auto monitor; the current run was left unchanged.");
+            return;
+        }
+
         var cancel = await CancelFollowAutoIfRunningAsync(
             reason: null,
-            showPostStopActions: context.Command is SocketMessageComponent component
-                && string.Equals(component.Data.CustomId, FollowAutoStopButtonId, StringComparison.Ordinal));
+            showPostStopActions: stopComponent is not null
+                && string.Equals(stopComponent.Data.CustomId, FollowAutoStopButtonId, StringComparison.Ordinal),
+            expectedRun: expectedRun);
+        if (cancel.Rejected)
+        {
+            await ModifyOriginalResponseWithMetricsAsync(
+                context,
+                "That Stop control belongs to an older follow-auto monitor; the current run was left unchanged.");
+            return;
+        }
+
         var stopSignals = await SignalFollowAutoStopAgentsAsync(cancel.RunId);
         var stopSummary = stopSignals.Attempted > 0
             ? $" Stop signal reached {stopSignals.Succeeded}/{stopSignals.Attempted} online agent(s) to abort in-flight follow clicks."
@@ -4858,57 +5087,150 @@ public sealed class DiscordBot
     }
 
     /// <summary>
-    /// The live monitor's -1 / +1 buttons. They only move the run's target; the run loop applies it
-    /// on its next cycle - benching leavers or letting the join path pick up a promoted VM - so a
-    /// press never blocks the gateway on a client operation.
+    /// The live monitor's -1 / +1 buttons. They only move the run's target; the active-game watcher
+    /// yields to the run loop, which benches a leaver or lets the join path pick up a promoted VM,
+    /// so a press never blocks the gateway on a client operation.
     /// </summary>
     private async Task HandleFollowAutoBotCountButtonAsync(SocketMessageComponent component, int delta)
     {
         await EnsureAcknowledgedAsync(component);
 
-        if (!IsFollowAutoRunning())
+        // Validation and mutation are one lifecycle operation. A handler may resume after any
+        // await, so checking IsRunning/message ID separately allowed an old monitor's click to
+        // pass, let that run unwind, and then change the successor run's process-global target.
+        var control = await _followAutoLifecycle.WithActiveRunAsync(
+            _ =>
+            {
+                var monitor = _followAutoMonitorMessage;
+                if (!IsCurrentFollowAutoMonitorMessage(component.Message.Id, monitor?.Id))
+                {
+                    return new FollowAutoBotCountControl(
+                        FollowAutoBotCountControlOutcome.StaleMonitor);
+                }
+
+                if (_followAutoTarget.LocalRestartArmed)
+                {
+                    return new FollowAutoBotCountControl(
+                        FollowAutoBotCountControlOutcome.LocalRestartArmed);
+                }
+
+                // Each press moves a real client in or out of a live game and takes a cycle to
+                // land, so a double-click has to be refused rather than queued.
+                if (!_followAutoRosterGate.TryAdjust(DateTimeOffset.UtcNow, out var retryAfter))
+                {
+                    return new FollowAutoBotCountControl(
+                        FollowAutoBotCountControlOutcome.RateLimited,
+                        RetryAfter: retryAfter);
+                }
+
+                var adjustment = _followAutoTarget.TryAdjust(
+                    delta,
+                    current => delta <= 0 || Volatile.Read(ref _followAutoRosterAvailability)
+                        .CanAddBot(current, _followAutoLivePlayers.Value));
+                if (adjustment.Outcome == FollowAutoTargetAdjustmentOutcome.Changed)
+                {
+                    PublishFollowAutoTargetAdjustment(adjustment);
+                }
+
+                return new FollowAutoBotCountControl(
+                    adjustment.Outcome switch
+                    {
+                        FollowAutoTargetAdjustmentOutcome.Changed => FollowAutoBotCountControlOutcome.Changed,
+                        FollowAutoTargetAdjustmentOutcome.LocalRestartArmed => FollowAutoBotCountControlOutcome.LocalRestartArmed,
+                        FollowAutoTargetAdjustmentOutcome.Refused => FollowAutoBotCountControlOutcome.Refused,
+                        _ => FollowAutoBotCountControlOutcome.AtLimit
+                    },
+                    adjustment.PreviousTarget,
+                    adjustment.Target,
+                    Monitor: monitor);
+            },
+            new FollowAutoBotCountControl(FollowAutoBotCountControlOutcome.NotRunning));
+
+        if (control.Outcome == FollowAutoBotCountControlOutcome.NotRunning)
         {
             await component.FollowupAsync("follow-auto is not running, so there is no bot count to change.", ephemeral: true);
             return;
         }
 
-        // Each press moves a real client in or out of a live game and takes a cycle to land, so a
-        // double-click has to be refused rather than queued.
-        if (!_followAutoRosterGate.TryAdjust(DateTimeOffset.UtcNow, out var retryAfter))
+        if (control.Outcome == FollowAutoBotCountControlOutcome.StaleMonitor)
         {
             await component.FollowupAsync(
-                $"The bot count changed moments ago; give it {Math.Ceiling(retryAfter.TotalSeconds):N0}s to take effect first.",
+                "That bot-count control belongs to an older follow-auto monitor; use the buttons on the current monitor.",
                 ephemeral: true);
             return;
         }
 
-        var current = Volatile.Read(ref _followAutoTargetBots);
-        if (delta > 0
-            && !FollowAutoRosterPolicy.CanAddBot(current, Volatile.Read(ref _followAutoOnlineCount), FollowAutoLivePlayerCount))
-        {
-            await component.FollowupAsync(FormatFollowAutoAddBotRefusal(current), ephemeral: true);
-            return;
-        }
-
-        var target = FollowAutoRosterPolicy.ClampTarget(current + delta);
-        if (target == current)
+        if (control.Outcome == FollowAutoBotCountControlOutcome.LocalRestartArmed)
         {
             await component.FollowupAsync(
-                $"Bot count is already at its {(delta > 0 ? "maximum" : "minimum")} of {current}.",
+                "The bot count is locked while local host recovery is armed; the recorded run will resume with the target shown on the monitor.",
                 ephemeral: true);
             return;
         }
 
-        Volatile.Write(ref _followAutoTargetBots, target);
+        if (control.Outcome == FollowAutoBotCountControlOutcome.RateLimited)
+        {
+            await component.FollowupAsync(
+                $"The bot count changed moments ago; give it {Math.Ceiling(control.RetryAfter.TotalSeconds):N0}s to take effect first.",
+                ephemeral: true);
+            return;
+        }
+
+        if (control.Outcome == FollowAutoBotCountControlOutcome.Refused)
+        {
+            await component.FollowupAsync(
+                FormatFollowAutoAddBotRefusal(control.PreviousTarget),
+                ephemeral: true);
+            return;
+        }
+
+        if (control.Outcome == FollowAutoBotCountControlOutcome.AtLimit)
+        {
+            await component.FollowupAsync(
+                $"Bot count is already at its {(delta > 0 ? "maximum" : "minimum")} of {control.PreviousTarget}.",
+                ephemeral: true);
+            return;
+        }
+
+        var current = control.PreviousTarget;
+        var target = control.Target;
         _logger.LogInformation(
             "follow-auto bot count changed from {Previous} to {Target} by button.", current, target);
         await UpdateFollowAutoMonitorAsync(
             target > current
                 ? $"Bot count raised to {target}; the next cycle brings one more VM into the game."
-                : $"Bot count lowered to {target}; one VM leaves the game and waits warm at the lobby.");
+                : $"Bot count lowered to {target}; one VM leaves the game and waits warm at the lobby.",
+            expectedMonitor: control.Monitor);
         await component.FollowupAsync(
             $"Bot count set to {target} ({FormatPartySize(target)} with the leader).",
             ephemeral: true);
+    }
+
+    private void PublishFollowAutoTargetAdjustment(FollowAutoTargetAdjustment adjustment)
+    {
+        while (true)
+        {
+            var availability = Volatile.Read(ref _followAutoRosterAvailability);
+            if (availability.TargetBotCount == adjustment.Target
+                || availability.TargetBotCount != adjustment.PreviousTarget)
+            {
+                // The loop either already published the adjusted roster, or it published an older
+                // in-flight roster after this button moved the target. The latter remains safely
+                // target-mismatched until the next reconciliation and cannot authorize another +1.
+                return;
+            }
+
+            var adjusted = availability.AfterTargetAdjustment(adjustment.Target);
+            if (ReferenceEquals(
+                Interlocked.CompareExchange(
+                    ref _followAutoRosterAvailability,
+                    adjusted,
+                    availability),
+                availability))
+            {
+                return;
+            }
+        }
     }
 
     // "a 8-player game" reads badly in the one case that matters most - the default, full game.
@@ -4916,6 +5238,13 @@ public sealed class DiscordBot
     {
         var players = botCount + 1;
         return $"{(players == 8 ? "an" : "a")} {players}-player game";
+    }
+
+    internal static bool IsCurrentFollowAutoMonitorMessage(
+        ulong pressedMessageId,
+        ulong? currentMonitorMessageId)
+    {
+        return currentMonitorMessageId == pressedMessageId;
     }
 
     private string FormatFollowAutoAddBotRefusal(int target)
@@ -4926,13 +5255,13 @@ public sealed class DiscordBot
                 + $"{FollowAutoRosterPolicy.MaxPlayersPerGame}-player game.";
         }
 
-        var online = Volatile.Read(ref _followAutoOnlineCount);
-        if (target >= online)
+        var availability = Volatile.Read(ref _followAutoRosterAvailability);
+        if (availability.TargetBotCount != target || availability.ConnectedBenchedCount <= 0)
         {
-            return $"No spare VM to add: {online} account(s) are online and all of them are already on the roster.";
+            return "No connected benched VM is available to add to the roster.";
         }
 
-        return $"The game is full ({FollowAutoLivePlayerCount}/{FollowAutoRosterPolicy.MaxPlayersPerGame} players); "
+        return $"The game is full ({_followAutoLivePlayers.Value}/{FollowAutoRosterPolicy.MaxPlayersPerGame} players); "
             + "a freed slot belongs to whoever left it, not to a waiting bot.";
     }
 
@@ -5128,31 +5457,23 @@ public sealed class DiscordBot
 
     // Same "if you quit, it should stop auto if its running" precedent as join-auto (issue #24) -
     // wired into the same quit/quit-all call sites as CancelJoinAutoIfRunningAsync.
-    private async Task<FollowAutoCancelResult> CancelFollowAutoIfRunningAsync(string? reason, bool showPostStopActions = false)
+    private async Task<FollowAutoCancelResult> CancelFollowAutoIfRunningAsync(
+        string? reason,
+        bool showPostStopActions = false,
+        FollowAutoRunLease? expectedRun = null)
     {
-        // Any explicit or implied stop supersedes a one-shot recovery resume that may have been
-        // written just before a local restart request.
-        _db.ClearFollowAutoResumeIntent();
-        await _followAutoLock.WaitAsync();
-        try
-        {
-            var runId = _followAutoCurrentRunId;
-            if (_followAutoCts is null)
+        var cancel = await _followAutoLifecycle.CancelAsync(
+            reason,
+            wasRunning => SetFollowAutoStopActionsRequested(wasRunning && showPostStopActions),
+            () =>
             {
-                SetFollowAutoStopActionsRequested(false);
-                return new FollowAutoCancelResult(false, runId);
-            }
+                // The lifecycle gate also covers local recovery's Arm + Save + restart queue.
+                // Whichever operation wins, Stop cannot be followed by a rewritten resume row.
+                ClearFollowAutoLocalRestartState();
+            },
+            expectedRun);
 
-            _followAutoStopReason = reason;
-            SetFollowAutoStopActionsRequested(showPostStopActions);
-            _followAutoCts.Cancel();
-            _followAutoCts = null;
-            return new FollowAutoCancelResult(true, runId);
-        }
-        finally
-        {
-            _followAutoLock.Release();
-        }
+        return new FollowAutoCancelResult(cancel.WasRunning, cancel.RunId, cancel.Rejected);
     }
 
     private async Task<FollowAutoStopSignalResult> SignalFollowAutoStopAgentsAsync(long followAutoRunId)
@@ -5297,7 +5618,12 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task StartFollowAutoMonitorAsync(IMessageChannel channel, bool metricsEnabled, int targetBotCount)
+    private async Task StartFollowAutoMonitorAsync(
+        IMessageChannel channel,
+        bool metricsEnabled,
+        int targetBotCount,
+        IReadOnlySet<string> incumbents,
+        FollowAutoRunLease run)
     {
         _followAutoStartedUtc = DateTimeOffset.UtcNow;
         _followAutoGameNumber = 0;
@@ -5305,21 +5631,33 @@ public sealed class DiscordBot
         _followAutoJoined = 0;
         _followAutoTotal = 0;
         var target = FollowAutoRosterPolicy.ClampTarget(targetBotCount);
-        Volatile.Write(ref _followAutoTargetBots, target);
-        // Seeded from the fleet rather than left at zero: the monitor and its +1 button are built
-        // from these the moment the message is posted, and a zero online count reads as "no spare
-        // VM" - so +1 was missing for the first cycle of every run.
-        var online = GetAccountEntriesByConnectivity().Online.Length;
-        Volatile.Write(ref _followAutoOnlineCount, online);
-        Volatile.Write(ref _followAutoBenchedCount, Math.Max(online - target, 0));
-        FollowAutoLivePlayerCount = null;
+        _followAutoTarget.Reset(target);
+        // Seed from the same incumbent-aware roster the loop uses. A resumed run can have an
+        // offline recovery incumbent occupying a target slot, which makes an online newcomer a
+        // real connected bench even when online count equals target count.
+        var onlineAccountKeys = GetAccountEntriesByConnectivity().Online
+            .Select(entry => entry.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var initialRoster = FollowAutoRosterPolicy.ResolveRoster(
+            onlineAccountKeys,
+            target,
+            incumbents);
+        Volatile.Write(
+            ref _followAutoRosterAvailability,
+            new FollowAutoRosterAvailability(
+                target,
+                onlineAccountKeys.Count,
+                initialRoster.Benched.Count(onlineAccountKeys.Contains)));
+        _followAutoLivePlayers.Reset();
         _followAutoRosterGate.Reset();
         _followAutoMetricsEnabled = metricsEnabled;
         try
         {
-            _followAutoMonitorMessage = await channel.SendMessageAsync(
+            var monitorMessage = await channel.SendMessageAsync(
                 AppendMetrics(_followAutoMetricsEnabled, FormatFollowAutoMonitorMessage("Starting follow-auto.")),
                 components: BuildFollowAutoMonitorComponents(running: true));
+            run.AssociateMonitorMessage(monitorMessage.Id);
+            _followAutoMonitorMessage = monitorMessage;
         }
         catch (Exception ex)
         {
@@ -5328,9 +5666,15 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task UpdateFollowAutoMonitorAsync(string status, int? joined = null, int? total = null)
+    private async Task UpdateFollowAutoMonitorAsync(
+        string status,
+        int? joined = null,
+        int? total = null,
+        IUserMessage? expectedMonitor = null)
     {
-        if (_followAutoMonitorMessage is null)
+        var monitorMessage = _followAutoMonitorMessage;
+        if (monitorMessage is null
+            || (expectedMonitor is not null && monitorMessage.Id != expectedMonitor.Id))
         {
             return;
         }
@@ -5348,7 +5692,7 @@ public sealed class DiscordBot
         try
         {
             var content = FormatFollowAutoMonitorMessage(status);
-            await _followAutoMonitorMessage.ModifyAsync(properties =>
+            await monitorMessage.ModifyAsync(properties =>
             {
                 properties.Content = AppendMetrics(_followAutoMetricsEnabled, content);
                 properties.Components = BuildFollowAutoMonitorComponents(running: true);
@@ -5360,7 +5704,10 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task CompleteFollowAutoMonitorAsync(bool ok, string status)
+    private async Task CompleteFollowAutoMonitorAsync(
+        bool ok,
+        string status,
+        bool allowPostStopActions = true)
     {
         var monitorMessage = _followAutoMonitorMessage;
         if (monitorMessage is null)
@@ -5368,7 +5715,9 @@ public sealed class DiscordBot
             return;
         }
 
-        var showStopActions = ConsumeFollowAutoStopActionsRequested() && ok;
+        var showStopActions = ConsumeFollowAutoStopActionsRequested()
+            && allowPostStopActions
+            && ok;
         try
         {
             var content = FormatFollowAutoMonitorMessage(status);
@@ -5402,9 +5751,10 @@ public sealed class DiscordBot
         var title = _followAutoGameNumber > 0
             ? $"follow-auto monitor - Game #{_followAutoGameNumber}"
             : "follow-auto monitor";
-        var target = Volatile.Read(ref _followAutoTargetBots);
-        var online = Volatile.Read(ref _followAutoOnlineCount);
-        var benchedCount = Volatile.Read(ref _followAutoBenchedCount);
+        var target = _followAutoTarget.TargetBotCount;
+        var availability = Volatile.Read(ref _followAutoRosterAvailability);
+        var online = availability.OnlineAccountCount;
+        var benchedCount = availability.ConnectedBenchedCount;
         var benched = benchedCount > 0 ? $", {benchedCount} benched" : "";
         // Rostered is deliberately its own number rather than being folded into the target: with
         // fewer VMs online than the target, "7 of 3 online" reads as a contradiction, when what is
@@ -5434,9 +5784,10 @@ public sealed class DiscordBot
 
     private async Task RunFollowAutoLoopAsync(
         FollowAutoRunOptions options,
-        long runId,
-        CancellationToken cancellationToken)
+        FollowAutoRunLease run)
     {
+        var runId = run.RunId;
+        var cancellationToken = run.Token;
         var channel = options.Channel;
         var delaySeconds = options.DelaySeconds;
         var watch = options.Watch;
@@ -5452,67 +5803,72 @@ public sealed class DiscordBot
         // Lives out here, not in the watch: each resync re-enters the watch with fresh locals, so a
         // counter held inside it could never cap anything.
         var outOfGameResyncsThisGame = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var rosterRefreshPending = false;
         string? lastWaitingReport = null;
         var lastWaitingReportUtc = DateTimeOffset.MinValue;
         CancellationTokenSource? watchCts = null;
         Task? watchTask = null;
-        if (watch)
+        try
         {
-            watchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            watchTask = RunGameAllWatchTickerAsync(
+            if (watch)
+            {
+                watchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                watchTask = RunGameAllWatchTickerAsync(
+                    channel,
+                    options.MetricsEnabled,
+                    "follow-auto",
+                    "follow-auto",
+                    () => GetAccountEntriesByConnectivity().Online,
+                    watchCts.Token);
+            }
+
+            await StartFollowAutoMonitorAsync(
                 channel,
                 options.MetricsEnabled,
-                "follow-auto",
-                "follow-auto",
-                () => GetAccountEntriesByConnectivity().Online,
-                watchCts.Token);
-        }
-
-        await StartFollowAutoMonitorAsync(channel, options.MetricsEnabled, options.TargetBotCount);
-        if (!string.IsNullOrWhiteSpace(options.ResumeReason))
-        {
-            await UpdateFollowAutoMonitorAsync(
-                $"Resumed after host recovery: {options.ResumeReason}",
-                joined: accountState.JoinedCount,
-                total: accountState.CountExpectedAccounts(
-                    GetAccountEntriesByConnectivity().Online.Select(entry => entry.Key).ToArray()));
-        }
-
-        // Sync before the first check rather than waiting for the periodic sweep: a VM brought
-        // online moments before Follow was pressed is the single most likely one to be holding a
-        // stale or missing bind, and one round of pushes here saves it from sitting out the first
-        // game entirely.
-        try
-        {
-            var startupSync = await _followTemplates.ReconcileAsync(cancellationToken);
-            if (startupSync.DidWork)
+                options.TargetBotCount,
+                accountState.Incumbents,
+                run);
+            if (!string.IsNullOrWhiteSpace(options.ResumeReason))
             {
-                _logger.LogInformation(
-                    "follow-auto start synced follow templates: repaired {Repaired}, failures {Failures}.",
-                    startupSync.RepairedAccountList,
-                    string.Join("; ", startupSync.Failures));
+                await UpdateFollowAutoMonitorAsync(
+                    $"Resumed after host recovery: {options.ResumeReason}",
+                    joined: accountState.JoinedCount,
+                    total: accountState.CountExpectedAccounts(
+                        GetAccountEntriesByConnectivity().Online.Select(entry => entry.Key).ToArray()));
             }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "follow-auto start follow-template sync failed.");
-        }
 
-        async Task DelayNextFollowCheckAsync(bool afterLeave = false)
-        {
-            // The rejoin after a leave must not inherit a configured pulse-pacing delay: that delay
-            // paces how often idle leader-presence checks run, not how fast the fleet rejoins once
-            // everyone has left. The short post-leave settle exists exactly to make the rejoin
-            // prompt, so always use it after a leave - previously a custom delaySeconds overrode it
-            // and stalled every rejoin by that whole interval.
-            var seconds = afterLeave
-                ? FollowAutoPostLeaveCheckSeconds
-                : (delaySeconds > 0 ? delaySeconds : FollowAutoDefaultCheckSeconds);
-            await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
-        }
+            // Sync before the first check rather than waiting for the periodic sweep: a VM brought
+            // online moments before Follow was pressed is the single most likely one to be holding
+            // a stale or missing bind, and one round of pushes here saves it from sitting out the
+            // first game entirely.
+            try
+            {
+                var startupSync = await _followTemplates.ReconcileAsync(cancellationToken);
+                if (startupSync.DidWork)
+                {
+                    _logger.LogInformation(
+                        "follow-auto start synced follow templates: repaired {Repaired}, failures {Failures}.",
+                        startupSync.RepairedAccountList,
+                        string.Join("; ", startupSync.Failures));
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "follow-auto start follow-template sync failed.");
+            }
 
-        try
-        {
+            async Task DelayNextFollowCheckAsync(bool afterLeave = false)
+            {
+                // The rejoin after a leave must not inherit a configured pulse-pacing delay: that
+                // delay paces idle leader-presence checks, not how fast the fleet rejoins once
+                // everyone has left. The short post-leave settle exists exactly to make the rejoin
+                // prompt, so always use it after a leave.
+                var seconds = afterLeave
+                    ? FollowAutoPostLeaveCheckSeconds
+                    : (delaySeconds > 0 ? delaySeconds : FollowAutoDefaultCheckSeconds);
+                await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
+            }
+
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -5524,7 +5880,7 @@ public sealed class DiscordBot
                 // displacing a bot already in the leader's game.
                 var roster = FollowAutoRosterPolicy.ResolveRoster(
                     allOnline.Select(entry => entry.Key),
-                    Volatile.Read(ref _followAutoTargetBots),
+                    _followAutoTarget.TargetBotCount,
                     accountState.Incumbents);
                 var benchedNowJoined = await BenchFollowAutoAccountsAsync(
                     roster, accountState, options, cancellationToken);
@@ -5534,11 +5890,22 @@ public sealed class DiscordBot
                 var onlineAccountKeys = online
                     .Select(entry => entry.Key)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var connectedAccountKeys = allOnline
+                    .Select(entry => entry.Key)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 // Read by the gateway task when it builds the monitor's buttons.
-                Volatile.Write(ref _followAutoBenchedCount, roster.Benched.Count);
-                Volatile.Write(ref _followAutoOnlineCount, allOnline.Length);
+                Volatile.Write(
+                    ref _followAutoRosterAvailability,
+                    new FollowAutoRosterAvailability(
+                        roster.TargetBotCount,
+                        allOnline.Length,
+                        roster.Benched.Count(connectedAccountKeys.Contains)));
                 if (benchedNowJoined.Length > 0)
                 {
+                    // Save and Exit is positive evidence that these players left this same game.
+                    // Release their known capacity immediately; a later fresh sample can still
+                    // raise the count again if another player filled a slot.
+                    _followAutoLivePlayers.RecordConfirmedDepartures(benchedNowJoined.Length);
                     await UpdateFollowAutoMonitorAsync(
                         $"Bot count lowered to {roster.TargetBotCount}: {string.Join(", ", benchedNowJoined)} left the game and "
                             + "will wait warm at the lobby.",
@@ -5546,7 +5913,10 @@ public sealed class DiscordBot
                         total: accountState.CountExpectedAccounts(onlineAccountKeys));
                 }
 
-                var newlyOfflineJoinedAccounts = accountState.BeginRecoveryForOfflineJoined(onlineAccountKeys);
+                // Connectivity and roster membership are different things. A joined account whose
+                // bench leave failed is intentionally off the active roster but is still online
+                // and must remain joined so the next cycle makes attempts two and three.
+                var newlyOfflineJoinedAccounts = accountState.BeginRecoveryForOfflineJoined(connectedAccountKeys);
                 if (currentGameActive)
                 {
                     isolatedAccountsResyncedThisGame.UnionWith(newlyOfflineJoinedAccounts);
@@ -5560,14 +5930,46 @@ public sealed class DiscordBot
                         && !accountState.ParkedGameFull.Contains(entry.Key))
                     .ToArray();
                 var expectedAccountCount = accountState.CountExpectedAccounts(onlineAccountKeys);
+                if (accountState.Joined.Any(roster.BenchedSet.Contains))
+                {
+                    // BenchFollowAutoAccountsAsync deliberately kept at least one failed leaver
+                    // joined. Nothing in the active join path can make progress until its bounded
+                    // retries finish, and falling through with an empty pending set would classify
+                    // the cycle as "no bound account" and stop the run. Advance directly to the
+                    // next roster cycle so attempts two and three really execute.
+                    rosterRefreshPending = false;
+                    idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                    await DelayNextFollowCheckAsync();
+                    continue;
+                }
+
+                if (rosterRefreshPending)
+                {
+                    rosterRefreshPending = false;
+                    // A successful bench already posted a more specific update after the live
+                    // counters changed. Promotions and fleet arrivals need this refresh so the
+                    // monitor immediately exposes the newly valid +1 state/capacity.
+                    if (benchedNowJoined.Length == 0)
+                    {
+                        await UpdateFollowAutoMonitorAsync(
+                            currentGameActive
+                                ? $"Game #{_followAutoGameNumber}: live roster reconciled after the bot target or connected fleet changed."
+                                : "Roster reconciled after the bot target or connected fleet changed.",
+                            joined: accountState.JoinedCount,
+                            total: expectedAccountCount);
+                    }
+                }
+
                 if (accountState.CanWatch(onlineAccountKeys))
                 {
                     var initialPulse = await TryFetchFollowPulseAsync(rotation: 0, _followAutoLockedNametag, accountState.Joined);
                     await TryLockNametagFromSampleAsync(initialPulse);
                     // Feeds the +1 button: a full game's free slot belongs to whoever left it.
-                    // Deliberately only overwritten when a sample actually read a count, so a
-                    // degraded read leaves the last known value rather than reopening the button.
-                    FollowAutoLivePlayerCount = initialPulse.PlayerCount ?? FollowAutoLivePlayerCount;
+                    // Null and lower samples leave the per-game high-water alone, so a degraded or
+                    // lagging vantage cannot reopen the button after any screen observed a full game.
+                    _followAutoLivePlayers.Observe(
+                        initialPulse.PlayerCount,
+                        initialPulse.PlayerCountFresh);
                     if (!currentGameActive)
                     {
                         _followAutoGameNumber++;
@@ -5588,10 +5990,20 @@ public sealed class DiscordBot
                     var watchResult = await WaitForFollowAutoGameEndAsync(
                         initialPulse.PlayerCount,
                         GetFollowAutoPlayerCountDropPollDelay,
+                        new FollowAutoRosterWatchSnapshot(roster.TargetBotCount, connectedAccountKeys),
                         accountState,
                         isolatedAccountsResyncedThisGame,
                         outOfGameResyncsThisGame,
                         cancellationToken);
+                    if (watchResult.ReconcileRoster)
+                    {
+                        // This is not game advancement. Keep joined/parking/per-game resync state
+                        // intact and immediately let the outer loop apply the new target or fleet
+                        // connectivity snapshot.
+                        rosterRefreshPending = true;
+                        continue;
+                    }
+
                     if (watchResult.IsolatedAccountKey is { } isolatedAccountKey)
                     {
                         // Once recovery starts, this account is no longer allowed to contribute
@@ -5680,6 +6092,7 @@ public sealed class DiscordBot
 
                     _followAutoGamesCompleted++;
                     currentGameActive = false;
+                    _followAutoLivePlayers.Reset();
                     isolatedAccountsResyncedThisGame.Clear();
                     outOfGameResyncsThisGame.Clear();
                     // The game the parked accounts were shut out of is over; they resume the
@@ -5761,6 +6174,11 @@ public sealed class DiscordBot
                             isolatedAccountsResyncedThisGame.Clear();
                             outOfGameResyncsThisGame.Clear();
                         }
+
+                        // The bound leader advanced whether or not this partial game had ever
+                        // reached the all-joined/"active" milestone. Do not carry a full-game
+                        // high-water from the abandoned game into the next roster scan.
+                        _followAutoLivePlayers.Reset();
 
                         // The game everyone was parked out of is being abandoned; the rescan
                         // targets wherever the leader went next, a fresh capacity situation.
@@ -5957,7 +6375,9 @@ public sealed class DiscordBot
                             nodeAccountKeys,
                             resumeRecoveryAccountKeys,
                             options,
+                            run,
                             cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (!recovery.RestartQueued)
                         {
                             // The node never rebooted. Allow a fresh incident to accumulate
@@ -5973,10 +6393,14 @@ public sealed class DiscordBot
 
                         if (recovery.LocalRestartQueued)
                         {
-                            await UpdateFollowAutoMonitorAsync(
-                                $"{recovery.Message} This follow-auto run is recorded and will resume after D2RHost starts again.",
-                                joined: accountState.JoinedCount,
-                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
+                            // This loop is terminal once its own host restart is queued. Retire the
+                            // static Stop button now: leaving it on an old monitor lets a click
+                            // minutes later cancel whichever successor run happens to be current.
+                            await CompleteFollowAutoMonitorAsync(
+                                ok: true,
+                                $"{recovery.Message} This run is closed; its exact recovery record will resume after D2RHost starts again unless an operator Stop clears it.",
+                                allowPostStopActions: false);
+                            cancellationToken.ThrowIfCancellationRequested();
                             return;
                         }
 
@@ -6145,7 +6569,7 @@ public sealed class DiscordBot
         }
         catch (OperationCanceledException)
         {
-            var reasonText = _followAutoStopReason is { } reason ? $"follow-auto stopped: {reason}." : "follow-auto stopped.";
+            var reasonText = run.StopReason is { } reason ? $"follow-auto stopped: {reason}." : "follow-auto stopped.";
             await CompleteFollowAutoMonitorAsync(ok: true, reasonText);
         }
         catch (Exception ex)
@@ -6158,21 +6582,6 @@ public sealed class DiscordBot
             watchCts?.Cancel();
             await AwaitWatchTickerStopAsync(watchTask, "follow-auto");
             watchCts?.Dispose();
-
-            await _followAutoLock.WaitAsync();
-            try
-            {
-                if (_followAutoCts?.Token == cancellationToken)
-                {
-                    _followAutoCts = null;
-                }
-
-                _followAutoStopReason = null;
-            }
-            finally
-            {
-                _followAutoLock.Release();
-            }
         }
     }
 
@@ -6374,38 +6783,23 @@ public sealed class DiscordBot
         IReadOnlyList<string> nodeAccountKeys,
         IReadOnlyList<string> resumeRecoveryAccountKeys,
         FollowAutoRunOptions options,
+        FollowAutoRunLease run,
         CancellationToken cancellationToken)
     {
         var localNode = _hyperV.IsLocalNode(request.NodeId);
-        var previousConnectedAt = localNode
-            ? null
-            : _registry.NodeSnapshot()
-                .FirstOrDefault(node => string.Equals(node.Id, request.NodeId, StringComparison.OrdinalIgnoreCase))
-                ?.ConnectedAt;
-        var restartRequestedUtc = DateTimeOffset.UtcNow;
         if (localNode)
         {
-            var idleMinutes = (int)Math.Clamp(
-                Math.Ceiling(options.IdleTimeout.TotalMinutes),
-                1,
-                int.MaxValue);
-            _db.SaveFollowAutoResumeIntent(new FollowAutoResumeIntent(
-                options.Channel.Id,
-                options.DelaySeconds,
-                options.Watch,
-                idleMinutes,
-                options.MetricsEnabled,
-                options.CharacterSlot,
-                options.FriendRow,
-                resumeRecoveryAccountKeys
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
-                    .ToArray(),
-                $"{request.TriggerAccountKey} reached {request.ConsecutiveFailures} consecutive warmup failures on {request.NodeId}",
-                // The live target, not the one the run started with: a restart must not undo a
-                // bot count the operator changed with the buttons since.
-                Volatile.Read(ref _followAutoTargetBots)));
+            return await QueueFollowAutoLocalNodeRestartAsync(
+                request,
+                resumeRecoveryAccountKeys,
+                options,
+                run);
         }
+
+        var previousConnectedAt = _registry.NodeSnapshot()
+            .FirstOrDefault(node => string.Equals(node.Id, request.NodeId, StringComparison.OrdinalIgnoreCase))
+            ?.ConnectedAt;
+        var restartRequestedUtc = DateTimeOffset.UtcNow;
 
         CommandResult restart;
         try
@@ -6417,20 +6811,10 @@ public sealed class DiscordBot
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            if (localNode)
-            {
-                _db.ClearFollowAutoResumeIntent();
-            }
-
             throw;
         }
         catch (Exception ex)
         {
-            if (localNode)
-            {
-                _db.ClearFollowAutoResumeIntent();
-            }
-
             return new FollowAutoNodeRecoveryResult(
                 RestartQueued: false,
                 RecoveryComplete: false,
@@ -6440,25 +6824,10 @@ public sealed class DiscordBot
 
         if (!restart.Ok)
         {
-            if (localNode)
-            {
-                _db.ClearFollowAutoResumeIntent();
-            }
-
             return new FollowAutoNodeRecoveryResult(
                 RestartQueued: false,
                 RecoveryComplete: false,
                 LocalRestartQueued: false,
-                restart.Message);
-        }
-
-        if (localNode)
-        {
-            ScheduleFollowAutoLocalRestartFallback();
-            return new FollowAutoNodeRecoveryResult(
-                RestartQueued: true,
-                RecoveryComplete: false,
-                LocalRestartQueued: true,
                 restart.Message);
         }
 
@@ -6512,7 +6881,107 @@ public sealed class DiscordBot
                     : $"; still offline: {string.Join(", ", missingAccounts)}."));
     }
 
-    private void ScheduleFollowAutoLocalRestartFallback()
+    private async Task<FollowAutoNodeRecoveryResult> QueueFollowAutoLocalNodeRestartAsync(
+        FollowAutoNodeRecoveryRequest request,
+        IReadOnlyList<string> resumeRecoveryAccountKeys,
+        FollowAutoRunOptions options,
+        FollowAutoRunLease run)
+    {
+        var result = await _followAutoLifecycle.WithCurrentRunAsync(
+            run,
+            async activeToken =>
+            {
+                var idleMinutes = (int)Math.Clamp(
+                    Math.Ceiling(options.IdleTimeout.TotalMinutes),
+                    1,
+                    int.MaxValue);
+                var resumeTargetBotCount = _followAutoTarget.ArmLocalRestart();
+                try
+                {
+                    _db.SaveFollowAutoResumeIntent(new FollowAutoResumeIntent(
+                        options.Channel.Id,
+                        options.DelaySeconds,
+                        options.Watch,
+                        idleMinutes,
+                        options.MetricsEnabled,
+                        options.CharacterSlot,
+                        options.FriendRow,
+                        resumeRecoveryAccountKeys
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+                            .ToArray(),
+                        $"{request.TriggerAccountKey} reached {request.ConsecutiveFailures} consecutive warmup failures on {request.NodeId}",
+                        resumeTargetBotCount,
+                        run.RunId));
+
+                    // Stop can publish cancellation while recovery owns the journal gate, then
+                    // waits on that gate to clear the durable intent. Recheck immediately before
+                    // queueing so a Stop already in flight cannot be followed by the restart.
+                    activeToken.ThrowIfCancellationRequested();
+                    var restart = await _hyperV.QueueSystemActionAsync(
+                        request.NodeId,
+                        HostSystemPowerAction.Restart,
+                        activeToken);
+                    // QueueSystemAction may return successfully even if its implementation did
+                    // not observe cancellation. Stop publishes this token before it waits to
+                    // clear the restart journal, so never report a resumable recovery afterwards.
+                    activeToken.ThrowIfCancellationRequested();
+                    if (!restart.Ok)
+                    {
+                        ClearFollowAutoLocalRestartState();
+                        return new FollowAutoNodeRecoveryResult(
+                            RestartQueued: false,
+                            RecoveryComplete: false,
+                            LocalRestartQueued: false,
+                            restart.Message);
+                    }
+
+                    return new FollowAutoNodeRecoveryResult(
+                        RestartQueued: true,
+                        RecoveryComplete: false,
+                        LocalRestartQueued: true,
+                        restart.Message);
+                }
+                catch (OperationCanceledException)
+                {
+                    ClearFollowAutoLocalRestartState();
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    ClearFollowAutoLocalRestartState();
+                    return new FollowAutoNodeRecoveryResult(
+                        RestartQueued: false,
+                        RecoveryComplete: false,
+                        LocalRestartQueued: false,
+                        ex.Message);
+                }
+            });
+
+        if (result.LocalRestartQueued)
+        {
+            run.Token.ThrowIfCancellationRequested();
+            ScheduleFollowAutoLocalRestartFallback(run.RunId);
+        }
+
+        return result;
+    }
+
+    private void ClearFollowAutoLocalRestartState()
+    {
+        try
+        {
+            _db.ClearFollowAutoResumeIntent();
+        }
+        finally
+        {
+            // Never leave the live target frozen just because durable cleanup failed. The database
+            // exception still propagates, but future controls and recovery attempts remain usable.
+            _followAutoTarget.DisarmLocalRestart();
+        }
+    }
+
+    private void ScheduleFollowAutoLocalRestartFallback(long recoveryGeneration)
     {
         _ = Task.Run(async () =>
         {
@@ -6524,20 +6993,22 @@ public sealed class DiscordBot
                 // durable one-shot here and resume in-process. A successful restart terminates
                 // this process before the delay and the new process consumes the same intent.
                 await Task.Delay(FollowAutoLocalRestartFallbackDelay);
-                if (_db.GetFollowAutoResumeIntent() is null)
-                {
-                    return;
-                }
-
                 _logger.LogWarning(
                     "The queued local restart did not terminate D2RHost; attempting to resume the recorded follow-auto run in the existing process.");
-                await TryResumeFollowAutoAsync();
+                await TryResumeFollowAutoAsync(recoveryGeneration);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Could not resume follow-auto after a late local restart failure.");
             }
         });
+    }
+
+    internal static bool IsExpectedFollowAutoResumeIntent(
+        long recoveryGeneration,
+        FollowAutoResumeIntent? intent)
+    {
+        return intent?.RecoveryGeneration == recoveryGeneration;
     }
 
     internal static bool HasNewWorkerConnection(
@@ -6590,9 +7061,9 @@ public sealed class DiscordBot
     }
 
     /// <summary>
-    /// Replaces one account's corrupted Settings.json with a healthy fleet member's copy, then
-    /// re-readies the client. Returns null when nothing was attempted (not corrupt, rate-limited,
-    /// or no eligible donor), so callers can fall through to the ordinary warmup escalation.
+    /// Replaces one account's corrupted Settings.json with a healthy fleet member's copy and marks
+    /// its separate ready/relaunch phase pending. Returns null only when this account has no repair
+    /// work; blocked, donor, and copy failures return a result while preserving the pending stage.
     /// </summary>
     /// <remarks>
     /// The transfer is master-side on purpose: the donor and the broken VM can sit on different
@@ -6603,14 +7074,48 @@ public sealed class DiscordBot
         string accountKey,
         AccountConfig account,
         string? statusJson,
+        DateTimeOffset statusObservedUtc,
+        DateTimeOffset? expectedTargetConnectedAt,
+        DateTimeOffset? expectedTargetStatusReceivedAt,
+        string? expectedIncidentToken,
         CancellationToken cancellationToken)
     {
-        if (!SettingsRepairPolicy.NeedsDonorSettings(statusJson))
+        if (SettingsRepairPolicy.NeedsDonorSettings(statusJson))
+        {
+            if (expectedTargetConnectedAt is null)
+            {
+                return new SettingsRepairAttempt(
+                    false,
+                    accountKey,
+                    DonorAccountKey: null,
+                    "the reset-settings report was not received on the target agent's current connection.");
+            }
+
+            _settingsRepairs.ObserveCurrentStatus(accountKey, statusJson, statusObservedUtc);
+        }
+
+        if (_settingsRepairs.RecoveryFor(accountKey).Stage != SettingsRecoveryStage.RepairRequired)
         {
             return null;
         }
 
-        if (!_settingsRepairs.TryBeginRepair(accountKey, DateTimeOffset.UtcNow, out var blockedReason))
+        var targetAgent = _registry.GetAgent(account.AgentId);
+        if (!HasStatusFromCurrentAgentConnection(targetAgent)
+            || expectedTargetConnectedAt is null
+            || targetAgent!.ConnectedAt != expectedTargetConnectedAt)
+        {
+            return new SettingsRepairAttempt(
+                false,
+                accountKey,
+                DonorAccountKey: null,
+                "target agent reconnected or has not sent fresh status on its current connection; waiting before replacing settings.");
+        }
+
+        using var lease = _settingsRepairs.TryAcquireRepair(
+            accountKey,
+            DateTimeOffset.UtcNow,
+            out var blockedReason);
+        if (lease is null)
         {
             _logger.LogWarning("Settings repair for {AccountKey} skipped: {Reason}", accountKey, blockedReason);
             return new SettingsRepairAttempt(false, accountKey, DonorAccountKey: null, blockedReason);
@@ -6624,7 +7129,9 @@ public sealed class DiscordBot
                 return new SettingsDonorCandidate(
                     entry.Key,
                     agent?.Connected == true,
-                    agent?.LastStatusJson);
+                    agent?.LastStatusJson,
+                    agent?.ConnectedAt,
+                    agent?.StatusReceivedAt);
             }),
             _config.SettingsDonorAccountKey);
 
@@ -6650,11 +7157,25 @@ public sealed class DiscordBot
                 continue;
             }
 
+            var donorAgent = _registry.GetAgent(donor.AgentId);
+            if (!HasStatusFromCurrentAgentConnection(donorAgent)
+                || SettingsRepairPolicy.ClassifyDonor(donorAgent!.LastStatusJson)
+                    == SettingsRepairPolicy.DonorHealth.Unusable)
+            {
+                donorFailures.Add($"{donorKey}: no fresh healthy status on its current connection");
+                continue;
+            }
+
             string donorContent;
             try
             {
                 var export = await _registry.SendCommandAsync(
-                    donor.AgentId, "settings_export", args: null, SettingsExportCommandTimeout, cancellationToken);
+                    donor.AgentId,
+                    "settings_export",
+                    args: null,
+                    SettingsExportCommandTimeout,
+                    cancellationToken,
+                    expectedAgentConnectedAt: donorAgent.ConnectedAt);
                 if (!export.Ok || export.Data is not { } exportData
                     || !TryGetString(exportData, "content", out donorContent))
                 {
@@ -6671,16 +7192,97 @@ public sealed class DiscordBot
             CommandResultInfo repair;
             try
             {
+                var currentTarget = _registry.GetAgent(account.AgentId);
+                if (!HasStatusFromCurrentAgentConnection(currentTarget)
+                    || currentTarget!.ConnectedAt != expectedTargetConnectedAt)
+                {
+                    return new SettingsRepairAttempt(
+                        false,
+                        accountKey,
+                        donorKey,
+                        "target agent reconnected while the donor was exporting; waiting for fresh target status without charging a repair attempt.");
+                }
+
+                if (currentTarget.StatusReceivedAt != expectedTargetStatusReceivedAt)
+                {
+                    var currentStatusJson = currentTarget.LastStatusJson;
+                    if (SettingsRepairPolicy.NeedsReadyAfterRepair(currentStatusJson))
+                    {
+                        _settingsRepairs.ObserveCurrentStatus(
+                            accountKey,
+                            currentStatusJson,
+                            DateTimeOffset.UtcNow);
+                        return new SettingsRepairAttempt(
+                            true,
+                            accountKey,
+                            donorKey,
+                            "target reports that a settings copy already landed; continuing with ready instead of copying again.");
+                    }
+
+                    if (SettingsRepairPolicy.ClassifyDonor(currentStatusJson)
+                        != SettingsRepairPolicy.DonorHealth.Unusable)
+                    {
+                        _settingsRepairs.RecordRecovered(accountKey);
+                        return new SettingsRepairAttempt(
+                            true,
+                            accountKey,
+                            donorKey,
+                            "target recovered while the donor was exporting; cancelled the settings copy without charging an attempt.");
+                    }
+
+                    if (SettingsRepairPolicy.NeedsDonorSettings(currentStatusJson))
+                    {
+                        var currentIncidentToken = SettingsRepairPolicy.RepairEvidenceToken(currentStatusJson);
+                        if (!string.Equals(currentIncidentToken, expectedIncidentToken, StringComparison.Ordinal))
+                        {
+                            _settingsRepairs.ObserveCurrentStatus(
+                                accountKey,
+                                currentStatusJson,
+                                DateTimeOffset.UtcNow);
+                            return new SettingsRepairAttempt(
+                                false,
+                                accountKey,
+                                donorKey,
+                                "target reported a different settings-reset incident while the donor was exporting; yielding before retry.");
+                        }
+                    }
+                    // Unknown/NotRunning is expected after a failed post-quit copy. The confirmed
+                    // incident stays authorized; only positive recovery/ready evidence cancels it.
+                }
+
+                // Acquisition, donor exports, and generation/precondition rejections are free.
+                // The target agent reports a charge only after its durable Prepared journal lands.
+                cancellationToken.ThrowIfCancellationRequested();
                 repair = await _registry.SendCommandAsync(
                     account.AgentId,
                     "settings_repair",
                     new { settingsContent = donorContent, settingsSourceAgentId = donor.AgentId },
                     SettingsRepairCommandTimeout,
-                    cancellationToken);
+                    cancellationToken,
+                    expectedAgentConnectedAt: expectedTargetConnectedAt);
             }
             catch (Exception ex)
             {
                 return new SettingsRepairAttempt(false, accountKey, donorKey, ex.Message);
+            }
+
+            var attemptWasCharged = TryGetAgentChargedSettingsRepairAttempt(
+                repair,
+                out var durableAttemptCount);
+            if (attemptWasCharged)
+            {
+                lease.RecordAgentChargedAttempt(
+                    DateTimeOffset.UtcNow,
+                    durableAttemptCount);
+            }
+
+            if (repair.Ok && !attemptWasCharged)
+            {
+                return new SettingsRepairAttempt(
+                    false,
+                    accountKey,
+                    donorKey,
+                    "target reported settings-repair success without confirming a durable attempt; refusing to advance recovery state.");
             }
 
             if (!repair.Ok)
@@ -6693,7 +7295,8 @@ public sealed class DiscordBot
                 accountKey,
                 donorKey,
                 repair.Message);
-            return new SettingsRepairAttempt(true, accountKey, donorKey, repair.Message);
+            lease.RecordRepairApplied(donorKey, DateTimeOffset.UtcNow);
+            return new SettingsRepairAttempt(true, accountKey, donorKey, repair.Message, CopyApplied: true);
         }
 
         return new SettingsRepairAttempt(
@@ -6826,16 +7429,37 @@ public sealed class DiscordBot
                 FollowWarmupOutcome.Failed);
         }
 
+        if (readyResult is { Ok: true }
+            && !string.Equals(readyResult.CommandId, "menu-ready-status-fallback", StringComparison.Ordinal))
+        {
+            // Only an actual menu_ready command result is new proof. A null (cached already-ready)
+            // or status fallback may predate another caller's gamma evidence and must not revoke
+            // its donor-export lease.
+            _settingsRepairs.RecordRecovered(accountKey);
+        }
+
         if (readyResult?.Ok == false)
         {
             // A ready failure whose status says the client reset its own Settings.json is not a
             // warmup failure at all - relaunching, power-cycling the VM, and restarting the node
             // would each fail in turn, in that order, over many minutes. Replace the file from a
             // healthy fleet member and give ready one more attempt before recording a strike.
+            var repairStatusJson = readyResult.Data?.GetRawText();
+            var repairTarget = _registry.GetAgent(account.AgentId);
             var repair = await TryRepairSettingsFromFleetAsync(
-                accountKey, account, readyResult.Data?.GetRawText(), cancellationToken);
+                accountKey,
+                account,
+                repairStatusJson,
+                DateTimeOffset.UtcNow,
+                repairTarget is { Connected: true } ? repairTarget.ConnectedAt : null,
+                repairTarget?.StatusReceivedAt,
+                SettingsRepairPolicy.RepairEvidenceToken(repairStatusJson),
+                cancellationToken);
             if (repair is { Ok: true })
             {
+                var repairDescription = repair.CopyApplied
+                    ? $"replaced corrupt D2R settings from {repair.DonorAccountKey}"
+                    : repair.Message;
                 try
                 {
                     readyResult = await SendReadyIfNotMenuReadyAsync(account, args);
@@ -6845,25 +7469,35 @@ public sealed class DiscordBot
                     return new FollowAutoCheckResult(
                         accountKey,
                         FollowAutoCheckOutcome.CheckFailure,
-                        $"replaced corrupt D2R settings from {repair.DonorAccountKey}, but the retried ready failed: "
+                        $"{repairDescription}, but the retried ready failed: "
                             + FormatExceptionWithAccountStatus(ex, accountKey, account),
                         FollowWarmupOutcome.Failed);
                 }
 
                 if (readyResult?.Ok == false)
                 {
+                    var retriedStatusJson = readyResult.Data?.GetRawText();
+                    if (SettingsRepairPolicy.NeedsDonorSettings(retriedStatusJson))
+                    {
+                        _settingsRepairs.ObserveCurrentStatus(
+                            accountKey,
+                            retriedStatusJson,
+                            DateTimeOffset.UtcNow);
+                    }
+
                     return new FollowAutoCheckResult(
                         accountKey,
                         FollowAutoCheckOutcome.CheckFailure,
-                        $"replaced corrupt D2R settings from {repair.DonorAccountKey}, but the retried ready failed: "
+                        $"{repairDescription}, but the retried ready failed: "
                             + readyResult.Message,
                         FollowWarmupOutcome.Failed);
                 }
 
                 _logger.LogWarning(
-                    "{AccountKey} recovered after its D2R settings were replaced from {DonorKey}.",
+                    "{AccountKey} completed settings recovery: {Description}.",
                     accountKey,
-                    repair.DonorAccountKey);
+                    repairDescription);
+                _settingsRepairs.RecordRecovered(accountKey);
             }
             else if (repair is not null)
             {
@@ -7219,6 +7853,7 @@ public sealed class DiscordBot
     private async Task<FollowAutoGameWatchResult> WaitForFollowAutoGameEndAsync(
         int? baseline,
         Func<TimeSpan> pollDelay,
+        FollowAutoRosterWatchSnapshot rosterSnapshot,
         FollowAutoAccountState accountState,
         IReadOnlySet<string> isolatedAccountsResyncedThisGame,
         IDictionary<string, int> outOfGameResyncsThisGame,
@@ -7239,6 +7874,15 @@ public sealed class DiscordBot
             var onlineAccountKeys = connectedEntries
                 .Select(entry => entry.Key)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (rosterSnapshot.RequiresReconciliation(
+                    _followAutoTarget.TargetBotCount,
+                    onlineAccountKeys))
+            {
+                return new FollowAutoGameWatchResult(
+                    "the requested bot roster or connected fleet changed",
+                    ReconcileRoster: true);
+            }
+
             var disconnectedAccounts = accountState.BeginRecoveryForOfflineJoined(onlineAccountKeys);
             if (disconnectedAccounts.FirstOrDefault() is { } disconnectedAccountKey)
             {
@@ -7250,6 +7894,7 @@ public sealed class DiscordBot
 
             var sample = await TryFetchFollowPulseAsync(rotation++, _followAutoLockedNametag, accountState.Joined);
             await TryLockNametagFromSampleAsync(sample);
+            _followAutoLivePlayers.Observe(sample.PlayerCount, sample.PlayerCountFresh);
 
             // Before interpreting the leader signal, check whether this vantage is even in a
             // game. A bot dropped back to the lobby after its join was already confirmed (a
@@ -7505,6 +8150,7 @@ public sealed class DiscordBot
             }
 
             var sample = await TryFetchFollowPulseForAsync(accountKey, account, _followAutoLockedNametag);
+            _followAutoLivePlayers.Observe(sample.PlayerCount, sample.PlayerCountFresh);
             if (sample.PlayerCount is not { } count)
             {
                 continue;
@@ -7551,6 +8197,7 @@ public sealed class DiscordBot
             // the session-locked one - not about any other bound alt that might coincidentally
             // be visible.
             var sample = await TryFetchFollowPulseForAsync(accountKey, account, _followAutoLockedNametag);
+            _followAutoLivePlayers.Observe(sample.PlayerCount, sample.PlayerCountFresh);
             var lockedEntry = _followAutoLockedNametag is { } locked
                 ? sample.Matches.FirstOrDefault(match => string.Equals(match.Fingerprint, locked, StringComparison.Ordinal))
                 : null;
@@ -7703,7 +8350,8 @@ public sealed class DiscordBot
         double? LeaderScore,
         string? AccountKey,
         IReadOnlyList<FollowLeaderMatch> Matches,
-        bool? InGame = null);
+        bool? InGame = null,
+        bool PlayerCountFresh = false);
 
     private static string FormatParkedGameFullNote(FollowAutoAccountState accountState)
     {
@@ -7772,6 +8420,7 @@ public sealed class DiscordBot
 
         var (accountKey, account) = joinedEntries[rotation % joinedEntries.Length];
         var sample = await TryFetchFollowPulseForAsync(accountKey, account, _followAutoLockedNametag);
+        _followAutoLivePlayers.Observe(sample.PlayerCount, sample.PlayerCountFresh);
         await TryLockNametagFromSampleAsync(sample);
         var (lockedPresent, _, _) = GetLockedNametagPresence(sample);
         if (lockedPresent != false)
@@ -7831,7 +8480,8 @@ public sealed class DiscordBot
                     TryGetNullableDouble(sampleData, "leaderScore"),
                     accountKey,
                     ParseLeaderMatches(sampleData),
-                    TryGetBoolean(sampleData, "inGame", out var inGame) ? inGame : null);
+                    TryGetBoolean(sampleData, "inGame", out var inGame) ? inGame : null,
+                    PlayerCountFresh: true);
             }
         }
         catch (Exception ex)
@@ -8492,7 +9142,25 @@ public sealed class DiscordBot
 
     private sealed record AccountCommandRunResult(string AccountKey, bool Ok, string Message);
 
-    private sealed record FollowAutoCancelResult(bool WasRunning, long RunId);
+    private sealed record FollowAutoCancelResult(bool WasRunning, long RunId, bool Rejected);
+
+    private enum FollowAutoBotCountControlOutcome
+    {
+        Changed,
+        NotRunning,
+        StaleMonitor,
+        LocalRestartArmed,
+        RateLimited,
+        Refused,
+        AtLimit
+    }
+
+    private sealed record FollowAutoBotCountControl(
+        FollowAutoBotCountControlOutcome Outcome,
+        int PreviousTarget = 0,
+        int Target = 0,
+        TimeSpan RetryAfter = default,
+        IUserMessage? Monitor = null);
 
     private sealed record FollowAutoStopSignalResult(int Attempted, int Succeeded);
 
@@ -8521,7 +9189,10 @@ public sealed class DiscordBot
         bool Ok,
         string AccountKey,
         string? DonorAccountKey,
-        string Message);
+        string Message,
+        bool CopyApplied = false);
+
+    private sealed record SettingsReadyAttempt(bool Ok, string Message);
 
     private sealed record FollowAutoRunOptions(
         IMessageChannel Channel,
@@ -8534,8 +9205,6 @@ public sealed class DiscordBot
         IReadOnlyList<string> InitialRecoveryAccountKeys,
         string? ResumeReason = null,
         int TargetBotCount = FollowAutoRosterPolicy.DefaultBotCount);
-
-    private sealed record FollowAutoRunStart(long RunId, CancellationTokenSource Cts);
 
     private sealed record FollowAutoNodeRecoveryRequest(
         string NodeId,
@@ -8557,7 +9226,8 @@ public sealed class DiscordBot
     private sealed record FollowAutoGameWatchResult(
         string Reason,
         string? IsolatedAccountKey = null,
-        bool AttemptTargetedLeave = true);
+        bool AttemptTargetedLeave = true,
+        bool ReconcileRoster = false);
 
     private sealed class SlashContext
     {

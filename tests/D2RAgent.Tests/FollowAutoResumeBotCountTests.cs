@@ -34,8 +34,24 @@ public sealed class FollowAutoResumeBotCountTests : IDisposable
         Assert.Equal(6, db.GetFollowAutoResumeIntent()!.TargetBotCount);
     }
 
-    // Hosts that ran before this column existed have a database without it. Adding it must not
-    // wipe a recorded resume or throw on read - the row simply reports the default.
+    [Fact]
+    public void RestartJournalUsesTheFrozenTargetAndLaterButtonChangesAreRejected()
+    {
+        var db = new AppDb(CreateConfig());
+        var target = new FollowAutoTargetControl();
+        target.Reset(4);
+
+        var frozenTarget = target.ArmLocalRestart();
+        db.SaveFollowAutoResumeIntent(NewIntent(frozenTarget));
+        var lateAdjustment = target.TryAdjust(1, _ => true);
+
+        Assert.Equal(FollowAutoTargetAdjustmentOutcome.LocalRestartArmed, lateAdjustment.Outcome);
+        Assert.Equal(4, target.TargetBotCount);
+        Assert.Equal(4, db.GetFollowAutoResumeIntent()!.TargetBotCount);
+    }
+
+    // Hosts that ran before these columns existed have a database without them. Adding them must
+    // not wipe a recorded resume or throw on read - the row simply reports safe defaults.
     [Fact]
     public void ADatabaseFromAnOlderHostGainsTheColumnAndReadsTheDefault()
     {
@@ -49,6 +65,7 @@ public sealed class FollowAutoResumeBotCountTests : IDisposable
         Assert.NotNull(intent);
         Assert.Equal(12345UL, intent.ChannelId);
         Assert.Equal(FollowAutoRosterPolicy.DefaultBotCount, intent.TargetBotCount);
+        Assert.Equal(0, intent.RecoveryGeneration);
     }
 
     [Fact]

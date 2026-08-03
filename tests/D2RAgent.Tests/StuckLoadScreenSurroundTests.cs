@@ -3,12 +3,12 @@ using Xunit;
 
 namespace D2RAgent.Tests;
 
-// The stuck-load-screen watchdog (VmOperations.QuitIfStuckLoadScreenAsync) only quits D2R
-// after a multi-minute streak of Unknown frames AND a fresh confirmation that every
-// D2RScreenClassifier.LoadScreenSurroundRegion reads near-black. These tests run that exact
-// region set and threshold against every full-page reference capture through the same
-// sampling math as the live path (FullCaptureRegionSampler mirrors WindowsInput.SampleRegion),
-// so the confirm-vs-reject decision for each known screen is pinned here, not eyeballed.
+// The stuck-load-screen watchdog (VmOperations.QuitIfStuckLoadScreenAsync) only quits D2R after
+// every D2RScreenClassifier.LoadScreenSurroundRegion remains near-black for the configured
+// interval, with an explicit policy exclusion for the first-run Gamma Calibration screen. These
+// tests run that exact region set and threshold against every full-page reference capture through
+// the same sampling math as the live path (FullCaptureRegionSampler mirrors
+// WindowsInput.SampleRegion), so the confirm-vs-reject decision is pinned here, not eyeballed.
 //
 // The safety-critical rows are the in-game ones: a wrong quit in a live Hardcore game is the
 // one outcome this watchdog must never produce, so every in-game capture - including the
@@ -32,9 +32,12 @@ public sealed class StuckLoadScreenSurroundTests
     [InlineData("intro_three_phase1.png", true)]
     [InlineData("intro_three_phase2.png", true)]
     [InlineData("intro_three_phase3.png", true)]
-    // Confirms on pixels, but classifies ConnectingToBattleNet - a recognized state resets the
-    // unknown streak, so the watchdog never reaches the pixel confirmation here.
+    // Confirms on pixels; remaining on a login splash for the full watchdog interval is itself a
+    // wedged startup and is intentionally recoverable by relaunch.
     [InlineData("d2r_splash_logging_in.png", true)]
+    // The gamma screen also has a black surround. The raw pixel signature necessarily matches,
+    // but the watchdog policy test below proves the dedicated detector vetoes the quit.
+    [InlineData("gamma_calibration_settings_reset.png", true)]
     // Brighter cinematic frames reject on their lit regions.
     [InlineData("intro_two_phase1.png", false)]
     [InlineData("intro_two_phase2.png", false)]
@@ -104,6 +107,35 @@ public sealed class StuckLoadScreenSurroundTests
     {
         var empty = ScreenRegionStatsCalculator.FromPixels([]);
         Assert.False(D2RScreenClassifier.IsLoadScreenSurroundRegion(empty));
+    }
+
+    [Fact]
+    public void GammaCalibrationCaptureIsExcludedFromTheWatchdogDespiteItsBlackSurround()
+    {
+        const string capture = "gamma_calibration_settings_reset.png";
+        var surroundConfirmed = AllSurroundRegionsBlack(capture);
+        var gammaDetected = ReferenceCaptureClassifier.IsGammaCalibrationScreen(capture);
+
+        Assert.True(surroundConfirmed);
+        Assert.True(gammaDetected);
+        Assert.False(VmOperations.IsStuckLoadScreenWatchdogCandidate(
+            surroundConfirmed,
+            gammaDetected));
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(true, false, true)]
+    public void WatchdogPolicyRequiresBlackSurroundWithoutGamma(
+        bool surroundConfirmed,
+        bool gammaDetected,
+        bool expectedCandidate)
+    {
+        Assert.Equal(
+            expectedCandidate,
+            VmOperations.IsStuckLoadScreenWatchdogCandidate(surroundConfirmed, gammaDetected));
     }
 
     // Documents the overlap that broke the v0.2.193 watchdog on a real wedge: the load

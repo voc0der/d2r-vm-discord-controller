@@ -40,8 +40,8 @@ internal static class FollowAutoRosterPolicy
     }
 
     /// <summary>
-    /// Splits the online accounts into the ones that should be in the game and the ones that should
-    /// sit this one out.
+    /// Splits online accounts and current-game incumbents into the ones that should hold roster
+    /// slots and the ones that should sit this one out.
     /// </summary>
     /// <param name="incumbents">
     /// Accounts already committed to the current game - joined, recovering, or parked. They keep
@@ -67,9 +67,22 @@ internal static class FollowAutoRosterPolicy
         int targetBotCount,
         IReadOnlySet<string>? incumbents = null)
     {
-        var ordered = onlineAccountKeys
-            .OrderByDescending(accountKey => incumbents?.Contains(accountKey) == true)
-            .ThenBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+        var online = onlineAccountKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var incumbentSet = incumbents is null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : incumbents.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ordered = online
+            .Where(incumbentSet.Contains)
+            .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
+            // An offline recovery incumbent still occupies a requested roster slot. Putting it
+            // after live incumbents preserves bots already in-game, while including it at all
+            // lets a lower target bench/forget the excess recovery instead of waiting forever.
+            .Concat(incumbentSet
+                .Where(accountKey => !online.Contains(accountKey))
+                .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase))
+            .Concat(online
+                .Where(accountKey => !incumbentSet.Contains(accountKey))
+                .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase))
             .ToArray();
         var target = ClampTarget(targetBotCount);
         return new FollowAutoRoster(
@@ -87,9 +100,9 @@ internal static class FollowAutoRosterPolicy
     /// sample degraded). That must not block growing the roster: with no game to be full of, the
     /// cap and the bench are the only real constraints.
     /// </remarks>
-    public static bool CanAddBot(int targetBotCount, int onlineAccountCount, int? livePlayerCount)
+    public static bool CanAddBot(int targetBotCount, int connectedBenchedCount, int? livePlayerCount)
     {
-        if (targetBotCount >= MaxBotCount || targetBotCount >= onlineAccountCount)
+        if (targetBotCount >= MaxBotCount || connectedBenchedCount <= 0)
         {
             return false;
         }
@@ -122,6 +135,42 @@ internal sealed record FollowAutoRoster(
     public IReadOnlySet<string> ActiveSet => _activeSet.Value;
 
     public IReadOnlySet<string> BenchedSet => _benchedSet.Value;
+}
+
+/// <summary>
+/// Atomic gateway-facing view of the roster the run loop actually resolved. The target tag is
+/// part of the snapshot: a connected-bench count calculated for target 3 must never authorize a
+/// second promotion after the gateway has already moved the target to 4.
+/// </summary>
+internal sealed record FollowAutoRosterAvailability(
+    int TargetBotCount,
+    int OnlineAccountCount,
+    int ConnectedBenchedCount)
+{
+    public bool CanAddBot(int currentTargetBotCount, int? livePlayerCount)
+    {
+        return TargetBotCount == currentTargetBotCount
+            && FollowAutoRosterPolicy.CanAddBot(
+                currentTargetBotCount,
+                ConnectedBenchedCount,
+                livePlayerCount);
+    }
+
+    /// <summary>
+    /// Carries a gateway target mutation forward until the run loop publishes an exact new
+    /// roster. Promotions consume one known connected bench immediately; reductions leave the
+    /// count conservative because the newly benched incumbent may currently be offline.
+    /// </summary>
+    public FollowAutoRosterAvailability AfterTargetAdjustment(int adjustedTargetBotCount)
+    {
+        var adjustedTarget = FollowAutoRosterPolicy.ClampTarget(adjustedTargetBotCount);
+        var promoted = Math.Max(adjustedTarget - TargetBotCount, 0);
+        return this with
+        {
+            TargetBotCount = adjustedTarget,
+            ConnectedBenchedCount = Math.Max(ConnectedBenchedCount - promoted, 0)
+        };
+    }
 }
 
 /// <summary>
@@ -158,5 +207,200 @@ internal sealed class FollowAutoRosterAdjustmentGate
         {
             _lastAdjustmentUtc = null;
         }
+    }
+}
+
+/// <summary>
+/// A stable snapshot of the inputs that selected the roster currently being watched. The
+/// in-game watcher must yield as soon as either input changes so the outer loop can bench,
+/// promote, or account for newly connected VMs without mistaking that change for a game end.
+/// </summary>
+internal sealed class FollowAutoRosterWatchSnapshot
+{
+    private readonly HashSet<string> _onlineAccountKeys;
+
+    public FollowAutoRosterWatchSnapshot(int targetBotCount, IEnumerable<string> onlineAccountKeys)
+    {
+        TargetBotCount = FollowAutoRosterPolicy.ClampTarget(targetBotCount);
+        _onlineAccountKeys = onlineAccountKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    public int TargetBotCount { get; }
+
+    public bool RequiresReconciliation(int targetBotCount, IEnumerable<string> onlineAccountKeys)
+    {
+        return TargetBotCount != FollowAutoRosterPolicy.ClampTarget(targetBotCount)
+            || !_onlineAccountKeys.SetEquals(onlineAccountKeys);
+    }
+}
+
+/// <summary>
+/// Thread-safe live bot target shared by the Discord gateway and follow run. Arming a local host
+/// restart freezes adjustments and returns the exact target that must be journaled; therefore a
+/// button press is either included in that snapshot or rejected, never acknowledged and lost.
+/// </summary>
+internal sealed class FollowAutoTargetControl
+{
+    private readonly object _sync = new();
+    private int _targetBotCount = FollowAutoRosterPolicy.DefaultBotCount;
+    private int _localRestartArmed;
+
+    public int TargetBotCount => Volatile.Read(ref _targetBotCount);
+
+    public bool LocalRestartArmed => Volatile.Read(ref _localRestartArmed) != 0;
+
+    public void Reset(int targetBotCount)
+    {
+        lock (_sync)
+        {
+            Volatile.Write(
+                ref _targetBotCount,
+                FollowAutoRosterPolicy.ClampTarget(targetBotCount));
+            Volatile.Write(ref _localRestartArmed, 0);
+        }
+    }
+
+    public FollowAutoTargetAdjustment TryAdjust(
+        int delta,
+        Func<int, bool> canAdjust)
+    {
+        lock (_sync)
+        {
+            var current = _targetBotCount;
+            if (_localRestartArmed != 0)
+            {
+                return new FollowAutoTargetAdjustment(
+                    FollowAutoTargetAdjustmentOutcome.LocalRestartArmed,
+                    current,
+                    current);
+            }
+
+            if (!canAdjust(current))
+            {
+                return new FollowAutoTargetAdjustment(
+                    FollowAutoTargetAdjustmentOutcome.Refused,
+                    current,
+                    current);
+            }
+
+            var target = FollowAutoRosterPolicy.ClampTarget(current + delta);
+            if (target == current)
+            {
+                return new FollowAutoTargetAdjustment(
+                    FollowAutoTargetAdjustmentOutcome.AtLimit,
+                    current,
+                    current);
+            }
+
+            Volatile.Write(ref _targetBotCount, target);
+            return new FollowAutoTargetAdjustment(
+                FollowAutoTargetAdjustmentOutcome.Changed,
+                current,
+                target);
+        }
+    }
+
+    public int ArmLocalRestart()
+    {
+        lock (_sync)
+        {
+            Volatile.Write(ref _localRestartArmed, 1);
+            return _targetBotCount;
+        }
+    }
+
+    public void DisarmLocalRestart()
+    {
+        lock (_sync)
+        {
+            Volatile.Write(ref _localRestartArmed, 0);
+        }
+    }
+}
+
+internal enum FollowAutoTargetAdjustmentOutcome
+{
+    Changed,
+    Refused,
+    AtLimit,
+    LocalRestartArmed
+}
+
+internal sealed record FollowAutoTargetAdjustment(
+    FollowAutoTargetAdjustmentOutcome Outcome,
+    int PreviousTarget,
+    int Target);
+
+/// <summary>
+/// Highest player count observed in the current game. A later low or unreadable sample must not
+/// reopen +1 after the game was known full; only confirmed advancement resets the high-water.
+/// </summary>
+internal sealed class FollowAutoPlayerCountHighWater
+{
+    private const int Unknown = -1;
+    private int _highestOrUnknown = Unknown;
+
+    public int? Value
+    {
+        get
+        {
+            var value = Volatile.Read(ref _highestOrUnknown);
+            return value == Unknown ? null : value;
+        }
+    }
+
+    public void Observe(int? playerCount, bool fresh = true)
+    {
+        if (!fresh || playerCount is not { } observed)
+        {
+            return;
+        }
+
+        while (true)
+        {
+            var current = Volatile.Read(ref _highestOrUnknown);
+            if (current >= observed)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _highestOrUnknown, observed, current) == current)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Releases capacity after this controller positively confirms that rostered bots left the
+    /// current game. A subsequent fresh sample can raise the value again if someone else fills a
+    /// slot; cached fallback counts cannot undo the confirmed departure.
+    /// </summary>
+    public void RecordConfirmedDepartures(int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        while (true)
+        {
+            var current = Volatile.Read(ref _highestOrUnknown);
+            if (current == Unknown)
+            {
+                return;
+            }
+
+            var adjusted = Math.Max(current - count, 0);
+            if (Interlocked.CompareExchange(ref _highestOrUnknown, adjusted, current) == current)
+            {
+                return;
+            }
+        }
+    }
+
+    public void Reset()
+    {
+        Volatile.Write(ref _highestOrUnknown, Unknown);
     }
 }

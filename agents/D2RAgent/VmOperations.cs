@@ -103,6 +103,14 @@ public sealed class VmOperations
     // donor settings file. The screen is static and the detector has enormous margins, but the
     // repair quits a live client and overwrites its settings, so it waits for a second look.
     private const int GammaCalibrationConfirmSightings = 2;
+    // Unconfirmed sightings belong to one short observation incident. Status and menu detection
+    // take an immediate independent second probe; the window prevents isolated positives from
+    // unrelated observations minutes apart from authorizing a settings-file replacement.
+    internal static readonly TimeSpan GammaCalibrationIncidentWindow = TimeSpan.FromSeconds(30);
+
+    internal readonly record struct D2RProcessGeneration(int ProcessId, DateTimeOffset StartedUtc);
+
+    private readonly record struct SettingsRepairProcessStopResult(bool Ok, string Message);
 
     private readonly VmAgentConfig _config;
     private readonly MachineTelemetrySampler _telemetry = new();
@@ -154,18 +162,34 @@ public sealed class VmOperations
     private bool _lastInGameHudResult;
     private long _followAutoStoppedThroughRunId;
     // Consecutive first-run gamma-calibration sightings (D2R reset its own Settings.json), guarded
-    // by _activityLock. Cleared only by a frame past character select - see RecordObservedFrame.
+    // by _activityLock. An unconfirmed incident is cleared by any failed/non-gamma observation or
+    // process restart. Once confirmed it stays latched while the broken client is stopped, and is
+    // cleared only by a successful settings replacement or a healthy rendered frame.
     private int _gammaCalibrationSightings;
     private DateTimeOffset? _firstGammaCalibrationUtc;
     private DateTimeOffset? _lastGammaCalibrationUtc;
+    private DateTimeOffset? _gammaCalibrationProcessStartUtc;
     private int _settingsRepairsApplied;
     private DateTimeOffset? _lastSettingsRepairUtc;
     private string? _lastSettingsRepairMessage;
+    // PREPARED is flushed before the client is quit and before a destructive replacement is
+    // attempted. READY means the replacement completed and only a healthy rendered frame may
+    // close the incident. The phase and attempt budget live beside Settings.json so process/VM
+    // restarts cannot accidentally authorize an uncounted duplicate replacement.
+    private D2RSettingsRepairPhase? _settingsRepairPhase;
+    private int _settingsRepairIncidentAttempts;
+    private DateTimeOffset? _settingsRepairIncidentFirstAttemptUtc;
+    private DateTimeOffset? _settingsRepairIncidentLastAttemptUtc;
+    private bool _settingsRepairBudgetJournalRewritePending;
+    private string? _settingsRepairJournalError;
+    private string? _settingsRepairJournalWarning;
+    private bool _settingsRepairTransactionInProgress;
 
     public VmOperations(VmAgentConfig config, string[]? restartArgs = null)
     {
         _config = config;
         _restartArgs = restartArgs ?? [];
+        LoadPersistedSettingsRepairState();
     }
 
     public Task<object> GetStatusAsync(CancellationToken cancellationToken)
@@ -440,6 +464,21 @@ public sealed class VmOperations
 
     private async Task<CommandResult> ExecuteCommandAsync(CommandRequest request, CancellationToken cancellationToken)
     {
+        // A single gamma sighting is enough to suppress input even though two are required before
+        // authorizing settings replacement. Ready/menu automation sends startup keys and targeted
+        // clicks; a click that lands on Continue can accept the reset defaults before the
+        // independent confirmation probe runs. Once the detector has seen this screen, only read-only,
+        // lifecycle, and settings-repair commands may proceed until the observation is disproved
+        // or the incident is repaired.
+        if (request.Command.StartsWith("menu_", StringComparison.Ordinal)
+            && ShouldSuppressMenuInputForSettingsReset())
+        {
+            ConfirmGammaCalibrationWithImmediateSecondProbe();
+            return CommandResult.Failure(
+                "D2R menu input is suppressed because the first-run gamma calibration screen was detected; Settings.json must be confirmed and repaired before automation continues.",
+                await CollectStatusAsync(cancellationToken));
+        }
+
         return request.Command switch
         {
             "launch_battlenet" => LaunchBattleNet(),
@@ -498,11 +537,11 @@ public sealed class VmOperations
     }
 
     /// <summary>
-    /// Replaces this VM's Settings.json with a healthy fleet member's copy. D2R owns that file
-    /// while it runs and rewrites it on exit, so the client is closed first and the write waits
-    /// <see cref="VmAgentConfig.SettingsRepairSettleSeconds"/> for that final write to land -
-    /// otherwise the repair is simply overwritten by the very client that corrupted it.
-    /// Relaunching is left to the host, which owns retry and escalation.
+    /// Replaces this VM's Settings.json with a healthy fleet member's copy. The PREPARED journal
+    /// is flushed before D2R is quit, so a process or VM crash cannot replay an uncounted
+    /// destructive attempt. D2R owns the file while it runs and rewrites it on exit, so the write
+    /// then waits <see cref="VmAgentConfig.SettingsRepairSettleSeconds"/> for that final write to
+    /// land. Relaunching is left to the host, which owns retry and escalation.
     /// </summary>
     private async Task<CommandResult> RepairSettingsAsync(MenuCommandArgs args, CancellationToken cancellationToken)
     {
@@ -518,50 +557,278 @@ public sealed class VmOperations
         }
 
         var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
-        var quit = await QuitD2RAsync(cancellationToken);
-        var settle = TimeSpan.FromSeconds(Math.Clamp(_config.SettingsRepairSettleSeconds, 0, 30));
-        if (settle > TimeSpan.Zero)
-        {
-            await Task.Delay(settle, cancellationToken);
-        }
-
-        if (IsD2RRunning())
+        if (path is null)
         {
             return CommandResult.Failure(
-                $"D2R is still running after the quit attempt ({quit.Message}); not replacing Settings.json while the client owns it.");
+                $"Could not resolve the Saved Games folder; set d2rSettingsPath to the full path of {D2RSettingsFile.SettingsFileName}.");
         }
 
-        if (!D2RSettingsFile.TryReplace(path, content!, out var backupPath, out var writeError))
-        {
-            return CommandResult.Failure(writeError);
-        }
-
-        // The corrupted state is cleared as far as this agent knows, but the proof is the client
-        // reaching character select on the next launch - so the sighting count resets and the
-        // detector gets to make that call again from scratch.
-        ClearGammaCalibrationSightings();
-        var message = $"Replaced {path} with {content!.Length} characters"
-            + (string.IsNullOrWhiteSpace(args.SettingsSourceAgentId) ? "" : $" from {args.SettingsSourceAgentId}")
-            + (string.IsNullOrWhiteSpace(backupPath) ? "" : $"; previous file kept at {backupPath}")
-            + $". Client was closed first: {quit.Message}";
         lock (_activityLock)
         {
-            _settingsRepairsApplied++;
-            _lastSettingsRepairUtc = DateTimeOffset.UtcNow;
-            _lastSettingsRepairMessage = message;
+            RefreshPersistedSettingsRepairStateLocked(path);
+            NormalizePersistedSettingsRepairBudgetLocked(DateTimeOffset.UtcNow);
+            if (_settingsRepairJournalError is not null)
+            {
+                return CommandResult.Failure(
+                    $"The settings-repair journal is invalid or unreadable; refusing to replace Settings.json until an operator removes or fixes it: {_settingsRepairJournalError}");
+            }
+
+            if (_settingsRepairPhase == D2RSettingsRepairPhase.Ready)
+            {
+                return CommandResult.Failure(
+                    "A donor settings replacement is already in Ready phase; refusing a duplicate copy until the client renders a healthy frame.");
+            }
         }
 
-        return CommandResult.Success(
-            message,
-            new
+        if (!TryCaptureD2RProcessGenerations(out var authorizedProcesses, out var processIdentityError))
+        {
+            return CommandResult.Failure(
+                $"Could not establish the exact D2R process generation before settings repair; no attempt was charged and nothing was changed: {processIdentityError}");
+        }
+
+        if (authorizedProcesses.Length > 1)
+        {
+            return CommandResult.Failure(
+                $"Found {authorizedProcesses.Length} D2R process generations; the Gamma screen cannot be bound unambiguously to one client, so no attempt was charged and nothing was changed.");
+        }
+
+        var d2rRunning = authorizedProcesses.Length == 1;
+        var freshGammaDetected = !d2rRunning;
+        if (d2rRunning)
+        {
+            freshGammaDetected = DetectFreshGammaCalibrationForSettingsRepair();
+            RecordObservedFrame(freshGammaDetected
+                ? nameof(VisibleD2RState.GammaCalibration)
+                : nameof(VisibleD2RState.Unknown));
+        }
+
+        if (!TryCaptureD2RProcessGenerations(out var processesAfterGammaProbe, out processIdentityError))
+        {
+            return CommandResult.Failure(
+                $"Could not revalidate the exact D2R process generation after the Gamma probe; no attempt was charged and nothing was changed: {processIdentityError}");
+        }
+
+        if (!ContainsOnlyAuthorizedSettingsRepairProcesses(authorizedProcesses, processesAfterGammaProbe))
+        {
+            return CommandResult.Failure(
+                "A new D2R process generation appeared during the Gamma authorization probe; no attempt was charged and the new client was left untouched.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var chargedAttemptCount = 0;
+        lock (_activityLock)
+        {
+            RefreshPersistedSettingsRepairStateLocked(path);
+            var preparedUtc = DateTimeOffset.UtcNow;
+            NormalizePersistedSettingsRepairBudgetLocked(preparedUtc);
+            if (!CanApplySettingsRepair(
+                    d2rRunning,
+                    freshGammaDetected,
+                    IsGammaCalibrationConfirmedLocked(),
+                    _settingsRepairPhase,
+                    _settingsRepairJournalError is not null,
+                    out var refusalReason))
             {
-                path,
-                backupPath = string.IsNullOrWhiteSpace(backupPath) ? null : backupPath,
-                sha256 = D2RSettingsFile.Sha256(content),
-                length = content.Length,
-                sourceAgentId = args.SettingsSourceAgentId,
-                settleSeconds = settle.TotalSeconds
-            });
+                return CommandResult.Failure(refusalReason);
+            }
+
+            if (_settingsRepairIncidentAttempts >= D2RSettingsRepairState.MaxAttemptsPerIncident)
+            {
+                return CommandResult.Failure(
+                    $"The settings-repair incident already spent its {D2RSettingsRepairState.MaxAttemptsPerIncident} replacement attempts; refusing another copy until the incident window expires or a healthy frame closes it.");
+            }
+
+            var nextAttemptCount = _settingsRepairIncidentAttempts + 1;
+            var firstAttemptUtc = _settingsRepairIncidentFirstAttemptUtc ?? preparedUtc;
+            var preparedState = new D2RSettingsRepairState(
+                D2RSettingsRepairState.CurrentSchemaVersion,
+                D2RSettingsRepairPhase.Prepared,
+                nextAttemptCount,
+                firstAttemptUtc,
+                preparedUtc);
+            if (!D2RSettingsFile.TryWriteRepairState(path, preparedState, out var stateError))
+            {
+                _settingsRepairJournalWarning =
+                    $"Could not persist PREPARED before replacement; no client/file changes were made: {stateError}";
+                _lastSettingsRepairMessage = _settingsRepairJournalWarning;
+                return CommandResult.Failure(_settingsRepairJournalWarning);
+            }
+
+            _settingsRepairPhase = D2RSettingsRepairPhase.Prepared;
+            _settingsRepairIncidentAttempts = nextAttemptCount;
+            _settingsRepairIncidentFirstAttemptUtc = firstAttemptUtc;
+            _settingsRepairIncidentLastAttemptUtc = preparedUtc;
+            _settingsRepairBudgetJournalRewritePending = false;
+            _settingsRepairJournalWarning = null;
+            _settingsRepairTransactionInProgress = true;
+            chargedAttemptCount = nextAttemptCount;
+        }
+
+        CommandResult ChargedFailure(string failure)
+        {
+            lock (_activityLock)
+            {
+                _lastSettingsRepairMessage = failure;
+            }
+
+            return CommandResult.Failure(
+                failure,
+                new
+                {
+                    settingsRepairAttemptCharged = true,
+                    incidentRepairAttempts = chargedAttemptCount
+                });
+        }
+
+        try
+        {
+            var quit = await StopAuthorizedD2RForSettingsRepairAsync(
+                authorizedProcesses,
+                cancellationToken);
+            if (!quit.Ok)
+            {
+                return ChargedFailure(
+                    $"{quit.Message} PREPARED remains retryable, and Settings.json was not replaced.");
+            }
+
+            var settle = TimeSpan.FromSeconds(Math.Clamp(_config.SettingsRepairSettleSeconds, 0, 30));
+            if (settle > TimeSpan.Zero)
+            {
+                await Task.Delay(settle, cancellationToken);
+            }
+
+            if (!TryCaptureD2RProcessGenerations(out var processesBeforeCopy, out processIdentityError))
+            {
+                return ChargedFailure(
+                    $"Could not prove D2R remained stopped before replacing Settings.json: {processIdentityError} PREPARED remains retryable, and Settings.json was not replaced.");
+            }
+
+            if (processesBeforeCopy.Length > 0)
+            {
+                var processDescription = ContainsOnlyAuthorizedSettingsRepairProcesses(
+                    authorizedProcesses,
+                    processesBeforeCopy)
+                    ? "the authorized D2R process is still running"
+                    : "a new D2R process generation appeared";
+                return ChargedFailure(
+                    $"Refusing to replace Settings.json because {processDescription} after the quit/settle step. PREPARED remains retryable, and every running client was left untouched.");
+            }
+
+            (bool Allowed, string Error) ValidateCommitBoundary()
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return (
+                        false,
+                        "Settings repair was cancelled before the atomic settings-file commit; the destination was left unchanged.");
+                }
+
+                if (!TryCaptureD2RProcessGenerations(
+                        out var processesAtCommit,
+                        out var commitIdentityError))
+                {
+                    return (
+                        false,
+                        $"Could not prove D2R was stopped at the atomic settings-file commit: {commitIdentityError} The destination was left unchanged.");
+                }
+
+                if (processesAtCommit.Length > 0)
+                {
+                    var processDescription = ContainsOnlyAuthorizedSettingsRepairProcesses(
+                        authorizedProcesses,
+                        processesAtCommit)
+                        ? "the authorized D2R process was still running"
+                        : "a new D2R process generation had appeared";
+                    return (
+                        false,
+                        $"Refused the atomic settings-file commit because {processDescription}; every running client and the destination file were left untouched.");
+                }
+
+                return (true, "");
+            }
+
+            if (!D2RSettingsFile.TryReplace(
+                    path,
+                    content!,
+                    out var backupPath,
+                    out var writeError,
+                    ValidateCommitBoundary))
+            {
+                return ChargedFailure(
+                    $"PREPARED replacement attempt failed; the donor may be retried within budget: {writeError}");
+            }
+
+            // The corrupted state is cleared as far as this agent knows, but the proof is the
+            // client reaching character select on the next launch - so the sighting count resets
+            // and the detector gets to make that call again from scratch.
+            ClearGammaCalibrationSightings();
+            var message = $"Replaced {path} with {content!.Length} characters"
+                + (string.IsNullOrWhiteSpace(args.SettingsSourceAgentId) ? "" : $" from {args.SettingsSourceAgentId}")
+                + (string.IsNullOrWhiteSpace(backupPath) ? "" : $"; previous file kept at {backupPath}")
+                + $". Client was closed first: {quit.Message}";
+            lock (_activityLock)
+            {
+                var appliedUtc = DateTimeOffset.UtcNow;
+                _settingsRepairPhase = D2RSettingsRepairPhase.Ready;
+                _settingsRepairsApplied++;
+                _lastSettingsRepairUtc = appliedUtc;
+
+                var readyState = new D2RSettingsRepairState(
+                    D2RSettingsRepairState.CurrentSchemaVersion,
+                    D2RSettingsRepairPhase.Ready,
+                    _settingsRepairIncidentAttempts,
+                    _settingsRepairIncidentFirstAttemptUtc,
+                    _settingsRepairIncidentLastAttemptUtc);
+                if (!D2RSettingsFile.TryWriteRepairState(path, readyState, out var stateError))
+                {
+                    // The donor is already installed. Memory stays READY so this process refuses
+                    // duplicates; the durable PREPARED state intentionally stays retryable if the
+                    // VM restarts before a later status pass can finish this rewrite.
+                    _settingsRepairBudgetJournalRewritePending = true;
+                    _settingsRepairJournalWarning =
+                        $"Could not persist READY after the donor copy; disk remains safely PREPARED: {stateError}";
+                    message += $" WARNING: {_settingsRepairJournalWarning}";
+                }
+                else
+                {
+                    _settingsRepairBudgetJournalRewritePending = false;
+                    _settingsRepairJournalWarning = null;
+                }
+
+                _lastSettingsRepairMessage = message;
+            }
+
+            return CommandResult.Success(
+                message,
+                new
+                {
+                    path,
+                    backupPath = string.IsNullOrWhiteSpace(backupPath) ? null : backupPath,
+                    sha256 = D2RSettingsFile.Sha256(content),
+                    length = content.Length,
+                    sourceAgentId = args.SettingsSourceAgentId,
+                    settleSeconds = settle.TotalSeconds,
+                    settingsRepairAttemptCharged = true,
+                    incidentRepairAttempts = chargedAttemptCount
+                });
+        }
+        catch (OperationCanceledException)
+        {
+            return ChargedFailure(
+                "Settings repair was cancelled after PREPARED was persisted; the charged attempt remains retryable, and Settings.json was not replaced.");
+        }
+        catch (Exception ex)
+        {
+            return ChargedFailure(
+                $"Settings repair failed after PREPARED was persisted: {ex.Message} The charged attempt remains retryable.");
+        }
+        finally
+        {
+            lock (_activityLock)
+            {
+                _settingsRepairTransactionInProgress = false;
+            }
+        }
     }
 
     private async Task<CommandResult> SelfUpdateAsync(CancellationToken cancellationToken)
@@ -787,11 +1054,6 @@ public sealed class VmOperations
     }
 
     /// <summary>
-    /// Status view of the graphics-initialization incident: whether the dialog is on screen right
-    /// now, how many dismiss-and-relaunch attempts this agent has already spent on it, and whether
-    /// it has given up and needs the host to power-cycle the VM. Null when there is nothing to say.
-    /// </summary>
-    /// <summary>
     /// Status view of a settings-file failure: whether this client is sitting on D2R's first-run
     /// gamma calibration screen (which means it reset its own Settings.json), and what repair this
     /// agent has already accepted. Null when there is nothing to say, so agents and hosts that
@@ -799,24 +1061,74 @@ public sealed class VmOperations
     /// </summary>
     private object? DescribeSettingsRepair(VisibleD2RState visibleState)
     {
-        var (sightings, firstUtc, lastUtc) = GetGammaCalibrationSnapshot();
+        // Heartbeats may legally be five minutes apart, while unconfirmed sightings intentionally
+        // expire after 30 seconds. Confirm immediately from an independent capture so autonomous
+        // status collection can arm repair without relying on a later menu command or heartbeat.
+        if (visibleState == VisibleD2RState.GammaCalibration
+            && !IsGammaCalibrationIncidentConfirmed())
+        {
+            ConfirmGammaCalibrationWithImmediateSecondProbe();
+        }
+
+        var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
+        int sightings;
+        DateTimeOffset? firstUtc;
+        DateTimeOffset? lastUtc;
+        bool gammaIncidentConfirmed;
         int repairsApplied;
         DateTimeOffset? lastRepairUtc;
         string? lastRepairMessage;
+        D2RSettingsRepairPhase? journalPhase;
+        int incidentRepairAttempts;
+        DateTimeOffset? incidentFirstRepairUtc;
+        DateTimeOffset? incidentLastRepairUtc;
+        string? repairJournalError;
+        string? repairJournalWarning;
         lock (_activityLock)
         {
+            RefreshPersistedSettingsRepairStateLocked(path);
+            NormalizePersistedSettingsRepairBudgetLocked(DateTimeOffset.UtcNow);
+            if (ShouldTransitionReadyRepairToPrepared(
+                    visibleState == VisibleD2RState.GammaCalibration,
+                    IsGammaCalibrationConfirmedLocked(),
+                    _settingsRepairPhase,
+                    _settingsRepairJournalError is not null))
+            {
+                TransitionReadyRepairToPreparedLocked(path);
+            }
+
+            sightings = _gammaCalibrationSightings;
+            firstUtc = _firstGammaCalibrationUtc;
+            lastUtc = _lastGammaCalibrationUtc;
+            gammaIncidentConfirmed = IsGammaCalibrationConfirmedLocked();
             repairsApplied = _settingsRepairsApplied;
             lastRepairUtc = _lastSettingsRepairUtc;
             lastRepairMessage = _lastSettingsRepairMessage;
+            journalPhase = _settingsRepairPhase;
+            incidentRepairAttempts = _settingsRepairIncidentAttempts;
+            incidentFirstRepairUtc = _settingsRepairIncidentFirstAttemptUtc;
+            incidentLastRepairUtc = _settingsRepairIncidentLastAttemptUtc;
+            repairJournalError = _settingsRepairJournalError;
+            repairJournalWarning = _settingsRepairJournalWarning;
         }
 
         var detected = visibleState == VisibleD2RState.GammaCalibration;
-        if (!detected && sightings == 0 && repairsApplied == 0)
+        var needsReadyAfterSettingsRepair = journalPhase == D2RSettingsRepairPhase.Ready;
+        var needsDonorSettings = _config.SettingsRepairEnabled
+            && repairJournalError is null
+            && journalPhase != D2RSettingsRepairPhase.Ready
+            && (gammaIncidentConfirmed || journalPhase == D2RSettingsRepairPhase.Prepared);
+        if (!detected
+            && sightings == 0
+            && repairsApplied == 0
+            && journalPhase is null
+            && incidentRepairAttempts == 0
+            && repairJournalError is null
+            && repairJournalWarning is null)
         {
             return null;
         }
 
-        var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
         // Only read the file while something is actually wrong. Keying this on repairsApplied too
         // meant every status collection for the rest of the process re-read and hashed a 4 KB file
         // to report a repair that had already succeeded.
@@ -841,8 +1153,10 @@ public sealed class VmOperations
             sightings,
             confirmSightings = GammaCalibrationConfirmSightings,
             // The flag the host acts on. Repairs are opt-out per VM, and one sighting is not
-            // enough - see IsSettingsRepairConfirmed.
-            needsDonorSettings = detected && IsSettingsRepairConfirmed(),
+            // enough. Once two looks confirm the incident, keep advertising it even if D2R has
+            // stopped: settings_repair intentionally quits the client before writing, and a
+            // cancellation or failed write must remain retryable on the next host sweep.
+            needsDonorSettings,
             repairEnabled = _config.SettingsRepairEnabled,
             firstSeenUtc = firstUtc,
             lastSeenUtc = lastUtc,
@@ -854,10 +1168,276 @@ public sealed class VmOperations
             settingsError,
             repairsApplied,
             lastRepairUtc,
-            lastRepairMessage
+            lastRepairMessage,
+            needsReadyAfterSettingsRepair,
+            journalPhase = journalPhase?.ToString(),
+            repairBlocked = repairJournalError is not null,
+            repairJournalError,
+            repairJournalWarning,
+            // settings_repair replacement attempts durably dispatched in this still-unresolved
+            // incident. PREPARED charges the attempt before quit/copy, so the host can rehydrate
+            // its destructive-copy budget without a crash creating a free replay.
+            incidentRepairAttempts,
+            incidentFirstRepairUtc,
+            incidentLastRepairUtc
         };
     }
 
+    private void LoadPersistedSettingsRepairState()
+    {
+        var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
+        if (path is null)
+        {
+            if (!string.IsNullOrWhiteSpace(_config.D2RSettingsPath))
+            {
+                _settingsRepairJournalError =
+                    $"Configured d2rSettingsPath \"{_config.D2RSettingsPath}\" is invalid or cannot be resolved.";
+                _lastSettingsRepairMessage =
+                    $"Settings repair and menu input are blocked: {_settingsRepairJournalError}";
+            }
+
+            return;
+        }
+
+        var readResult = D2RSettingsFile.ReadRepairState(path, out var state, out var readError);
+        if (readResult == D2RSettingsRepairStateReadResult.Invalid)
+        {
+            _settingsRepairJournalError = readError;
+            _lastSettingsRepairMessage =
+                $"The settings-repair journal is invalid or unreadable; repair and menu input are blocked: {readError}";
+            return;
+        }
+
+        if (readResult == D2RSettingsRepairStateReadResult.Missing)
+        {
+            return;
+        }
+
+        ApplyPersistedSettingsRepairStateLocked(state);
+        NormalizePersistedSettingsRepairBudgetLocked(DateTimeOffset.UtcNow);
+    }
+
+    private void NormalizePersistedSettingsRepairBudgetLocked(DateTimeOffset nowUtc)
+    {
+        var expiredNow = _settingsRepairIncidentAttempts > 0
+            && _settingsRepairIncidentLastAttemptUtc is { } lastAttemptUtc
+            && nowUtc - lastAttemptUtc >= D2RSettingsRepairState.IncidentWindow;
+        if ((!expiredNow && !_settingsRepairBudgetJournalRewritePending)
+            || _settingsRepairPhase is null
+            || _settingsRepairJournalError is not null
+            || _settingsRepairTransactionInProgress)
+        {
+            return;
+        }
+
+        if (expiredNow)
+        {
+            _settingsRepairIncidentAttempts = 0;
+            _settingsRepairIncidentFirstAttemptUtc = null;
+            _settingsRepairIncidentLastAttemptUtc = null;
+        }
+
+        var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
+        var currentState = new D2RSettingsRepairState(
+            D2RSettingsRepairState.CurrentSchemaVersion,
+            _settingsRepairPhase.Value,
+            _settingsRepairIncidentAttempts,
+            _settingsRepairIncidentFirstAttemptUtc,
+            _settingsRepairIncidentLastAttemptUtc);
+        if (!D2RSettingsFile.TryWriteRepairState(path, currentState, out var stateError))
+        {
+            // An expired in-memory count still stays expired so status cannot block forever. A
+            // later load normalizes by the persisted timestamp, and every status pass retries the
+            // write whether this is expiry cleanup or recovery from an earlier journal failure.
+            _settingsRepairBudgetJournalRewritePending = true;
+            _settingsRepairJournalWarning = expiredNow
+                ? $"The settings-repair attempt budget expired in memory, but its journal could not be updated: {stateError}"
+                : $"The {_settingsRepairPhase} settings-repair journal still could not be persisted: {stateError}";
+            _lastSettingsRepairMessage = _settingsRepairJournalWarning;
+        }
+        else
+        {
+            _settingsRepairBudgetJournalRewritePending = false;
+            _settingsRepairJournalWarning = null;
+        }
+    }
+
+    private void RefreshPersistedSettingsRepairStateLocked(string? path)
+    {
+        if (path is null || _settingsRepairTransactionInProgress)
+        {
+            return;
+        }
+
+        var readResult = D2RSettingsFile.ReadRepairState(path, out var state, out var readError);
+        if (readResult == D2RSettingsRepairStateReadResult.Invalid)
+        {
+            _settingsRepairJournalError = readError;
+            _lastSettingsRepairMessage =
+                $"The settings-repair journal is invalid or unreadable; repair and menu input are blocked: {readError}";
+            return;
+        }
+
+        if (readResult == D2RSettingsRepairStateReadResult.Missing)
+        {
+            // Missing is normal. If an operator removed an invalid journal, that is the explicit
+            // recovery action which clears fail-closed mode. Do not erase an in-memory valid phase
+            // merely because its durable rewrite disappeared during this process.
+            if (_settingsRepairJournalError is not null)
+            {
+                if (_settingsRepairPhase is null)
+                {
+                    ClearPersistedSettingsRepairStateLocked();
+                }
+                else
+                {
+                    _settingsRepairJournalError = null;
+                    _settingsRepairBudgetJournalRewritePending = true;
+                    _settingsRepairJournalWarning =
+                        $"The invalid journal was removed; restoring the known in-memory {_settingsRepairPhase} phase to disk.";
+                }
+            }
+
+            return;
+        }
+
+        var wasBlocked = _settingsRepairJournalError is not null;
+        _settingsRepairJournalError = null;
+        if (ShouldAdoptPersistedSettingsRepairState(
+                _settingsRepairPhase,
+                _settingsRepairBudgetJournalRewritePending,
+                wasBlocked,
+                state.Phase))
+        {
+            ApplyPersistedSettingsRepairStateLocked(state);
+            return;
+        }
+
+        if (_settingsRepairPhase == D2RSettingsRepairPhase.Ready
+            && state.Phase == D2RSettingsRepairPhase.Prepared)
+        {
+            // READY is proof that this process already completed the copy. A stale PREPARED file
+            // may survive a failed READY write or a transient unreadable-journal interval, but it
+            // must never roll the live process back into donor-ready state. Rewrite our known
+            // READY state on the Normalize pass immediately following this refresh.
+            _settingsRepairBudgetJournalRewritePending = true;
+            _settingsRepairJournalWarning =
+                "Ignored a stale Prepared repair journal because this process already reached Ready; restoring Ready to disk.";
+            _lastSettingsRepairMessage = _settingsRepairJournalWarning;
+        }
+    }
+
+    internal static bool ShouldAdoptPersistedSettingsRepairState(
+        D2RSettingsRepairPhase? inMemoryPhase,
+        bool journalRewritePending,
+        bool wasBlocked,
+        D2RSettingsRepairPhase persistedPhase)
+    {
+        if (inMemoryPhase is null)
+        {
+            return true;
+        }
+
+        // A durable READY is always the safer direction: it prevents replaying a copy which may
+        // already have completed, even if an older in-memory budget rewrite was pending.
+        if (inMemoryPhase == D2RSettingsRepairPhase.Prepared
+            && persistedPhase == D2RSettingsRepairPhase.Ready)
+        {
+            return true;
+        }
+
+        // Never downgrade proof of a completed copy from READY to PREPARED.
+        if (inMemoryPhase == D2RSettingsRepairPhase.Ready
+            && persistedPhase == D2RSettingsRepairPhase.Prepared)
+        {
+            return false;
+        }
+
+        return wasBlocked
+            && !journalRewritePending
+            && inMemoryPhase == persistedPhase;
+    }
+
+    internal static bool ShouldTransitionReadyRepairToPrepared(
+        bool gammaDetected,
+        bool gammaIncidentConfirmed,
+        D2RSettingsRepairPhase? phase,
+        bool journalBlocked)
+    {
+        return gammaDetected
+            && gammaIncidentConfirmed
+            && phase == D2RSettingsRepairPhase.Ready
+            && !journalBlocked;
+    }
+
+    private void TransitionReadyRepairToPreparedLocked(string? path)
+    {
+        if (_settingsRepairTransactionInProgress
+            || _settingsRepairJournalError is not null
+            || _settingsRepairPhase != D2RSettingsRepairPhase.Ready)
+        {
+            return;
+        }
+
+        var retryState = new D2RSettingsRepairState(
+            D2RSettingsRepairState.CurrentSchemaVersion,
+            D2RSettingsRepairPhase.Prepared,
+            _settingsRepairIncidentAttempts,
+            _settingsRepairIncidentFirstAttemptUtc,
+            _settingsRepairIncidentLastAttemptUtc);
+        if (!D2RSettingsFile.TryWriteRepairState(path, retryState, out var stateError))
+        {
+            // Keep Ready in memory until Prepared is durable. Advertising donor work before that
+            // point would let a duplicate command race a process/VM crash back to Ready.
+            _settingsRepairJournalWarning =
+                $"Post-copy Gamma was confirmed, but the retry phase could not be persisted: {stateError}";
+            _lastSettingsRepairMessage = _settingsRepairJournalWarning;
+            return;
+        }
+
+        _settingsRepairPhase = D2RSettingsRepairPhase.Prepared;
+        _settingsRepairBudgetJournalRewritePending = false;
+        _settingsRepairJournalWarning = null;
+        _lastSettingsRepairMessage =
+            "The copied settings still reached Gamma Calibration; durable Prepared authorizes the next bounded donor attempt.";
+    }
+
+    private void ApplyPersistedSettingsRepairStateLocked(D2RSettingsRepairState state)
+    {
+        _settingsRepairPhase = state.Phase;
+        _settingsRepairIncidentAttempts = state.AttemptCount;
+        _settingsRepairIncidentFirstAttemptUtc = state.FirstAttemptUtc;
+        _settingsRepairIncidentLastAttemptUtc = state.LastAttemptUtc;
+        _settingsRepairBudgetJournalRewritePending = false;
+        _settingsRepairJournalError = null;
+        _settingsRepairJournalWarning = null;
+        if (state.Phase == D2RSettingsRepairPhase.Ready)
+        {
+            _settingsRepairsApplied = Math.Max(_settingsRepairsApplied, 1);
+            _lastSettingsRepairUtc ??= state.LastAttemptUtc;
+        }
+
+        _lastSettingsRepairMessage =
+            $"Reloaded an unresolved {state.Phase} settings-repair incident from disk.";
+    }
+
+    private void ClearPersistedSettingsRepairStateLocked()
+    {
+        _settingsRepairPhase = null;
+        _settingsRepairIncidentAttempts = 0;
+        _settingsRepairIncidentFirstAttemptUtc = null;
+        _settingsRepairIncidentLastAttemptUtc = null;
+        _settingsRepairBudgetJournalRewritePending = false;
+        _settingsRepairJournalError = null;
+        _settingsRepairJournalWarning = null;
+        _lastSettingsRepairMessage = null;
+    }
+
+    /// <summary>
+    /// Status view of the graphics-initialization incident: whether the dialog is on screen right
+    /// now, how many dismiss-and-relaunch attempts this agent has already spent on it, and whether
+    /// it has given up and needs the host to power-cycle the VM. Null when there is nothing to say.
+    /// </summary>
     private object? DescribeGraphicsDeviceFailure(VisibleD2RState visibleState)
     {
         var (streak, lastUtc, detail) = GetGraphicsDeviceFailureSnapshot();
@@ -1192,8 +1772,10 @@ public sealed class VmOperations
     // client is quit, the existing machinery recovers on its own - the host's next
     // follow-auto cycle runs menu_ready, which relaunches and re-readies the client.
     //
-    // The quit decision is deliberately keyed ONLY on the black-surround pixel signature
-    // persisting across monitor ticks, never on what the screen CLASSIFIES as. v0.2.193
+    // The quit decision is deliberately keyed on the black-surround pixel signature persisting
+    // across monitor ticks, with one explicit exclusion for the first-run Gamma Calibration
+    // screen. That screen shares the signature but needs a settings-file repair, not a relaunch.
+    // Apart from that exclusion, the watchdog never keys on what the screen CLASSIFIES as. v0.2.193
     // required a continuous streak of Unknown classifications first, and that's exactly why
     // it never fired on the second live wedge: the load screen's doorway artwork brightens
     // as loading progresses, and a brighter frame crosses IsDiabloSplashScreen's thresholds
@@ -1265,7 +1847,7 @@ public sealed class VmOperations
 
     private bool IsStuckLoadScreenConfirmed(WindowsInput input)
     {
-        return TryRunBounded(
+        var surroundConfirmed = TryRunBounded(
             () =>
             {
                 foreach (var region in D2RScreenClassifier.LoadScreenSurroundRegions)
@@ -1285,6 +1867,37 @@ public sealed class VmOperations
             },
             StuckLoadScreenSampleBoundMs,
             fallback: false);
+
+        if (!surroundConfirmed)
+        {
+            return false;
+        }
+
+        // gamma_calibration_settings_reset.png satisfies every black-surround region. Only pay
+        // for its seven-region detector after that cheap gate passes, then check both coordinate
+        // paths so the watchdog cannot quit the client before the settings-repair sweep sees it.
+        // Recording the observation also feeds the two-look incident tracker.
+        var gammaCalibrationDetected = IsGammaCalibrationScreen(input, windowRelative: false)
+            || IsGammaCalibrationScreen(input, windowRelative: true);
+        if (gammaCalibrationDetected)
+        {
+            RecordObservedFrame(nameof(VisibleD2RState.GammaCalibration));
+        }
+
+        // Retain the veto if this particular GDI read times out after an earlier detector already
+        // identified Gamma. An unconfirmed stale sighting is cleared by the next non-gamma frame
+        // or process-instance change; a confirmed one intentionally lasts until repair/health.
+        var gammaCalibrationIncident = gammaCalibrationDetected
+            || ShouldSuppressMenuInputForSettingsReset();
+
+        return IsStuckLoadScreenWatchdogCandidate(surroundConfirmed, gammaCalibrationIncident);
+    }
+
+    internal static bool IsStuckLoadScreenWatchdogCandidate(
+        bool surroundConfirmed,
+        bool gammaCalibrationIncident)
+    {
+        return surroundConfirmed && !gammaCalibrationIncident;
     }
 
     internal void ReconcileActivityFromLiveSnapshot(ActivitySnapshot liveActivity)
@@ -2699,6 +3312,13 @@ public sealed class VmOperations
         if (!IsAnyLobbyEntryMenuVisible(input))
         {
             var readyState = DetectReadyScreenStateStable(input);
+            if (readyState == ReadyScreenState.GammaCalibration)
+            {
+                return await RefuseMenuInputForGammaCalibrationAsync(
+                    "Follow-auto stopped before lobby navigation",
+                    cancellationToken);
+            }
+
             if (readyState is ReadyScreenState.DiabloSplash or ReadyScreenState.ConnectingToBattleNet)
             {
                 MarkCommandCheckpoint($"FollowAutoCheckAsync: D2R is {readyState}; waiting for ready");
@@ -3853,6 +4473,7 @@ public sealed class VmOperations
             return;
         }
 
+        ReconcileGammaCalibrationProcessInstance(processStartedUtc.Value);
         lock (_activityLock)
         {
             if (_lastObservedD2RStartUtc is not null
@@ -3865,6 +4486,27 @@ public sealed class VmOperations
             }
 
             _lastObservedD2RStartUtc = processStartedUtc;
+        }
+    }
+
+    /// <summary>
+    /// Keeps an unconfirmed gamma sighting from one D2R process from combining with a sighting
+    /// after a relaunch. A confirmed settings-reset incident remains latched across a stop/restart
+    /// because relaunching cannot repair the file; only replacement or a healthy rendered frame
+    /// proves that incident is over.
+    /// </summary>
+    internal void ReconcileGammaCalibrationProcessInstance(DateTimeOffset processStartedUtc)
+    {
+        lock (_activityLock)
+        {
+            var processChanged = _gammaCalibrationProcessStartUtc is { } previousStart
+                && Math.Abs((processStartedUtc - previousStart).TotalSeconds) > 1;
+            if (processChanged && !IsGammaCalibrationConfirmedLocked())
+            {
+                ClearGammaCalibrationSightingsLocked();
+            }
+
+            _gammaCalibrationProcessStartUtc = processStartedUtc;
         }
     }
 
@@ -4067,7 +4709,8 @@ public sealed class VmOperations
         // Last, because it is the only state here that means "this client is not coming back
         // without a file being replaced" - everything above is a screen the client can leave on
         // its own, so none of them should ever have to wait behind this check.
-        if (IsGammaCalibrationScreen(input, windowRelative: false))
+        if (IsGammaCalibrationScreen(input, windowRelative: false)
+            || IsGammaCalibrationScreen(input, windowRelative: true))
         {
             return VisibleD2RState.GammaCalibration;
         }
@@ -5324,10 +5967,11 @@ public sealed class VmOperations
     // fallback never recomputes a screen state at all - it just hardcodes Unknown. Stamping every
     // classifier result here, regardless of which caller produced it, gives /d2r status a live
     // "what did we last actually see" answer even while detailed status collection is stuck.
-    private void RecordObservedFrame(string frame)
+    internal void RecordObservedFrame(string frame, DateTimeOffset? observedUtc = null)
     {
+        var observedAt = observedUtc ?? DateTimeOffset.UtcNow;
         _lastObservedFrame = frame;
-        _lastObservedFrameUtc = DateTimeOffset.UtcNow;
+        _lastObservedFrameUtc = observedAt;
 
         // "Unknown" is the same literal for both VisibleD2RState and ReadyScreenState, so every
         // live classification that resolves nothing extends the unknown streak, and any
@@ -5348,18 +5992,77 @@ public sealed class VmOperations
         if (IsHealthyRenderedFrame(frame))
         {
             ClearGraphicsDeviceFailureStreak();
+            lock (_activityLock)
+            {
+                if (!_settingsRepairTransactionInProgress)
+                {
+                    var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
+                    var journalReadResult = D2RSettingsRepairStateReadResult.Missing;
+                    string? journalReadError = null;
+                    if (path is not null)
+                    {
+                        journalReadResult = D2RSettingsFile.ReadRepairState(
+                            path,
+                            out _,
+                            out journalReadError);
+                    }
+
+                    if (_settingsRepairPhase is not null
+                        || _settingsRepairIncidentAttempts > 0
+                        || _settingsRepairJournalError is not null
+                        || _settingsRepairJournalWarning is not null
+                        || journalReadResult != D2RSettingsRepairStateReadResult.Missing)
+                    {
+                        if (D2RSettingsFile.TryClearRepairState(path, out var clearError))
+                        {
+                            _settingsRepairPhase = null;
+                            _settingsRepairIncidentAttempts = 0;
+                            _settingsRepairIncidentFirstAttemptUtc = null;
+                            _settingsRepairIncidentLastAttemptUtc = null;
+                            _settingsRepairBudgetJournalRewritePending = false;
+                            _settingsRepairJournalError = null;
+                            _settingsRepairJournalWarning = null;
+                        }
+                        else
+                        {
+                            // Keep the in-memory latch aligned with the sidecar so a later healthy
+                            // observation retries deletion instead of resurrecting stale work on restart.
+                            if (journalReadResult == D2RSettingsRepairStateReadResult.Invalid)
+                            {
+                                _settingsRepairJournalError = journalReadError ?? clearError;
+                            }
+
+                            _settingsRepairJournalWarning =
+                                $"Healthy frame rendered, but the repair journal could not be cleared: {clearError}";
+                            _lastSettingsRepairMessage = _settingsRepairJournalWarning;
+                        }
+                    }
+                }
+            }
         }
 
         if (frame == nameof(VisibleD2RState.GammaCalibration))
         {
-            RecordGammaCalibrationSighting();
+            if (OperatingSystem.IsWindows() && TryGetD2RProcessStartUtc() is { } processStartedUtc)
+            {
+                ReconcileGammaCalibrationProcessInstance(processStartedUtc);
+            }
+
+            RecordGammaCalibrationSighting(observedAt);
+            return;
         }
-        else if (IsHealthyRenderedFrame(frame))
+
+        lock (_activityLock)
         {
-            // Only a screen past character select clears it. Deliberately not DiabloSplash or
-            // Unknown: the client passes through both on its way TO the gamma screen, and
-            // clearing there would reset the confirm count on every single pass.
-            ClearGammaCalibrationSightings();
+            // Before confirmation, *every* non-gamma observation is a failed consecutive look.
+            // In particular, the ready loop's immediate second probe records Unknown on a miss;
+            // retaining the first sighting there let two isolated positives authorize a write.
+            // After confirmation the incident is deliberately latched through Unknown, splash,
+            // NotRunning, and process-only fallbacks so a failed/cancelled repair stays retryable.
+            if (!IsGammaCalibrationConfirmedLocked() || IsHealthyRenderedFrame(frame))
+            {
+                ClearGammaCalibrationSightingsLocked();
+            }
         }
     }
 
@@ -5368,13 +6071,32 @@ public sealed class VmOperations
     /// and overwrites its settings file, so it takes <see cref="GammaCalibrationConfirmSightings"/>
     /// separate looks at the screen, not one.
     /// </summary>
-    private void RecordGammaCalibrationSighting()
+    private void RecordGammaCalibrationSighting(DateTimeOffset observedUtc)
     {
         lock (_activityLock)
         {
-            _gammaCalibrationSightings++;
-            _lastGammaCalibrationUtc = DateTimeOffset.UtcNow;
-            _firstGammaCalibrationUtc ??= _lastGammaCalibrationUtc;
+            if (!IsGammaCalibrationConfirmedLocked()
+                && _lastGammaCalibrationUtc is { } lastObservation
+                && observedUtc - lastObservation > GammaCalibrationIncidentWindow)
+            {
+                ClearGammaCalibrationSightingsLocked();
+            }
+
+            _gammaCalibrationSightings = Math.Min(
+                _gammaCalibrationSightings + 1,
+                GammaCalibrationConfirmSightings);
+            _lastGammaCalibrationUtc = observedUtc;
+            _firstGammaCalibrationUtc ??= observedUtc;
+
+            if (ShouldTransitionReadyRepairToPrepared(
+                    gammaDetected: true,
+                    IsGammaCalibrationConfirmedLocked(),
+                    _settingsRepairPhase,
+                    _settingsRepairJournalError is not null))
+            {
+                TransitionReadyRepairToPreparedLocked(
+                    D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath));
+            }
         }
     }
 
@@ -5382,10 +6104,20 @@ public sealed class VmOperations
     {
         lock (_activityLock)
         {
-            _gammaCalibrationSightings = 0;
-            _firstGammaCalibrationUtc = null;
-            _lastGammaCalibrationUtc = null;
+            ClearGammaCalibrationSightingsLocked();
         }
+    }
+
+    private void ClearGammaCalibrationSightingsLocked()
+    {
+        _gammaCalibrationSightings = 0;
+        _firstGammaCalibrationUtc = null;
+        _lastGammaCalibrationUtc = null;
+    }
+
+    private bool IsGammaCalibrationConfirmedLocked()
+    {
+        return _gammaCalibrationSightings >= GammaCalibrationConfirmSightings;
     }
 
     private (int Sightings, DateTimeOffset? FirstUtc, DateTimeOffset? LastUtc) GetGammaCalibrationSnapshot()
@@ -5398,18 +6130,102 @@ public sealed class VmOperations
 
     internal bool IsSettingsRepairConfirmed()
     {
-        return _config.SettingsRepairEnabled
-            && GetGammaCalibrationSnapshot().Sightings >= GammaCalibrationConfirmSightings;
+        return _config.SettingsRepairEnabled && IsGammaCalibrationIncidentConfirmed();
+    }
+
+    internal bool NeedsDonorSettings()
+    {
+        if (!_config.SettingsRepairEnabled)
+        {
+            return false;
+        }
+
+        lock (_activityLock)
+        {
+            var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
+            RefreshPersistedSettingsRepairStateLocked(path);
+            NormalizePersistedSettingsRepairBudgetLocked(DateTimeOffset.UtcNow);
+            return _settingsRepairJournalError is null
+                && _settingsRepairPhase != D2RSettingsRepairPhase.Ready
+                && (IsGammaCalibrationConfirmedLocked()
+                    || _settingsRepairPhase == D2RSettingsRepairPhase.Prepared);
+        }
+    }
+
+    internal bool IsGammaCalibrationIncidentConfirmed()
+    {
+        lock (_activityLock)
+        {
+            return IsGammaCalibrationConfirmedLocked();
+        }
+    }
+
+    internal bool ShouldSuppressMenuInputForSettingsReset()
+    {
+        lock (_activityLock)
+        {
+            var path = D2RSettingsFile.ResolveSettingsPath(_config.D2RSettingsPath);
+            RefreshPersistedSettingsRepairStateLocked(path);
+            NormalizePersistedSettingsRepairBudgetLocked(DateTimeOffset.UtcNow);
+            return _gammaCalibrationSightings > 0
+                || _settingsRepairPhase == D2RSettingsRepairPhase.Prepared
+                || _settingsRepairJournalError is not null;
+        }
+    }
+
+    /// <summary>
+    /// Pure authorization gate for a destructive donor copy. A live client must still be on the
+    /// Gamma screen in a fresh screen/window probe; a stopped client is eligible only from a
+    /// confirmed Gamma incident or a durable PREPARED retry latch.
+    /// </summary>
+    internal static bool CanApplySettingsRepair(
+        bool d2rRunning,
+        bool freshGammaDetected,
+        bool gammaIncidentConfirmed,
+        D2RSettingsRepairPhase? journalPhase,
+        bool journalBlocked,
+        out string refusalReason)
+    {
+        if (journalBlocked)
+        {
+            refusalReason =
+                "The settings-repair journal is invalid or unreadable; refusing replacement until an operator removes or fixes it.";
+            return false;
+        }
+
+        if (journalPhase == D2RSettingsRepairPhase.Ready)
+        {
+            refusalReason =
+                "A donor settings replacement is already in Ready phase; refusing a duplicate copy until the client renders a healthy frame.";
+            return false;
+        }
+
+        if (d2rRunning && !freshGammaDetected)
+        {
+            refusalReason =
+                "D2R is running, but a fresh screen-and-window probe no longer detects Gamma Calibration; refusing to quit or replace its settings.";
+            return false;
+        }
+
+        if (!gammaIncidentConfirmed && journalPhase != D2RSettingsRepairPhase.Prepared)
+        {
+            refusalReason =
+                "No confirmed Gamma Calibration incident or durable Prepared retry exists; refusing to replace Settings.json.";
+            return false;
+        }
+
+        refusalReason = "";
+        return true;
     }
 
     private T AbandonReadyLoopForGammaCalibration<T>(Func<T> result)
     {
-        // Every remaining nudge in the plan would land on this screen, and the burst includes
-        // Enter/Space - which is the Continue button. Clicking Continue accepts the defaults D2R
-        // invented for the settings file it just reset, which is how a bad resolution gets
-        // baked in and takes every pixel classifier on this VM with it.
+        // Every remaining nudge in the plan would land on this screen. A startup click that lands
+        // on Continue accepts the defaults D2R invented for the settings file it just reset,
+        // which is how a bad resolution gets baked in and takes every pixel classifier on this VM
+        // with it.
         MarkCommandCheckpoint("ready loop stopped: D2R is on the first-run gamma calibration screen (settings reset)");
-        ConfirmGammaCalibrationBeforeAbandoningReady();
+        ConfirmGammaCalibrationWithImmediateSecondProbe();
         return result();
     }
 
@@ -5425,17 +6241,40 @@ public sealed class VmOperations
     /// regions and keeps the two-look rule intact: this is a genuinely independent read, and a
     /// screen that has changed underneath simply fails it and clears the streak.
     /// </remarks>
-    private void ConfirmGammaCalibrationBeforeAbandoningReady()
+    private void ConfirmGammaCalibrationWithImmediateSecondProbe()
     {
-        if (!OperatingSystem.IsWindows() || IsSettingsRepairConfirmed())
+        if (!OperatingSystem.IsWindows() || IsGammaCalibrationIncidentConfirmed())
         {
             return;
         }
 
-        var confirmed = IsGammaCalibrationScreen(new WindowsInput(), windowRelative: false);
+        var input = new WindowsInput();
+        var confirmed = IsGammaCalibrationScreen(input, windowRelative: false)
+            || IsGammaCalibrationScreen(input, windowRelative: true);
         RecordObservedFrame(confirmed
             ? nameof(VisibleD2RState.GammaCalibration)
             : nameof(VisibleD2RState.Unknown));
+    }
+
+    private bool DetectFreshGammaCalibrationForSettingsRepair()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        try
+        {
+            var input = new WindowsInput();
+            var screenDetected = IsGammaCalibrationScreen(input, windowRelative: false);
+            var windowDetected = IsGammaCalibrationScreen(input, windowRelative: true);
+            return screenDetected || windowDetected;
+        }
+        catch (Exception)
+        {
+            // A capture failure is not evidence authorizing a quit and file replacement.
+            return false;
+        }
     }
 
     // Deliberately excludes DiabloSplash: a client that renders its splash and then fails device
@@ -5444,10 +6283,12 @@ public sealed class VmOperations
     // without a working renderer counts.
     private static bool IsHealthyRenderedFrame(string frame)
     {
-        return frame == nameof(VisibleD2RState.CharacterScreen)
+        return frame == nameof(ReadyScreenState.CharacterMenu)
+            || frame == nameof(VisibleD2RState.CharacterScreen)
             || frame == nameof(VisibleD2RState.OfflineCharacterScreen)
             || frame == nameof(VisibleD2RState.LobbyOrGame)
-            || frame == nameof(VisibleD2RState.InGame);
+            || frame == nameof(VisibleD2RState.InGame)
+            || frame == nameof(ReadyScreenState.CannotJoinCurrentCharacterDialog);
     }
 
     private void RecordClassifierBreakdown(string breakdown)
@@ -5601,22 +6442,30 @@ public sealed class VmOperations
     {
         MarkCommandCheckpoint("EnsureLobbyOpenedAsync: start");
         var activity = GetActivitySnapshot();
-        if (activity.State == D2RActivityState.LobbyOrGame)
-        {
-            MarkLobbyOrGameInteraction("Using remembered lobby/game state for menu automation.");
-            return null;
-        }
 
-        // The cached activity state is Unknown or CharacterScreenIdle here - which can simply
-        // mean nothing has recorded a fresher state yet (e.g. right after an agent restart),
-        // not that the client genuinely isn't at the lobby. A live check costs one bounded
-        // sample pass and means this command self-heals regardless of which lobby sub-state
-        // (Join tab, Create tab, party drawer open/closed, Friends tab open) it lands in,
-        // instead of assuming a fixed character-screen-then-lobby sequence and blind-clicking
-        // through it even when the client is already sitting at the lobby.
+        // Check the live screen before trusting cached activity. Besides self-healing any stale
+        // cache, this prevents a remembered LobbyOrGame state from bypassing the Gamma safety
+        // guard after D2R has restarted onto the settings-reset screen.
         if (IsAnyLobbyEntryMenuVisible(input))
         {
             MarkLobbyOrGameInteraction("Confirmed Lobby visually before menu automation.");
+            return null;
+        }
+
+        // This is the last common point before lobby-oriented commands begin blind character-slot
+        // and Lobby clicks. Detect the terminal settings-reset screen here as well as in
+        // menu_ready: a caller may issue a direct menu command after an agent/client restart, and
+        // a window-relative Gamma result must stop that command rather than fall through to input.
+        if (DetectReadyScreenStateStable(input) == ReadyScreenState.GammaCalibration)
+        {
+            return await RefuseMenuInputForGammaCalibrationAsync(
+                "Lobby automation stopped before sending input",
+                cancellationToken);
+        }
+
+        if (activity.State == D2RActivityState.LobbyOrGame)
+        {
+            MarkLobbyOrGameInteraction("Using remembered lobby/game state for menu automation.");
             return null;
         }
 
@@ -5645,6 +6494,17 @@ public sealed class VmOperations
         await ClickLobbyDirectAsync(input, cancellationToken);
         MarkLobbyOrGameInteraction("Clicked Lobby without visual verification.");
         return null;
+    }
+
+    private async Task<CommandResult> RefuseMenuInputForGammaCalibrationAsync(
+        string context,
+        CancellationToken cancellationToken)
+    {
+        MarkCommandCheckpoint($"{context}: first-run gamma calibration screen detected");
+        ConfirmGammaCalibrationWithImmediateSecondProbe();
+        return CommandResult.Failure(
+            $"{context}: D2R reset Settings.json and is stopped on the first-run gamma calibration screen; menu input is suppressed until settings repair succeeds.",
+            await CollectStatusAsync(cancellationToken));
     }
 
     private async Task<(bool Confirmed, string Description)> WaitForPostSaveExitMenuAsync(
@@ -5747,7 +6607,14 @@ public sealed class VmOperations
             return await OpenLobbyFromCharacterScreenAsync(input, args, cancellationToken);
         }
 
-        if (DetectReadyScreenStateStable(input) == ReadyScreenState.CharacterScreen)
+        var readyState = DetectReadyScreenStateStable(input);
+        if (readyState == ReadyScreenState.GammaCalibration)
+        {
+            ConfirmGammaCalibrationWithImmediateSecondProbe();
+            return false;
+        }
+
+        if (readyState == ReadyScreenState.CharacterScreen)
         {
             return await OpenLobbyFromCharacterScreenAsync(input, args, cancellationToken);
         }
@@ -6479,7 +7346,7 @@ public sealed class VmOperations
         if (state == ReadyScreenState.Unknown && includeWindowRelativeDetection)
         {
             state = DetectReadyScreenStateWindowOnlyBounded(input, ReadyStartupSampleGrid);
-            detectedViaWindowRelative = IsReadyScreenState(state);
+            detectedViaWindowRelative = IsActionableReadyScreenDetection(state);
         }
 
         if (state == ReadyScreenState.Unknown)
@@ -6498,11 +7365,11 @@ public sealed class VmOperations
             () =>
             {
                 state = DetectReadyScreenStateWindowOnly(input, sampleGrid);
-                return IsReadyScreenState(state);
+                return IsActionableReadyScreenDetection(state);
             },
             ReadyStartupDetectionIntervalMs);
 
-        return detected ? state : ReadyScreenState.Unknown;
+        return ResolveBoundedWindowReadyDetection(state, detected);
     }
 
     private ReadyScreenState DetectReadyScreenStateScreenOnly(WindowsInput input, int sampleGrid)
@@ -6606,6 +7473,24 @@ public sealed class VmOperations
             or ReadyScreenState.LobbyOrGame
             or ReadyScreenState.InGame
             or ReadyScreenState.CannotJoinCurrentCharacterDialog;
+    }
+
+    // GammaCalibration is not a successful "ready" state, but it is an actionable terminal
+    // detection: every ready/menu input burst must stop there. Keeping this separate from
+    // IsReadyScreenState prevents callers from reporting success while ensuring the bounded
+    // window-relative wrapper does not collapse GammaCalibration back to Unknown.
+    internal static bool IsActionableReadyScreenDetection(ReadyScreenState state)
+    {
+        return IsReadyScreenState(state) || state == ReadyScreenState.GammaCalibration;
+    }
+
+    internal static ReadyScreenState ResolveBoundedWindowReadyDetection(
+        ReadyScreenState state,
+        bool completedWithinBound)
+    {
+        return completedWithinBound && IsActionableReadyScreenDetection(state)
+            ? state
+            : ReadyScreenState.Unknown;
     }
 
     private bool IsCharacterButtonPairReady(WindowsInput input, bool windowRelative, int sampleGrid = MenuSampleGrid)
@@ -8084,6 +8969,291 @@ public sealed class VmOperations
     private bool IsBattleNetRunning(DesktopWindowScanCache? cache = null)
     {
         return IsAnyProcessRunning(GetBattleNetProcessNames(), cache);
+    }
+
+    internal static bool ContainsOnlyAuthorizedSettingsRepairProcesses(
+        IReadOnlyCollection<D2RProcessGeneration> authorizedProcesses,
+        IReadOnlyCollection<D2RProcessGeneration> currentProcesses)
+    {
+        var authorized = authorizedProcesses.ToHashSet();
+        return currentProcesses.All(authorized.Contains);
+    }
+
+    private bool TryCaptureD2RProcessGenerations(
+        out D2RProcessGeneration[] generations,
+        out string error)
+    {
+        generations = [];
+        error = "";
+        if (!OperatingSystem.IsWindows())
+        {
+            return true;
+        }
+
+        var byProcessId = new Dictionary<int, D2RProcessGeneration>();
+        try
+        {
+            foreach (var process in FindProcessesByNameOrWindowTitle(GetD2RProcessNames()))
+            {
+                using (process)
+                {
+                    var processId = process.Id;
+                    if (byProcessId.ContainsKey(processId))
+                    {
+                        continue;
+                    }
+
+                    if (process.HasExited)
+                    {
+                        continue;
+                    }
+
+                    var startedUtc = TryGetProcessStartUtc(process);
+                    if (startedUtc is null)
+                    {
+                        error =
+                            $"Could not read the start time for D2R pid {processId}; refusing to guess which process generation owns the screen.";
+                        return false;
+                    }
+
+                    byProcessId.Add(
+                        processId,
+                        new D2RProcessGeneration(processId, startedUtc.Value));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not enumerate D2R process generations: {ex.Message}";
+            return false;
+        }
+
+        generations = byProcessId.Values
+            .OrderBy(generation => generation.ProcessId)
+            .ThenBy(generation => generation.StartedUtc)
+            .ToArray();
+        return true;
+    }
+
+    private async Task<SettingsRepairProcessStopResult> StopAuthorizedD2RForSettingsRepairAsync(
+        IReadOnlyCollection<D2RProcessGeneration> authorizedProcesses,
+        CancellationToken cancellationToken)
+    {
+        if (authorizedProcesses.Count > 1)
+        {
+            return new SettingsRepairProcessStopResult(
+                false,
+                "The settings repair was authorized against more than one D2R process generation; every client was left untouched.");
+        }
+
+        bool TryCaptureOnlyAuthorized(
+            out D2RProcessGeneration[] currentProcesses,
+            out string failure)
+        {
+            if (!TryCaptureD2RProcessGenerations(out currentProcesses, out var captureError))
+            {
+                failure =
+                    $"Could not revalidate D2R process identity: {captureError} Every client was left untouched.";
+                return false;
+            }
+
+            if (!ContainsOnlyAuthorizedSettingsRepairProcesses(authorizedProcesses, currentProcesses))
+            {
+                failure =
+                    "A new D2R process generation appeared after settings repair was authorized; the new client was left untouched.";
+                return false;
+            }
+
+            failure = "";
+            return true;
+        }
+
+        if (!TryCaptureOnlyAuthorized(out var current, out var failure))
+        {
+            return new SettingsRepairProcessStopResult(false, failure);
+        }
+
+        if (current.Length == 0)
+        {
+            ClearD2RActivity();
+            return new SettingsRepairProcessStopResult(
+                true,
+                "The authorized D2R process was already stopped.");
+        }
+
+        var expected = current[0];
+        if (!TryOpenExactD2RProcess(expected, out var process, out var openError))
+        {
+            return new SettingsRepairProcessStopResult(false, openError);
+        }
+
+        var gracefulCloseSent = false;
+        if (process is not null)
+        {
+            using (process)
+            {
+                try
+                {
+                    gracefulCloseSent = process.CloseMainWindow();
+                }
+                catch (InvalidOperationException)
+                {
+                    // The authorized generation exited between validation and WM_CLOSE. The
+                    // generation scan below decides whether that is a clean stop or a restart.
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    // An unresponsive or windowless authorized process still gets the exact-PID
+                    // hard-kill path below, after another generation check.
+                }
+            }
+        }
+
+        if (gracefulCloseSent)
+        {
+            for (var waitedSeconds = 0; waitedSeconds < 8; waitedSeconds += 2)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                if (!TryCaptureOnlyAuthorized(out current, out failure))
+                {
+                    return new SettingsRepairProcessStopResult(false, failure);
+                }
+
+                if (current.Length == 0)
+                {
+                    ClearD2RActivity();
+                    return new SettingsRepairProcessStopResult(
+                        true,
+                        $"Closed authorized D2R pid {expected.ProcessId} gracefully.");
+                }
+            }
+        }
+
+        if (!TryCaptureOnlyAuthorized(out current, out failure))
+        {
+            return new SettingsRepairProcessStopResult(false, failure);
+        }
+
+        if (current.Length == 0)
+        {
+            ClearD2RActivity();
+            return new SettingsRepairProcessStopResult(
+                true,
+                $"Authorized D2R pid {expected.ProcessId} exited before a hard kill was needed.");
+        }
+
+        expected = current[0];
+        if (!TryOpenExactD2RProcess(expected, out process, out openError))
+        {
+            return new SettingsRepairProcessStopResult(false, openError);
+        }
+
+        if (process is not null)
+        {
+            using (process)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: false);
+                    using var exitWait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    exitWait.CancelAfter(TimeSpan.FromSeconds(10));
+                    try
+                    {
+                        await process.WaitForExitAsync(exitWait.Token);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        // The final generation scan below reports a still-live exact process.
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    // It exited after the exact-generation handle was opened. Verify below.
+                }
+                catch (System.ComponentModel.Win32Exception ex)
+                {
+                    return new SettingsRepairProcessStopResult(
+                        false,
+                        $"Could not kill authorized D2R pid {expected.ProcessId}: {ex.Message}");
+                }
+            }
+        }
+
+        if (!TryCaptureOnlyAuthorized(out current, out failure))
+        {
+            return new SettingsRepairProcessStopResult(false, failure);
+        }
+
+        if (current.Length > 0)
+        {
+            return new SettingsRepairProcessStopResult(
+                false,
+                $"Authorized D2R pid {expected.ProcessId} is still running after the exact-generation kill attempt.");
+        }
+
+        ClearD2RActivity();
+        return new SettingsRepairProcessStopResult(
+            true,
+            $"Killed only the authorized D2R generation (pid {expected.ProcessId}, started {expected.StartedUtc:O}).");
+    }
+
+    private static bool TryOpenExactD2RProcess(
+        D2RProcessGeneration expected,
+        out Process? process,
+        out string error)
+    {
+        process = null;
+        error = "";
+        try
+        {
+            process = Process.GetProcessById(expected.ProcessId);
+            // Acquire and retain the process handle before checking StartTime. Keeping that handle
+            // open prevents PID reuse between generation validation and CloseMainWindow/Kill.
+            _ = process.Handle;
+            if (process.HasExited)
+            {
+                process.Dispose();
+                process = null;
+                return true;
+            }
+
+            var actualStartUtc = TryGetProcessStartUtc(process);
+            if (actualStartUtc is null)
+            {
+                error =
+                    $"Could not re-read the start time for authorized D2R pid {expected.ProcessId}; the process was left untouched.";
+                process.Dispose();
+                process = null;
+                return false;
+            }
+
+            if (actualStartUtc.Value != expected.StartedUtc)
+            {
+                error =
+                    $"D2R pid {expected.ProcessId} now belongs to a different process generation; the new client was left untouched.";
+                process.Dispose();
+                process = null;
+                return false;
+            }
+
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            process?.Dispose();
+            process = null;
+            return true;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException
+                                   or System.ComponentModel.Win32Exception
+                                   or NotSupportedException)
+        {
+            process?.Dispose();
+            process = null;
+            error =
+                $"Could not bind authorized D2R pid {expected.ProcessId} to its exact process generation: {ex.Message}";
+            return false;
+        }
     }
 
     private bool IsD2RRunning(DesktopWindowScanCache? cache = null)

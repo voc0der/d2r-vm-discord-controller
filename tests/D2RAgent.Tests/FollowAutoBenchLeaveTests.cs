@@ -78,6 +78,42 @@ public sealed class FollowAutoBenchLeaveTests
         Assert.True(state.CanWatch(activeRoster));
     }
 
+    // Active-roster membership is not connectivity. After a failed Save and Exit the client is
+    // deliberately benched but still online and joined, so the disconnect recovery pass must not
+    // erase it before attempts two and three can run.
+    [Fact]
+    public void AnOnlineBenchedLeaveFailureIsNotMisclassifiedAsDisconnected()
+    {
+        var state = new FollowAutoAccountState();
+        state.MarkJoined("hc1");
+        state.MarkJoined("hc2");
+        var activeRoster = Set("hc1");
+        var connectedFleet = Set("hc1", "hc2");
+
+        Assert.True(state.ShouldRetryBenchLeave("hc2"));
+        Assert.Empty(state.BeginRecoveryForOfflineJoined(connectedFleet));
+
+        Assert.Contains("hc2", state.Joined);
+        Assert.DoesNotContain("hc2", state.RecoveryPending);
+        Assert.False(state.CanWatch(activeRoster));
+        Assert.True(state.ShouldRetryBenchLeave("hc2"));
+        Assert.False(state.ShouldRetryBenchLeave("hc2"));
+    }
+
+    [Fact]
+    public void ATrulyDisconnectedBenchedLeaveFailureStillEntersRecovery()
+    {
+        var state = new FollowAutoAccountState();
+        state.MarkJoined("hc1");
+        state.MarkJoined("hc2");
+
+        var disconnected = state.BeginRecoveryForOfflineJoined(Set("hc1"));
+
+        Assert.Equal(["hc2"], disconnected);
+        Assert.DoesNotContain("hc2", state.Joined);
+        Assert.Contains("hc2", state.RecoveryPending);
+    }
+
     // Benched accounts that never made it into the game are dropped straight away. A benched
     // account left recovery-pending would block the watch with nothing left to drive its recovery.
     [Fact]
