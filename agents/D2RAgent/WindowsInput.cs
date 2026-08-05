@@ -556,7 +556,11 @@ internal sealed class WindowsInput
 
     public void PressEscape()
     {
-        ScanKey(VkEscape);
+        // Escape toggles D2R's pause menu, so delivering the same logical key through both the
+        // scan-code and legacy virtual-key routes immediately undoes the first press. Stateful
+        // keys must use exactly one delivery route per attempt; the caller can retry explicitly
+        // if D2R did not react.
+        ScanKeyOnce(VkEscape);
     }
 
     public void PressAltF4()
@@ -1345,8 +1349,8 @@ internal sealed class WindowsInput
         if (scanCode == 0)
         {
             // A legacy virtual-key press is the sole fallback when Windows cannot resolve
-            // a scan code. Do not also send another input route: G changes state, so two
-            // successfully delivered presses would immediately undo each other.
+            // a scan code. Do not also send another input route: these keys change state, so
+            // two successfully delivered presses would immediately undo each other.
             Key(virtualKey);
             return;
         }

@@ -4143,6 +4143,22 @@ public sealed class DiscordBot
         };
     }
 
+    private static object BuildSaveExitArgs(
+        string accountKey,
+        AccountConfig account,
+        long? followAutoRunId)
+    {
+        return followAutoRunId is > 0
+            ? new
+            {
+                accountKey,
+                displayName = account.DisplayName ?? accountKey,
+                vmName = account.VmName ?? account.AgentId,
+                followAutoRunId
+            }
+            : BuildAccountArgs(accountKey, account);
+    }
+
     private GameInput ResolveGameInput(SlashContext context)
     {
         var stored = _db.GetActiveGame();
@@ -5883,7 +5899,7 @@ public sealed class DiscordBot
                     _followAutoTarget.TargetBotCount,
                     accountState.Incumbents);
                 var benchedNowJoined = await BenchFollowAutoAccountsAsync(
-                    roster, accountState, options, cancellationToken);
+                    roster, accountState, options, runId, cancellationToken);
                 var online = allOnline
                     .Where(entry => roster.ActiveSet.Contains(entry.Key))
                     .ToArray();
@@ -6038,6 +6054,7 @@ public sealed class DiscordBot
                             postResult: false,
                             metricsEnabled: _followAutoMetricsEnabled,
                             onlyAccounts: isolatedAccount,
+                            followAutoRunId: runId,
                             cancellationToken: cancellationToken);
                         var resyncLeave = resyncLeaveResults.FirstOrDefault();
                         if (resyncLeave is { Ok: true })
@@ -6079,6 +6096,7 @@ public sealed class DiscordBot
                         postResult: false,
                         metricsEnabled: _followAutoMetricsEnabled,
                         onlyAccounts: joinedLeaveTargets,
+                        followAutoRunId: runId,
                         cancellationToken: cancellationToken);
                     var leaveFailures = leaveResults.Where(result => !result.Ok).ToArray();
                     if (leaveFailures.Length > 0)
@@ -6151,6 +6169,7 @@ public sealed class DiscordBot
                             postResult: false,
                             metricsEnabled: _followAutoMetricsEnabled,
                             onlyAccounts: staleAccountKeys,
+                            followAutoRunId: runId,
                             cancellationToken: cancellationToken);
 
                         var staleLeaveFailures = staleLeaveResults.Where(result => !result.Ok).ToArray();
@@ -7320,6 +7339,7 @@ public sealed class DiscordBot
         FollowAutoRoster roster,
         FollowAutoAccountState accountState,
         FollowAutoRunOptions options,
+        long followAutoRunId,
         CancellationToken cancellationToken)
     {
         if (roster.Benched.Count == 0)
@@ -7350,9 +7370,10 @@ public sealed class DiscordBot
             options.Channel,
             $"bot count lowered to {roster.TargetBotCount}",
             postResult: false,
-            options.MetricsEnabled,
+            metricsEnabled: options.MetricsEnabled,
             onlyAccounts: benchedInGame.ToHashSet(StringComparer.OrdinalIgnoreCase),
-            cancellationToken);
+            followAutoRunId: followAutoRunId,
+            cancellationToken: cancellationToken);
 
         // Only confirmed leavers are dropped. An account whose Save and Exit failed is still
         // sitting in the leader's game, so it stays in the run's joined set and this runs again on
@@ -7739,6 +7760,7 @@ public sealed class DiscordBot
         bool postResult = true,
         bool metricsEnabled = true,
         IReadOnlySet<string>? onlyAccounts = null,
+        long? followAutoRunId = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -7781,7 +7803,7 @@ public sealed class DiscordBot
                 var result = await _registry.SendCommandAsync(
                     entry.Value.AgentId,
                     "menu_save_exit",
-                    BuildAccountArgs(entry.Key, entry.Value),
+                    BuildSaveExitArgs(entry.Key, entry.Value, followAutoRunId),
                     TimeSpan.FromSeconds(210),
                     cancellationToken);
                 return new JoinResult(entry.Key, result.Ok, result.Message);

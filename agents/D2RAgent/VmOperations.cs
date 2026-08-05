@@ -54,9 +54,16 @@ public sealed class VmOperations
     // narrow text bands sample denser. Mirrored by ReferenceCaptureClassifier's tests.
     internal const int GameFullTextBandSampleGrid = 17;
     private const int FastMenuDelayMs = 150;
-    // Three rounds cover the worst blind-Escape case: a lagged first attempt whose menu opened
-    // after the click needs one round to toggle the menu back closed and a third to land clean.
+    // Each round sends one stateful Escape and one click. Multiple delivery routes in one round
+    // toggle D2R's pause menu open then closed; retries provide the reliability fallback without
+    // undoing a successful Escape.
     private const int SaveExitMaxAttempts = 3;
+    // A confirmed save-exit only proves the HUD is gone, but follow-auto deliberately schedules
+    // its next join check two seconds later and D2R normally returns to the lobby. Preserve that
+    // narrow expectation long enough to bypass the expensive general-purpose lobby classifiers
+    // once. Only a follow-auto-tagged leave sets it, and the run id plus D2R process generation
+    // must still match; manual/unknown/recovery entry points retain the full classifiers.
+    internal static readonly TimeSpan ExpectedLobbyAfterSaveExitWindow = TimeSpan.FromSeconds(30);
     private const int EntryPollIntervalMs = 200;
     private const int LobbyPollIntervalMs = 250;
     // ComputeVisibleStateClassifierBreakdown/ComputeReadyScreenClassifierBreakdown are ~25-35
@@ -121,6 +128,7 @@ public sealed class VmOperations
     private D2RActivityState _activityState = D2RActivityState.Unknown;
     private DateTimeOffset? _characterScreenIdleSinceUtc;
     private DateTimeOffset? _lastLobbyOrGameInteractionUtc;
+    private ExpectedLobbyAfterSaveExit? _expectedLobbyAfterSaveExit;
     private DateTimeOffset? _lastObservedD2RStartUtc;
     private DateTimeOffset? _lastBrokenSessionRestartUtc;
     // Consecutive broken-session recoveries with no confirmed-healthy session in between;
@@ -211,6 +219,19 @@ public sealed class VmOperations
         {
             return CollectProcessOnlyStatus(
                 "UI command is active; using process-only status so diagnostics cannot starve menu input.",
+                cancellationToken);
+        }
+
+        // The host asks for live status immediately before every follow-auto check. After this
+        // same run just confirmed Save and Exit, doing the full detailed screen classification
+        // here would spend the exact GDI-heavy delay the follow fast path is meant to avoid and
+        // could then trigger a redundant menu_ready. Report the process-bound expectation through
+        // the cheap status path without consuming it; the follow command remains the one-shot
+        // consumer and performs the narrow Friends verification next.
+        if (HasExpectedLobbyAfterSaveExitCandidate(DateTimeOffset.UtcNow))
+        {
+            return CollectProcessOnlyStatus(
+                "Recent follow-auto Save and Exit expects the lobby; skipped the detailed status classifier.",
                 cancellationToken);
         }
 
@@ -331,7 +352,9 @@ public sealed class VmOperations
         var d2rRunning = OperatingSystem.IsWindows()
             && WindowsProcessFinder.IsAnyNamedProcessRunning(GetD2RProcessNames());
         RefreshD2RProcessActivity(d2rRunning);
-        var visibleState = GetBestProcessOnlyVisibleState(d2rRunning);
+        var visibleState = d2rRunning && IsExpectedLobbyAfterSaveExitForCurrentProcess()
+            ? VisibleD2RState.LobbyOrGame
+            : GetBestProcessOnlyVisibleState(d2rRunning);
         var activity = DetectVisibleActivitySnapshot(d2rRunning, visibleState);
 
         return new
@@ -499,7 +522,7 @@ public sealed class VmOperations
             "menu_follow_bind" => await FollowBindCaptureAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             "menu_follow_bind_game" => FollowBindInGameCapture(MenuCommandArgs.From(request.Args)),
             "menu_follow_auto_check" => await FollowAutoCheckAsync(MenuCommandArgs.From(request.Args), cancellationToken),
-            "menu_save_exit" => await SaveAndExitAsync(cancellationToken),
+            "menu_save_exit" => await SaveAndExitAsync(MenuCommandArgs.From(request.Args).FollowAutoRunId, cancellationToken),
             "settings_repair" => await RepairSettingsAsync(MenuCommandArgs.From(request.Args), cancellationToken),
             _ => CommandResult.Failure($"Unsupported VM command: {request.Command}")
         };
@@ -1907,6 +1930,7 @@ public sealed class VmOperations
             _activityState = liveActivity.State;
             _characterScreenIdleSinceUtc = liveActivity.CharacterScreenIdleSinceUtc;
             _lastLobbyOrGameInteractionUtc = liveActivity.LastLobbyOrGameInteractionUtc;
+            _expectedLobbyAfterSaveExit = null;
             _lastActivityReason = liveActivity.Reason;
         }
     }
@@ -3183,9 +3207,17 @@ public sealed class VmOperations
         }
 
         ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
+        var usedExpectedPostSaveExitLobby = ConsumeExpectedLobbyAfterSaveExit(followAutoRunId);
+        if (usedExpectedPostSaveExitLobby)
+        {
+            MarkCommandCheckpoint(
+                "FollowAutoCheckAsync: expected post-save-exit lobby; skipping initial and lobby classifiers");
+        }
+
         CommandResult? unexpectedGameLeave = null;
         var recoveredOpenModernPauseMenu = false;
-        var unexpectedGameRecovery = await RunFollowAutoInGameRecoveryAsync(
+        var unexpectedGameRecovery = ShouldRunFollowAutoScreenClassifiers(usedExpectedPostSaveExitLobby)
+            ? await RunFollowAutoInGameRecoveryAsync(
             detectBeforeNormalization: () => TryRunBounded<InGameHudMatchKind?>(
                 () => DetectBestInGameHudMatch(input),
                 InGameSafetyCheckBoundMs,
@@ -3203,17 +3235,21 @@ public sealed class VmOperations
             leaveGame: async token =>
             {
                 MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed unexpected game is in legacy graphics; using Save and Exit");
-                unexpectedGameLeave = await SaveAndExitAsync(token);
+                unexpectedGameLeave = await SaveAndExitAsync(followAutoRunId, token);
                 return unexpectedGameLeave.Ok;
             },
             leaveOpenModernPauseMenu: async token =>
             {
                 recoveredOpenModernPauseMenu = true;
                 MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed an open modern Save and Exit menu; clicking its Save and Exit button directly");
-                unexpectedGameLeave = await SaveAndExitFromOpenModernPauseMenuAsync(input, token);
+                unexpectedGameLeave = await SaveAndExitFromOpenModernPauseMenuAsync(
+                    input,
+                    followAutoRunId,
+                    token);
                 return unexpectedGameLeave.Ok;
             },
-            cancellationToken);
+            cancellationToken)
+            : FollowAutoInGameRecoveryOutcome.NotInGame;
 
         if (unexpectedGameRecovery == FollowAutoInGameRecoveryOutcome.LeftGame)
         {
@@ -3255,7 +3291,8 @@ public sealed class VmOperations
         // this modal but before it could dismiss it. Clear it before trying to navigate the
         // lobby; otherwise the overlay absorbs every friends-list click and looks like a
         // generic "could not confirm lobby" failure.
-        if (IsCannotJoinCurrentCharacterDialogOpen(input))
+        if (ShouldRunFollowAutoScreenClassifiers(usedExpectedPostSaveExitLobby)
+            && IsCannotJoinCurrentCharacterDialogOpen(input))
         {
             MarkCommandCheckpoint("FollowAutoCheckAsync: current-character join restriction still visible; dismissing");
             var dismissed = await DismissCannotJoinCurrentCharacterDialogAsync(input, cancellationToken);
@@ -3265,7 +3302,8 @@ public sealed class VmOperations
         // Same leftover-modal hazard for "Game is full": a cancelled/timed-out attempt can leave
         // the OK dialog up, absorbing every lobby click. Report it as a full game (not a generic
         // navigation failure) so the host's park counter sees this attempt too.
-        if (IsGameFullDialogOpen(input))
+        if (ShouldRunFollowAutoScreenClassifiers(usedExpectedPostSaveExitLobby)
+            && IsGameFullDialogOpen(input))
         {
             MarkCommandCheckpoint("FollowAutoCheckAsync: game-is-full dialog still visible; dismissing");
             var dismissed = await DismissGameEntryErrorDialogAsync(input, cancellationToken);
@@ -3279,7 +3317,9 @@ public sealed class VmOperations
         // follow-auto session is unattended and long-running (tolerates a "Waiting" cycle while
         // D2R comes back up); other menu commands surface the same offline condition as a
         // failure instead so an interactive caller isn't surprised by their game being restarted.
-        if (IsCharacterScreenOffline(input) && !await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
+        if (ShouldRunFollowAutoScreenClassifiers(usedExpectedPostSaveExitLobby)
+            && IsCharacterScreenOffline(input)
+            && !await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
         {
             MarkCommandCheckpoint("FollowAutoCheckAsync: offline character screen did not reconnect; recovering with a restart");
             var recovery = await RecoverFromBrokenBattleNetSessionAsync(cancellationToken);
@@ -3302,14 +3342,23 @@ public sealed class VmOperations
         }
 
         ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
-        var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
-        ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
-        if (lobby is not null)
+        if (!ShouldRunFollowAutoScreenClassifiers(usedExpectedPostSaveExitLobby))
         {
-            return lobby;
+            MarkCommandCheckpoint(
+                "FollowAutoCheckAsync: expected post-save-exit lobby; proceeding to Friends verification");
+        }
+        else
+        {
+            var lobby = await EnsureLobbyOpenedAsync(input, args, cancellationToken);
+            ThrowIfFollowAutoStopped(followAutoRunId, cancellationToken);
+            if (lobby is not null)
+            {
+                return lobby;
+            }
         }
 
-        if (!IsAnyLobbyEntryMenuVisible(input))
+        if (ShouldRunFollowAutoScreenClassifiers(usedExpectedPostSaveExitLobby)
+            && !IsAnyLobbyEntryMenuVisible(input))
         {
             var readyState = DetectReadyScreenStateStable(input);
             if (readyState == ReadyScreenState.GammaCalibration)
@@ -4182,7 +4231,9 @@ public sealed class VmOperations
         return new AgentCommon.UiPoint(Math.Clamp(rowPoint.X - 0.090, 0, 1), rowPoint.Y);
     }
 
-    private async Task<CommandResult> SaveAndExitAsync(CancellationToken cancellationToken)
+    private async Task<CommandResult> SaveAndExitAsync(
+        long? followAutoRunId,
+        CancellationToken cancellationToken)
     {
         var input = FocusD2R();
         var lastPostExitState = "post-exit menu state was not visually confirmed";
@@ -4190,11 +4241,13 @@ public sealed class VmOperations
         {
             cancellationToken.ThrowIfCancellationRequested();
             MarkCommandCheckpoint($"SaveAndExitAsync: attempt {attempt}/{SaveExitMaxAttempts}");
-            input.PressEscape();
-            _ = input.SendWindowEscapeKey(GetD2RProcessNames());
+            SendOneEscape(input);
             await DelayStepAsync(cancellationToken);
             ClickD2R(input, GetUiPoint(D2RUiCoordinateTarget.SaveAndExitButton));
-            var (confirmed, postExitState) = await WaitForPostSaveExitMenuAsync(input, cancellationToken);
+            var (confirmed, postExitState) = await WaitForPostSaveExitMenuAsync(
+                input,
+                followAutoRunId,
+                cancellationToken);
             lastPostExitState = postExitState;
             if (confirmed)
             {
@@ -4230,6 +4283,7 @@ public sealed class VmOperations
 
     private async Task<CommandResult> SaveAndExitFromOpenModernPauseMenuAsync(
         WindowsInput input,
+        long? followAutoRunId,
         CancellationToken cancellationToken)
     {
         var lastPostExitState = "post-exit menu state was not visually confirmed";
@@ -4265,7 +4319,10 @@ public sealed class VmOperations
                 input.VisibleClickOnce(saveAndExitPoint, MouseButton.Left);
             }
 
-            var (confirmed, postExitState) = await WaitForPostSaveExitMenuAsync(input, cancellationToken);
+            var (confirmed, postExitState) = await WaitForPostSaveExitMenuAsync(
+                input,
+                followAutoRunId,
+                cancellationToken);
             lastPostExitState = postExitState;
             if (confirmed)
             {
@@ -4374,6 +4431,7 @@ public sealed class VmOperations
         {
             _activityState = D2RActivityState.CharacterScreenIdle;
             _characterScreenIdleSinceUtc = DateTimeOffset.UtcNow;
+            _expectedLobbyAfterSaveExit = null;
             _lastActivityReason = reason;
         }
     }
@@ -4385,8 +4443,126 @@ public sealed class VmOperations
             _activityState = D2RActivityState.Unknown;
             _characterScreenIdleSinceUtc = null;
             _lastLobbyOrGameInteractionUtc = null;
+            _expectedLobbyAfterSaveExit = null;
             _lastActivityReason = reason;
         }
+    }
+
+    private void MarkExpectedLobbyAfterSaveExit(long? followAutoRunId, string reason)
+    {
+        var nowUtc = DateTimeOffset.UtcNow;
+        var processStartedUtc = followAutoRunId is > 0
+            ? TryGetD2RProcessStartUtc()
+            : null;
+        ExpectedLobbyAfterSaveExit? expectation = followAutoRunId is > 0 && processStartedUtc is { } startedUtc
+            ? new ExpectedLobbyAfterSaveExit(
+                followAutoRunId.Value,
+                startedUtc,
+                nowUtc + ExpectedLobbyAfterSaveExitWindow)
+            : null;
+
+        lock (_activityLock)
+        {
+            _activityState = D2RActivityState.Unknown;
+            _characterScreenIdleSinceUtc = null;
+            _lastLobbyOrGameInteractionUtc = null;
+            _expectedLobbyAfterSaveExit = expectation;
+            _lastActivityReason = expectation is not null
+                ? reason
+                : "Save and Exit left the game; the specific post-exit menu was not identified.";
+        }
+    }
+
+    private bool ConsumeExpectedLobbyAfterSaveExit(long? followAutoRunId)
+    {
+        var processStartedUtc = followAutoRunId is > 0
+            ? TryGetD2RProcessStartUtc()
+            : null;
+        lock (_activityLock)
+        {
+            var expected = ShouldTrustExpectedLobbyAfterSaveExit(
+                _expectedLobbyAfterSaveExit,
+                followAutoRunId,
+                processStartedUtc,
+                _activityState,
+                DateTimeOffset.UtcNow);
+            _expectedLobbyAfterSaveExit = null;
+            return expected;
+        }
+    }
+
+    private bool HasExpectedLobbyAfterSaveExitCandidate(DateTimeOffset nowUtc)
+    {
+        lock (_activityLock)
+        {
+            return _expectedLobbyAfterSaveExit is { } expected
+                && expected.ExpiresUtc >= nowUtc
+                && _activityState != D2RActivityState.CharacterScreenIdle;
+        }
+    }
+
+    private bool IsExpectedLobbyAfterSaveExitForCurrentProcess()
+    {
+        var processStartedUtc = TryGetD2RProcessStartUtc();
+        lock (_activityLock)
+        {
+            var nowUtc = DateTimeOffset.UtcNow;
+            var expected = ShouldReportExpectedLobbyAfterSaveExit(
+                _expectedLobbyAfterSaveExit,
+                processStartedUtc,
+                _activityState,
+                nowUtc);
+
+            // Keep a valid expectation for the follow command to consume. Contradictory process
+            // or activity evidence and expiry are terminal; a transient inability to read the
+            // process start time is not, so it may try again on the actual follow command.
+            if (!expected
+                && _expectedLobbyAfterSaveExit is { } stale
+                && (stale.ExpiresUtc < nowUtc
+                    || _activityState == D2RActivityState.CharacterScreenIdle
+                    || (processStartedUtc is { } currentProcessStartedUtc
+                        && Math.Abs((stale.ProcessStartedUtc - currentProcessStartedUtc).TotalSeconds) > 1)))
+            {
+                _expectedLobbyAfterSaveExit = null;
+            }
+
+            return expected;
+        }
+    }
+
+    internal static bool ShouldTrustExpectedLobbyAfterSaveExit(
+        ExpectedLobbyAfterSaveExit? expectation,
+        long? followAutoRunId,
+        DateTimeOffset? processStartedUtc,
+        D2RActivityState activityState,
+        DateTimeOffset nowUtc)
+    {
+        return expectation is { } expected
+            && followAutoRunId is > 0
+            && expected.FollowAutoRunId == followAutoRunId.Value
+            && ShouldReportExpectedLobbyAfterSaveExit(
+                expectation,
+                processStartedUtc,
+                activityState,
+                nowUtc);
+    }
+
+    internal static bool ShouldReportExpectedLobbyAfterSaveExit(
+        ExpectedLobbyAfterSaveExit? expectation,
+        DateTimeOffset? processStartedUtc,
+        D2RActivityState activityState,
+        DateTimeOffset nowUtc)
+    {
+        return expectation is { } expected
+            && processStartedUtc is { } currentProcessStartedUtc
+            && Math.Abs((expected.ProcessStartedUtc - currentProcessStartedUtc).TotalSeconds) <= 1
+            && expected.ExpiresUtc >= nowUtc
+            && activityState != D2RActivityState.CharacterScreenIdle;
+    }
+
+    internal static bool ShouldRunFollowAutoScreenClassifiers(bool usedExpectedPostSaveExitLobby)
+    {
+        return !usedExpectedPostSaveExitLobby;
     }
 
     private void MarkCommandCheckpoint(string checkpoint)
@@ -4438,6 +4614,7 @@ public sealed class VmOperations
             _activityState = D2RActivityState.LobbyOrGame;
             _characterScreenIdleSinceUtc = null;
             _lastLobbyOrGameInteractionUtc = DateTimeOffset.UtcNow;
+            _expectedLobbyAfterSaveExit = null;
             _lastActivityReason = reason;
         }
     }
@@ -4449,6 +4626,7 @@ public sealed class VmOperations
             _activityState = D2RActivityState.Unknown;
             _characterScreenIdleSinceUtc = null;
             _lastLobbyOrGameInteractionUtc = null;
+            _expectedLobbyAfterSaveExit = null;
             _lastObservedD2RStartUtc = null;
             _lastActivityReason = null;
         }
@@ -4482,6 +4660,7 @@ public sealed class VmOperations
                 _activityState = D2RActivityState.Unknown;
                 _characterScreenIdleSinceUtc = null;
                 _lastLobbyOrGameInteractionUtc = null;
+                _expectedLobbyAfterSaveExit = null;
                 _lastActivityReason = "D2R process restarted.";
             }
 
@@ -6510,6 +6689,7 @@ public sealed class VmOperations
 
     private async Task<(bool Confirmed, string Description)> WaitForPostSaveExitMenuAsync(
         WindowsInput input,
+        long? followAutoRunId,
         CancellationToken cancellationToken)
     {
         var timeoutSeconds = Math.Clamp(
@@ -6558,7 +6738,9 @@ public sealed class VmOperations
 
             if (hudPresent == false && consecutiveHudGone >= 2)
             {
-                MarkD2RActivityUnknown("Save and Exit left the game; the specific post-exit menu was not yet identified.");
+                MarkExpectedLobbyAfterSaveExit(
+                    followAutoRunId,
+                    "Save and Exit left the game; expecting the lobby for the next follow-auto check.");
                 return (true, "left the game");
             }
 
@@ -8366,9 +8548,29 @@ public sealed class VmOperations
         // negotiation. A false return means no usable target was found and therefore no
         // window key was sent, so the visible scan-code press is a true fallback rather than
         // a second state-changing delivery.
-        if (!input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames()))
+        SendSingleStatefulKey(
+            () => input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames()),
+            input.PressLegacyGraphicsToggle);
+    }
+
+    private void SendOneEscape(WindowsInput input)
+    {
+        // Prefer the D2R HWND because FocusD2R deliberately does not block on foreground
+        // negotiation. A false return means no usable target was found and therefore no
+        // window key was sent, so the visible scan-code press is a true fallback rather than
+        // a second state-changing delivery.
+        SendSingleStatefulKey(
+            () => input.SendWindowEscapeKey(GetD2RProcessNames()),
+            input.PressEscape);
+    }
+
+    internal static void SendSingleStatefulKey(
+        Func<bool> trySendWindowKey,
+        Action sendVisibleKey)
+    {
+        if (!trySendWindowKey())
         {
-            input.PressLegacyGraphicsToggle();
+            sendVisibleKey();
         }
     }
 
@@ -9586,6 +9788,11 @@ public sealed class VmOperations
     {
         public bool Toggled { get; set; }
     }
+
+    internal readonly record struct ExpectedLobbyAfterSaveExit(
+        long FollowAutoRunId,
+        DateTimeOffset ProcessStartedUtc,
+        DateTimeOffset ExpiresUtc);
 
     internal sealed record ActivitySnapshot(
         D2RActivityState State,
