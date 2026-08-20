@@ -233,12 +233,17 @@ Long-running host commands defer the Discord interaction and continue in backgro
 
 Reference: ![Battle.net logged in](assets/d2r-ui/logged_in_battle_net.jpg)
 
+Current-chrome reference (post-Reign-of-the-Warlock): ![Battle.net ready, Reign of the Warlock](assets/d2r-ui/1366x768/battlenet_reign_of_the_warlock_play.png)
+
 Popup reference: ![Battle.net What's New popup](assets/d2r-ui/battlenet_whats_new_popup.jpg)
 
 Expected state:
 
 - Battle.net is logged in.
-- Diablo II: Resurrected is selected.
+- The D2R card is selected. After the *Reign of the Warlock* upgrade its left game art carries the
+  new lockup, while the `GAME VERSION` dropdown below still reads `Diablo II: Resurrected`.
+  Automation reads neither: the art is not sampled by any gate, and the dropdown is not a click
+  target, so `--exec="launch OSI"` behaves exactly as before.
 - The blue Play button is visible.
 - The What's New/news popup is closed if it appears after a cold launch.
 

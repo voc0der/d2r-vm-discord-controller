@@ -6,7 +6,8 @@ Coordinates for click/sample targets in these states are centralized in [automat
 
 | State | Asset | Purpose |
 | --- | --- | --- |
-| Battle.net ready | `assets/d2r-ui/logged_in_battle_net.jpg` | Battle.net is logged in, D2R selected, Play button visible. |
+| Battle.net ready | `assets/d2r-ui/logged_in_battle_net.jpg` | Battle.net is logged in, D2R selected, Play button visible. Chrome here is two revisions old; the current-chrome equivalent is the row below. |
+| Battle.net ready (Reign of the Warlock) | `assets/d2r-ui/1366x768/battlenet_reign_of_the_warlock_play.png` | Same ready state on the current launcher after the Reign of the Warlock upgrade. The left game art, the tab strip, and the left-column links all changed; the Play button, the GAME VERSION dropdown, and the bottom-left `Locate the game`/`Region` line did not move. |
 | Battle.net What's New popup | `assets/d2r-ui/battlenet_whats_new_popup.jpg` | Intermittent Battle.net news/ad modal that can cover Play after a cold launch. |
 | Battle.net Installation Required | `assets/d2r-ui/1366x768/battlenet_installation_required.png` | Sole authorization for forgotten-install-location repair. The agent samples Continue plus Cancel and safely clicks Cancel; Continue is never clicked. |
 | Battle.net D2R install landing | `assets/d2r-ui/1366x768/battlenet_d2r_install_landing.png` | D2R card after the launcher forgot its path. Authorized repair clicks Locate the game, never Install. |

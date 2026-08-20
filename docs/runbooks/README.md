@@ -6,6 +6,7 @@ Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 
 - `logged_in_battle_net.jpg`: Battle.net logged in with D2R selected and ready to press Play.
 - `battlenet_whats_new_popup.jpg`: Battle.net What's New/news modal that can appear over Play after a cold launch.
+- `1366x768/battlenet_reign_of_the_warlock_play.png`: Current (post-Reign-of-the-Warlock) launcher client, redacted social rail. Same state as `logged_in_battle_net.jpg` two chrome revisions later: new left game art, star instead of the FAVORITES label, and the left-column link list moved out over the news pane. Every launcher gate still passes on it - see the Battle.net section of [pixel-classifier-catalog.md](pixel-classifier-catalog.md).
 - `1366x768/battlenet_installation_required.png`: Cropped launcher client showing the two-button prompt that authorizes forgotten-install-location repair; automation clicks Cancel, never Continue.
 - `1366x768/battlenet_d2r_install_landing.png`: Cropped D2R Install card with the safe `Locate the game` link.
 - `1366x768/battlenet_shop_landing.png`: Cropped unrelated Shop landing that makes repair resend the D2R product launch command.

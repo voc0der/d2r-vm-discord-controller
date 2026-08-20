@@ -14,6 +14,10 @@ public sealed class BattleNetScreenClassifierTests
     private const string ChooseFolder = "battlenet_choose_install_folder.png";
     private const string StartInstall = "battlenet_start_install_scan.png";
     private const string InstalledPlay = "logged_in_battle_net.jpg";
+    // Post-"Reign of the Warlock" launcher: the left game art carries the new lockup and a
+    // magenta glow bar, and the tab strip trades the FAVORITES label for a star icon. Nothing
+    // the repair gates sample moved, and this capture is what proves it.
+    private const string WarlockPlay = "battlenet_reign_of_the_warlock_play.png";
 
     private static readonly D2RUiAutomationConfig Ui = new();
 
@@ -24,7 +28,8 @@ public sealed class BattleNetScreenClassifierTests
         { ShopLanding, false },
         { ChooseFolder, false },
         { StartInstall, false },
-        { InstalledPlay, false }
+        { InstalledPlay, false },
+        { WarlockPlay, false }
     };
 
     public static TheoryData<string, bool> PrimaryActionCases => new()
@@ -33,6 +38,7 @@ public sealed class BattleNetScreenClassifierTests
         // two-button modal above authorizes repair, so an Install match alone is never enough
         // to click the dangerous primary action during repair.
         { InstalledPlay, true },
+        { WarlockPlay, true },
         { InstallLanding, true },
         { InstallationRequired, false },
         { ShopLanding, false },
@@ -47,7 +53,8 @@ public sealed class BattleNetScreenClassifierTests
         { InstallLanding, false },
         { ShopLanding, false },
         { ChooseFolder, false },
-        { InstalledPlay, false }
+        { InstalledPlay, false },
+        { WarlockPlay, false }
     };
 
     [Theory]
@@ -125,6 +132,7 @@ public sealed class BattleNetScreenClassifierTests
     [InlineData(ShopLanding, 1066, 640)]
     [InlineData(ChooseFolder, 669, 473)]
     [InlineData(StartInstall, 1000, 641)]
+    [InlineData(WarlockPlay, 1000, 640)]
     public void CroppedRunbookAssetHasPinnedDimensions(
         string capture,
         int expectedWidth,

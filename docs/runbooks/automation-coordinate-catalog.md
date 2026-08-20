@@ -9,7 +9,8 @@ pixelY = round(point.y * 768)
 
 The implementation source of truth is `D2RUiCoordinateCatalog` in `agents/AgentCommon/D2RUiCoordinateCatalog.cs`. Use the proportional value in config; use the X/Y values below when checking the 1366x768 screenshots.
 
-The five Battle.net install-location references are privacy-safe crops from 1366x768 desktop
+The five Battle.net install-location references, plus
+`1366x768/battlenet_reign_of_the_warlock_play.png`, are privacy-safe crops from 1366x768 desktop
 captures, so their stored dimensions are the launcher/dialog dimensions rather than 1366x768.
 For those rows, the X/Y column is a common 1366x768 *reference plane* used by config tests; live
 input resolves the proportional point against the Battle.net client rectangle. The two native
@@ -19,12 +20,12 @@ folder-dialog points resolve against the exact-title `Choose a Folder` dialog's 
 
 | Target | Config/helper target | Proportional x,y | 1366x768 X,Y | Kind | Reference asset | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Battle.net Play/primary action button | `BattleNetPlayButton` | `0.170,0.830` | `232,637` | Click/sample | `logged_in_battle_net.jpg` | Client-relative blue Play button. The exact persisted legacy value `0.129,0.703` is migrated because it was measured against the desktop instead of the launcher client. During authorized repair the identical-looking Install button is detected but never clicked. |
-| Battle.net What's New title | `BattleNetWhatsNewTitle` | `0.226,0.187` | `309,144` | Sample | `logged_in_battle_net.jpg` | Popup detector sample, not clicked. |
-| Battle.net What's New close | `BattleNetWhatsNewCloseButton` | `0.843,0.146` | `1152,112` | Click | `logged_in_battle_net.jpg` | Closes news/ad popup. |
+| Battle.net Play/primary action button | `BattleNetPlayButton` | `0.170,0.830` | `232,637` | Click/sample | `logged_in_battle_net.jpg`, `1366x768/battlenet_reign_of_the_warlock_play.png` | Client-relative blue Play button. The button is a fixed 271x55 px widget 40 px in from the client's left edge, unchanged by the Reign of the Warlock art swap; this ratio is only valid near a 1000-1070 px client width. The exact persisted legacy value `0.129,0.703` is migrated because it was measured against the desktop instead of the launcher client. During authorized repair the identical-looking Install button is detected but never clicked. |
+| Battle.net What's New title | `BattleNetWhatsNewTitle` | `0.226,0.187` | `309,144` | Sample | `battlenet_whats_new_popup.jpg` | Popup detector sample, not clicked. Tuned against a 1000x640 client, which is still the live client size post-Reign-of-the-Warlock. |
+| Battle.net What's New close | `BattleNetWhatsNewCloseButton` | `0.843,0.146` | `1152,112` | Click | `battlenet_whats_new_popup.jpg` | Closes news/ad popup. Resolves to the modal's own X at a 1000x640 client. |
 | Installation Required Continue | `BattleNetInstallRequiredContinueButton` | `0.388,0.577` | `530,443` | Sample | `1366x768/battlenet_installation_required.png` | Blue half of the two-button modal detector. Never clicked: Continue begins a new install. |
 | Installation Required Cancel | `BattleNetInstallRequiredCancelButton` | `0.493,0.577` | `673,443` | Click/sample | `1366x768/battlenet_installation_required.png` | Grey half of the modal detector and the safe dismissal target. |
-| Locate the game | `BattleNetLocateGameLink` | `0.185,0.902` | `253,693` | Click | `1366x768/battlenet_d2r_install_landing.png` | Opens existing-install selection after the modal authorized repair. |
+| Locate the game | `BattleNetLocateGameLink` | `0.185,0.902` | `253,693` | Click | `1366x768/battlenet_d2r_install_landing.png` | Opens existing-install selection after the modal authorized repair. Blind click - no gate samples it. The link text spans 147-242 px of the client, so this ratio misses it entirely above a ~1310 px client width. |
 | Folder path field | `BattleNetFolderPathField` | `0.615,0.878` | `840,674` | Click/type | `1366x768/battlenet_choose_install_folder.png` | Relative to the exact-title native folder dialog, not the launcher. Receives the validated full install directory. |
 | Select Folder | `BattleNetFolderSelectButton` | `0.745,0.943` | `1018,724` | Click | `1366x768/battlenet_choose_install_folder.png` | Relative to the exact-title native folder dialog. |
 | Install confirmation title | `BattleNetInstallConfirmationTitle` | `0.540,0.145` | `738,111` | Sample | `1366x768/battlenet_start_install_scan.png` | High-contrast title half of the confirmation detector. |

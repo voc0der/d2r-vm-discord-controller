@@ -85,6 +85,55 @@ Measured 9x9 sample-grid margins from the reference captures:
   `stdDev=101.6`, `bright=0.272`, `dark=0.716`. Every other repair reference rejects the
   combined confirmation gate.
 
+### Reign of the Warlock launcher art (2026-08-20): no gate moved
+
+The D2R upgrade to *Reign of the Warlock* repaints the launcher's left game art - new subtitle
+lockup with a magenta glow bar under it - and the surrounding Battle.net chrome changed with it:
+the tab strip trades the `FAVORITES` label for a star icon (shifting the D2R tile left), the
+left-column `Upgrade Available`/`Shop`/`Patch Notes`/`Forums`/`Support` list moved out into a
+floating row over the news pane, and the bottom line lost its `| Version: 3.2.x` half. None of
+that touches a sampled region, because **every launcher target is anchored to the bottom-left
+control stack, not to the art**. Measured on
+`1366x768/battlenet_reign_of_the_warlock_play.png` (client `1000x640`, social rail redacted):
+
+| Region | Reign of the Warlock reading | Gate | Result |
+| --- | --- | --- | --- |
+| Play/primary `0.170,0.830` | `lum=108.5`, `blue=0.94`, `dark=0.00` | `IsPrimaryActionReady` | passes, same as the historical installed-Play capture (`lum=111.1`, `blue=0.94`) |
+| Installation Required Continue `0.388,0.577` | `lum=9.5`, `blue=0.00`, `dark=1.00` | `IsInstallationRequiredModal` | rejects |
+| Installation Required Cancel `0.493,0.577` | `lum=12.6`, `grey=0.01`, `dark=0.90` | `IsInstallationRequiredModal` | rejects |
+| Install confirmation title `0.540,0.145` | `stdDev=7.0`, `bright=0.00`, `dark=0.41` | `IsInstallLocationConfirmation` | rejects |
+| Start Install `0.858,0.880` | `lum=26.2`, `blue=0.00`, `dark=0.89` | `IsInstallLocationConfirmation` | rejects |
+| What's New title `0.226,0.187` | `lum=44.9`, `stdDev=36.2`, `dark=0.00` | `IsBattleNetWhatsNewPopupOpen` | rejects (open popup reads `stdDev=75.8`, `dark=0.85`) |
+
+The Start Install sample and the right edge of the confirmation-title sample fall inside the
+redacted social rail in the committed crop, so the asset reads them as pure black; the row above
+records what the un-redacted capture measured, and both reject.
+
+The reason the art swap is harmless is worth keeping written down: the primary button is a
+**fixed 271x55 px widget at a fixed 40 px offset from the client's left edge** in every launcher
+capture on file (`battlenet_d2r_install_landing.png` at client width 1066,
+`logged_in_battle_net.jpg` at 1025, this one at 1000). The stored `0.170` center therefore lands
+at 175/181/170 px into a button spanning 40-311 px - comfortably inside all three. That also
+states where the real fragility is, and it is **window width, not game art**: every left-column
+target is a fixed-pixel widget addressed by a ratio, so each one only holds while the launcher
+client stays near the 1000-1070 px width all three captures share. Maximized on a 1366x768 guest
+(client ~1360) the two behave differently, and the difference is worth knowing before it happens:
+
+- `BattleNetPlayButton` `0.170` still lands on the button (231 px), but its `0.160`-wide sample
+  grows to 218 px and now overhangs the button's right edge by ~30 px of dark background, pulling
+  `BlueRatio` from `0.94` toward `~0.86` against a `0.80` floor. It survives; the margin thins.
+- `BattleNetLocateGameLink` `0.185` resolves to 252 px, past the right edge of the `Locate the
+  game.` link, whose bright text measures **147-242 px** in `battlenet_d2r_install_landing.png`.
+  Anything above a ~1310 px client misses it, and install-location repair clicks dead space with
+  no failing gate to say so - it is a blind click, not a sampled one.
+
+Re-tune or re-anchor these before ever letting the launcher run maximized.
+
+`BattleNetScreenClassifierTests` pins all three gates against this capture alongside the older
+references. `IsBattleNetWhatsNewPopupOpen` is the one launcher gate with **no** pinned reference
+test - its thresholds are inline in `VmOperations`, not in `BattleNetScreenClassifier`, so no
+reference-capture test can reach them. Its numbers above were measured by hand.
+
 ## First-run gamma calibration (settings reset)
 
 Detects that D2R reset its own `Settings.json` and is treating this launch as a first run - the
