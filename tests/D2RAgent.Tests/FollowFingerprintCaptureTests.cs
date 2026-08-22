@@ -16,17 +16,24 @@ public sealed class FollowFingerprintCaptureTests
         Assert.Equal([1, 2, 3], samples);
     }
 
+    // Gated rather than slept so the abandoned capture's bounded-call slot is returned before the
+    // test finishes; see BoundedCallSlots.
     [Fact]
     public void TryCaptureFriendFingerprintSamplesTimesOut()
     {
+        using var release = new ManualResetEventSlim(false);
+
         var samples = VmOperations.TryCaptureFriendFingerprintSamples(
             () =>
             {
-                Thread.Sleep(250);
+                release.Wait(TimeSpan.FromSeconds(30));
                 return [1, 2, 3];
             },
             timeoutMs: 20);
 
         Assert.Null(samples);
+
+        release.Set();
+        BoundedCallSlots.WaitForAll();
     }
 }

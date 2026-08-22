@@ -27,15 +27,19 @@ public sealed class TryRunBoundedTests
         Assert.False(VmOperations.TryRunBounded(() => false, TimeoutMs));
     }
 
+    // The action blocks on a gate rather than a fixed sleep so the hang lasts exactly as long as
+    // the assertion needs, and the abandoned call's semaphore slot is handed back before this
+    // test returns. See BoundedCallSlots for why that matters to the saturation test below.
     [Fact]
     public void DoesNotBlockPastTheTimeoutWhenTheActionHangs()
     {
+        using var release = new ManualResetEventSlim(false);
         var stopwatch = Stopwatch.StartNew();
 
         var result = VmOperations.TryRunBounded(
             () =>
             {
-                Thread.Sleep(TimeSpan.FromSeconds(5));
+                release.Wait(TimeSpan.FromSeconds(30));
                 return true;
             },
             TimeoutMs);
@@ -46,6 +50,9 @@ public sealed class TryRunBoundedTests
         Assert.True(
             stopwatch.ElapsedMilliseconds < 2000,
             $"TryRunBounded should give up around {TimeoutMs}ms, not wait out the hung action; took {stopwatch.ElapsedMilliseconds}ms.");
+
+        release.Set();
+        BoundedCallSlots.WaitForAll();
     }
 
     [Fact]
@@ -71,12 +78,13 @@ public sealed class TryRunBoundedTests
     [Fact]
     public void GenericOverloadReturnsFallbackWhenTheActionHangs()
     {
+        using var release = new ManualResetEventSlim(false);
         var stopwatch = Stopwatch.StartNew();
 
         var result = VmOperations.TryRunBounded(
             () =>
             {
-                Thread.Sleep(TimeSpan.FromSeconds(5));
+                release.Wait(TimeSpan.FromSeconds(30));
                 return "done";
             },
             TimeoutMs,
@@ -88,6 +96,9 @@ public sealed class TryRunBoundedTests
         Assert.True(
             stopwatch.ElapsedMilliseconds < 2000,
             $"TryRunBounded should give up around {TimeoutMs}ms, not wait out the hung action; took {stopwatch.ElapsedMilliseconds}ms.");
+
+        release.Set();
+        BoundedCallSlots.WaitForAll();
     }
 
     [Fact]
@@ -117,15 +128,12 @@ public sealed class TryRunBoundedTests
         using var allStarted = new CountdownEvent(capacity);
         using var release = new ManualResetEventSlim(false);
 
-        // DoesNotBlockPastTheTimeoutWhenTheActionHangs and GenericOverloadReturnsFallbackWhenTheActionHangs
-        // (above) each call TryRunBounded with a 5-second-sleeping action and a 250ms timeout -
-        // exactly the "gives up waiting, but the action keeps running in the background" case the
-        // concurrency cap exists for. That means each of those tests' background task now holds a
-        // real semaphore slot for the full 5 seconds, completely decoupled from their own test
-        // method already having returned. Without this wait, this test raced those lingering
-        // slots and saw 31 of 32 acquired - not a bug in the cap, just two siblings' correct,
-        // intentional hangs still draining when this one started.
-        await Task.Delay(TimeSpan.FromSeconds(6));
+        // Every sibling that deliberately hangs a bounded call now releases its action and waits
+        // for its own slot before returning (see BoundedCallSlots), so the semaphore is pristine
+        // here by construction rather than by out-waiting the thread pool. This used to be a fixed
+        // 6s delay plus a 15s drain loop, which still lost the race on a loaded CI runner and
+        // failed at 27 of 32 slots - a slow pool, not a broken cap (run 32546672295).
+        BoundedCallSlots.WaitForAll();
 
         // Separately: the pool's default thread-injection rate is gradual under sudden burst
         // load, and SetMinThreads only raises the target the pool grows toward - it doesn't force
@@ -156,19 +164,9 @@ public sealed class TryRunBoundedTests
             Assert.Same(warmupAll, warmupWinner); // "Thread-pool warmup tasks did not finish."
         }
 
-        // A timed-out sibling returns before its queued background action necessarily starts.
-        // On a loaded Windows runner that action can begin late and keep its semaphore slot past
-        // the fixed six-second grace above. Wait for the actual admission gate to drain instead
-        // of assuming Task.Run scheduling latency; otherwise those legitimate lingering calls
-        // make this test launch only 30/32 saturators and report a false cap failure.
-        var drainDeadline = DateTimeOffset.UtcNow.AddSeconds(15);
-        while (VmOperations.AvailableBoundedCallSlots != capacity
-            && DateTimeOffset.UtcNow < drainDeadline)
-        {
-            await Task.Delay(TimeSpan.FromMilliseconds(50));
-        }
-
-        Assert.Equal(capacity, VmOperations.AvailableBoundedCallSlots);
+        // The warmup above queues and drains its own pool work, so re-check rather than trusting
+        // the state observed before it.
+        BoundedCallSlots.WaitForAll();
 
         // Dedicated OS threads for the dispatch side, not Task.Run, so the 32 saturating calls
         // don't have to compete with their own 32 *inner* TryRunBounded-spawned tasks for pool
