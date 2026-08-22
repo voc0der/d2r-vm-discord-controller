@@ -3735,13 +3735,43 @@ public sealed class VmOperations
                 return false;
             }
 
-            ClickD2R(input, GetFriendRowPoint(friendRow), MouseButton.Right);
-            await DelayStepAsync(cancellationToken);
-            stopCheck?.Invoke();
             var friendJoinPoint = GetFriendContextJoinGamePoint(friendRow);
             if (!IsFriendContextJoinPointInLeftPane(friendJoinPoint))
             {
                 MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): friend context Join Game point was outside the Friends pane at row {friendRow}");
+                return false;
+            }
+
+            // Sample the target BEFORE the right-click so the click below can be proven to land on
+            // a context menu rather than on whatever the Friends pane happens to draw there.
+            var beforeRightClick = TryRunBounded<ScreenRegionStats?>(
+                () => SampleFriendContextMenuRegion(input, friendJoinPoint),
+                InGameHudSampleBoundMs,
+                fallback: null);
+
+            ClickD2R(input, GetFriendRowPoint(friendRow), MouseButton.Right);
+            await DelayStepAsync(cancellationToken);
+            stopCheck?.Invoke();
+
+            var afterRightClick = TryRunBounded<ScreenRegionStats?>(
+                () => SampleFriendContextMenuRegion(input, friendJoinPoint),
+                InGameHudSampleBoundMs,
+                fallback: null);
+
+            // The context menu is an overlay: if it opened, the pixels under the Join Game point
+            // changed. If they did not, the right-click did not produce a menu - the friend row
+            // was empty, the click missed, or the menu opened somewhere this offset does not
+            // predict - and clicking anyway is a blind click into the Friends pane. At the default
+            // geometry, row 7's Join Game point is (0.278, 0.638), which lands inside the Add
+            // Friend button; that is where the stray "Enter e-mail address or BattleTag" modal
+            // came from. A modal like that blocks every later click, so the cost of guessing wrong
+            // here is a client that is stuck until someone dismisses it by hand.
+            if (!FriendContextMenuProbe.MenuAppeared(beforeRightClick, afterRightClick))
+            {
+                MarkCommandCheckpoint(
+                    $"ClickFriendJoinOptionUntilEnteredGameAsync({context}): no context menu appeared under the "
+                        + $"Join Game point after right-clicking friend row {friendRow}; skipping the click rather "
+                        + "than clicking blind into the Friends pane");
                 return false;
             }
 
@@ -3788,9 +3818,25 @@ public sealed class VmOperations
         }
 
         var timeout = TimeSpan.FromSeconds(Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1));
-        var deadline = DateTimeOffset.UtcNow + timeout;
+        // Every retry below renews `deadline`. The budget is what stops those renewals from
+        // running past the agent-side command timeout, which would replace this method's
+        // diagnosis with a bare "exceeded agent-side timeout" the host cannot act on.
+        var budget = new FriendJoinRetryBudget(DateTimeOffset.UtcNow);
+        var deadline = budget.ClampDeadline(DateTimeOffset.UtcNow + timeout);
         var dialogRetries = 0;
         var connectionRetries = 0;
+
+        GameEntryAttemptResult BudgetExhausted(string exhaustedReason)
+        {
+            MarkCommandCheckpoint(
+                $"ClickFriendJoinOptionUntilEnteredGameAsync({context}): retry budget exhausted - {exhaustedReason}");
+            return new GameEntryAttemptResult(
+                false,
+                dialogRetries,
+                connectionRetries,
+                $"Gave up on this follow cycle: {exhaustedReason}. The client stays at the lobby and the next "
+                    + "cycle retries from a clean start.");
+        }
 
         async Task<bool> SelectAndSubmitFriendGameAsync(string reason, bool resetDeadline = false)
         {
@@ -3803,7 +3849,7 @@ public sealed class VmOperations
 
             if (resetDeadline)
             {
-                deadline = DateTimeOffset.UtcNow + timeout;
+                deadline = budget.ClampDeadline(DateTimeOffset.UtcNow + timeout);
             }
 
             return true;
@@ -3874,6 +3920,15 @@ public sealed class VmOperations
                 }
 
                 dialogRetries++;
+                if (!budget.TryConsume(FriendJoinRetryReason.ErrorDialog, DateTimeOffset.UtcNow, out var dialogExhausted))
+                {
+                    // Dismiss before returning: leaving the modal up would block the next cycle's
+                    // menu_ready and turn one exhausted budget into a permanently stuck client.
+                    stopCheck?.Invoke();
+                    await DismissGameEntryErrorDialogAsync(input, cancellationToken);
+                    return BudgetExhausted(dialogExhausted);
+                }
+
                 MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): stale/error dialog, reselecting friend game");
                 stopCheck?.Invoke();
                 if (!await DismissGameEntryErrorDialogAsync(input, cancellationToken)
@@ -3888,6 +3943,11 @@ public sealed class VmOperations
             if (waitResult == GameEntryWaitResult.ConnectionInterrupted)
             {
                 connectionRetries++;
+                if (!budget.TryConsume(FriendJoinRetryReason.ConnectionInterrupted, DateTimeOffset.UtcNow, out var connectionExhausted))
+                {
+                    return BudgetExhausted(connectionExhausted);
+                }
+
                 MarkCommandCheckpoint($"ClickFriendJoinOptionUntilEnteredGameAsync({context}): connection interrupted, reselecting friend game");
                 stopCheck?.Invoke();
                 if (!await WaitForMenuAfterConnectionInterruptedAsync(input, joinGameTab, cancellationToken)
@@ -3901,6 +3961,11 @@ public sealed class VmOperations
 
             if (waitResult == GameEntryWaitResult.OfflineCharacterScreen)
             {
+                if (!budget.TryConsume(FriendJoinRetryReason.OfflineCharacterScreen, DateTimeOffset.UtcNow, out var offlineExhausted))
+                {
+                    return BudgetExhausted(offlineExhausted);
+                }
+
                 stopCheck?.Invoke();
                 if (!await EnsureOnlineCharacterScreenAsync(input, cancellationToken))
                 {
@@ -3923,6 +3988,11 @@ public sealed class VmOperations
 
             if (waitResult == GameEntryWaitResult.ReturnedToCharacterScreen)
             {
+                if (!budget.TryConsume(FriendJoinRetryReason.ReturnedToCharacterScreen, DateTimeOffset.UtcNow, out var characterExhausted))
+                {
+                    return BudgetExhausted(characterExhausted);
+                }
+
                 stopCheck?.Invoke();
                 if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true))
                 {
@@ -3939,6 +4009,11 @@ public sealed class VmOperations
 
             if (waitResult == GameEntryWaitResult.ReturnedToMenu)
             {
+                if (!budget.TryConsume(FriendJoinRetryReason.ReturnedToMenu, DateTimeOffset.UtcNow, out var menuExhausted))
+                {
+                    return BudgetExhausted(menuExhausted);
+                }
+
                 stopCheck?.Invoke();
                 if (!await SelectAndSubmitFriendGameAsync("retry after menu return", resetDeadline: true))
                 {
@@ -7875,6 +7950,20 @@ public sealed class VmOperations
     internal static bool IsFriendContextJoinPointInLeftPane(AgentCommon.UiPoint point)
     {
         return point.X < 0.45;
+    }
+
+    // Sampled twice per join attempt - once before the right-click and once after - so
+    // FriendContextMenuProbe can tell an open context menu from the Friends pane art the
+    // predicted Join Game point would otherwise be clicked against.
+    private static ScreenRegionStats SampleFriendContextMenuRegion(
+        WindowsInput input,
+        AgentCommon.UiPoint friendJoinPoint)
+    {
+        return input.SampleRegion(
+            friendJoinPoint,
+            FriendContextMenuProbe.RegionWidthRatio,
+            FriendContextMenuProbe.RegionHeightRatio,
+            sampleGrid: FriendContextMenuProbe.RegionSampleGrid);
     }
 
     private bool IsInGameReady(WindowsInput input)

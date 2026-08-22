@@ -5815,6 +5815,9 @@ public sealed class DiscordBot
         var accountState = new FollowAutoAccountState();
         accountState.BeginRecovery(options.InitialRecoveryAccountKeys);
         var warmupFailures = new FollowWarmupFailureTracker();
+        // Separate ladder from warmupFailures: a follow check can fail on a client whose warmup
+        // succeeded, and nothing used to escalate that. See FollowCheckFailureTracker.
+        var checkFailureLadder = new FollowCheckFailureTracker();
         var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
         var midJoinRotation = 0;
         var currentGameActive = false;
@@ -6278,6 +6281,7 @@ public sealed class DiscordBot
                 var recoveryRequests = new Dictionary<string, FollowAutoNodeRecoveryRequest>(
                     StringComparer.OrdinalIgnoreCase);
                 var vmRecoveryRequests = new List<FollowAutoVmRecoveryRequest>();
+                var clientRestartRequests = new List<FollowAutoClientRestartRequest>();
                 foreach (var result in checkResults)
                 {
                     if (!pendingByAccount.TryGetValue(result.AccountKey, out var failedEntry))
@@ -6317,6 +6321,57 @@ public sealed class DiscordBot
                         // inheriting the spent one from this incident.
                         _settingsRepairs.RecordRecovered(result.AccountKey);
                     }
+
+                    // Independent of the warmup ladder above. A check failure on a client whose
+                    // warmup succeeded used to be reported and otherwise ignored, which is how a
+                    // bot that dropped mid-session could sit at the lobby for an entire run.
+                    if (result.Outcome == FollowAutoCheckOutcome.CheckFailure)
+                    {
+                        var checkFailure = checkFailureLadder.RecordFailure(result.AccountKey);
+                        if (checkFailure.ClientRestartRequested)
+                        {
+                            clientRestartRequests.Add(new FollowAutoClientRestartRequest(
+                                result.AccountKey,
+                                failedEntry.Value,
+                                checkFailure.TotalFailures,
+                                result.Message));
+                        }
+                        else if (checkFailure.VmRecoveryRequested)
+                        {
+                            vmRecoveryRequests.Add(new FollowAutoVmRecoveryRequest(
+                                nodeId,
+                                result.AccountKey,
+                                failedEntry.Value,
+                                checkFailure.TotalFailures));
+                        }
+                    }
+                    else
+                    {
+                        checkFailureLadder.RecordSuccess(result.AccountKey);
+                    }
+                }
+
+                foreach (var request in clientRestartRequests
+                             .OrderBy(request => request.AccountKey, StringComparer.OrdinalIgnoreCase))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                    lastWaitingReport = null;
+                    await UpdateFollowAutoMonitorAsync(
+                        $"{request.AccountKey} failed {request.TotalFailures} follow checks in a row "
+                            + $"({request.LastMessage}). Restarting D2R on that client before considering a VM power cycle.",
+                        joined: accountState.JoinedCount,
+                        total: accountState.CountExpectedAccounts(onlineAccountKeys));
+
+                    var restart = await RestartFollowAutoClientAsync(request, cancellationToken);
+                    await UpdateFollowAutoMonitorAsync(
+                        restart.Ok
+                            ? $"{request.AccountKey}: {restart.Message} It rejoins on the next follow check; "
+                                + $"{FollowCheckFailureTracker.EscalationThreshold} more consecutive failures escalate further."
+                            : $"{request.AccountKey}: could not restart D2R: {restart.Message} The next "
+                                + $"{FollowCheckFailureTracker.EscalationThreshold} consecutive failures escalate further.",
+                        joined: accountState.JoinedCount,
+                        total: accountState.CountExpectedAccounts(onlineAccountKeys));
                 }
 
                 foreach (var request in vmRecoveryRequests
@@ -6339,6 +6394,10 @@ public sealed class DiscordBot
                     if (vmRecovery.Ok)
                     {
                         warmupFailures.RecordVmRecovered(request.AccountKey, request.NodeId);
+                        // Release the check-failure latch too. The guest this account runs on is
+                        // new, so a client that fails again has earned a fresh ladder rather than
+                        // being stuck one rung below the top for the rest of the run.
+                        checkFailureLadder.RecordVmRecovered(request.AccountKey);
                     }
                     else
                     {
@@ -6626,6 +6685,33 @@ public sealed class DiscordBot
     /// which no amount of in-guest relaunching fixes because the guest's display driver is what
     /// is broken.
     /// </summary>
+    // First rung of the check-failure ladder. The client is reachable and answering - its warmup
+    // keeps succeeding - so the cheapest thing that clears wedged lobby state is a fresh D2R
+    // process. A failure here is not fatal: the ladder simply escalates on the next streak.
+    private async Task<CommandResult> RestartFollowAutoClientAsync(
+        FollowAutoClientRestartRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _registry.SendCommandAsync(
+                request.Account.AgentId,
+                "restart_d2r",
+                BuildAccountArgs(request.AccountKey, request.Account),
+                TimeSpan.FromSeconds(210),
+                cancellationToken);
+
+            return result.Ok
+                ? CommandResult.Success($"restarted D2R after {request.TotalFailures} failed follow checks.")
+                : CommandResult.Failure(result.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "restart_d2r after repeated follow-check failures failed for {AccountKey}.", request.AccountKey);
+            return CommandResult.Failure(ex.Message);
+        }
+    }
+
     private async Task<CommandResult> RecoverFollowAutoVmAsync(
         FollowAutoVmRecoveryRequest request,
         CancellationToken cancellationToken)
@@ -9450,6 +9536,12 @@ public sealed class DiscordBot
         string AccountKey,
         AccountConfig Account,
         int ConsecutiveFailures);
+
+    private sealed record FollowAutoClientRestartRequest(
+        string AccountKey,
+        AccountConfig Account,
+        int TotalFailures,
+        string LastMessage);
 
     private sealed record FollowAutoGameWatchResult(
         string Reason,

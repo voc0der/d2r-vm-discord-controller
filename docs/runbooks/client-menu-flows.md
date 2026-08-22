@@ -509,6 +509,47 @@ Expected context menu:
 - `Whisper`, `Remove Friend`, rank options, `Mute`, and `Join Game` are visible.
 - `Join Game` is the bottom option in the captured context menu.
 
+The `Join Game` click is guarded by `FriendContextMenuProbe`: the predicted point is sampled before
+and after the right-click, and the click is only spent when those pixels changed. A menu that is
+shorter than the offset assumes (a friend with no joinable game gets one row fewer), or that never
+opened, leaves the region unchanged and the click is skipped with a checkpoint rather than landing
+blind in the Friends pane - which for rows 6-8 means the Add Friend button. See
+[friend-selector-design.md](friend-selector-design.md) for the measurements.
+
+### Follow-check failures escalate
+
+`ClickFriendJoinOptionUntilEnteredGameAsync` reselects and retries the friend game on stale dialogs,
+connection interruptions, and menu/character-screen returns, renewing its per-attempt deadline each
+time. `FriendJoinRetryBudget` bounds that: at most 3 dialog retries, 3 connection retries, 6 total,
+and 150s of wall clock overall.
+
+Without those caps, a client in an error-dialog or connection-interrupt storm renewed its own
+deadline indefinitely and ran until the 205s agent-side command timeout killed
+`menu_follow_auto_check` outright. That was the worst possible ending: a timeout is reported as
+`ok=false` with no join diagnosis at all, so the host had nothing to escalate on. The budget
+guarantees the command always returns its own answer first.
+
+On the host, `FollowCheckFailureTracker` counts consecutive check failures per account and climbs a
+ladder that did not previously exist:
+
+| Consecutive check failures | Action |
+| --- | --- |
+| 1-2 | Reported on the monitor; nothing else. |
+| 3 | Restart D2R on that client (`restart_d2r`). |
+| 3 more, twice over | Power-cycle that account's VM. |
+
+This is deliberately separate from `FollowWarmupFailureTracker`. That ladder counts desktop-to-lobby
+warmup failures, and a check failure is not one - the client answered `menu_ready`, so warmup
+genuinely succeeded and its counter is correctly reset. The gap was that nothing else was counting.
+A client whose warmup keeps succeeding while its follow check keeps failing - a bot that
+disconnected mid-session and never rejoined - produced a monitor line every cycle and no action,
+indefinitely. `lobby_follow_stuck_friends_panel_open.png` is that state: one bot parked at the lobby
+with the Friends panel open while the rest of the fleet played.
+
+A D2R restart is the first rung because these failures happen on a client that is reachable and
+answering, which points at wedged UI state rather than a bad guest; a client restart clears that in
+about a minute against several for a VM cycle.
+
 ## Save And Exit
 
 References:
