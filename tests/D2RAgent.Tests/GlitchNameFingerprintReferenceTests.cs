@@ -7,8 +7,26 @@ namespace D2RAgent.Tests;
 // score mistook Position for Glitch on three of four VMs after Glitch left, so the lone correct
 // "gone" vantage could never obtain the independent confirmation required to make everyone
 // follow. These are the operator's captures from immediately before and after that departure.
+//
+// These captures are LEGACY graphics, a mode Reign of the Warlock removed, so they are the one
+// place left that deliberately does not use PartyMemberSlots. The bug this pins was in
+// PartyNameFingerprint's scoring - a partial-window Dice score that let a short name match inside
+// a longer one - not in where the band was sampled from, so the regression is still worth running:
+// the legacy band coordinates are pinned locally below as historical constants and the scorer is
+// exercised exactly as before. Retiring the captures would retire the only test that covers a real
+// incident. There is no modern equivalent yet, because that needs a before/after pair of captures
+// around a departure and only a single full-party modern capture exists.
 public sealed class GlitchNameFingerprintReferenceTests
 {
+    // The pre-RoTW legacy name-band geometry, frozen here because PartyMemberSlots no longer
+    // describes it: portraits ran left-to-right from x 190 at a 72px pitch inside a pillarboxed
+    // 4:3 viewport, 58px wide, with names centered under each portrait across y 78-106.
+    private const double LegacySlotLeft = 190.0;
+    private const double LegacySlotWidth = 58.0;
+    private const double LegacySlotPitch = 72.0;
+    private const double LegacyNameBandCenterY = 92.0;
+    private const double LegacyNameBandWidth = 72.0;
+    private const double LegacyNameBandHeight = 28.0;
     [Fact]
     public void GlitchMatchesItsBoundCapture()
     {
@@ -46,11 +64,15 @@ public sealed class GlitchNameFingerprintReferenceTests
 
     private static PartyNameFingerprint CaptureBand(string fileName, int slot)
     {
+        var left = LegacySlotLeft + ((slot - 1) * LegacySlotPitch);
+        var center = new UiPoint(
+            (left + (LegacySlotWidth / 2)) / 1366.0,
+            LegacyNameBandCenterY / 768.0);
         var region = FullCaptureRegionSampler.CapturePixelRegion(
             fileName,
-            PartyMemberSlots.GetSlotNameBandCenter(slot),
-            PartyMemberSlots.NameBandWidthRatio,
-            PartyMemberSlots.NameBandHeightRatio);
+            center,
+            LegacyNameBandWidth / 1366.0,
+            LegacyNameBandHeight / 768.0);
         var mask = PartyNameFingerprint.FromPixels(region.Rgb, region.Width, region.Height);
         Assert.NotNull(mask);
         return mask;

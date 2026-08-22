@@ -63,8 +63,6 @@ public sealed class D2RUiAutomationConfig
     public int StepDelayMs { get; set; } = 350;
     public int LongDelayMs { get; set; } = 1500;
     public int GameLoadSeconds { get; set; } = 6;
-    public bool ToggleLegacyGraphicsAfterEnteringGame { get; set; } = true;
-    public int LegacyGraphicsToggleDelaySeconds { get; set; } = 20;
     public int LobbyLoadSeconds { get; set; } = 3;
     public int ReadyStartupSkipSeconds { get; set; } = 45;
     public int ReadyStartupSkipIntervalMs { get; set; } = 100;
@@ -163,11 +161,16 @@ public sealed class D2RUiAutomationConfig
     public UiPoint CreateNightmareButton { get; set; } = new(0.767, 0.350);
     public UiPoint CreateHellButton { get; set; } = new(0.832, 0.350);
     public UiPoint CreateGameButton { get; set; } = new(0.765, 0.619);
+    public UiPoint OptionsButton { get; set; } = new(0.500, 0.374);
     public UiPoint SaveAndExitButton { get; set; } = new(0.500, 0.439);
-    public UiPoint ModernHealthGlobe { get; set; } = new(0.260, 0.900);
-    public UiPoint ModernManaGlobe { get; set; } = new(0.760, 0.900);
-    public UiPoint LegacyHealthGlobe { get; set; } = new(0.200, 0.900);
-    public UiPoint LegacyManaGlobe { get; set; } = new(0.800, 0.900);
+    public UiPoint ReturnToGameButton { get; set; } = new(0.500, 0.505);
+    // Reign of the Warlock appends these two below Return to Game, under a divider. They are
+    // sample-only anchors: nothing clicks them, and they exist so the pause-menu classifier can
+    // record which menu layout a client is actually rendering. See docs/runbooks/ui-state-catalog.md.
+    public UiPoint LootFilterButton { get; set; } = new(0.500, 0.577);
+    public UiPoint ChronicleButton { get; set; } = new(0.500, 0.643);
+    public UiPoint HealthGlobe { get; set; } = new(0.260, 0.900);
+    public UiPoint ManaGlobe { get; set; } = new(0.760, 0.900);
     public UiPoint InGameHudBar { get; set; } = new(0.500, 0.955);
 }
 

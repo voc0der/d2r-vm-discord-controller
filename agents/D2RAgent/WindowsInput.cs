@@ -443,11 +443,6 @@ internal sealed class WindowsInput
         return true;
     }
 
-    public bool SendWindowLegacyGraphicsToggle(IEnumerable<string> processNames)
-    {
-        return SendWindowReadySkipKey(processNames);
-    }
-
     public InputDiagnostics GetInputDiagnostics(IEnumerable<string> processNames, DesktopWindowScanCache? cache = null)
     {
         EnsureWindows();
@@ -583,11 +578,13 @@ internal sealed class WindowsInput
         ScanKey(VkReturn);
     }
 
-    public void PressLegacyGraphicsToggle()
-    {
-        ScanKeyOnce(VkG);
-    }
-
+    // G is the startup/intro skip key purely because it is inert: it opens nothing, confirms
+    // nothing, and cancels nothing, so a burst of them can never take an action the caller did
+    // not ask for. That was true before Reign of the Warlock (where G's only binding was the
+    // legacy-graphics toggle) and is more true after it (RoTW dropped legacy graphics, so G is
+    // bound to nothing at all). What the bursts rely on is only that D2R treats it as "a key"
+    // at its press-any-key prompts - not that it has any binding. See StartupReadyInputPlan.cs
+    // for why Escape/Space/Enter are not usable here.
     public void PressReadySkipKey()
     {
         ScanKey(VkG);

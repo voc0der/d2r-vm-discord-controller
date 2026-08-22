@@ -32,11 +32,17 @@ internal sealed record StartupReadyInputPlan(
     // in a burst reliably reaches the client, and Escape-then-Enter is exactly D2R's open-then-
     // confirm-exit-dialog sequence: watch-lmrwii244-20260625-205519.log showed it quitting D2R
     // outright on 2 VMs ("frame NotRunning" right after a burst). User confirmed directly in a
-    // live VM that G alone clears the intro/title sequence just as fast as the old combination -
-    // G only ever toggles legacy graphics, so it can't open or confirm anything. These plans now
+    // live VM that G alone clears the intro/title sequence just as fast as the old combination.
+    // G is safe here because it is inert: it opens nothing, confirms nothing, cancels nothing, so
+    // a burst can never take an action nobody asked for. Reign of the Warlock only strengthened
+    // that - G's one binding used to be the legacy-graphics toggle, and RoTW removed legacy
+    // graphics entirely, so G is now bound to nothing at all. The bursts never depended on that
+    // binding, only on D2R counting G as "a key" at its press-any-key prompts. These plans now
     // send only G (both delivery mechanisms, scan-code and window-targeted, for the same
     // redundancy the old plans had against an unfocused/not-yet-existing window), plus the
     // pre-existing focus/click actions, which were never implicated in this failure mode.
+    // IntroActions/SplashActions/BurstActions also click ui.introSkipPoint, so they keep a
+    // non-key path through the intro; TitleActions is the one keys-only plan.
     public static readonly IReadOnlyList<StartupReadyInputAction> IntroActions =
     [
         StartupReadyInputAction.FocusD2R,

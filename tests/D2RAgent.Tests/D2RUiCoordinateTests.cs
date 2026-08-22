@@ -51,11 +51,13 @@ public sealed class D2RUiCoordinateTests
         { D2RUiCoordinateTarget.CreateNightmareButton, 1048, 269 },
         { D2RUiCoordinateTarget.CreateHellButton, 1137, 269 },
         { D2RUiCoordinateTarget.CreateGameButton, 1045, 475 },
+        { D2RUiCoordinateTarget.OptionsButton, 683, 287 },
         { D2RUiCoordinateTarget.SaveAndExitButton, 683, 337 },
-        { D2RUiCoordinateTarget.ModernHealthGlobe, 355, 691 },
-        { D2RUiCoordinateTarget.ModernManaGlobe, 1038, 691 },
-        { D2RUiCoordinateTarget.LegacyHealthGlobe, 273, 691 },
-        { D2RUiCoordinateTarget.LegacyManaGlobe, 1093, 691 },
+        { D2RUiCoordinateTarget.ReturnToGameButton, 683, 388 },
+        { D2RUiCoordinateTarget.LootFilterButton, 683, 443 },
+        { D2RUiCoordinateTarget.ChronicleButton, 683, 494 },
+        { D2RUiCoordinateTarget.HealthGlobe, 355, 691 },
+        { D2RUiCoordinateTarget.ManaGlobe, 1038, 691 },
         { D2RUiCoordinateTarget.InGameHudBar, 683, 733 }
     };
 

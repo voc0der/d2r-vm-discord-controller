@@ -66,12 +66,19 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("sitting_in_town3_lowestgfx.png", ReferenceVisibleState.InGame)]
     [InlineData("sitting_in_town_again.png", ReferenceVisibleState.InGame)]
     [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", ReferenceVisibleState.InGame)]
-    [InlineData("low_graphics_mode_generic.png", ReferenceVisibleState.InGame)]
+    [InlineData("follow_auto_pending_modern_ingame.png", ReferenceVisibleState.InGame)]
+    // Pre-RoTW legacy-graphics captures. Reign of the Warlock removed legacy graphics, so no
+    // live client can render these frames any more and the legacy globe anchors they needed
+    // are gone. They are kept in the corpus because they are still real D2R frames: here they
+    // pin that the BROAD frame fallback alone (action bar + bottom/center HUD, no globes)
+    // is enough to keep them out of the lobby/character-screen states. The ready-path
+    // counterpart is LegacyGraphicsCapturesAreNoLongerRecognizedByTheReadyPath below.
+    [InlineData("legacy_gfx_ingame_town.png", ReferenceVisibleState.InGame)]
     [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", ReferenceVisibleState.InGame)]
     [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceVisibleState.InGame)]
-    [InlineData("follow_auto_pending_modern_ingame.png", ReferenceVisibleState.InGame)]
-    // The modern pause overlay dims the ordinary action bar/globe profile, but its two
-    // colored globes plus three centered menu buttons are explicit in-game evidence.
+    // The pause overlay dims the ordinary action bar/globe profile, but its two colored globes
+    // plus three centered menu buttons are explicit in-game evidence.
+    [InlineData("rotw_ingame_save_and_exit_menu.png", ReferenceVisibleState.InGame)]
     [InlineData("save_and_exit_resurrected.jpg", ReferenceVisibleState.InGame)]
     [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", ReferenceVisibleState.InGame)]
     [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceVisibleState.InGame)]
@@ -102,7 +109,7 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("sitting_in_town3_lowestgfx.png", false)]
     [InlineData("sitting_in_town_again.png", true)]
     [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", false)]
-    [InlineData("low_graphics_mode_generic.png", false)]
+    [InlineData("legacy_gfx_ingame_town.png", false)]
     [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", false)]
     [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", false)]
     public void InGameCaptureLobbyOverlapMatchesKnownStatus(string capture, bool expectedLobbyOverlap)
@@ -200,10 +207,8 @@ public sealed class ReferenceCaptureFlowTests
     [InlineData("sitting_in_town3_lowestgfx.png", ReferenceReadyState.InGame)]
     [InlineData("sitting_in_town_again.png", ReferenceReadyState.InGame)]
     [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", ReferenceReadyState.InGame)]
-    [InlineData("low_graphics_mode_generic.png", ReferenceReadyState.InGame)]
-    [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", ReferenceReadyState.InGame)]
-    [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceReadyState.InGame)]
     [InlineData("follow_auto_pending_modern_ingame.png", ReferenceReadyState.InGame)]
+    [InlineData("rotw_ingame_save_and_exit_menu.png", ReferenceReadyState.InGame)]
     [InlineData("save_and_exit_resurrected.jpg", ReferenceReadyState.InGame)]
     [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", ReferenceReadyState.InGame)]
     [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", ReferenceReadyState.InGame)]
@@ -289,20 +294,71 @@ public sealed class ReferenceCaptureFlowTests
             ReferenceCaptureClassifier.IsCannotJoinCurrentCharacterDialogOpen(capture));
     }
 
+    // The pause-menu detector is gated on the three rows that Reign of the Warlock did NOT
+    // move - Options, Save and Exit, Return to Game - so the same detector accepts the
+    // pre-expansion three-row menu and RoTW's five-row one. rotw_ingame_save_and_exit_menu.png
+    // is the post-expansion capture; the modern_gfx_* and save_and_exit_resurrected captures
+    // are the pre-expansion ones, kept so a future anchor change cannot silently break either.
     [Theory]
+    [InlineData("rotw_ingame_save_and_exit_menu.png", true)]
     [InlineData("save_and_exit_resurrected.jpg", true)]
     [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", true)]
     [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", true)]
     [InlineData("follow_auto_pending_modern_ingame.png", false)]
-    [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", false)]
     [InlineData("lobby_join_game_screen.png", false)]
     [InlineData("char_screen_act1.png", false)]
     [InlineData("load_screen_phase_1.png", false)]
     [InlineData("cannot_join_game_with_current_character.png", false)]
-    public void ModernSaveAndExitDetectorRequiresGlobesAndThreeButtonOverlay(
+    public void SaveAndExitDetectorRequiresGlobesAndThreeButtonOverlay(
         string capture,
         bool expectedOpen)
     {
-        Assert.Equal(expectedOpen, ReferenceCaptureClassifier.IsModernSaveAndExitMenu(capture));
+        Assert.Equal(expectedOpen, ReferenceCaptureClassifier.IsSaveAndExitMenu(capture));
+    }
+
+    // Reign of the Warlock appends Loot Filter and Chronicle below a divider. Nothing clicks
+    // them and no flow branches on them; this only pins the observational check that reports
+    // which menu layout a client is rendering, so "this VM never took the expansion" stays
+    // distinguishable from "the anchors moved".
+    [Theory]
+    [InlineData("rotw_ingame_save_and_exit_menu.png", true)]
+    [InlineData("save_and_exit_resurrected.jpg", false)]
+    [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", false)]
+    [InlineData("modern_gfx_ingame_save_and_exit_not_hightlighted.png", false)]
+    [InlineData("follow_auto_pending_modern_ingame.png", false)]
+    [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", false)]
+    [InlineData("sitting_in_town.png", false)]
+    [InlineData("lobby_join_game_screen.png", false)]
+    [InlineData("char_screen_act1.png", false)]
+    [InlineData("load_screen_phase_1.png", false)]
+    public void ExpansionPauseMenuRowsOnlyMatchTheFiveRowMenu(string capture, bool expected)
+    {
+        Assert.Equal(expected, ReferenceCaptureClassifier.HasExpansionPauseMenuRows(capture));
+    }
+
+    // A deliberate, load-bearing consequence of dropping the legacy globe anchors, pinned here
+    // so it can never be mistaken for a regression.
+    //
+    // The pillarboxed legacy HUD put its globes at 0.200/0.800 of screen width; the modern HUD
+    // puts them at 0.260/0.760. The detector used to sample both pairs. Reign of the Warlock
+    // removed legacy graphics - a live client cannot render that HUD any more - so only the
+    // modern pair is sampled now, and these captures no longer satisfy the STRICT globe match
+    // the ready path requires. They still classify InGame on the visible-state path via the
+    // broad frame fallback (see RealCaptureClassifiesAsExpectedState), which is why the two
+    // paths legitimately disagree about them.
+    //
+    // If a client ever renders this HUD again, the fix is to restore the legacy globe anchors,
+    // not to loosen the ready path onto the broad frame - that frame matches ordinary outdoor
+    // scenery (sitting_in_town*.png) and is deliberately not trusted on its own.
+    [Theory]
+    [InlineData("legacy_gfx_ingame_town.png")]
+    [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png")]
+    [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png")]
+    [InlineData("save_and_exit_legacy.jpg")]
+    public void LegacyGraphicsCapturesAreNoLongerRecognizedByTheReadyPath(string capture)
+    {
+        Assert.False(ReferenceCaptureClassifier.IsInGameReadyStrict(capture));
+        Assert.Equal(ReferenceReadyState.Unknown, ReferenceCaptureClassifier.ClassifyReady(capture));
+        Assert.Equal(ReferenceVisibleState.InGame, ReferenceCaptureClassifier.Classify(capture));
     }
 }

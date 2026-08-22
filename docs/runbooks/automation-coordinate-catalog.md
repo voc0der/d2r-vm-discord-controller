@@ -64,12 +64,32 @@ folder-dialog points resolve against the exact-title `Choose a Folder` dialog's 
 | Create Nightmare button | `CreateNightmareButton` | `0.767,0.350` | `1048,269` | Click | `1366x768/lobby_create_game_screen.png` | Nightmare. |
 | Create Hell button | `CreateHellButton` | `0.832,0.350` | `1137,269` | Click | `1366x768/lobby_create_game_screen.png` | Hell. |
 | Final Create Game button | `CreateGameButton` | `0.765,0.619` | `1045,475` | Click/sample | `1366x768/snippets/create_game_button_text.png` | Submit create form. |
-| Save and Exit button | `SaveAndExitButton` | `0.500,0.439` | `683,337` | Click | `save_and_exit_resurrected.jpg` | Escape menu Save and Exit. |
-| Modern health globe | `ModernHealthGlobe` | `0.260,0.900` | `355,691` | Sample | `1366x768/snippets/modern_health_globe.png` | In-game detector sample, not clicked. |
-| Modern mana globe | `ModernManaGlobe` | `0.760,0.900` | `1038,691` | Sample | `1366x768/snippets/modern_mana_globe.png` | In-game detector sample, not clicked. |
-| Legacy health globe | `LegacyHealthGlobe` | `0.200,0.900` | `273,691` | Sample | `1366x768/low_graphics_mode_generic.png` | In-game detector sample, not clicked. |
-| Legacy mana globe | `LegacyManaGlobe` | `0.800,0.900` | `1093,691` | Sample | `1366x768/low_graphics_mode_generic.png` | In-game detector sample, not clicked. |
+| Pause menu Options button | `OptionsButton` | `0.500,0.374` | `683,287` | Sample | `1366x768/rotw_ingame_save_and_exit_menu.png` | Pause-menu detector sample, not clicked. |
+| Pause menu Save and Exit button | `SaveAndExitButton` | `0.500,0.439` | `683,337` | Click/sample | `1366x768/rotw_ingame_save_and_exit_menu.png` | The only pause-menu row the agent ever clicks. |
+| Pause menu Return to Game button | `ReturnToGameButton` | `0.500,0.505` | `683,388` | Sample | `1366x768/rotw_ingame_save_and_exit_menu.png` | Pause-menu detector sample, not clicked. |
+| Pause menu Loot Filter button | `LootFilterButton` | `0.500,0.577` | `683,443` | Sample | `1366x768/rotw_ingame_save_and_exit_menu.png` | Reign of the Warlock row, below the divider. Sample only - never clicked. |
+| Pause menu Chronicle button | `ChronicleButton` | `0.500,0.643` | `683,494` | Sample | `1366x768/rotw_ingame_save_and_exit_menu.png` | Reign of the Warlock row, below the divider. Sample only - never clicked. |
+| Health globe | `HealthGlobe` | `0.260,0.900` | `355,691` | Sample | `1366x768/snippets/modern_health_globe.png` | In-game detector sample, not clicked. |
+| Mana globe | `ManaGlobe` | `0.760,0.900` | `1038,691` | Sample | `1366x768/snippets/modern_mana_globe.png` | In-game detector sample, not clicked. |
 | In-game bottom HUD | `InGameHudBar` | `0.500,0.955` | `683,733` | Sample | `1366x768/just_landed_in_game_checkforhealthandmanaglobes.png` | Bottom UI frame detector. |
+
+## Retired Targets
+
+Reign of the Warlock removed legacy graphics from D2R, so the client renders exactly one HUD
+and one pause menu. These targets were deleted rather than kept as compatibility fields, and
+their `ui.*` config keys are ignored if a VM config still carries them:
+
+| Retired target | Was | Why it is gone |
+| --- | --- | --- |
+| `LegacyHealthGlobe` | `0.200,0.900` (`273,691`) | Legacy graphics was pillarboxed 4:3 at 1366x768, which put the globes at different screen ratios than the full-width HUD. No live client can render it. |
+| `LegacyManaGlobe` | `0.800,0.900` (`1093,691`) | Same. |
+| `ModernHealthGlobe` | `0.260,0.900` (`355,691`) | Renamed to `HealthGlobe`. Same value - the "modern" qualifier only existed to contrast with legacy. |
+| `ModernManaGlobe` | `0.760,0.900` (`1038,691`) | Renamed to `ManaGlobe`. Same value. |
+
+A VM config that still sets `legacyHealthGlobe`/`legacyManaGlobe`/`modernHealthGlobe`/
+`modernManaGlobe` loads without error - unknown JSON properties are ignored - but a *customized*
+`modernHealthGlobe`/`modernManaGlobe` silently reverts to the catalog default. Rename those two
+keys to `healthGlobe`/`manaGlobe` on any VM that overrode them.
 
 ## Dynamic Rows
 

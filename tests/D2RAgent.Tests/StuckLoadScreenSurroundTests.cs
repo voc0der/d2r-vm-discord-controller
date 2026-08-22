@@ -51,7 +51,7 @@ public sealed class StuckLoadScreenSurroundTests
     [InlineData("sitting_in_town3_lowestgfx.png", false)]
     [InlineData("sitting_in_town_again.png", false)]
     [InlineData("just_landed_in_game_checkforhealthandmanaglobes.png", false)]
-    [InlineData("low_graphics_mode_generic.png", false)]
+    [InlineData("legacy_gfx_ingame_town.png", false)]
     [InlineData("legacy_gfx_ingame_save_and_exit_hightlighted.png", false)]
     [InlineData("legacy_gfx_ingame_save_and_exit_not_hightlighted.png", false)]
     [InlineData("modern_gfx_ingame_save_and_exit_hovered.png", false)]

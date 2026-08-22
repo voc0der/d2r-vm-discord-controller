@@ -268,42 +268,32 @@ internal static class ReferenceCaptureClassifier
         return D2RScreenClassifier.IsCharacterMenuReady(logo, options, cinematics);
     }
 
-    // Only the modern/legacy HUD globe profiles - never the broader Frame-kind fallback.
+    // Only the HUD globe profiles - never the broader Frame-kind fallback.
     // Mirrors VmOperations.IsInGameReadyStrict.
     public static bool IsInGameReadyStrict(string capture)
     {
         var actionHud = Sample(capture, new UiPoint(0.500, 0.955), 0.42, 0.08);
-        var modernHealth = Sample(capture, new UiPoint(0.260, 0.900), 0.055, 0.080);
-        var modernMana = Sample(capture, new UiPoint(0.760, 0.900), 0.055, 0.080);
-        var legacyHealth = Sample(capture, new UiPoint(0.200, 0.900), 0.055, 0.080);
-        var legacyMana = Sample(capture, new UiPoint(0.800, 0.900), 0.055, 0.080);
+        var health = Sample(capture, new UiPoint(0.260, 0.900), 0.055, 0.080);
+        var mana = Sample(capture, new UiPoint(0.760, 0.900), 0.055, 0.080);
 
-        return D2RScreenClassifier.IsInGameHudProfile(modernHealth, modernMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18)
-            || IsModernSaveAndExitMenu(capture, modernHealth, modernMana)
-            || D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18);
+        return D2RScreenClassifier.IsInGameHudProfile(health, mana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18)
+            || IsSaveAndExitMenu(capture, health, mana);
     }
 
     public static bool IsInGameReady(string capture)
     {
         var actionHud = Sample(capture, new UiPoint(0.500, 0.955), 0.42, 0.08);
-        var modernHealth = Sample(capture, new UiPoint(0.260, 0.900), 0.055, 0.080);
-        var modernMana = Sample(capture, new UiPoint(0.760, 0.900), 0.055, 0.080);
-        var legacyHealth = Sample(capture, new UiPoint(0.200, 0.900), 0.055, 0.080);
-        var legacyMana = Sample(capture, new UiPoint(0.800, 0.900), 0.055, 0.080);
+        var health = Sample(capture, new UiPoint(0.260, 0.900), 0.055, 0.080);
+        var mana = Sample(capture, new UiPoint(0.760, 0.900), 0.055, 0.080);
         var bottomHud = Sample(capture, new UiPoint(0.500, 0.940), 0.70, 0.13);
         var centerHud = Sample(capture, new UiPoint(0.500, 0.940), 0.22, 0.08);
 
-        if (D2RScreenClassifier.IsInGameHudProfile(modernHealth, modernMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        if (D2RScreenClassifier.IsInGameHudProfile(health, mana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
         {
             return true;
         }
 
-        if (IsModernSaveAndExitMenu(capture, modernHealth, modernMana))
-        {
-            return true;
-        }
-
-        if (D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        if (IsSaveAndExitMenu(capture, health, mana))
         {
             return true;
         }
@@ -311,24 +301,31 @@ internal static class ReferenceCaptureClassifier
         return D2RScreenClassifier.IsInGameHudFrame(actionHud, bottomHud, centerHud);
     }
 
-    public static bool IsModernSaveAndExitMenu(string capture)
+    public static bool IsSaveAndExitMenu(string capture)
     {
-        var modernHealth = Sample(capture, new UiPoint(0.260, 0.900), 0.055, 0.080);
-        var modernMana = Sample(capture, new UiPoint(0.760, 0.900), 0.055, 0.080);
-        return IsModernSaveAndExitMenu(capture, modernHealth, modernMana);
+        var health = Sample(capture, new UiPoint(0.260, 0.900), 0.055, 0.080);
+        var mana = Sample(capture, new UiPoint(0.760, 0.900), 0.055, 0.080);
+        return IsSaveAndExitMenu(capture, health, mana);
     }
 
-    private static bool IsModernSaveAndExitMenu(
+    public static bool HasExpansionPauseMenuRows(string capture)
+    {
+        return D2RScreenClassifier.HasExpansionPauseMenuRows(
+            Sample(capture, new UiPoint(0.500, 0.577), 0.16, 0.045),
+            Sample(capture, new UiPoint(0.500, 0.643), 0.16, 0.045));
+    }
+
+    private static bool IsSaveAndExitMenu(
         string capture,
-        ScreenRegionStats modernHealth,
-        ScreenRegionStats modernMana)
+        ScreenRegionStats health,
+        ScreenRegionStats mana)
     {
         var optionsButton = Sample(capture, new UiPoint(0.500, 0.374), 0.16, 0.045);
         var saveAndExitButton = Sample(capture, new UiPoint(0.500, 0.439), 0.16, 0.045);
         var returnToGameButton = Sample(capture, new UiPoint(0.500, 0.505), 0.16, 0.045);
-        return D2RScreenClassifier.IsModernSaveAndExitMenu(
-            modernHealth,
-            modernMana,
+        return D2RScreenClassifier.IsSaveAndExitMenu(
+            health,
+            mana,
             optionsButton,
             saveAndExitButton,
             returnToGameButton);

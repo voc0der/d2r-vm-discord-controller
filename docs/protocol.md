@@ -489,7 +489,7 @@ it. These rejoins are capped at `MaxOutOfGameResyncsPerGame` (3) per account per
 that chronically misreads its own live game cannot churn rejoins; on hitting the cap the monitor
 names the account and points at its resolution/reference images.
 
-After `menu_play`, `menu_join_game`, `menu_create_game`, and `menu_join_friend`, the VM agent can wait and press `G` to switch to legacy graphics. This is controlled by `ui.toggleLegacyGraphicsAfterEnteringGame` and `ui.legacyGraphicsToggleDelaySeconds` in `vm-agent.config.json`.
+After `menu_play`, `menu_join_game`, `menu_create_game`, and `menu_join_friend`, the VM agent does nothing further to the client: entry is confirmed from the HUD and the command returns. Until Reign of the Warlock it waited and pressed `G` to switch the client to legacy graphics, controlled by `ui.toggleLegacyGraphicsAfterEnteringGame` and `ui.legacyGraphicsToggleDelaySeconds`. RoTW removed legacy graphics from D2R, so both config keys were deleted; a VM config that still sets them loads without error and they are ignored.
 
 `self_update` checks the latest GitHub release for `D2RAgent-win-x64.zip`. If the connected VM agent is older than the latest release, it starts the in-place updater, replies with `updateStarted: true`, and exits after sending the command result so the updater can replace the files and restart the published exe from that release. `D2RHost` only queues this command after the host has completed its own startup update check and the VM agent has authenticated. When update notifications are enabled, the master posts Discord messages for master-local VM-agent results; worker-local update notifications are not forwarded to the master.
 

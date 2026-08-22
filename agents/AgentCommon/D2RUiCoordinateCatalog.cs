@@ -46,11 +46,13 @@ public enum D2RUiCoordinateTarget
     CreateNightmareButton,
     CreateHellButton,
     CreateGameButton,
+    OptionsButton,
     SaveAndExitButton,
-    ModernHealthGlobe,
-    ModernManaGlobe,
-    LegacyHealthGlobe,
-    LegacyManaGlobe,
+    ReturnToGameButton,
+    LootFilterButton,
+    ChronicleButton,
+    HealthGlobe,
+    ManaGlobe,
     InGameHudBar
 }
 
@@ -152,11 +154,13 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.CreateNightmareButton => Choose(ui.CreateNightmareButton, Defaults.CreateNightmareButton),
             D2RUiCoordinateTarget.CreateHellButton => Choose(ui.CreateHellButton, Defaults.CreateHellButton),
             D2RUiCoordinateTarget.CreateGameButton => Choose(ui.CreateGameButton, Defaults.CreateGameButton),
+            D2RUiCoordinateTarget.OptionsButton => Choose(ui.OptionsButton, Defaults.OptionsButton),
             D2RUiCoordinateTarget.SaveAndExitButton => Choose(ui.SaveAndExitButton, Defaults.SaveAndExitButton),
-            D2RUiCoordinateTarget.ModernHealthGlobe => Choose(ui.ModernHealthGlobe, Defaults.ModernHealthGlobe),
-            D2RUiCoordinateTarget.ModernManaGlobe => Choose(ui.ModernManaGlobe, Defaults.ModernManaGlobe),
-            D2RUiCoordinateTarget.LegacyHealthGlobe => Choose(ui.LegacyHealthGlobe, Defaults.LegacyHealthGlobe),
-            D2RUiCoordinateTarget.LegacyManaGlobe => Choose(ui.LegacyManaGlobe, Defaults.LegacyManaGlobe),
+            D2RUiCoordinateTarget.ReturnToGameButton => Choose(ui.ReturnToGameButton, Defaults.ReturnToGameButton),
+            D2RUiCoordinateTarget.LootFilterButton => Choose(ui.LootFilterButton, Defaults.LootFilterButton),
+            D2RUiCoordinateTarget.ChronicleButton => Choose(ui.ChronicleButton, Defaults.ChronicleButton),
+            D2RUiCoordinateTarget.HealthGlobe => Choose(ui.HealthGlobe, Defaults.HealthGlobe),
+            D2RUiCoordinateTarget.ManaGlobe => Choose(ui.ManaGlobe, Defaults.ManaGlobe),
             D2RUiCoordinateTarget.InGameHudBar => Choose(ui.InGameHudBar, Defaults.InGameHudBar),
             _ => throw new ArgumentOutOfRangeException(nameof(target), target, "Unknown D2R UI coordinate target.")
         };
@@ -375,11 +379,13 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.CreateNightmareButton => "Create Nightmare difficulty button",
             D2RUiCoordinateTarget.CreateHellButton => "Create Hell difficulty button",
             D2RUiCoordinateTarget.CreateGameButton => "Final Create Game button",
-            D2RUiCoordinateTarget.SaveAndExitButton => "Save and Exit button",
-            D2RUiCoordinateTarget.ModernHealthGlobe => "Modern health globe sample",
-            D2RUiCoordinateTarget.ModernManaGlobe => "Modern mana globe sample",
-            D2RUiCoordinateTarget.LegacyHealthGlobe => "Legacy health globe sample",
-            D2RUiCoordinateTarget.LegacyManaGlobe => "Legacy mana globe sample",
+            D2RUiCoordinateTarget.OptionsButton => "Pause menu Options button",
+            D2RUiCoordinateTarget.SaveAndExitButton => "Pause menu Save and Exit button",
+            D2RUiCoordinateTarget.ReturnToGameButton => "Pause menu Return to Game button",
+            D2RUiCoordinateTarget.LootFilterButton => "Pause menu Loot Filter button (Reign of the Warlock)",
+            D2RUiCoordinateTarget.ChronicleButton => "Pause menu Chronicle button (Reign of the Warlock)",
+            D2RUiCoordinateTarget.HealthGlobe => "Health globe sample",
+            D2RUiCoordinateTarget.ManaGlobe => "Mana globe sample",
             D2RUiCoordinateTarget.InGameHudBar => "In-game bottom HUD sample",
             _ => target.ToString()
         };
@@ -392,10 +398,12 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.BattleNetWhatsNewTitle
                 or D2RUiCoordinateTarget.BattleNetInstallRequiredContinueButton
                 or D2RUiCoordinateTarget.BattleNetInstallConfirmationTitle
-                or D2RUiCoordinateTarget.ModernHealthGlobe
-                or D2RUiCoordinateTarget.ModernManaGlobe
-                or D2RUiCoordinateTarget.LegacyHealthGlobe
-                or D2RUiCoordinateTarget.LegacyManaGlobe
+                or D2RUiCoordinateTarget.OptionsButton
+                or D2RUiCoordinateTarget.ReturnToGameButton
+                or D2RUiCoordinateTarget.LootFilterButton
+                or D2RUiCoordinateTarget.ChronicleButton
+                or D2RUiCoordinateTarget.HealthGlobe
+                or D2RUiCoordinateTarget.ManaGlobe
                 or D2RUiCoordinateTarget.InGameHudBar => D2RUiCoordinateKind.Sample,
             _ => D2RUiCoordinateKind.Click
         };
@@ -449,11 +457,13 @@ public static class D2RUiCoordinateCatalog
                 or D2RUiCoordinateTarget.CreateNightmareButton
                 or D2RUiCoordinateTarget.CreateHellButton
                 or D2RUiCoordinateTarget.CreateGameButton => "1366x768/lobby_create_game_screen.png",
-            D2RUiCoordinateTarget.SaveAndExitButton => "in-game escape menu",
-            D2RUiCoordinateTarget.ModernHealthGlobe
-                or D2RUiCoordinateTarget.ModernManaGlobe
-                or D2RUiCoordinateTarget.LegacyHealthGlobe
-                or D2RUiCoordinateTarget.LegacyManaGlobe
+            D2RUiCoordinateTarget.OptionsButton
+                or D2RUiCoordinateTarget.SaveAndExitButton
+                or D2RUiCoordinateTarget.ReturnToGameButton
+                or D2RUiCoordinateTarget.LootFilterButton
+                or D2RUiCoordinateTarget.ChronicleButton => "1366x768/rotw_ingame_save_and_exit_menu.png",
+            D2RUiCoordinateTarget.HealthGlobe
+                or D2RUiCoordinateTarget.ManaGlobe
                 or D2RUiCoordinateTarget.InGameHudBar => "1366x768/just_landed_in_game_checkforhealthandmanaglobes.png",
             _ => ""
         };
@@ -468,11 +478,14 @@ public static class D2RUiCoordinateCatalog
             D2RUiCoordinateTarget.FriendContextJoinGame => "Row-1 context-menu option; runtime clicks keep the same in-menu offset from the right-clicked friend row because the menu is anchored to the pointer position.",
             D2RUiCoordinateTarget.IntroSkipPoint => "Center click/key target used during intro, splash, and title skip bursts.",
             D2RUiCoordinateTarget.CannotJoinCurrentCharacterCancelButton => "Dismisses the two-button current-character join restriction without switching characters.",
-            D2RUiCoordinateTarget.ModernHealthGlobe
-                or D2RUiCoordinateTarget.ModernManaGlobe
-                or D2RUiCoordinateTarget.LegacyHealthGlobe
-                or D2RUiCoordinateTarget.LegacyManaGlobe
+            D2RUiCoordinateTarget.HealthGlobe
+                or D2RUiCoordinateTarget.ManaGlobe
                 or D2RUiCoordinateTarget.InGameHudBar => "Detection sample, not a click target.",
+            D2RUiCoordinateTarget.OptionsButton
+                or D2RUiCoordinateTarget.ReturnToGameButton => "Pause-menu detection sample, not a click target.",
+            D2RUiCoordinateTarget.LootFilterButton
+                or D2RUiCoordinateTarget.ChronicleButton => "Reign of the Warlock pause-menu rows, below the divider. Detection samples only - nothing ever clicks them.",
+            D2RUiCoordinateTarget.SaveAndExitButton => "The only pause-menu row the agent ever clicks.",
             D2RUiCoordinateTarget.BattleNetWhatsNewTitle => "Popup detection sample, not a click target.",
             D2RUiCoordinateTarget.BattleNetInstallRequiredContinueButton => "Detection sample only. Repair cancels this prompt because Continue starts a new install.",
             D2RUiCoordinateTarget.BattleNetFolderPathField

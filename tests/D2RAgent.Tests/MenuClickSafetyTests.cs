@@ -34,41 +34,32 @@ public sealed class MenuClickSafetyTests
         Assert.Equal(expectedSkip, skip);
     }
 
+    // Reign of the Warlock removed legacy graphics, and with it the normalization step that
+    // used to press G and re-detect before authorizing an exit. The safety property that step
+    // protected is asserted directly here instead: only a STRICT globe match (HudProfile) or a
+    // positively identified pause menu may lead to a click.
     [Fact]
-    public async Task FollowAutoModernGameTogglesOnceThenRequiresLegacyBeforeLeaving()
+    public async Task FollowAutoInGameHudLeavesViaSaveAndExit()
     {
         var actions = new List<string>();
 
         var outcome = await VmOperations.RunFollowAutoInGameRecoveryAsync(
-            detectBeforeNormalization: () =>
+            detectInGameMatch: () =>
             {
-                actions.Add("detect-before");
-                return VmOperations.InGameHudMatchKind.ModernProfile;
-            },
-            toggleLegacyGraphics: () => actions.Add("toggle-legacy"),
-            waitForLegacyGraphics: _ =>
-            {
-                actions.Add("wait-for-legacy");
-                return Task.CompletedTask;
-            },
-            detectAfterNormalization: () =>
-            {
-                actions.Add("detect-after");
-                return VmOperations.InGameHudMatchKind.LegacyProfile;
+                actions.Add("detect");
+                return VmOperations.InGameHudMatchKind.HudProfile;
             },
             leaveGame: _ =>
             {
                 actions.Add("leave-game");
                 return Task.FromResult(true);
             },
-            leaveOpenModernPauseMenu: _ => throw new InvalidOperationException(
-                "The direct open-menu leave path should not run for a normal modern HUD."),
+            leaveOpenPauseMenu: _ => throw new InvalidOperationException(
+                "The direct open-menu leave path should not run for an ordinary in-game HUD."),
             CancellationToken.None);
 
         Assert.Equal(VmOperations.FollowAutoInGameRecoveryOutcome.LeftGame, outcome);
-        Assert.Equal(
-            ["detect-before", "toggle-legacy", "wait-for-legacy", "detect-after", "leave-game"],
-            actions);
+        Assert.Equal(["detect", "leave-game"], actions);
     }
 
     [Fact]
@@ -77,16 +68,13 @@ public sealed class MenuClickSafetyTests
         var leaveAttempted = false;
 
         var outcome = await VmOperations.RunFollowAutoInGameRecoveryAsync(
-            detectBeforeNormalization: () => null,
-            toggleLegacyGraphics: () => { },
-            waitForLegacyGraphics: _ => Task.CompletedTask,
-            detectAfterNormalization: () => null,
+            detectInGameMatch: () => null,
             leaveGame: _ =>
             {
                 leaveAttempted = true;
                 return Task.FromResult(true);
             },
-            leaveOpenModernPauseMenu: _ => throw new InvalidOperationException(
+            leaveOpenPauseMenu: _ => throw new InvalidOperationException(
                 "An inconclusive HUD must not authorize an open-menu click."),
             CancellationToken.None);
 
@@ -95,87 +83,43 @@ public sealed class MenuClickSafetyTests
     }
 
     [Fact]
-    public async Task FollowAutoLobbyStateDoesNotToggleOrLeave()
+    public async Task FollowAutoLobbyStateDoesNotLeave()
     {
-        var toggleAttempted = false;
         var leaveAttempted = false;
 
         var outcome = await VmOperations.RunFollowAutoInGameRecoveryAsync(
-            detectBeforeNormalization: () => VmOperations.InGameHudMatchKind.None,
-            toggleLegacyGraphics: () => toggleAttempted = true,
-            waitForLegacyGraphics: _ => Task.CompletedTask,
-            detectAfterNormalization: () => throw new InvalidOperationException("A lobby state should not be rechecked."),
+            detectInGameMatch: () => VmOperations.InGameHudMatchKind.None,
             leaveGame: _ =>
             {
                 leaveAttempted = true;
                 return Task.FromResult(true);
             },
-            leaveOpenModernPauseMenu: _ => throw new InvalidOperationException(
+            leaveOpenPauseMenu: _ => throw new InvalidOperationException(
                 "A lobby state must not authorize an open-menu click."),
             CancellationToken.None);
 
         Assert.Equal(VmOperations.FollowAutoInGameRecoveryOutcome.NotInGame, outcome);
-        Assert.False(toggleAttempted);
         Assert.False(leaveAttempted);
     }
 
+    // The broad Frame fallback matches ordinary outdoor scenery (sitting_in_town*.png), so it
+    // must never reach a click: acting on one would send Escape and a fixed-coordinate click
+    // into the live world. Before RoTW this was enforced by requiring a fresh LegacyProfile
+    // after normalization; now it is enforced by the match kind directly.
     [Fact]
-    public async Task FollowAutoLegacyGameDoesNotToggleButFreshlyRechecksBeforeLeaving()
-    {
-        var actions = new List<string>();
-
-        var outcome = await VmOperations.RunFollowAutoInGameRecoveryAsync(
-            detectBeforeNormalization: () =>
-            {
-                actions.Add("detect-before");
-                return VmOperations.InGameHudMatchKind.LegacyProfile;
-            },
-            toggleLegacyGraphics: () => actions.Add("toggle-legacy"),
-            waitForLegacyGraphics: _ =>
-            {
-                actions.Add("wait-for-legacy");
-                return Task.CompletedTask;
-            },
-            detectAfterNormalization: () =>
-            {
-                actions.Add("detect-after");
-                return VmOperations.InGameHudMatchKind.LegacyProfile;
-            },
-            leaveGame: _ =>
-            {
-                actions.Add("leave-game");
-                return Task.FromResult(true);
-            },
-            leaveOpenModernPauseMenu: _ => throw new InvalidOperationException(
-                "The direct open-menu leave path should not run for a legacy HUD."),
-            CancellationToken.None);
-
-        Assert.Equal(VmOperations.FollowAutoInGameRecoveryOutcome.LeftGame, outcome);
-        Assert.Equal(["detect-before", "detect-after", "leave-game"], actions);
-    }
-
-    [Theory]
-    [InlineData((int)VmOperations.InGameHudMatchKind.ModernProfile)]
-    [InlineData((int)VmOperations.InGameHudMatchKind.Frame)]
-    [InlineData((int)VmOperations.InGameHudMatchKind.ModernSaveAndExitMenu)]
-    public async Task FollowAutoDoesNotUseOrdinarySaveAndExitWithoutFreshLegacyProfile(
-        int afterNormalizationValue)
+    public async Task FollowAutoBroadFrameMatchNeverAuthorizesAClick()
     {
         var leaveAttempted = false;
-        var afterNormalization = (VmOperations.InGameHudMatchKind)afterNormalizationValue;
 
         var outcome = await VmOperations.RunFollowAutoInGameRecoveryAsync(
-            detectBeforeNormalization: () => VmOperations.InGameHudMatchKind.ModernProfile,
-            toggleLegacyGraphics: () => { },
-            waitForLegacyGraphics: _ => Task.CompletedTask,
-            detectAfterNormalization: () => afterNormalization,
+            detectInGameMatch: () => VmOperations.InGameHudMatchKind.Frame,
             leaveGame: _ =>
             {
                 leaveAttempted = true;
                 return Task.FromResult(true);
             },
-            leaveOpenModernPauseMenu: _ => throw new InvalidOperationException(
-                "Only an initially confirmed open pause menu authorizes its direct click path."),
+            leaveOpenPauseMenu: _ => throw new InvalidOperationException(
+                "A broad frame match must not authorize an open-menu click."),
             CancellationToken.None);
 
         Assert.Equal(VmOperations.FollowAutoInGameRecoveryOutcome.DetectionInconclusive, outcome);
@@ -183,33 +127,22 @@ public sealed class MenuClickSafetyTests
     }
 
     [Fact]
-    public async Task FollowAutoOpenModernPauseMenuClicksDirectlyWithoutTogglingOrPressingEscapeFlow()
+    public async Task FollowAutoOpenPauseMenuClicksDirectlyWithoutTheEscapeFlow()
     {
         var actions = new List<string>();
 
         var outcome = await VmOperations.RunFollowAutoInGameRecoveryAsync(
-            detectBeforeNormalization: () =>
+            detectInGameMatch: () =>
             {
-                actions.Add("detect-before");
-                return VmOperations.InGameHudMatchKind.ModernSaveAndExitMenu;
-            },
-            toggleLegacyGraphics: () => actions.Add("toggle-legacy"),
-            waitForLegacyGraphics: _ =>
-            {
-                actions.Add("wait-for-legacy");
-                return Task.CompletedTask;
-            },
-            detectAfterNormalization: () =>
-            {
-                actions.Add("detect-after");
-                return VmOperations.InGameHudMatchKind.LegacyProfile;
+                actions.Add("detect");
+                return VmOperations.InGameHudMatchKind.SaveAndExitMenu;
             },
             leaveGame: _ =>
             {
                 actions.Add("ordinary-leave");
                 return Task.FromResult(true);
             },
-            leaveOpenModernPauseMenu: _ =>
+            leaveOpenPauseMenu: _ =>
             {
                 actions.Add("direct-open-menu-leave");
                 return Task.FromResult(true);
@@ -217,28 +150,18 @@ public sealed class MenuClickSafetyTests
             CancellationToken.None);
 
         Assert.Equal(VmOperations.FollowAutoInGameRecoveryOutcome.LeftGame, outcome);
-        Assert.Equal(["detect-before", "direct-open-menu-leave"], actions);
+        Assert.Equal(["detect", "direct-open-menu-leave"], actions);
     }
 
     [Fact]
-    public async Task FollowAutoFreshNoHudResultPreservesNotInGameOutcome()
+    public async Task FollowAutoFailedLeaveIsReportedRatherThanSwallowed()
     {
-        var leaveAttempted = false;
-
         var outcome = await VmOperations.RunFollowAutoInGameRecoveryAsync(
-            detectBeforeNormalization: () => VmOperations.InGameHudMatchKind.ModernProfile,
-            toggleLegacyGraphics: () => { },
-            waitForLegacyGraphics: _ => Task.CompletedTask,
-            detectAfterNormalization: () => VmOperations.InGameHudMatchKind.None,
-            leaveGame: _ =>
-            {
-                leaveAttempted = true;
-                return Task.FromResult(true);
-            },
-            leaveOpenModernPauseMenu: _ => Task.FromResult(true),
+            detectInGameMatch: () => VmOperations.InGameHudMatchKind.HudProfile,
+            leaveGame: _ => Task.FromResult(false),
+            leaveOpenPauseMenu: _ => Task.FromResult(true),
             CancellationToken.None);
 
-        Assert.Equal(VmOperations.FollowAutoInGameRecoveryOutcome.NotInGame, outcome);
-        Assert.False(leaveAttempted);
+        Assert.Equal(VmOperations.FollowAutoInGameRecoveryOutcome.LeaveFailed, outcome);
     }
 }

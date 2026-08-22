@@ -358,7 +358,7 @@ The VM agent can drive the flows captured in `docs/runbooks/assets/d2r-ui/`:
 - In-game Save and Exit.
 - D2R window quit via Alt+F4.
 
-Before menu commands click into the lobby, the agent waits for the character screen or lobby tabs to be visually detectable. For `join` and `create-game`, it retries the final Join/Create button until the active lobby tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. After `play`, `join`, `create-game`, or `follow`, the agent waits `ui.legacyGraphicsToggleDelaySeconds` seconds and presses `G` to switch to legacy graphics for lower idle GPU use. Disable that with `ui.toggleLegacyGraphicsAfterEnteringGame: false` in the VM config.
+Before menu commands click into the lobby, the agent waits for the character screen or lobby tabs to be visually detectable. For `join` and `create-game`, it retries the final Join/Create button until the active lobby tab disappears or `ui.gameEntryStartTimeoutSeconds` expires. After `play`, `join`, `create-game`, or `follow`, the agent stops once the in-game HUD confirms entry. It used to wait `ui.legacyGraphicsToggleDelaySeconds` and press `G` to switch the client to legacy graphics for lower idle GPU use; the Reign of the Warlock expansion removed legacy graphics from D2R, so that step and both of its config keys are gone. Every client now runs the one remaining graphics mode, which costs more idle GPU per VM than legacy did.
 
 All-client commands are staggered and skip offline VM agents and disconnected/stale workers. Set `CLIENT_STAGGER_SECONDS=30` on the master, or set `startAllDelaySeconds` in its `d2r-host.config.json`.
 

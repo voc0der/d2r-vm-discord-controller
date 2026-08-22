@@ -32,17 +32,26 @@ public sealed record PartyNameFingerprint(int Width, int Height, byte[] PackedBi
     private const string SerializationPrefix = "pn1";
     private const int MaxDimension = 512;
 
-    // Name text measured (245,244,243) on every reference capture regardless of scene; the
-    // luminance floor is 120 rather than something tighter because the staggered lower-baseline
-    // rendering antialiases the same glyphs dimmer (rows measured only above lum 100-120 there).
-    // The channel-difference caps reject bright saturated scene pixels (torches, gold frames)
-    // while keeping the slightly warm white D2R uses.
+    // Name text measured (245,244,243) - a near-white - on the legacy captures this was first
+    // calibrated against. The modern HUD renders the same text a good deal dimmer and distinctly
+    // warmer: measured across all seven names in rotw_ingame_party_members_7.png it peaks around
+    // (177,159,106), luminance ~158, with a green-blue spread of 53. That sat a hair inside the
+    // old `< 55` cap, so short names were losing most of their glyphs to it and falling under
+    // MinGlyphBits - "Ras" captured 12 bits where 24 are required, and Grid/Shar/Trinity produced
+    // no glyph box at all. Widening the green-blue cap to 70 is the whole fix: every one of the
+    // seven names then captures 27-56 bits.
+    //
+    // The luminance floor stays at 120 deliberately. Dropping it to 100 captures more of each
+    // glyph (32-72 bits) but also more of the scene, and the worst different-name score rises
+    // from 0.43 to 0.51 against a 0.65 threshold - the extra bits are noise, not signal. The
+    // channel-difference caps reject bright saturated scene pixels (torches, frames) while
+    // keeping the warm off-white D2R actually uses.
     public static bool IsNameTextColor(byte red, byte green, byte blue)
     {
         var luminance = (red * 0.2126) + (green * 0.7152) + (blue * 0.0722);
         return luminance > 120
             && Math.Abs(red - green) < 35
-            && Math.Abs(green - blue) < 55;
+            && Math.Abs(green - blue) < 70;
     }
 
     // Builds a full-band mask from an RGB pixel block (3 bytes per pixel, row-major), e.g. a

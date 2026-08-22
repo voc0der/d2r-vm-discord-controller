@@ -240,31 +240,64 @@ internal static class D2RScreenClassifier
             && hud.DarkRatio < 0.80;
     }
 
-    public static bool IsModernSaveAndExitMenu(
+    // D2R dims the whole scene while the Escape menu is open. That drops the globes and action
+    // bar below the normal HUD-profile thresholds, but both globe colors remain visible and the
+    // menu contributes distinctive, centered grey buttons. Requiring the entire combination
+    // avoids treating generic dark menus, loading art, or coincidental red/blue scenery as an
+    // in-game pause.
+    //
+    // Only the top three rows - Options, Save and Exit, Return to Game - are required. Reign of
+    // the Warlock appends Loot Filter and Chronicle below a divider without moving those three:
+    // measured on the reference captures, all three occupy identical scanlines before and after
+    // the expansion (rows 271-292, 321-342, 371-392 at 1366x768). Gating on the two new rows as
+    // well would buy nothing and would blind the detector on any client that has not taken the
+    // expansion yet, so they are reported separately by HasExpansionPauseMenuRows instead.
+    public static bool IsSaveAndExitMenu(
         ScreenRegionStats health,
         ScreenRegionStats mana,
         ScreenRegionStats optionsButton,
         ScreenRegionStats saveAndExitButton,
         ScreenRegionStats returnToGameButton)
     {
-        // Resurrected graphics dims the whole scene while the Escape menu is open. That
-        // drops the modern globes and action bar below the normal HUD-profile thresholds,
-        // but both globe colors remain visible and the menu contributes three distinctive,
-        // centered grey buttons. Requiring the entire combination avoids treating generic
-        // dark menus, loading art, or coincidental red/blue scenery as an in-game pause.
-        static bool IsPauseMenuButton(ScreenRegionStats stats)
-        {
-            return stats.AverageLuminance > 60
-                && stats.LuminanceStdDev > 40
-                && stats.GreyRatio > 0.60
-                && stats.DarkRatio < 0.35;
-        }
-
         return health.RedRatio > 0.12
             && mana.BlueRatio > 0.20
             && IsPauseMenuButton(optionsButton)
             && IsPauseMenuButton(saveAndExitButton)
             && IsPauseMenuButton(returnToGameButton);
+    }
+
+    // Distinguishes Reign of the Warlock's five-row pause menu from the pre-expansion three-row
+    // one. Purely observational - nothing clicks these rows and no flow branches on the result -
+    // but it is what lets a status/telemetry line say which menu a client is actually rendering,
+    // which is the difference between "this VM never took the expansion" and "the anchors moved".
+    //
+    // The separation is not marginal. On the pre-expansion captures these two bands are the
+    // dimmed game world with no menu chrome at all (modern_gfx_* and save_and_exit_resurrected:
+    // std 3.9-5.7, dark 1.00); on the RoTW capture they are lit button faces (std 42.0-48.4,
+    // dark 0.35-0.36). Requiring both rows keeps a bright patch of scenery behind one band from
+    // being read as an expansion menu.
+    public static bool HasExpansionPauseMenuRows(
+        ScreenRegionStats lootFilterButton,
+        ScreenRegionStats chronicleButton)
+    {
+        static bool IsExpansionRow(ScreenRegionStats stats)
+        {
+            return stats.Samples > 0
+                && stats.LuminanceStdDev > 25
+                && stats.GreyRatio > 0.40
+                && stats.DarkRatio < 0.60;
+        }
+
+        return IsExpansionRow(lootFilterButton)
+            && IsExpansionRow(chronicleButton);
+    }
+
+    private static bool IsPauseMenuButton(ScreenRegionStats stats)
+    {
+        return stats.AverageLuminance > 60
+            && stats.LuminanceStdDev > 40
+            && stats.GreyRatio > 0.60
+            && stats.DarkRatio < 0.35;
     }
 
     public static bool IsInGameHudFrame(

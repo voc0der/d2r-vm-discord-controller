@@ -31,9 +31,11 @@ Current image assets live in `docs/runbooks/assets/d2r-ui/`:
 - `1366x768/game_exists_name.png`: Redacted Create Game modal when the chosen game name already exists.
 - `lobby_right_click_party_icon.jpg`: Lobby friends drawer opened from the party/friends icon near chat, with a friend context menu open.
 - `friend_context_join_game.jpg`: Right-click friend context menu with `Join Game` visible.
-- `1366x768/follow_auto_pending_modern_ingame.png`: Follow-auto pending-account recovery case where the client is unexpectedly still in a modern-graphics game.
-- `save_and_exit_resurrected.jpg`: Resurrected graphics pause menu with Save and Exit.
-- `save_and_exit_legacy.jpg`: Legacy graphics pause menu with Save and Exit Game.
+- `1366x768/follow_auto_pending_modern_ingame.png`: Follow-auto pending-account recovery case where the client is unexpectedly still in a game.
+- `1366x768/rotw_ingame_save_and_exit_menu.png`: Current in-game pause menu after the Reign of the Warlock upgrade - Options, Save and Exit, Return to Game, divider, Loot Filter, Chronicle.
+- `1366x768/rotw_ingame_party_members_1.png` .. `_7.png`: The party panel on the current HUD at every size, one through seven OTHER members, stacked down the left screen edge. Supersedes `party_members_0..3.png`, which were legacy captures with a horizontal panel. Note the filenames count other members; the operator's originals (`2player-rotw.png` .. `7player-rotw.png`) counted total players in the game.
+- `save_and_exit_resurrected.jpg`: Pre-expansion pause menu with Save and Exit (three rows).
+- `save_and_exit_legacy.jpg`: Legacy graphics pause menu with Save and Exit Game. Retired - Reign of the Warlock removed legacy graphics; kept as a detector fixture only.
 
 Host diagnostic assets live in `docs/runbooks/assets/d2r-host/`:
 

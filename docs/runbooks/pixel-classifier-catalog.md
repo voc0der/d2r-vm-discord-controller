@@ -216,8 +216,8 @@ the same lobby/in-game ordering, with two narrow differences called out inline:
 4. Partial character menu (`IsCharacterMenuReady`) - `DetectVisibleD2RState` folds this into
    step 3 via OR and never reports it separately; the ready-loop functions report it as its own
    `ReadyScreenState.CharacterMenu` terminal state, distinct from `CharacterScreen`
-5. Strict in-game HUD evidence (`IsInGameReadyStrict` - modern/legacy globe profiles only,
-   never the broad Frame-kind fallback)
+5. Strict in-game HUD evidence (`IsInGameReadyStrict` - the globe profile and the pause-menu
+   overlay only, never the broad Frame-kind fallback)
 6. Lobby/game entry menu (`IsAnyLobbyEntryMenuVisibleIgnoringInGameOverlap`)
 7. Broad in-game fallback (`IsInGameReady`, including the Frame-kind match) - `DetectVisibleD2RState`
    only; the ready-loop functions stop at step 6 and report `Unknown` rather than retrying a
@@ -247,12 +247,23 @@ the same lobby/in-game ordering, with two narrow differences called out inline:
 
 | Function | Regions | Threshold |
 | --- | --- | --- |
-| `IsInGameHudProfile` (checked once for modern globes, once for legacy) | health globe, mana globe, action-bar HUD (`InGameHudBar` `0.500,0.955` `0.42x0.08`) | `health.RedRatio > 0.20 && mana.BlueRatio > 0.18 && hud.AverageLuminance > 35 && hud.LuminanceStdDev > 25 && hud.DarkRatio < 0.80` |
+| `IsInGameHudProfile` | health globe (`0.260,0.900`), mana globe (`0.760,0.900`), action-bar HUD (`InGameHudBar` `0.500,0.955` `0.42x0.08`) | `health.RedRatio > 0.20 && mana.BlueRatio > 0.18 && hud.AverageLuminance > 35 && hud.LuminanceStdDev > 25 && hud.DarkRatio < 0.80` |
+| `IsSaveAndExitMenu` (pause overlay; dimming drops it below the profile above) | health/mana globes as above, plus `OptionsButton` `0.500,0.374`, `SaveAndExitButton` `0.500,0.439`, `ReturnToGameButton` `0.500,0.505`, each `0.16x0.045` | `health.RedRatio > 0.12 && mana.BlueRatio > 0.20` AND all three buttons pass `AverageLuminance > 60 && LuminanceStdDev > 40 && GreyRatio > 0.60 && DarkRatio < 0.35` |
+| `HasExpansionPauseMenuRows` (observational only - nothing branches on it) | `LootFilterButton` `0.500,0.577`, `ChronicleButton` `0.500,0.643`, each `0.16x0.045` | Both rows need `Samples > 0 && LuminanceStdDev > 25 && GreyRatio > 0.40 && DarkRatio < 0.60`. Measured: expansion menu std 42.0-48.4 / dark 0.35-0.36; pre-expansion menus std 3.9-5.7 / dark 1.00 |
 | `IsInGameHudFrame` (fallback when globe colors don't match - potion/dye variations) | action bar (as above), bottom HUD `0.500,0.940` `0.70x0.13`, center HUD `0.500,0.940` `0.22x0.08` | All three regions need `LuminanceStdDev` above a per-region floor (30/28/32) and `DarkRatio` below a ceiling (0.85/0.85/0.80); action bar and center HUD additionally need `BrightRatio` or `GreyRatio` evidence of UI elements |
 
-`InGame` is `IsInGameHudProfile(modern) || IsInGameHudProfile(legacy) || IsInGameHudFrame`.
-The live detector short-circuits in that order so the normal modern-HUD success path only has to
-sample the action bar and modern globes; diagnostics still sample and print every HUD region.
+`InGame` is `IsInGameHudProfile || IsSaveAndExitMenu || IsInGameHudFrame`. The live detector
+short-circuits in that order, so the normal success path only samples the action bar and the two
+globes; the pause-menu overlay's three extra samples are only paid for when both dimmed globe
+colors are still present. Diagnostics still sample and print every HUD region.
+
+**Reign of the Warlock removed the legacy globe pair.** Until then this table had a second
+`IsInGameHudProfile` row for legacy graphics, whose pillarboxed 4:3 layout put the globes at
+`0.200,0.900`/`0.800,0.900` instead of `0.260`/`0.760`. Legacy graphics no longer exists in the
+client, so those anchors were deleted rather than left to cost a sample on every detection pass.
+The consequence is pinned deliberately: the legacy captures still in the corpus classify `InGame`
+via the broad frame fallback but `Unknown` on the ready path. See
+[ui-state-catalog.md](ui-state-catalog.md#retired-states-legacy-graphics).
 
 ## Stuck load screen (watchdog confirmation)
 
@@ -293,45 +304,104 @@ margins, pinned by `StuckLoadScreenSurroundTests` against every full-page captur
 
 ## Party member count
 
-issue #20, item 6. D2R draws one gold-framed portrait icon per OTHER party member (not counting
-yourself) in a row at the top-left of the screen, filling left-to-right with no gaps and no
-reordering. Reference screenshots: `docs/runbooks/assets/d2r-ui/1366x768/party_members_0.png`
-through `party_members_3.png` - solo through 3 other members, captured live and classified by
-direct pixel measurement (`PartyMemberSlotsTests.cs`/`PartyFrameClassifierTests.cs` pin the exact
-numbers below; `PartyMemberCountReferenceTests.cs` re-derives the count from the real screenshots
-end to end).
+issue #20, item 6. D2R draws one bronze-framed portrait icon per OTHER party member (not counting
+yourself), filling in order with no gaps. Reference screenshots:
+`docs/runbooks/assets/d2r-ui/1366x768/rotw_ingame_party_members_1.png` through `_7.png` - the
+complete 1-to-7 ladder (the operator's originals were named for TOTAL players in the game, so
+`2player-rotw.png` is you plus one portrait) - plus every party-less modern in-game capture in the
+corpus as the 0-member negative set (`PartyMemberSlotsTests.cs`/`PartyFrameClassifierTests.cs` pin the exact numbers
+below; `PartyMemberCountReferenceTests.cs` re-derives the count from the real screenshots end to
+end).
 
-| Slot | Box (1366x768 px) | Top-edge sample strip |
-| --- | --- | --- |
-| 1 | `(190,26)`-`(248,77)`, 58x51 | center `(219, 29)`, 58x6 |
-| 2 | `(262,26)`-`(320,77)` | center `(291, 29)`, 58x6 |
-| 3 | `(334,26)`-`(390,77)` | center `(363, 29)`, 58x6 |
-| N (1-7) | left = 190 + (N-1)*72 | left = box left, same width/height |
+**Reign of the Warlock rotated this panel.** Legacy graphics laid the portraits out horizontally
+across the top of a pillarboxed 4:3 viewport (left = 190, 72px pitch along X). The modern HUD
+stacks them **vertically down the left screen edge**. Every constant here was remeasured, not
+converted - the pillarbox offset alone does not translate them, because D2R scales the modern UI
+independently. See [ui-state-catalog.md](ui-state-catalog.md#party-member-panel-after-reign-of-the-warlock).
 
-Slots 4-7 are extrapolated from the confirmed 72px pitch between slots 1-3, not directly observed
-- a full D2R party is 8 including the observing character, so only 7 other portraits can appear;
-only 0-3 references exist so far. If counts above 3 look wrong,
-capture `party_members_4.png` etc. and recheck `PartyMemberSlots` before assuming the detection
-logic is broken.
+Per-slot structure, offsets relative to the slot top (the health bar's first row); slot 1 top is
+y 88 and the pitch is 72.5px, so slot N's top is `88 + (N-1) * 72.5`:
+
+| Element | Rows (relative) | Columns | Used for |
+| --- | --- | --- | --- |
+| Green health bar | `+0..+5` | x 16-55 | Nothing - see below |
+| Portrait, bronze frame | `+7..+49` | x 16-58 | Frame border only |
+| Name text | `+51..+60` | from x 17, left-aligned | Name fingerprint |
+
+Measured health-bar tops: 88, 160, 233, 305, 378, 450, 523 - alternating 72/73px steps, hence the
+72.5 pitch. `MaxSlots = 7` is now directly observed rather than extrapolated: a full party is 8
+including the observing character, and the capture shows exactly seven other portraits with clear
+space below slot 7.
 
 **Classifies the frame border, not the health bar fill above it.** The bar's color and length
 track that member's current HP (green when healthy, shrinking and recoloring as they take
 damage, gone if they're dead), so a damaged or dead party member's bar is not reliably green -
 keying detection on it would undercount anyone who's taken damage, which in real play is most of
-the party most of the time. The gold/tan frame itself is constant regardless of HP or which
-character occupies the slot, measured at R∈(110,200), G∈(80,170), B∈(15,100), R>G>B, R-B>40
-(`PartyFrameClassifier.IsFrameColor`). This is deliberately separate from the existing
-`OrangeRatio` classifier above (`blue < 45`): this frame's blue channel measured 50-90 across
-every sampled pixel, well over that cutoff, so reusing `OrangeRatio` would have under-detected.
+the party most of the time. This matters more than it looks: every slot in the reference capture
+is at full HP, so a bar-based check would have measured perfectly and then failed the first time
+somebody took a hit. The frame is constant regardless of HP or which character occupies the slot,
+measured at R∈[40,115], G∈[30,100], B∈[10,75], R>G>B, R-B>=18 (`PartyFrameClassifier.IsFrameColor`).
 
-A slot counts as occupied when `PartyFrameClassifier.FrameRatio` over its top-edge strip is
-`>= 0.3`. Measured ratios: every occupied slot across all three non-empty references landed in
-0.44-0.59; every unoccupied slot (including the entire top-left HUD region in the solo reference)
-measured exactly 0.0 - large margin either side of 0.3 for a real VM's capture/scaling jitter.
-Sampling is restricted to a thin strip across just the top edge of the frame rather than the
-whole ~58x51 box because the box interior is the character's portrait art, which differs per
-character and isn't a reliable signal; the strip stays clear of it while still measuring well
-clear of the threshold.
+Those bounds are also new. The legacy frame was a bright gold requiring `R > 110`; the modern one
+is a much darker bronze whose red runs 18-102 (p5 54, p50 70, p95 98) and never reaches 110, so
+the pre-RoTW thresholds scored **0.00 on a fully populated party** - party counting could only
+ever have returned 0 once legacy graphics went away.
+
+A slot counts as occupied when `PartyFrameClassifier.FrameRatio` over its frame band is `>= 0.34`.
+Only the 3px top border is character-independent: rows `+7..+9` read 0.95-0.98 bronze across all
+seven distinct characters, while every row from `+10` to `+46` is portrait art ranging 0.09-0.33
+depending on who is in the slot, and only the 2px bottom border at `+47..+48` returns to 0.95. The
+interior is deliberately not trusted.
+
+The sampled band is 6px centered at `+8` on a **5x5 grid**, and the band size and grid are chosen
+together: both samplers floor a region at `max(sizeInPixels, sampleGrid)` per axis, so a 3px band
+on the default 9-grid is silently inflated to 9px, drags in the health-bar gap above and portrait
+art below, and collapses an occupied slot to 0.32 - a hair over the threshold. The values were
+picked by sweeping band height, grid size and offset over the real sampler math and scoring each
+candidate on its **worst** result across all seven slots *and* ±2px of vertical drift, not its best
+at one exact alignment. That matters because the 72.5 pitch puts odd slots on a half-pixel: a
+configuration tuned on slot 1 alone scores 0.25 on slot 4.
+
+Measured through the real sampler across the whole ladder plus every party-less capture, at rest
+and at ±2px: occupied slots never drop below **0.40**, and the highest any empty position reaches
+is **0.28**. The threshold is 0.34, the midpoint, giving 0.06 either way.
+
+That 0.28 is worth naming rather than rounding away. It is slot 7 of the 5-member capture, where
+bright terrain shows through the empty column and passes the bronze test on scattered pixels. It is
+also why the contiguity rule is **load-bearing rather than an optimization**: the counter stops at
+the first slot under the threshold, and across the entire corpus every *first-empty* slot reads
+exactly 0.00 - two full slots away from that outlier. A lone bright patch further down the column
+can never be reached, so it cannot inflate a count. Removing the early exit would make detection
+strictly worse, not just slower.
+
+Narrower bands were tried and rejected: sampling only the 3px border on a 3- or 4-grid separates
+beautifully at rest but collapses to 0.25 under ±2px drift, because the band slides off the border
+entirely. Wider bands score better in a naive sweep but only by leaning on portrait art, which
+varies per character and is exactly what this detector must not depend on.
+
+**The panel is sorted, and a member's slot is not stable.** The pre-RoTW note here claimed D2R
+"never reorders"; the full ladder shows the opposite. Adding a member *inserts* them in sorted
+position and pushes everyone below down a slot - `Trinity` sits in slot 2 at a two-member party and
+slot 7 at a full one, and `Shar` was inserted **above** `Trinity` rather than appended after it.
+Every capture is a strict alphabetical subsequence:
+
+| Members | Slots, top to bottom |
+| --- | --- |
+| 1 | Calypso |
+| 2 | Calypso, Trinity |
+| 3 | Calypso, **Shar**, Trinity |
+| 4 | Calypso, **Iammer**, Shar, Trinity |
+| 5 | Calypso, Iammer, **Odysseus**, Shar, Trinity |
+| 6 | Calypso, Iammer, Odysseus, **Ras**, Shar, Trinity |
+| 7 | Calypso, **Grid**, Iammer, Odysseus, Ras, Shar, Trinity |
+
+No production code depends on slot stability - the follow-auto pulse scans every visible band and
+scores all bound nametags against each of them - so this is a documentation correction, not a bug.
+It is pinned by `SlotAssignmentIsNotStableAcrossPartyChanges` so nobody later "optimizes" the pulse
+into a cached-slot lookup.
+
+Sorting does not create gaps, so the contiguity the counter relies on still holds at every size:
+occupied slots are always the leading ones and the first empty slot reads flat zero.
 
 Total players in a game = party member count + 1 (yourself), which only holds while everyone
 present is in one party - true for this project's own multi-boxed-accounts use case, not
@@ -349,19 +419,15 @@ can verify a specific player (the operator) is still in the game instead of leav
 public game's player count wobbles. Same reference screenshots as the party member count above;
 `PartyNameFingerprintReferenceTests.cs` re-derives every number below from them end to end.
 
-**Geometry** (1366x768, all measured): names are drawn centered on the portrait's center x
-(219 + 72 per slot, +-1px across every named slot) in near-white text, on one of two baselines:
+**Geometry** (1366x768, all measured against `rotw_ingame_party_members_7.png`): names are drawn
+**left-aligned from x 17** - not centered under the portrait the way the legacy HUD drew them -
+on a single baseline occupying rows `+51..+60` relative to the slot top. Measured across all seven
+named slots the text starts at x 17 in every one and runs as far right as x 60 for the longest
+name on file (`Odysseus`). The capture band is x 16-66, rows `+50..+61`, which clears the portrait
+above (ends at `+49`) and the next slot's health bar below (starts at `+72.5`).
 
-- Upper baseline y 81-90 - the normal case (`Netrunner` in all three populated references,
-  `Skeleton` in `party_members_3.png`).
-- Lower baseline y 93-103 - used when the name would collide with its left neighbor's
-  (`Position` in `party_members_3.png`, `Skeleton` in `party_members_2.png`). The staggered
-  rendering also uses visibly thinner strokes (same word measured 156 vs 190 text pixels).
-
-The capture band per slot is the full 72px pitch wide (long names overhang the 58px portrait:
-`Netrunner` measured 65px) and spans y 78-106, covering both baselines. It stops at y 106
-exactly because the game chat log starts there (`[Game] Position left our world.` measured at
-y 106-117 in `party_members_2.png`) in the same near-white as name text.
+The legacy two-baseline stagger is gone with legacy graphics: modern draws every name on one
+baseline, so there is no thin-stroke lower variant to absorb any more.
 
 **Why not FriendFingerprint's raw-RGB comparison:** the friends drawer draws names on a fixed
 dark panel; the party bar draws them over the live game world, so the background behind the same
@@ -369,10 +435,26 @@ name changes every game. Measured across references, the same name over differen
 slots/baselines scored 32.8 average RGB difference - already past FriendFingerprint's 30.6 match
 cutoff. Only the glyph pixels are stable.
 
+The modern layout makes that worse, not better: legacy drew these names over the black pillarbox
+bar, so the backdrop was constant. What keeps it manageable is that a name band is only ever
+sampled for a slot the frame check has already confirmed occupied, so a band over open terrain is
+not a state production can reach.
+
+That guard is load-bearing, not an efficiency measure. Slot 6 of the 5-member capture is **empty**,
+and its name band still returns a full 48x9 glyph box of **88 bits** - pure terrain, and more bits
+than any real name in the corpus (the longest, `Odysseus`, captures 56). Sampled unguarded, the
+matcher would be handed that as if it were a nametag.
+
 **Classifier** (`PartyNameFingerprint.IsNameTextColor`): luminance > 120, `|R-G| < 35`,
-`|G-B| < 55`. Name text measured (245,244,243) everywhere; the 120 floor (not higher) absorbs
-the dimmer antialiasing of the staggered rendering. Every empty band across all four references
-measured exactly 0 matching pixels.
+`|G-B| < 70`. The green-blue cap used to be 55, calibrated on legacy's near-white (245,244,243).
+The modern HUD renders the same text dimmer and distinctly warmer - measured across all seven
+names it peaks around (177,159,106), luminance ~158, with a green-blue spread of **53**, a hair
+inside the old cap. Short names were therefore losing most of their glyphs and falling under
+`MinGlyphBits` (24): `Ras` captured 12 bits, and `Grid`/`Shar`/`Trinity` produced no glyph box at
+all, so binding any of them silently failed. Widening the cap to 70 is the whole fix - all seven
+names then capture 27-56 bits. The luminance floor stays at 120 deliberately: dropping it to 100
+captures more of each glyph (32-72 bits) but also more of the scene, and the worst different-name
+score rises from 0.43 to 0.51 - the extra bits are noise, not signal.
 
 **Matching:** bind crops the band mask to its glyph bounding box (rejected below 24 bits); a
 probe slides that template over a freshly captured band mask and takes the best whole-name Dice
@@ -383,14 +465,35 @@ ignored). Match threshold 0.65, calibrated:
 
 | Pair | Score |
 | --- | --- |
-| Same name, same slot, different capture (`Netrunner`) | 1.000 |
-| Same name, different slot + baseline + stroke weight + background (`Skeleton`) | 0.757 |
-| Best different-name confusion (`Glitch` template over `Position` band) | 0.551 |
-| Departed player probed anywhere (`Position` vs `party_members_2.png`) | 0.485 max |
+| Every name against its own band (all 7) | 1.000 |
+| Worst same name, any pair across the whole ladder (`Calypso`, 1-member vs 6-member) | 0.977 |
+| Same name, different slot **and** background (`Trinity`, slot 7 vs slot 2) | 1.000 |
+| Best different-name confusion (`Shar` vs `Grid` - two 4-character names) | 0.441 |
+| Departed member probed against the one remaining band | 0.409 max |
 
-The added `party_glitch_*` captures exercise the former false-positive topology directly:
-`Glitch` scores 1.000 while present and no more than 0.551 against any remaining name after it
-leaves.
+0.65 sits between a 0.977 same-name floor and a 0.441 different-name ceiling - 0.327 of margin
+above, 0.209 below. The same-name floor is *tighter* than the legacy corpus's 0.757 because modern
+draws every name on one baseline, so there is no thin-stroke staggered variant to match against.
+
+The ladder is a far stronger calibration set than one capture could be. Because the panel re-sorts
+as members join, the same seven names appear at different slot indices against different scene
+backdrops across the seven captures - `Calypso` in slot 1 of all seven, `Trinity` migrating from
+slot 2 to slot 7 - which supplies the same-name side, while the full party supplies **42**
+different-name pairs against the legacy corpus's 8. The hard case is covered directly: `Grid`,
+`Ras` and `Shar` are 3-4 character names whose glyph boxes are only 16-19px wide, which is where
+two different names look most alike.
+
+The ladder also reproduces the leave-detection scenario on the modern HUD: with everyone but
+`Calypso` gone, every other bound name scores 0.267-0.409 against the single band still on screen,
+well clear of the threshold. That is the failure mode that wedged follow-auto in
+`watch-follow-auto-20260717-124344.log`.
+
+The `party_glitch_*` captures exercise the former false-positive topology directly: `Glitch` scores
+1.000 while present and no more than 0.551 against any remaining name after it leaves. Those are
+legacy captures, so `GlitchNameFingerprintReferenceTests` is the one test that deliberately does
+not use `PartyMemberSlots` - it pins the legacy band coordinates locally as historical constants.
+The bug it covers was in the scorer, not the geometry, so the regression still runs; retiring the
+captures would retire the only test covering a real incident.
 
 **Multi-alt nametag rolodex.** `leader-template.txt` holds one serialized nametag per line, in
 bind order - the operator binds each alt they play once. Every pulse captures each visible slot
@@ -461,8 +564,8 @@ screen even though it appeared to have detected an error dialog.
 
 `LobbyOrGame` is `IsGameEntryMenuVisible(createTab || joinTab, entryButtonReady, formPanelReady)`.
 Top-level visible-state detection (`v0.2.85`) checks **strict** in-game evidence
-(`IsInGameReadyStrict` - the modern/legacy HUD globe profiles only, never the broad Frame-kind
-fallback) before this lobby check, then this lobby check, then falls back to the full
+(`IsInGameReadyStrict` - the HUD globe profile and the pause-menu overlay only, never the broad
+Frame-kind fallback) before this lobby check, then this lobby check, then falls back to the full
 `IsInGameReady` (including the Frame-kind fallback) after it. Two historical fixes, preserved
 deliberately on opposite sides of the lobby check:
 
@@ -520,9 +623,9 @@ of "this click missed the UI" (see "Safety: blind recovery clicks..." below) - a
 click/key burst sent while the client is actually already in a live game is a movement click,
 and in Hardcore, the wrong one can kill a character. Every reference capture the ready loop's
 new `InGame` branch is verified against (`sitting_in_town*.png`,
-`just_landed_in_game_checkforhealthandmanaglobes.png`, `low_graphics_mode_generic.png`,
-`follow_auto_pending_modern_ingame.png`, `legacy_gfx_ingame_save_and_exit_*.png`) was directly
-measured to pass strict modern-or-legacy HUD globe evidence *before* writing this fix,
+`just_landed_in_game_checkforhealthandmanaglobes.png`, `follow_auto_pending_modern_ingame.png`,
+and - at the time, before Reign of the Warlock retired them - the legacy captures) was directly
+measured to pass strict HUD globe evidence *before* writing this fix,
 specifically to confirm the existing
 `sitting_in_town.png` lobby-tab/entry-button overlap (documented above) can never reach the new
 lobby branch in the ready loop either - strict in-game evidence wins first, exactly as it does
@@ -745,7 +848,7 @@ mechanism works on a live VM. That needs a real run.
   two checks, not one, if it's ever touched again.
 - **The broad `IsInGameHudFrame` fallback can overlap filled join/create forms.** Top-level
   visible-state detection gives the lobby-entry form priority. Game-entry confirmation accepts
-  strong modern/legacy globe profiles directly, but broad HUD-frame fallback matches are only
+  the strong globe profile directly, but broad HUD-frame fallback matches are only
   accepted after a short post-entry-click grace window. This keeps menu screens from being treated
   as already in-game just because their lower chrome happens to look HUD-like, without making HUD
   confirmation pay for extra lobby-form sampling during D2R's load spike. During game-entry
@@ -809,12 +912,15 @@ mechanism works on a live VM. That needs a real run.
   independent bug from the v0.2.71/72/73 `IsInGameReady` throttle saga** - it reproduced
   identically on v0.2.73 (plain, unbounded, un-throttled `IsInGameReady`, after that throttle was
   fully reverted), proving the throttle was never the actual cause of this particular freeze.
-- **Modern-graphics Save and Exit dims the action bar enough that the ordinary HUD profiles
-  miss it.** The dedicated modern pause detector combines both still-colored modern globes
-  with all three centered grey buttons (Options, Save and Exit, Return to Game).
-  `modern_gfx_ingame_save_and_exit_*.png` therefore classifies as `InGame` without relaxing
-  the generic action-bar thresholds, while normal modern gameplay, legacy pause captures,
-  lobby/character screens, and load screens reject the overlay-specific check. Stale-game
+- **Save and Exit dims the action bar enough that the ordinary HUD profile misses it.** The
+  dedicated pause detector combines both still-colored globes with the three centered grey
+  buttons (Options, Save and Exit, Return to Game). `rotw_ingame_save_and_exit_menu.png` and the
+  pre-expansion `modern_gfx_ingame_save_and_exit_*.png` therefore classify as `InGame` without
+  relaxing the generic action-bar thresholds, while normal gameplay, lobby/character screens,
+  and load screens reject the overlay-specific check. Reign of the Warlock appended Loot Filter
+  and Chronicle below a divider **without moving those three rows** (identical scanlines in both
+  captures), so the detector was left gated on the top three: requiring the new rows would buy
+  nothing and would blind it on a client that has not taken the expansion. Stale-game
   recovery clicks the already-visible Save and Exit button directly; it does not press Escape
   first (which would close the menu), and it freshly re-confirms the overlay before every
   retry so that coordinate can never become a blind in-world click.

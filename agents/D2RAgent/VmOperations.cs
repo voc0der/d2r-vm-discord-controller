@@ -2189,7 +2189,7 @@ public sealed class VmOperations
     };
 
     // Scans slots in order and stops at the first miss rather than checking all 7 unconditionally
-    // - D2R fills slots left-to-right with no gaps (PartyMemberSlots), so the common case (a
+    // - D2R fills slots top-to-bottom with no gaps (PartyMemberSlots), so the common case (a
     // handful of accounts, not a full 8-player lobby) samples only as many regions as there are
     // actual members instead of always paying for 7.
     private int CountOtherPartyMembers(WindowsInput input)
@@ -2200,7 +2200,8 @@ public sealed class VmOperations
                 () => input.SamplePartyFrameRatio(
                     PartyMemberSlots.GetSlotTopEdgeCenter(slot),
                     PartyMemberSlots.EdgeWidthRatio,
-                    PartyMemberSlots.EdgeHeightRatio),
+                    PartyMemberSlots.EdgeHeightRatio,
+                    PartyMemberSlots.FrameSampleGrid),
                 PartyFrameSampleBoundMs,
                 0.0);
             if (ratio < PartyMemberSlots.FrameRatioThreshold)
@@ -3218,30 +3219,20 @@ public sealed class VmOperations
         var recoveredOpenModernPauseMenu = false;
         var unexpectedGameRecovery = ShouldRunFollowAutoScreenClassifiers(usedExpectedPostSaveExitLobby)
             ? await RunFollowAutoInGameRecoveryAsync(
-            detectBeforeNormalization: () => TryRunBounded<InGameHudMatchKind?>(
-                () => DetectBestInGameHudMatch(input),
-                InGameSafetyCheckBoundMs,
-                fallback: null),
-            toggleLegacyGraphics: () =>
-            {
-                MarkCommandCheckpoint("FollowAutoCheckAsync: unexpected game is not confirmed legacy; sending one graphics toggle before re-check");
-                SendOneLegacyGraphicsToggle(input);
-            },
-            waitForLegacyGraphics: DelayStepAsync,
-            detectAfterNormalization: () => TryRunBounded<InGameHudMatchKind?>(
+            detectInGameMatch: () => TryRunBounded<InGameHudMatchKind?>(
                 () => DetectBestInGameHudMatch(input),
                 InGameSafetyCheckBoundMs,
                 fallback: null),
             leaveGame: async token =>
             {
-                MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed unexpected game is in legacy graphics; using Save and Exit");
+                MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed unexpected game by strict HUD globes; using Save and Exit");
                 unexpectedGameLeave = await SaveAndExitAsync(followAutoRunId, token);
                 return unexpectedGameLeave.Ok;
             },
-            leaveOpenModernPauseMenu: async token =>
+            leaveOpenPauseMenu: async token =>
             {
                 recoveredOpenModernPauseMenu = true;
-                MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed an open modern Save and Exit menu; clicking its Save and Exit button directly");
+                MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed an open Save and Exit menu; clicking its Save and Exit button directly");
                 unexpectedGameLeave = await SaveAndExitFromOpenModernPauseMenuAsync(
                     input,
                     followAutoRunId,
@@ -3255,8 +3246,8 @@ public sealed class VmOperations
         {
             return CommandResult.Success(
                 recoveredOpenModernPauseMenu
-                    ? "This pending client was already in a game with the modern Save and Exit menu open. Clicked Save and Exit directly; waiting for the next follow-auto cycle to join the bound friend."
-                    : "This pending client was already in a game. Confirmed legacy graphics and used Save and Exit; waiting for the next follow-auto cycle to join the bound friend.",
+                    ? "This pending client was already in a game with the Save and Exit menu open. Clicked Save and Exit directly; waiting for the next follow-auto cycle to join the bound friend."
+                    : "This pending client was already in a game. Confirmed it by the in-game HUD globes and used Save and Exit; waiting for the next follow-auto cycle to join the bound friend.",
                 new
                 {
                     bound = true,
@@ -3277,7 +3268,7 @@ public sealed class VmOperations
         if (unexpectedGameRecovery == FollowAutoInGameRecoveryOutcome.DetectionInconclusive)
         {
             return CommandResult.Success(
-                "Follow-auto suspected this pending client was already in a game, but a fresh legacy HUD profile could not be confirmed; waiting for the next follow-auto cycle without clicking.",
+                "Follow-auto suspected this pending client was already in a game, but a strict in-game HUD profile could not be confirmed; waiting for the next follow-auto cycle without clicking.",
                 new
                 {
                     bound = true,
@@ -3534,7 +3525,7 @@ public sealed class VmOperations
         // WaitForGameEntryAsync, which samples the strict HUD globes FIRST and only accepts a
         // broad in-game frame after a grace period. Re-running a second, globes-only strict gate
         // here just re-litigates that same decision with no fallback: when entry was legitimately
-        // confirmed via the broad frame (a dark load area, or the legacy/modern-graphics HUD
+        // confirmed via the broad frame (a dark load area, or the HUD
         // difference), the gate fails even though the client is in and playing - and the old
         // failure return then called CollectStatusAsync, which stalled for the entire game
         // (2m35s captured in watch-follow-auto-20260714-182232.log, the bot in-game the whole
@@ -3800,7 +3791,6 @@ public sealed class VmOperations
         var deadline = DateTimeOffset.UtcNow + timeout;
         var dialogRetries = 0;
         var connectionRetries = 0;
-        var legacyToggle = new LegacyGraphicsToggleState();
 
         async Task<bool> SelectAndSubmitFriendGameAsync(string reason, bool resetDeadline = false)
         {
@@ -3829,7 +3819,7 @@ public sealed class VmOperations
             cancellationToken.ThrowIfCancellationRequested();
             stopCheck?.Invoke();
             var broadHudFrameAcceptAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 3, 8));
-            var waitResult = await WaitForGameEntryAsync(input, joinGameTab, cancellationToken, legacyToggle, broadHudFrameAcceptAt);
+            var waitResult = await WaitForGameEntryAsync(input, joinGameTab, cancellationToken, broadHudFrameAcceptAt);
             stopCheck?.Invoke();
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
@@ -4292,19 +4282,19 @@ public sealed class VmOperations
             cancellationToken.ThrowIfCancellationRequested();
 
             // Never retry this fixed-coordinate click merely because a generic HUD sample
-            // still says "in game." Once the modern pause overlay is gone, the same point is
-            // the live world and could move a Hardcore character. Every attempt must freshly
-            // re-prove the distinctive three-button overlay first.
+            // still says "in game." Once the pause overlay is gone, the same point is the live
+            // world and could move a Hardcore character. Every attempt must freshly re-prove
+            // the distinctive three-button overlay first.
             var pauseMenuMatch = TryRunBounded<InGameHudMatchKind?>(
                 () => DetectBestInGameHudMatch(input),
                 InGameSafetyCheckBoundMs,
                 fallback: null);
-            if (pauseMenuMatch != InGameHudMatchKind.ModernSaveAndExitMenu)
+            if (pauseMenuMatch != InGameHudMatchKind.SaveAndExitMenu)
             {
                 MarkLobbyOrGameInteraction(
-                    "Direct Save and Exit retry was suppressed because the modern pause menu was no longer confirmed.");
+                    "Direct Save and Exit retry was suppressed because the pause menu was no longer confirmed.");
                 return CommandResult.Failure(
-                    $"The modern Save and Exit menu was not freshly confirmed before attempt {attempt}; no fixed-coordinate click was sent.{FormatInputDiagnosticsSuffix()}",
+                    $"The Save and Exit menu was not freshly confirmed before attempt {attempt}; no fixed-coordinate click was sent.{FormatInputDiagnosticsSuffix()}",
                     await CollectStatusAsync(cancellationToken));
             }
 
@@ -4864,7 +4854,7 @@ public sealed class VmOperations
         // thresholds below can coincidentally match ordinary outdoor scenery: createTab read
         // lum=38.7/grey=0.85/dark=0.15 (passes) and createButton read lum=32.7/grey=0.32/
         // dark=0.68 (passes) purely by chance, at a real reference capture's exact coordinates.
-        // Checking strict in-game evidence (modern/legacy HUD globes, IsInGameReadyStrict) first
+        // Checking strict in-game evidence (HUD globes, IsInGameReadyStrict) first
         // means a real in-game scene with visible globes - the common case - never reaches the
         // lobby check at all. The broader Frame-kind fallback stays AFTER the lobby check,
         // unchanged from v0.2.64, which added that ordering because a filled join/create form
@@ -5015,8 +5005,7 @@ public sealed class VmOperations
 
     private static string FormatHudEvidence(InGameHudEvidence evidence)
     {
-        return $"hpR={evidence.ModernHealth.RedRatio:F2},mpB={evidence.ModernMana.BlueRatio:F2},"
-            + $"lhpR={evidence.LegacyHealth.RedRatio:F2},lmpB={evidence.LegacyMana.BlueRatio:F2},"
+        return $"hpR={evidence.Health.RedRatio:F2},mpB={evidence.Mana.BlueRatio:F2},"
             + $"bar(l={evidence.ActionHud.AverageLuminance:F0},sd={evidence.ActionHud.LuminanceStdDev:F0},d={evidence.ActionHud.DarkRatio:F2},br={evidence.ActionHud.BrightRatio:F2},g={evidence.ActionHud.GreyRatio:F2}),"
             + $"bot(sd={evidence.BottomHud.LuminanceStdDev:F0},d={evidence.BottomHud.DarkRatio:F2}),"
             + $"ctr(sd={evidence.CenterHud.LuminanceStdDev:F0},d={evidence.CenterHud.DarkRatio:F2},br={evidence.CenterHud.BrightRatio:F2},g={evidence.CenterHud.GreyRatio:F2})";
@@ -5128,7 +5117,7 @@ public sealed class VmOperations
     // Same bounding shape as TryRunBounded above, generalized to a fallback value instead of a
     // bool. watch-xy4wiew2-20260625-132336.log: ComputeVisibleStateClassifierBreakdown (~25-35
     // unbounded GDI region samples) froze a deadline-boundary checkpoint for 1m19s when called
-    // from TryConfirmAtElapsedDeadlineAsync on every failed HUD confirmation, not just on
+    // from TryConfirmAtElapsedDeadline on every failed HUD confirmation, not just on
     // Unknown like its other call sites - this is purely diagnostic output (RecordClassifierBreakdown
     // doesn't feed any pass/fail decision), so bounding it carries none of the staleness risk
     // that caching IsInGameReady's result did in v0.2.71/72.
@@ -5195,52 +5184,35 @@ public sealed class VmOperations
     // refuses to click Lobby in that state, but merely turning that refusal into "wait one
     // cycle" strands the account forever: every cycle reaches the same gate again.
     //
-    // For an ordinary live HUD, legacy graphics gives the fresh detector stable globe/action-
-    // bar anchors before we decide whether Save and Exit is appropriate. A client already in
-    // legacy mode must not receive G again (that would switch it back to modern); modern,
-    // broad-frame, and initially-unsampled states get exactly one G delivery, and only a fresh
-    // LegacyProfile match authorizes the ordinary Escape+Save-and-Exit flow.
+    // Until Reign of the Warlock this method had a normalization step in front of the decision:
+    // any non-legacy in-game match got exactly one G press to force the client into legacy
+    // graphics, because legacy gave the detector stable globe/action-bar anchors, and only a
+    // fresh LegacyProfile match afterwards authorized the exit. RoTW removed legacy graphics,
+    // so G normalizes nothing and the step is gone. What survives unchanged is the property
+    // that step existed to guarantee: the ordinary Escape+Save-and-Exit flow is authorized only
+    // by a STRICT globe match (HudProfile), never by the broad Frame fallback. Frame matches on
+    // ordinary outdoor scenery (see IsInGameReadyStrict), and acting on one would mean sending
+    // Escape and a fixed-coordinate click into the live world.
     //
-    // A positively identified modern Save-and-Exit menu is the one exception: G is ignored
-    // while that overlay is open, and SaveAndExitAsync's leading Escape would close the menu.
-    // Its dedicated three-button-plus-globes classifier therefore authorizes only the already-
-    // visible Save and Exit button, never an in-world or lobby click.
+    // A positively identified Save-and-Exit menu is handled separately because
+    // SaveAndExitAsync's leading Escape would close the menu that is already open. Its dedicated
+    // three-button-plus-globes classifier authorizes only the already-visible Save and Exit
+    // button, never an in-world or lobby click.
     internal static async Task<FollowAutoInGameRecoveryOutcome> RunFollowAutoInGameRecoveryAsync(
-        Func<InGameHudMatchKind?> detectBeforeNormalization,
-        Action toggleLegacyGraphics,
-        Func<CancellationToken, Task> waitForLegacyGraphics,
-        Func<InGameHudMatchKind?> detectAfterNormalization,
+        Func<InGameHudMatchKind?> detectInGameMatch,
         Func<CancellationToken, Task<bool>> leaveGame,
-        Func<CancellationToken, Task<bool>> leaveOpenModernPauseMenu,
+        Func<CancellationToken, Task<bool>> leaveOpenPauseMenu,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var beforeNormalization = detectBeforeNormalization();
-        if (beforeNormalization == InGameHudMatchKind.None)
-        {
-            return FollowAutoInGameRecoveryOutcome.NotInGame;
-        }
-
-        if (beforeNormalization == InGameHudMatchKind.ModernSaveAndExitMenu)
-        {
-            return await leaveOpenModernPauseMenu(cancellationToken)
-                ? FollowAutoInGameRecoveryOutcome.LeftGame
-                : FollowAutoInGameRecoveryOutcome.LeaveFailed;
-        }
-
-        if (beforeNormalization != InGameHudMatchKind.LegacyProfile)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            toggleLegacyGraphics();
-            await waitForLegacyGraphics(cancellationToken);
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        return detectAfterNormalization() switch
+        return detectInGameMatch() switch
         {
             InGameHudMatchKind.None => FollowAutoInGameRecoveryOutcome.NotInGame,
             null => FollowAutoInGameRecoveryOutcome.DetectionInconclusive,
-            InGameHudMatchKind.LegacyProfile => await leaveGame(cancellationToken)
+            InGameHudMatchKind.SaveAndExitMenu => await leaveOpenPauseMenu(cancellationToken)
+                ? FollowAutoInGameRecoveryOutcome.LeftGame
+                : FollowAutoInGameRecoveryOutcome.LeaveFailed,
+            InGameHudMatchKind.HudProfile => await leaveGame(cancellationToken)
                 ? FollowAutoInGameRecoveryOutcome.LeftGame
                 : FollowAutoInGameRecoveryOutcome.LeaveFailed,
             _ => FollowAutoInGameRecoveryOutcome.DetectionInconclusive
@@ -6879,7 +6851,6 @@ public sealed class VmOperations
         var dialogRetries = 0;
         var connectionRetries = 0;
         var iteration = 0;
-        var legacyToggle = new LegacyGraphicsToggleState();
         DateTimeOffset GetBroadHudFrameAcceptAt() =>
             DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 3, 8));
 
@@ -6889,17 +6860,15 @@ public sealed class VmOperations
         var entryReclickAt = broadHudFrameAcceptAt;
         var blindEntryReclicks = 0;
 
-        async Task<GameEntryAttemptResult?> TryConfirmAtElapsedDeadlineAsync(string checkpointContext)
+        GameEntryAttemptResult? TryConfirmAtElapsedDeadline(string checkpointContext)
         {
             if (DateTimeOffset.UtcNow < deadline)
             {
                 return null;
             }
 
-            if (!await TryConfirmEnteredGameAsync(
+            if (!TryConfirmEnteredGame(
                     input,
-                    cancellationToken,
-                    legacyToggle,
                     checkpointContext,
                     broadHudFrameAcceptAt,
                     forceFreshSample: true))
@@ -6949,10 +6918,8 @@ public sealed class VmOperations
                 continue;
             }
 
-            if (await TryConfirmEnteredGameAsync(
+            if (TryConfirmEnteredGame(
                     input,
-                    cancellationToken,
-                    legacyToggle,
                     $"ClickMenuEntryButtonUntilEnteredGameAsync: loop iteration {iteration}",
                     broadHudFrameAcceptAt))
             {
@@ -7007,7 +6974,7 @@ public sealed class VmOperations
                 continue;
             }
 
-            var elapsedDeadlineResult = await TryConfirmAtElapsedDeadlineAsync(
+            var elapsedDeadlineResult = TryConfirmAtElapsedDeadline(
                 $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary after connection check (iteration {iteration})");
             if (elapsedDeadlineResult is not null)
             {
@@ -7027,7 +6994,7 @@ public sealed class VmOperations
                 }
             }
 
-            elapsedDeadlineResult = await TryConfirmAtElapsedDeadlineAsync(
+            elapsedDeadlineResult = TryConfirmAtElapsedDeadline(
                 $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary after offline-screen check (iteration {iteration})");
             if (elapsedDeadlineResult is not null)
             {
@@ -7050,10 +7017,8 @@ public sealed class VmOperations
 
             if (DateTimeOffset.UtcNow >= deadline)
             {
-                if (await TryConfirmEnteredGameAsync(
+                if (TryConfirmEnteredGame(
                         input,
-                        cancellationToken,
-                        legacyToggle,
                         $"ClickMenuEntryButtonUntilEnteredGameAsync: timeout boundary (iteration {iteration})",
                         broadHudFrameAcceptAt,
                         forceFreshSample: true))
@@ -7066,16 +7031,14 @@ public sealed class VmOperations
             }
 
             MarkCommandCheckpoint($"ClickMenuEntryButtonUntilEnteredGameAsync: WaitForGameEntryAsync (iteration {iteration})");
-            var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken, legacyToggle, broadHudFrameAcceptAt);
+            var waitResult = await WaitForGameEntryAsync(input, activeTab, cancellationToken, broadHudFrameAcceptAt);
             if (waitResult == GameEntryWaitResult.EnteredGame)
             {
                 return new GameEntryAttemptResult(true, dialogRetries, connectionRetries, "Entered game.");
             }
 
-            if (await TryConfirmEnteredGameAsync(
+            if (TryConfirmEnteredGame(
                     input,
-                    cancellationToken,
-                    legacyToggle,
                     $"ClickMenuEntryButtonUntilEnteredGameAsync: after wait result (iteration {iteration})",
                     broadHudFrameAcceptAt))
             {
@@ -7386,14 +7349,14 @@ public sealed class VmOperations
 
         return $"Menu samples: visible={visible}, tab={tab}, entry={entry}, formScreen={formScreen}, formWindow={formWindow}. "
             + $"HUD pixels: ready={hudEvidenceSummary} "
-            + "(hpR/mpB=modern health-red/mana-blue ratio, lhpR/lmpB=legacy equivalents, "
+            + "(hpR/mpB=health-red/mana-blue globe ratio, "
             + "thresholds health>0.20 mana>0.18; bar/bot/ctr=action-bar/bottom/center HUD luminance stats).";
     }
 
     private static InGameHudEvidence EmptyInGameHudEvidence()
     {
         var empty = new ScreenRegionStats(0, 0, 0, 0, 0, 0, 0, 0, 0);
-        return new InGameHudEvidence(empty, empty, empty, empty, empty, empty, empty);
+        return new InGameHudEvidence(empty, empty, empty, empty, empty);
     }
 
     private static string FormatGameEntryWaitFailure(GameEntryWaitResult result)
@@ -7465,8 +7428,8 @@ public sealed class VmOperations
             return ReadyScreenState.CharacterMenu;
         }
 
-        // Mirrors DetectVisibleD2RState's ordering: strict in-game HUD evidence (modern/legacy
-        // globes) is checked before the lobby check, because sitting_in_town*.png proved the
+        // Mirrors DetectVisibleD2RState's ordering: strict in-game HUD evidence (the health and
+        // mana globes) is checked before the lobby check, because sitting_in_town*.png proved the
         // lobby-tab/entry-button thresholds can coincidentally match ordinary outdoor scenery.
         // Recognizing both here - not just at the top-level status detector - means the ready
         // loop itself stops sending click/key input the moment the client has already reached
@@ -7920,19 +7883,17 @@ public sealed class VmOperations
             || IsInGameReady(input, windowRelative: true);
     }
 
-    // Only the modern/legacy HUD globe profiles - never the broader Frame-kind fallback. The
+    // Only the HUD globe profiles - never the broader Frame-kind fallback. The
     // globes are a far more distinctive signal than the generic lobby-tab/entry-button
     // luminance thresholds, which sitting_in_town.png proved can coincidentally match ordinary
     // outdoor scenery. Used to check strict in-game evidence before the lobby check in
     // DetectVisibleD2RState, without touching the deliberately-after-lobby Frame fallback.
     private bool IsInGameReadyStrict(WindowsInput input)
     {
-        return DetectInGameHudMatch(input, windowRelative: false) is InGameHudMatchKind.ModernProfile
-                or InGameHudMatchKind.LegacyProfile
-                or InGameHudMatchKind.ModernSaveAndExitMenu
-            || DetectInGameHudMatch(input, windowRelative: true) is InGameHudMatchKind.ModernProfile
-                or InGameHudMatchKind.LegacyProfile
-                or InGameHudMatchKind.ModernSaveAndExitMenu;
+        return DetectInGameHudMatch(input, windowRelative: false) is InGameHudMatchKind.HudProfile
+                or InGameHudMatchKind.SaveAndExitMenu
+            || DetectInGameHudMatch(input, windowRelative: true) is InGameHudMatchKind.HudProfile
+                or InGameHudMatchKind.SaveAndExitMenu;
     }
 
     private bool IsInGameReadyStrictBounded(WindowsInput input, bool fallbackOnTimeout)
@@ -7973,20 +7934,20 @@ public sealed class VmOperations
     private InGameHudMatchKind DetectInGameHudMatch(WindowsInput input, bool windowRelative)
     {
         var actionHud = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.InGameHudBar), widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
-        var modernHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        var modernMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        if (D2RScreenClassifier.IsInGameHudProfile(modernHealth, modernMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        var health = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.HealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var mana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        if (D2RScreenClassifier.IsInGameHudProfile(health, mana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
         {
-            return InGameHudMatchKind.ModernProfile;
+            return InGameHudMatchKind.HudProfile;
         }
 
-        // The modern Escape menu dims the HUD enough to fail the ordinary profile. Only pay
-        // for its three extra samples when both dimmed globe colors are still present.
-        if (modernHealth.RedRatio > 0.12 && modernMana.BlueRatio > 0.20)
+        // The Escape menu dims the HUD enough to fail the ordinary profile. Only pay for its
+        // three extra samples when both dimmed globe colors are still present.
+        if (health.RedRatio > 0.12 && mana.BlueRatio > 0.20)
         {
             var optionsButton = SampleD2RRegion(
                 input,
-                new AgentCommon.UiPoint(0.500, 0.374),
+                GetUiPoint(D2RUiCoordinateTarget.OptionsButton),
                 widthRatio: 0.16,
                 heightRatio: 0.045,
                 windowRelative: windowRelative);
@@ -7998,26 +7959,19 @@ public sealed class VmOperations
                 windowRelative: windowRelative);
             var returnToGameButton = SampleD2RRegion(
                 input,
-                new AgentCommon.UiPoint(0.500, 0.505),
+                GetUiPoint(D2RUiCoordinateTarget.ReturnToGameButton),
                 widthRatio: 0.16,
                 heightRatio: 0.045,
                 windowRelative: windowRelative);
-            if (D2RScreenClassifier.IsModernSaveAndExitMenu(
-                    modernHealth,
-                    modernMana,
+            if (D2RScreenClassifier.IsSaveAndExitMenu(
+                    health,
+                    mana,
                     optionsButton,
                     saveAndExitButton,
                     returnToGameButton))
             {
-                return InGameHudMatchKind.ModernSaveAndExitMenu;
+                return InGameHudMatchKind.SaveAndExitMenu;
             }
-        }
-
-        var legacyHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        var legacyMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        if (D2RScreenClassifier.IsInGameHudProfile(legacyHealth, legacyMana, actionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
-        {
-            return InGameHudMatchKind.LegacyProfile;
         }
 
         var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: windowRelative);
@@ -8030,17 +7984,15 @@ public sealed class VmOperations
     private InGameHudMatchKind DetectBestInGameHudMatch(WindowsInput input)
     {
         var screenMatch = DetectInGameHudMatch(input, windowRelative: false);
-        if (screenMatch is InGameHudMatchKind.ModernProfile
-            or InGameHudMatchKind.LegacyProfile
-            or InGameHudMatchKind.ModernSaveAndExitMenu)
+        if (screenMatch is InGameHudMatchKind.HudProfile
+            or InGameHudMatchKind.SaveAndExitMenu)
         {
             return screenMatch;
         }
 
         var windowMatch = DetectInGameHudMatch(input, windowRelative: true);
-        if (windowMatch is InGameHudMatchKind.ModernProfile
-            or InGameHudMatchKind.LegacyProfile
-            or InGameHudMatchKind.ModernSaveAndExitMenu)
+        if (windowMatch is InGameHudMatchKind.HudProfile
+            or InGameHudMatchKind.SaveAndExitMenu)
         {
             return windowMatch;
         }
@@ -8075,23 +8027,16 @@ public sealed class VmOperations
     private InGameHudEvidence SampleInGameHudEvidence(WindowsInput input, bool windowRelative)
     {
         var actionHud = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.InGameHudBar), widthRatio: 0.42, heightRatio: 0.08, windowRelative: windowRelative);
-        var modernHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        var modernMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ModernManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        var legacyHealth = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyHealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
-        var legacyMana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.LegacyManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var health = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.HealthGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
+        var mana = SampleD2RRegion(input, GetUiPoint(D2RUiCoordinateTarget.ManaGlobe), widthRatio: 0.055, heightRatio: 0.080, windowRelative: windowRelative);
         var bottomHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.70, heightRatio: 0.13, windowRelative: windowRelative);
         var centerHud = SampleD2RRegion(input, new AgentCommon.UiPoint(0.500, 0.940), widthRatio: 0.22, heightRatio: 0.08, windowRelative: windowRelative);
-        return new InGameHudEvidence(modernHealth, modernMana, legacyHealth, legacyMana, actionHud, bottomHud, centerHud);
+        return new InGameHudEvidence(health, mana, actionHud, bottomHud, centerHud);
     }
 
     private static bool IsInGameHudEvidenceReady(InGameHudEvidence evidence)
     {
-        if (D2RScreenClassifier.IsInGameHudProfile(evidence.ModernHealth, evidence.ModernMana, evidence.ActionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
-        {
-            return true;
-        }
-
-        if (D2RScreenClassifier.IsInGameHudProfile(evidence.LegacyHealth, evidence.LegacyMana, evidence.ActionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
+        if (D2RScreenClassifier.IsInGameHudProfile(evidence.Health, evidence.Mana, evidence.ActionHud, healthRedThreshold: 0.20, manaBlueThreshold: 0.18))
         {
             return true;
         }
@@ -8248,23 +8193,22 @@ public sealed class VmOperations
 
     private async Task<GameEntryWaitResult> WaitForGameEntryAsync(WindowsInput input, CancellationToken cancellationToken)
     {
-        return await WaitForGameEntryAsync(input, returnTab: null, cancellationToken, new LegacyGraphicsToggleState());
+        return await WaitForGameEntryAsync(input, returnTab: null, cancellationToken);
     }
 
     private async Task<GameEntryWaitResult> WaitForGameEntryAsync(
         WindowsInput input,
         AgentCommon.UiPoint? returnTab,
         CancellationToken cancellationToken,
-        LegacyGraphicsToggleState legacyToggle,
         DateTimeOffset? broadHudFrameAcceptAt = null)
     {
+        // Before Reign of the Warlock this deadline was also stretched to cover the post-entry
+        // legacy-graphics toggle and its settle time. RoTW removed legacy graphics, so nothing
+        // is done to the client after entry is confirmed and the entry/load timeouts are the
+        // only thing left to wait on.
         var delaySeconds = Math.Max(
             Math.Max(_config.Ui.GameEntryStartTimeoutSeconds, 1),
             Math.Max(_config.Ui.GameLoadSeconds, 1));
-        if (_config.Ui.ToggleLegacyGraphicsAfterEnteringGame)
-        {
-            delaySeconds = Math.Max(delaySeconds, Math.Max(_config.Ui.LegacyGraphicsToggleDelaySeconds, 1));
-        }
 
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(delaySeconds);
         var returnDetectionAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(Math.Clamp(_config.Ui.GameLoadSeconds, 2, 5));
@@ -8278,10 +8222,8 @@ public sealed class VmOperations
             pollIteration++;
             var canDetectReturn = returnTab is not null && DateTimeOffset.UtcNow >= returnDetectionAt;
 
-            if (await TryConfirmEnteredGameAsync(
+            if (TryConfirmEnteredGame(
                     input,
-                    cancellationToken,
-                    legacyToggle,
                     $"WaitForGameEntryAsync: poll iteration {pollIteration}",
                     broadHudFrameAcceptAt))
             {
@@ -8355,10 +8297,8 @@ public sealed class VmOperations
             await Task.Delay((int)Math.Min(EntryPollIntervalMs, remainingMs), cancellationToken);
         }
 
-        if (await TryConfirmEnteredGameAsync(
+        if (TryConfirmEnteredGame(
                 input,
-                cancellationToken,
-                legacyToggle,
                 "WaitForGameEntryAsync: deadline",
                 broadHudFrameAcceptAt,
                 forceFreshSample: true))
@@ -8466,11 +8406,9 @@ public sealed class VmOperations
         return D2RScreenClassifier.IsGameEntryMenuVisible(createTab || joinTab, entry, formScreen || formWindow);
     }
 
-    private async Task<bool> TryConfirmEnteredGameAsync(
+    private bool TryConfirmEnteredGame(
         WindowsInput input,
-        CancellationToken cancellationToken,
-        LegacyGraphicsToggleState legacyToggle,
-        string checkpointContext = "TryConfirmEnteredGameAsync",
+        string checkpointContext = "TryConfirmEnteredGame",
         DateTimeOffset? broadHudFrameAcceptAt = null,
         bool forceFreshSample = false)
     {
@@ -8483,74 +8421,7 @@ public sealed class VmOperations
         RecordObservedFrame(VisibleD2RState.InGame.ToString());
         MarkLobbyOrGameInteraction("Detected in-game HUD.");
         MarkCommandCheckpoint($"{checkpointContext}: confirmed in-game HUD");
-        await ToggleLegacyGraphicsAfterEntryAsync(input, cancellationToken, legacyToggle);
         return true;
-    }
-
-    private async Task ToggleLegacyGraphicsAfterEntryAsync(
-        WindowsInput input,
-        CancellationToken cancellationToken,
-        LegacyGraphicsToggleState legacyToggle)
-    {
-        if (!_config.Ui.ToggleLegacyGraphicsAfterEnteringGame)
-        {
-            return;
-        }
-
-        if (legacyToggle.Toggled)
-        {
-            return;
-        }
-
-        legacyToggle.Toggled = true;
-        var currentMatch = TryRunBounded<InGameHudMatchKind?>(
-            () => DetectBestInGameHudMatch(input),
-            InGameSafetyCheckBoundMs,
-            fallback: null);
-        if (currentMatch == InGameHudMatchKind.LegacyProfile)
-        {
-            MarkCommandCheckpoint(
-                "ToggleLegacyGraphicsAfterEntryAsync: legacy HUD already confirmed; graphics toggle skipped");
-            return;
-        }
-
-        if (currentMatch == InGameHudMatchKind.ModernSaveAndExitMenu)
-        {
-            MarkCommandCheckpoint(
-                "ToggleLegacyGraphicsAfterEntryAsync: modern pause menu is open; graphics toggle suppressed");
-            return;
-        }
-
-        if (currentMatch != InGameHudMatchKind.ModernProfile)
-        {
-            MarkCommandCheckpoint(
-                $"ToggleLegacyGraphicsAfterEntryAsync: current graphics profile was not conclusive ({currentMatch?.ToString() ?? "unsampled"}); graphics toggle suppressed");
-            return;
-        }
-
-        await DelayFastMenuAsync(cancellationToken);
-        SendOneLegacyGraphicsToggle(input);
-        await DelayFastMenuAsync(cancellationToken);
-
-        var normalizedMatch = TryRunBounded<InGameHudMatchKind?>(
-            () => DetectBestInGameHudMatch(input),
-            InGameSafetyCheckBoundMs,
-            fallback: null);
-        MarkCommandCheckpoint(
-            normalizedMatch == InGameHudMatchKind.LegacyProfile
-                ? "ToggleLegacyGraphicsAfterEntryAsync: legacy HUD confirmed after one graphics toggle"
-                : $"ToggleLegacyGraphicsAfterEntryAsync: legacy HUD was not confirmed after one graphics toggle ({normalizedMatch?.ToString() ?? "unsampled"})");
-    }
-
-    private void SendOneLegacyGraphicsToggle(WindowsInput input)
-    {
-        // Prefer the D2R HWND because FocusD2R deliberately does not block on foreground
-        // negotiation. A false return means no usable target was found and therefore no
-        // window key was sent, so the visible scan-code press is a true fallback rather than
-        // a second state-changing delivery.
-        SendSingleStatefulKey(
-            () => input.SendWindowLegacyGraphicsToggle(GetD2RProcessNames()),
-            input.PressLegacyGraphicsToggle);
     }
 
     private void SendOneEscape(WindowsInput input)
@@ -9712,9 +9583,8 @@ public sealed class VmOperations
     internal enum InGameHudMatchKind
     {
         None,
-        ModernProfile,
-        LegacyProfile,
-        ModernSaveAndExitMenu,
+        HudProfile,
+        SaveAndExitMenu,
         Frame
     }
 
@@ -9784,11 +9654,6 @@ public sealed class VmOperations
         public DateTimeOffset NextActionAt { get; set; }
     }
 
-    private sealed class LegacyGraphicsToggleState
-    {
-        public bool Toggled { get; set; }
-    }
-
     internal readonly record struct ExpectedLobbyAfterSaveExit(
         long FollowAutoRunId,
         DateTimeOffset ProcessStartedUtc,
@@ -9801,10 +9666,8 @@ public sealed class VmOperations
         string? Reason);
 
     private sealed record InGameHudEvidence(
-        ScreenRegionStats ModernHealth,
-        ScreenRegionStats ModernMana,
-        ScreenRegionStats LegacyHealth,
-        ScreenRegionStats LegacyMana,
+        ScreenRegionStats Health,
+        ScreenRegionStats Mana,
         ScreenRegionStats ActionHud,
         ScreenRegionStats BottomHud,
         ScreenRegionStats CenterHud);

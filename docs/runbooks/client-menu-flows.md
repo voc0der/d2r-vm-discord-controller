@@ -361,7 +361,7 @@ Automation:
 /d2r ready account:hc1
 ```
 
-The ready flow sends the initial D2R launch command, then immediately starts the startup input plan while it keeps nudging Battle.net Play and retrying the launch command at `battleNetExecRetryDelaySeconds`. It does not wait for desktop/focus/status launch plumbing or a trusted D2R process/window/status result before sending intro-safe input, because live runs showed those checks could sit in front of the skip loop while the videos or post-intro splash were already visible. Each startup burst leads with a bounded (one detection cycle, `ReadyStartupDetectionIntervalMs` = 250ms) best-effort foreground/focus attempt on D2R, then sends useful input regardless of whether that succeeded: a click at `ui.introSkipPoint`, default center, and `G` as both a scan-code keypress and a window-targeted message - no other key. **None of the startup bursts (intro, title-skip, splash-continue, fallback) send Escape, Space, or Enter as of v0.2.95.** Before that, the intro burst alone sent Escape (D2R's actual cinematic-skip key, scoped there because the others risked an Escape-then-Enter exit-dialog confirm at an already-reached, misclassified character screen). Once `v0.2.93` fixed the GDI/`dwm.exe` detection stall that made bursts unreliable, every send started actually reaching the client - and `watch-lmrwii244-20260625-205519.log` showed exactly that Escape-then-Enter sequence quitting D2R outright on two VMs (`frame NotRunning` right after a burst). The user confirmed directly in a live VM that `G` alone clears the intro and title sequence just as fast as the old click/Escape/Space/Enter combination, and `G` only ever toggles legacy graphics, so it cannot open or confirm any dialog - removing Escape/Space/Enter from every plan instead of re-scoping again. See `StartupReadyInputPlan.cs`'s four action lists (`IntroActions`/`TitleActions`/`SplashActions`/`BurstActions`) for the exact, current per-burst action sets; `StartupReadyInputPlanTests.cs` asserts none of them ever reintroduce `PressEscapeKey`/`SendWindowEscapeKey`/`PressStartKey`/`SendWindowReadyBurst`. The hot startup classifier checks screen-relative 1366x768 regions every detection cycle so process/window lookup cannot throttle input cadence, and it now adds a bounded window-relative character-screen probe about once per second so a warm but offset/window-relative client is not missed until the full startup plan ends. Seeing only the left-side character-select menu chrome records `CharacterMenu`; that state is enough to proceed, and any further startup nudges for it use the no-Escape burst. If the screen looks like the Connecting to Battle.net modal, the loop still sends the safe splash burst without Escape, because a false positive there otherwise strands the VM at the post-intro splash. A transient exact-name process miss also does not abort ready while startup input is still running; the launch nudge retries if D2R really exited. The loop repeats until online, partial-menu, or offline character select is visually detected. `ui.readyStartupBlindSuccessSeconds` is kept only as a config compatibility field and should remain `0`; blind ready success hides broken input.
+The ready flow sends the initial D2R launch command, then immediately starts the startup input plan while it keeps nudging Battle.net Play and retrying the launch command at `battleNetExecRetryDelaySeconds`. It does not wait for desktop/focus/status launch plumbing or a trusted D2R process/window/status result before sending intro-safe input, because live runs showed those checks could sit in front of the skip loop while the videos or post-intro splash were already visible. Each startup burst leads with a bounded (one detection cycle, `ReadyStartupDetectionIntervalMs` = 250ms) best-effort foreground/focus attempt on D2R, then sends useful input regardless of whether that succeeded: a click at `ui.introSkipPoint`, default center, and `G` as both a scan-code keypress and a window-targeted message - no other key. **None of the startup bursts (intro, title-skip, splash-continue, fallback) send Escape, Space, or Enter as of v0.2.95.** Before that, the intro burst alone sent Escape (D2R's actual cinematic-skip key, scoped there because the others risked an Escape-then-Enter exit-dialog confirm at an already-reached, misclassified character screen). Once `v0.2.93` fixed the GDI/`dwm.exe` detection stall that made bursts unreliable, every send started actually reaching the client - and `watch-lmrwii244-20260625-205519.log` showed exactly that Escape-then-Enter sequence quitting D2R outright on two VMs (`frame NotRunning` right after a burst). The user confirmed directly in a live VM that `G` alone clears the intro and title sequence just as fast as the old click/Escape/Space/Enter combination - so Escape/Space/Enter were removed from every plan instead of being re-scoped again. `G` is safe here because it is **inert**: it opens nothing, confirms nothing, and cancels nothing, so a burst can never take an action nobody asked for. Reign of the Warlock only strengthened that - `G`'s one binding used to be the legacy-graphics toggle, and RoTW removed legacy graphics, so `G` is now bound to nothing at all. The bursts never depended on that binding, only on D2R counting `G` as "a key" at its press-any-key prompts. `IntroActions`/`SplashActions`/`BurstActions` also click `ui.introSkipPoint`, so they keep a non-key path through the intro; `TitleActions` is the one keys-only plan. See `StartupReadyInputPlan.cs`'s four action lists (`IntroActions`/`TitleActions`/`SplashActions`/`BurstActions`) for the exact, current per-burst action sets; `StartupReadyInputPlanTests.cs` asserts none of them ever reintroduce `PressEscapeKey`/`SendWindowEscapeKey`/`PressStartKey`/`SendWindowReadyBurst`. The hot startup classifier checks screen-relative 1366x768 regions every detection cycle so process/window lookup cannot throttle input cadence, and it now adds a bounded window-relative character-screen probe about once per second so a warm but offset/window-relative client is not missed until the full startup plan ends. Seeing only the left-side character-select menu chrome records `CharacterMenu`; that state is enough to proceed, and any further startup nudges for it use the no-Escape burst. If the screen looks like the Connecting to Battle.net modal, the loop still sends the safe splash burst without Escape, because a false positive there otherwise strands the VM at the post-intro splash. A transient exact-name process miss also does not abort ready while startup input is still running; the launch nudge retries if D2R really exited. The loop repeats until online, partial-menu, or offline character select is visually detected. `ui.readyStartupBlindSuccessSeconds` is kept only as a config compatibility field and should remain `0`; blind ready success hides broken input.
 
 D2R menu flows usually send clicks and keys through three layers, not as a try-this-then-fall-back-on-failure chain: `SendInput`, the old working visible desktop path (`SetCursorPos` + `mouse_event`/`keybd_event`), and a window-targeted `PostMessage`/`SendMessage` straight to D2R's HWND. This is deliberate for normal buttons and text fields: `SendInput`'s return value only means the OS accepted the event into the synthetic input queue, not that D2R's engine reacted to it - it reports success almost unconditionally, so any fallback gated on that signal never actually runs. Menu commands must not block on foreground/focus before clicking; they click the full VM screen coordinates first, then post the same click to D2R's HWND if a window handle is available. The window-targeted message is the only one of the three that doesn't depend on D2R genuinely holding OS focus/topmost at that instant, which matters because focus can and does silently slip during multi-VM automation. Reversible toggle controls are the exception: the lobby party/friends drawer icon and Friends accordion header use one visible desktop click through `ClickD2RStatefulToggle`, then verify the resulting drawer/list state. Sending the normal redundant click stack to those controls can open and immediately close the pane. Character screen and lobby readiness checks sample both full-screen coordinates and D2R-window-relative coordinates as fuzzy state hints, not as hard blockers before clicking. Lobby tab detection is guarded by character-screen anchors so Act/title backgrounds do not masquerade as lobby.
 
@@ -418,7 +418,7 @@ Automation:
 /d2r join all:false account:hc1 character-slot:1
 ```
 
-Before typing, the VM agent clicks Lobby, clicks Join Game, then types the game/password even if visual tab confirmation is fuzzy. After typing, it clicks the final Join Game button first, then watches for game entry, error dialogs, connection interrupted, or return to menu. If a game-entry error modal appears, such as password mismatch or game unavailable, the agent clicks OK, restores the Join Game form, re-enters the game/password fields, and retries. The two-button `You cannot join the game with your current character` restriction is handled separately: the agent clicks Cancel rather than the inert gap where the generic dialog's OK button would be. If the full-screen connection interrupted message appears, the agent waits for the Join Game tab to return, restores the form, and retries. Restore clicks and retypes even when tab visual confirmation is fuzzy. After confirmed game entry, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
+Before typing, the VM agent clicks Lobby, clicks Join Game, then types the game/password even if visual tab confirmation is fuzzy. After typing, it clicks the final Join Game button first, then watches for game entry, error dialogs, connection interrupted, or return to menu. If a game-entry error modal appears, such as password mismatch or game unavailable, the agent clicks OK, restores the Join Game form, re-enters the game/password fields, and retries. The two-button `You cannot join the game with your current character` restriction is handled separately: the agent clicks Cancel rather than the inert gap where the generic dialog's OK button would be. If the full-screen connection interrupted message appears, the agent waits for the Join Game tab to return, restores the form, and retries. Restore clicks and retypes even when tab visual confirmation is fuzzy. After confirmed game entry the agent does nothing further to the client. It used to press `G` to switch the client to legacy graphics; Reign of the Warlock removed legacy graphics, so that step and its `ui.toggleLegacyGraphicsAfterEnteringGame`/`ui.legacyGraphicsToggleDelaySeconds` config keys are gone.
 
 ## Character Screen To Create Game
 
@@ -455,7 +455,7 @@ Automation:
 /d2r create-game all:false account:hc1 character-slot:1
 ```
 
-Before typing, the VM agent clicks Lobby, clicks Create Game, then types the game/password even if visual tab confirmation is fuzzy. After typing, it clicks the final Create Game button first, then watches for game entry, connection interrupted, create-name errors, or return to menu. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. If a create error dialog appears, such as `A Game Already Exists With That Name`, create fails fast instead of retrying the same name until timeout. Restore clicks and retypes even when tab visual confirmation is fuzzy. After confirmed game entry, the agent presses `G` with both scan-code/keybd and window-message input when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
+Before typing, the VM agent clicks Lobby, clicks Create Game, then types the game/password even if visual tab confirmation is fuzzy. After typing, it clicks the final Create Game button first, then watches for game entry, connection interrupted, create-name errors, or return to menu. If the full-screen connection interrupted message appears, the agent waits for the Create Game tab to return, restores the form, and retries. If a create error dialog appears, such as `A Game Already Exists With That Name`, create fails fast instead of retrying the same name until timeout. Restore clicks and retypes even when tab visual confirmation is fuzzy. After confirmed game entry the agent does nothing further to the client; the post-entry `G` graphics toggle was removed with legacy graphics.
 
 ## Join Off Friend
 
@@ -501,7 +501,7 @@ Root cause of "3 VMs sat at the lobby and never opened the drawer, seemed confus
 `v0.2.151`: `EnsureLobbyOpenedAsync` itself gained a narrower version of the same live check, for every caller. The cached `D2RActivityState.LobbyOrGame` fast-path above is untouched (still trusted without re-checking, per the "harmless even if wrong" reasoning for create/join flows). What changed is the *fallback* used when the cache is `Unknown` rather than `LobbyOrGame` or `CharacterScreenIdle` - e.g. right after an agent restart, before anything has recorded a fresher state. That fallback previously went straight to a blind character-slot-select-then-click-Lobby sequence with zero live verification, for every caller, every time. It now checks `IsAnyLobbyEntryMenuVisible` first, so a cold/Unknown cache that happens to already be sitting at the lobby - in any sub-state (Join tab, Create tab, party drawer open or closed, Friends tab open, friend context menu open) - self-heals into "already there" instead of blind-clicking through a state it's already past. See "Ready loop gains lobby/in-game awareness" in pixel-classifier-catalog.md for the related ready-loop fix from the same change.
 
 `friend-row` is the visible row number in the opened friends drawer. If omitted, the VM agent uses `ui.defaultFriendRow` from `vm-agent.config.json`.
-After opening the friend context menu, the VM agent clicks the configured `Join Game` row. After choosing Join Game and waiting for load, the agent presses `G` when `ui.toggleLegacyGraphicsAfterEnteringGame` is enabled.
+After opening the friend context menu, the VM agent clicks the configured `Join Game` row. After choosing Join Game the agent waits for load and confirms entry from the HUD; the post-entry `G` graphics toggle was removed with legacy graphics.
 
 Expected context menu:
 
@@ -513,15 +513,23 @@ Expected context menu:
 
 References:
 
-![Modern Save and Exit hovered 1366x768](assets/d2r-ui/1366x768/modern_gfx_ingame_save_and_exit_hovered.png)
+Current menu (Reign of the Warlock):
 
-![Modern Save and Exit not highlighted 1366x768](assets/d2r-ui/1366x768/modern_gfx_ingame_save_and_exit_not_hightlighted.png)
+![Pause menu after Reign of the Warlock 1366x768](assets/d2r-ui/1366x768/rotw_ingame_save_and_exit_menu.png)
+
+Pre-expansion menu, kept as detector fixtures:
+
+![Save and Exit hovered 1366x768](assets/d2r-ui/1366x768/modern_gfx_ingame_save_and_exit_hovered.png)
+
+![Save and Exit not highlighted 1366x768](assets/d2r-ui/1366x768/modern_gfx_ingame_save_and_exit_not_hightlighted.png)
+
+![Save and Exit Resurrected](assets/d2r-ui/save_and_exit_resurrected.jpg)
+
+Retired (legacy graphics, removed from D2R by Reign of the Warlock):
 
 ![Legacy Save and Exit highlighted 1366x768](assets/d2r-ui/1366x768/legacy_gfx_ingame_save_and_exit_hightlighted.png)
 
 ![Legacy Save and Exit not highlighted 1366x768](assets/d2r-ui/1366x768/legacy_gfx_ingame_save_and_exit_not_hightlighted.png)
-
-![Save and Exit Resurrected](assets/d2r-ui/save_and_exit_resurrected.jpg)
 
 ![Save and Exit Legacy](assets/d2r-ui/save_and_exit_legacy.jpg)
 
@@ -541,8 +549,16 @@ After clicking Save and Exit, automation polls for either lobby-form evidence or
 
 Notes:
 
-- Resurrected mode labels the middle menu option `Save and Exit`.
-- Legacy mode labels the middle menu option `Save and Exit Game`.
+- **Reign of the Warlock changed this screen.** The menu now has five rows - Options, Save and
+  Exit, Return to Game, a divider, then Loot Filter and Chronicle. The top three did **not**
+  move: measured against the pre-expansion captures they occupy identical scanlines (271-292,
+  321-342, 371-392 at 1366x768). So the Save and Exit click coordinate `0.500,0.439` (`683,337`)
+  is unchanged, it is still the only row anything clicks, and the three-button detector still
+  passes. Loot Filter (`0.500,0.577`) and Chronicle (`0.500,0.643`) are sample-only anchors that
+  nothing clicks; the nearest click target sits well above them. Full table in
+  [ui-state-catalog.md](ui-state-catalog.md#pause-menu-after-reign-of-the-warlock).
+- The menu labels the middle option `Save and Exit`. Legacy graphics, which labelled it
+  `Save and Exit Game`, no longer exists in the client.
 - `/d2r quit <account>` focuses D2R and sends Alt+F4.
 - `/d2r stop <account>` is still available as a hard process stop. Use `/d2r save-exit <account>` when you want a clean game leave.
 
@@ -552,15 +568,19 @@ References:
 
 ![Just landed in game health and mana globes 1366x768](assets/d2r-ui/1366x768/just_landed_in_game_checkforhealthandmanaglobes.png)
 
-![Low graphics mode generic 1366x768](assets/d2r-ui/1366x768/low_graphics_mode_generic.png)
+![Follow-auto pending client unexpectedly still in a game at 1366x768](assets/d2r-ui/1366x768/follow_auto_pending_modern_ingame.png)
 
-![Follow-auto pending client unexpectedly still in a modern-graphics game at 1366x768](assets/d2r-ui/1366x768/follow_auto_pending_modern_ingame.png)
+Retired legacy-graphics reference (pillarboxed 4:3; formerly named `low_graphics_mode_generic.png`):
+
+![In-game town, legacy graphics 1366x768](assets/d2r-ui/1366x768/legacy_gfx_ingame_town.png)
 
 Expected state:
 
-- Health and mana globes are present.
+- Health and mana globes are present, at `0.260,0.900` and `0.760,0.900`.
 - The lower action bar is visible.
-- If legacy graphics are enabled after entry, the client still shows stable globe/action-bar regions that can prove the game loaded.
+- There is one HUD layout to match. Legacy graphics was pillarboxed at 1366x768 and put the
+  globes at `0.200`/`0.800` instead, so the detector used to sample a second globe pair; Reign of
+  the Warlock removed legacy graphics and those anchors were deleted with it.
 
 Automation use:
 
@@ -571,14 +591,14 @@ Automation use:
 
 Use the new image set to make the flow less guessy:
 
-- Startup skip: while D2R is not at a recognized character screen, send Escape, real `G`, window-targeted key messages, and a click at `ui.introSkipPoint` without blocking on focus first. Do not mark ready just because the process is still running.
+- Startup skip: while D2R is not at a recognized character screen, send real `G`, window-targeted key messages, and a click at `ui.introSkipPoint` without blocking on focus first. (Escape is deliberately **not** sent - see the startup-input paragraph above.) Do not mark ready just because the process is still running.
 - Character screen readiness: sample regions from all five act backgrounds plus the not-selected state. The stable anchors are the left Diablo/options menu and the Play/Lobby button row.
 - Lobby open: after clicking Lobby, verify the active tab, the entry button, and the dark lobby form panel using `lobby_join_game_screen.png`, `lobby_create_game_screen.png`, or the party/chat drawer captures. The lobby detector must reject character select even when the old tab/button sample points overlap usable-looking art.
 - Create game: use `lobby_create_game_screen.png` and `lobby_create_game_filled.png` to verify that the form accepted focus and text. Use `lobby_create_game_terror_zones_not_available.png` so the terrorized checkbox state is not mistaken for a failure.
 - Join game: use `lobby_join_game_screen.png` and the difficulty dropdown capture to verify the active tab and difficulty selection before typing. Use `game_password_doesnt_match.png` and `cant_join_hell.png` as generic recoverable error dialogs; use `cannot_join_game_with_current_character.png` for the separate two-button follow retry state.
 - Friend follow: use the party icon hover/click captures to verify the drawer state. Fresh drawer opens show `lobby_click_party_icon.png` with the Friends accordion collapsed; expanded rows are shown in `lobby_friends_tab_party.png`. Distinguish `lobby_right_click_friend_join_game_available.png` from `lobby_right_click_friend_nojoin_game_available.png` so follow fails fast when Join Game is not present.
-- Game entry: use `just_landed_in_game_checkforhealthandmanaglobes.png`, `low_graphics_mode_generic.png`, and `follow_auto_pending_modern_ingame.png` as positive success states. The detector has separate modern and legacy globe anchors because legacy mode is pillarboxed at 1366x768.
-- Save and exit: use both modern and legacy save/exit captures so the clean-leave flow works before and after the legacy graphics toggle. Escape is delivered through exactly one route per attempt (the D2R window first, with one visible scan-code fallback only when no target window exists), because redundant deliveries toggle the pause menu open and immediately closed.
+- Game entry: use `just_landed_in_game_checkforhealthandmanaglobes.png` and `follow_auto_pending_modern_ingame.png` as positive success states. There is one globe anchor pair; the legacy pair was retired with legacy graphics.
+- Save and exit: use `rotw_ingame_save_and_exit_menu.png` as the current menu and the pre-expansion `modern_gfx_ingame_save_and_exit_*.png` captures as regression fixtures. Escape is delivered through exactly one route per attempt (the D2R window first, with one visible scan-code fallback only when no target window exists), because redundant deliveries toggle the pause menu open and immediately closed.
 
 ## Follow Bind/Auto (Issue #25)
 
@@ -586,7 +606,9 @@ Use the new image set to make the flow less guessy:
 
 Bind/auto/follow first make the friend list idempotently visible: if the drawer is closed they single-click `LobbyPartyIcon`, then verify whether rows are already visible before deciding to click `FriendsAccordionHeader`, because D2R can preserve the Friends accordion state across game cycles. If the drawer is already open they also leave it alone unless row evidence says the Friends accordion is collapsed. These two controls use `ClickD2RStatefulToggle` instead of the normal redundant `ClickD2R` click stack because a second delivered click reverses the toggle state. Expansion is verified by scanning rows 1-3 for both row marker evidence and visible name-strip text before every row scan; failure messages include the sampled `rNtxt/rNmark` stats. Friend context menus are anchored to the mouse position at right-click time, so the `FriendContextJoinGame` coordinate is treated as the row-1 reference and offset from whichever row was right-clicked. This avoids the old blind party-icon click that closed an already-open drawer, the redundant-input double-toggle that opened and immediately closed the drawer, false expansion failures on short/dim friend-name text, stale row-1-only context clicks, collapsing an already-expanded freshly opened drawer, and capturing the empty black drawer body after a fresh drawer open.
 
-At the start of a pending account's follow-auto check, an in-game safety match now enters an explicit stale-game recovery instead of repeatedly suppressing the Lobby click. The agent identifies the current HUD profile first: an already-legacy client is not toggled back to modern, while a modern/broad/inconclusive profile receives exactly one `G` delivery. The ordinary Save and Exit flow is authorized only after a fresh `LegacyProfile` match. A still-inconclusive profile performs no menu or exit click and reports that it is waiting; a fresh not-in-game result resumes ordinary Lobby navigation. A positively identified modern Save-and-Exit overlay is handled separately because `G` is ignored there and the ordinary flow's leading Escape would close it: both dimmed modern globes plus all three centered pause buttons must match, then the agent clicks the already-visible Save and Exit button directly. Every direct retry freshly re-verifies that overlay before clicking, so the same coordinate is never clicked in the live world. This also covers a host or agent restart that loses the in-memory joined set while the D2R client remains in the previous game.
+At the start of a pending account's follow-auto check, an in-game safety match enters an explicit stale-game recovery instead of repeatedly suppressing the Lobby click. The agent identifies the current HUD match once and branches on it. A **strict globe match** authorizes the ordinary Escape + Save and Exit flow. A **broad frame match or an inconclusive/unsampled read** performs no menu or exit click and reports that it is waiting - the broad frame matches ordinary outdoor scenery (`sitting_in_town*.png`), and acting on it would mean sending Escape and a fixed-coordinate click into the live world. A fresh not-in-game result resumes ordinary Lobby navigation. A positively identified Save-and-Exit overlay is handled separately because the ordinary flow's leading Escape would close it: both dimmed globes plus all three centered pause buttons must match, then the agent clicks the already-visible Save and Exit button directly. Every direct retry freshly re-verifies that overlay before clicking, so the same coordinate is never clicked in the live world. This also covers a host or agent restart that loses the in-memory joined set while the D2R client remains in the previous game.
+
+Before Reign of the Warlock this branch had a normalization step in front of it: any non-legacy in-game match got exactly one `G` press to force the client into legacy graphics, which gave the detector stable globe/action-bar anchors, and only a fresh `LegacyProfile` match afterwards authorized the exit. RoTW removed legacy graphics, so `G` normalizes nothing and the step is gone. The safety property it existed to guarantee is unchanged and is now enforced directly by the match kind - see `MenuClickSafetyTests`.
 
 When a follow-auto-tagged Save and Exit confirms two consecutive HUD-gone samples, the agent records a 30-second, one-shot expectation that the client is returning to the lobby. The expectation is bound to both the follow-auto run ID and the current D2R process start time; manual leaves, a newer run, a client restart, expiry, or contradictory live activity cannot use it. While it is valid, the host's ready preflight uses process-only status and the next follow check skips the general stale-game/lobby classifiers, proceeding directly to the narrower Friends drawer verification. A failed Friends verification consumes the expectation, so the next cycle returns to the full classifier and navigation path.
 
