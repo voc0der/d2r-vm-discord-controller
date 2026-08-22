@@ -29,6 +29,17 @@
     "d2r-"
   ],
   "settingsDonorAccountKey": null,
+  // Recovery for a VM that freezes partway through a restart, typically on the Windows boot logo.
+  // A graceful stop cannot clear that, so the host cuts power outright and starts it again. Only
+  // ever runs where the host had already given up and would otherwise restart the whole node.
+  // A guest whose Hyper-V heartbeat is answering is never power-cut.
+  "vmHangRecovery": {
+    "enabled": true,
+    "hangSuspectedAfterSeconds": 300,
+    "noEvidenceGraceSeconds": 1200,
+    "settleSeconds": 10,
+    "maxHardPowerCuts": 2
+  },
   "agents": {
     "d2r-hc-01": {
       "kind": "vm",

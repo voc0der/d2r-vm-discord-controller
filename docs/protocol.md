@@ -292,6 +292,7 @@ The worker also accepts these physical-host commands from the master:
 vm_status
 vm_start
 vm_stop
+vm_turnoff
 vm_reboot
 vm_snapshot
 system_sleep
@@ -300,6 +301,10 @@ system_restart
 ```
 
 VM commands require `args.vmName`; `vm_snapshot` optionally accepts `args.snapshotName`. They execute through the worker's local PowerShell configuration and `allowedVmNamePrefixes`.
+
+`vm_stop` is `Stop-VM -Force`, a *guest-cooperative* shutdown routed through the integration services. `vm_turnoff` is `Stop-VM -TurnOff -Force`, which needs nothing from the guest at all - the hypervisor equivalent of holding the power button. It exists for guests frozen partway through a restart, which cannot answer `vm_stop`, and the host only issues it where it had already given up and would otherwise restart the whole node. See [host-vm-power-lifecycle.md](runbooks/host-vm-power-lifecycle.md#wedged-vm-recovery-hard-power-cut) for the evidence required before one is sent. A worker node predating this command answers `Unsupported worker command`, which the recovery reports as needing that node updated.
+
+`vm_status` now also reports `Heartbeat` (Hyper-V's Heartbeat integration-service `PrimaryStatusDescription`) and `HeartbeatEnabled`. A VM with the service disabled or absent serializes `Heartbeat` as `null`, and a worker node predating this omits both fields; either way the master treats the heartbeat as unknown rather than as evidence of a hang. `State` is emitted as a string here, but both the string and the numeric `VMState` that older nodes send are accepted.
 
 The `system_*` commands still act on the worker's physical Windows machine, but they first run a local VM safety transaction. The worker takes the distinct, non-empty `vmName` values from its own `accounts` configuration, reads every Hyper-V state, and durably records only the VMs that are `Running`. It then stops and confirms those VMs `Off` before queueing sleep (or its hibernation fallback), shutdown, or restart. VMs already `Off` are not recorded and therefore stay off. A failed query or any other state, including a transitional, paused, or saved state, fails the command without queueing the host action. A partial stop pass is rolled back; a rollback that cannot finish remains in the worker's local SQLite journal for startup recovery.
 

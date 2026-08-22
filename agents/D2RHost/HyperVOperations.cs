@@ -36,6 +36,12 @@ public sealed class HyperVOperations : ILocalVmPowerOperations
             "vm_status" => await RunForVmAsync(vmName, GetVmStatusCommand(vmName), cancellationToken),
             "vm_start" => await RunForVmAsync(vmName, $"Start-VM -Name {PsQuote(vmName)} | Out-Null; {GetVmStatusCommand(vmName)}", cancellationToken),
             "vm_stop" => await RunForVmAsync(vmName, $"Stop-VM -Name {PsQuote(vmName)} -Force | Out-Null; {GetVmStatusCommand(vmName)}", cancellationToken),
+            // The hypervisor equivalent of holding the power button. Unlike vm_stop's -Force, which
+            // still asks the guest through its integration services, -TurnOff needs nothing from
+            // the guest at all - which is the entire point, because the guests this exists for are
+            // frozen on the Windows boot logo and are not running integration services to ask.
+            // Never a first resort: see VmHangRecoveryPolicy for when the host is allowed to use it.
+            "vm_turnoff" => await RunForVmAsync(vmName, $"Stop-VM -Name {PsQuote(vmName)} -TurnOff -Force | Out-Null; {GetVmStatusCommand(vmName)}", cancellationToken),
             "vm_reboot" => await RunForVmAsync(vmName, $"Restart-VM -Name {PsQuote(vmName)} -Force | Out-Null; {GetVmStatusCommand(vmName)}", cancellationToken),
             "vm_snapshot" => await SnapshotVmAsync(vmName, request.Args, cancellationToken),
             _ => CommandResult.Failure($"Unsupported Hyper-V command: {request.Command}")
@@ -208,9 +214,24 @@ public sealed class HyperVOperations : ILocalVmPowerOperations
         return null;
     }
 
+    /// <summary>
+    /// Adds Hyper-V's Heartbeat integration-service status to the VM status payload. That is the
+    /// one field that tells the host whether a powered-on guest actually reached a working Windows,
+    /// which is what lets VmHangRecoveryPolicy tell a frozen boot from a slow one instead of
+    /// guessing from elapsed time. SilentlyContinue plus the null coalesce matter: the service can
+    /// be disabled per-VM or missing entirely, and that must serialize as an absent heartbeat
+    /// (treated as "no evidence") rather than failing the whole status call.
+    /// </summary>
     private static string GetVmStatusCommand(string vmName)
     {
-        return $"Get-VM -Name {PsQuote(vmName)} | Select-Object Name,State,Uptime,CPUUsage,MemoryAssigned | ConvertTo-Json -Compress";
+        return "$vm = Get-VM -Name " + PsQuote(vmName) + "; "
+            + "$hb = Get-VMIntegrationService -VMName " + PsQuote(vmName) + " -Name 'Heartbeat' -ErrorAction SilentlyContinue; "
+            + "[pscustomobject]@{ "
+            + "Name = $vm.Name; State = [string]$vm.State; Uptime = $vm.Uptime; "
+            + "CPUUsage = $vm.CPUUsage; MemoryAssigned = $vm.MemoryAssigned; "
+            + "Heartbeat = $(if ($hb) { [string]$hb.PrimaryStatusDescription } else { $null }); "
+            + "HeartbeatEnabled = $(if ($hb) { [bool]$hb.Enabled } else { $false }) "
+            + "} | ConvertTo-Json -Compress";
     }
 
     private static string PsQuote(string value)

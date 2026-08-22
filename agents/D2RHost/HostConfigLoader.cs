@@ -213,6 +213,29 @@ public static class HostConfigLoader
         config.WindowsFirewall ??= new WindowsFirewallConfig();
         config.WindowsFirewall.WasExplicitlyConfigured = windowsFirewallWasSpecified;
         config.WindowsFirewall.OwnerId = firewallOwnerId;
+        if (config.VmHangRecovery.HangSuspectedAfterSeconds < 60)
+        {
+            throw new InvalidOperationException(
+                "vmHangRecovery.hangSuspectedAfterSeconds must be at least 60; a shorter window cannot clear an ordinary cold boot.");
+        }
+
+        if (config.VmHangRecovery.NoEvidenceGraceSeconds < config.VmHangRecovery.HangSuspectedAfterSeconds)
+        {
+            throw new InvalidOperationException(
+                "vmHangRecovery.noEvidenceGraceSeconds must be at least hangSuspectedAfterSeconds; "
+                    + "the no-evidence path must never act sooner than the one backed by a heartbeat reading.");
+        }
+
+        if (config.VmHangRecovery.SettleSeconds is < 1 or > 120)
+        {
+            throw new InvalidOperationException("vmHangRecovery.settleSeconds must be between 1 and 120.");
+        }
+
+        if (config.VmHangRecovery.MaxHardPowerCuts is < 1 or > 5)
+        {
+            throw new InvalidOperationException("vmHangRecovery.maxHardPowerCuts must be between 1 and 5.");
+        }
+
         if (config.WindowsFirewall.ReconcileSeconds is < 5 or > 3600)
         {
             throw new InvalidOperationException(

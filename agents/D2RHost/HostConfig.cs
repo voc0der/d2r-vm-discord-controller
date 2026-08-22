@@ -40,8 +40,59 @@ public sealed class HostConfig
     // only sets the order candidates are tried in - a configured donor that is offline or itself
     // broken is skipped rather than blocking the repair.
     public string? SettingsDonorAccountKey { get; set; }
+    public VmHangRecoveryConfig VmHangRecovery { get; set; } = new();
     public Dictionary<string, HostAgentConfig> Agents { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, AccountConfig> Accounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// Recovery for a VM that freezes partway through a restart - typically sitting on the Windows boot
+/// logo, never reaching a desktop, with its agent unable to report anything because it never
+/// started. A graceful stop cannot clear that (it is routed through guest integration services the
+/// frozen guest is not running), so the host cuts power outright and starts the VM again.
+///
+/// Every default here is deliberately patient. This only ever runs where the host has already given
+/// up waiting and the alternative is restarting the whole physical node, so the cost of waiting a
+/// little longer is small and the cost of cutting a healthy guest's power is not.
+/// See VmHangRecoveryPolicy.
+/// </summary>
+public sealed class VmHangRecoveryConfig
+{
+    /// <summary>
+    /// Set false to keep the pre-existing behavior: a VM that will not come back is reported as a
+    /// failed recovery and escalates to a node restart without a power cut being attempted.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// How long a powered-on guest may go without a Hyper-V heartbeat before it counts as wedged.
+    /// Only applies when the heartbeat is actually being reported and says there is no contact -
+    /// positive evidence the guest never reached a working Windows. Must clear a genuine cold boot
+    /// with room to spare; raise it before lowering it.
+    /// </summary>
+    public int HangSuspectedAfterSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// The fallback window when the heartbeat is NOT reported (integration service disabled or
+    /// absent, or a worker node too old to send it). With no evidence to act on, a power cut waits
+    /// out this much longer window instead of the one above. Defaults to the full agent-reconnect
+    /// budget, so it costs nothing that was not already being spent.
+    /// </summary>
+    public int NoEvidenceGraceSeconds { get; set; } = 1200;
+
+    /// <summary>
+    /// How long to leave the VM off before starting it again. Hyper-V releases the guest's devices
+    /// and memory asynchronously, and starting into that teardown is its own source of a wedged
+    /// boot - the exact failure this is trying to clear.
+    /// </summary>
+    public int SettleSeconds { get; set; } = 10;
+
+    /// <summary>
+    /// Hard power cuts allowed per recovery attempt. A guest that will not come back after this
+    /// many is a host or hardware problem, and looping would only delay the node-level escalation
+    /// that can actually help.
+    /// </summary>
+    public int MaxHardPowerCuts { get; set; } = 2;
 }
 
 public sealed class WindowsFirewallConfig

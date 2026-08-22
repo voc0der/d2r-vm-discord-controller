@@ -1862,6 +1862,10 @@ public sealed class DiscordBot
             "status" => "vm_status",
             "start" => "vm_start",
             "stop" => "vm_stop",
+            // Deliberately a separate verb from stop rather than a flag on it. This is an
+            // uncontrolled power cut - the guest gets no chance to flush anything - so it should
+            // never be reachable by mistyping the ordinary stop.
+            "turnoff" => "vm_turnoff",
             "reboot" => "vm_reboot",
             "snapshot" => "vm_snapshot",
             _ => throw new InvalidOperationException($"Unsupported VM subcommand: {context.SubcommandName}")
@@ -6636,6 +6640,10 @@ public sealed class DiscordBot
 
         var args = JsonSerializer.SerializeToElement(new { accountKey = request.AccountKey, vmName });
 
+        var policy = new VmHangRecoveryPolicy(BuildVmHangRecoveryOptions());
+        var hardPowerCuts = 0;
+        var notes = new List<string>();
+
         var stop = await SendVmPowerCommandAsync(request.Account, "vm_stop", args, cancellationToken);
         if (!stop.Ok)
         {
@@ -6646,10 +6654,33 @@ public sealed class DiscordBot
         // the shutdown request can leave it in Stopping. Confirm Off before starting: Start-VM
         // against a VM that is not actually Off fails, and that failure would be reported as a
         // completed recovery.
+        var stopRequestedAt = DateTimeOffset.UtcNow;
         var off = await WaitForVmPowerStateAsync(request.Account, args, "Off", cancellationToken);
         if (!off.Ok)
         {
-            return CommandResult.Failure($"{vmName} did not confirm Off after Stop-VM: {off.Message}");
+            // A forced shutdown went unanswered, which means the guest is not running the
+            // integration services it is routed through. Before this existed, that ended the
+            // recovery and escalated to restarting the entire physical node - taking every healthy
+            // sibling VM on it down to fix one wedged guest.
+            var lastState = await ReadVmPowerStateAsync(request.Account, args, cancellationToken);
+            var verdict = policy.AssessStuckShutdown(
+                lastState,
+                DateTimeOffset.UtcNow - stopRequestedAt,
+                hardPowerCuts);
+            if (verdict.Verdict != VmHangVerdict.HardPowerCut)
+            {
+                return CommandResult.Failure(
+                    $"{vmName} did not confirm Off after Stop-VM: {off.Message}. No power cut was attempted because {verdict.Reason}.");
+            }
+
+            var cut = await HardPowerCutAsync(request.Account, args, vmName, verdict.Reason, cancellationToken);
+            hardPowerCuts++;
+            notes.Add(cut.Message);
+            if (!cut.Ok)
+            {
+                return CommandResult.Failure(
+                    $"{vmName} did not confirm Off after Stop-VM and the power cut also failed: {cut.Message}");
+            }
         }
 
         var start = await SendVmPowerCommandAsync(request.Account, "vm_start", args, cancellationToken);
@@ -6664,7 +6695,15 @@ public sealed class DiscordBot
             return CommandResult.Failure($"{vmName} did not confirm Running after Start-VM: {running.Message}");
         }
 
-        var deadline = DateTimeOffset.UtcNow + FollowAutoNodeRecoveryTimeout;
+        // A VM can reach Running and still freeze partway through boot - typically on the Windows
+        // logo, sometimes with the spinner under it - and nothing inside the guest can say so
+        // because its agent never started. The loop below waits for that agent, and while it waits
+        // it keeps asking Hyper-V whether the guest is alive at all. If the hypervisor has no
+        // contact with it after the grace window, the boot is wedged and only a power cut clears
+        // it. A guest whose heartbeat answers is never cut - see VmHangRecoveryPolicy.
+        var poweredOnAt = DateTimeOffset.UtcNow;
+        var deadline = poweredOnAt + FollowAutoNodeRecoveryTimeout;
+        var lastAssessment = "the agent simply had not reconnected yet";
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -6674,7 +6713,49 @@ public sealed class DiscordBot
             if (onlineAccountKeys.Contains(request.AccountKey))
             {
                 return CommandResult.Success(
-                    $"{vmName} was powered off, confirmed Off, started again, and its agent reconnected.");
+                    $"{vmName} was powered off, confirmed Off, started again, and its agent reconnected."
+                        + FormatVmRecoveryNotes(notes));
+            }
+
+            var status = await SendVmPowerCommandAsync(request.Account, "vm_status", args, cancellationToken);
+            var powerState = status.Ok && TryReadVmPowerState(status, out var observed) ? observed : null;
+            var heartbeat = status.Ok ? TryReadVmHeartbeat(status) : VmHeartbeatStatus.Unknown;
+            var assessment = policy.AssessBootHang(
+                powerState,
+                heartbeat,
+                DateTimeOffset.UtcNow - poweredOnAt,
+                hardPowerCuts);
+            lastAssessment = assessment.Reason;
+
+            if (assessment.Verdict == VmHangVerdict.HardPowerCut)
+            {
+                var cut = await HardPowerCutAsync(request.Account, args, vmName, assessment.Reason, cancellationToken);
+                hardPowerCuts++;
+                notes.Add(cut.Message);
+                if (!cut.Ok)
+                {
+                    return CommandResult.Failure(
+                        $"{vmName} appears wedged ({assessment.Reason}), and the power cut failed: {cut.Message}");
+                }
+
+                var restart = await SendVmPowerCommandAsync(request.Account, "vm_start", args, cancellationToken);
+                if (!restart.Ok)
+                {
+                    return CommandResult.Failure(
+                        $"{vmName} was powered off after a wedged boot, but Start-VM failed: {restart.Message}");
+                }
+
+                var backUp = await WaitForVmPowerStateAsync(request.Account, args, "Running", cancellationToken);
+                if (!backUp.Ok)
+                {
+                    return CommandResult.Failure(
+                        $"{vmName} did not confirm Running after its power cut: {backUp.Message}");
+                }
+
+                // The guest is booting from cold now, so its reconnect budget restarts with it.
+                poweredOnAt = DateTimeOffset.UtcNow;
+                deadline = poweredOnAt + FollowAutoNodeRecoveryTimeout;
+                continue;
             }
 
             await Task.Delay(FollowAutoNodeRecoveryPollInterval, cancellationToken);
@@ -6682,7 +6763,71 @@ public sealed class DiscordBot
 
         return CommandResult.Failure(
             $"{vmName} is Running again, but its agent did not reconnect within "
-                + $"{FollowAutoNodeRecoveryTimeout.TotalMinutes:N0} minutes.");
+                + $"{FollowAutoNodeRecoveryTimeout.TotalMinutes:N0} minutes ({lastAssessment})."
+                + FormatVmRecoveryNotes(notes));
+    }
+
+    private VmHangRecoveryOptions BuildVmHangRecoveryOptions()
+    {
+        var configured = _config.VmHangRecovery;
+        return new VmHangRecoveryOptions(
+            configured.Enabled,
+            TimeSpan.FromSeconds(configured.HangSuspectedAfterSeconds),
+            TimeSpan.FromSeconds(configured.NoEvidenceGraceSeconds),
+            TimeSpan.FromSeconds(configured.SettleSeconds),
+            configured.MaxHardPowerCuts);
+    }
+
+    /// <summary>
+    /// Cuts a wedged guest's power outright, waits for Hyper-V to confirm Off, then holds for the
+    /// configured settle window before the caller starts it again. The settle is not cosmetic:
+    /// Hyper-V releases the guest's devices and memory asynchronously after a turn-off, and
+    /// starting into that teardown is its own way to produce the wedged boot this is clearing.
+    /// </summary>
+    private async Task<CommandResult> HardPowerCutAsync(
+        AccountConfig account,
+        JsonElement args,
+        string vmName,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var options = BuildVmHangRecoveryOptions();
+        var turnOff = await SendVmPowerCommandAsync(account, "vm_turnoff", args, cancellationToken);
+        if (!turnOff.Ok)
+        {
+            // A worker node older than the build that added vm_turnoff answers "Unsupported worker
+            // command" here. Say so plainly rather than leaving an operator to wonder why the
+            // recovery stopped: that node needs updating before this can help it.
+            return CommandResult.Failure(
+                $"vm_turnoff for {vmName} failed: {turnOff.Message} "
+                    + "(a worker node that predates hard power-cut support cannot run this; update that node).");
+        }
+
+        var off = await WaitForVmPowerStateAsync(account, args, "Off", cancellationToken);
+        if (!off.Ok)
+        {
+            return CommandResult.Failure(
+                $"{vmName} did not confirm Off even after a hard power cut: {off.Message}");
+        }
+
+        await Task.Delay(options.SettleBeforeRestart, cancellationToken);
+        return CommandResult.Success(
+            $"cut power to {vmName} because {reason}, confirmed Off, and settled "
+                + $"{options.SettleBeforeRestart.TotalSeconds:N0}s before starting it again");
+    }
+
+    private async Task<string?> ReadVmPowerStateAsync(
+        AccountConfig account,
+        JsonElement args,
+        CancellationToken cancellationToken)
+    {
+        var status = await SendVmPowerCommandAsync(account, "vm_status", args, cancellationToken);
+        return status.Ok && TryReadVmPowerState(status, out var state) ? state : null;
+    }
+
+    private static string FormatVmRecoveryNotes(IReadOnlyCollection<string> notes)
+    {
+        return notes.Count == 0 ? "" : " Along the way: " + string.Join("; ", notes) + ".";
     }
 
     private async Task<CommandResult> SendVmPowerCommandAsync(
@@ -6734,6 +6879,67 @@ public sealed class DiscordBot
 
         return CommandResult.Failure(
             $"still {lastObserved} after {FollowAutoVmPowerStateTimeout.TotalSeconds:N0}s");
+    }
+
+    /// <summary>
+    /// Reads Hyper-V's Heartbeat integration-service status out of a <c>vm_status</c> result.
+    /// A missing field is <see cref="VmHeartbeatStatus.Unknown"/>, not a failure: the service can be
+    /// disabled per-VM, and every worker node older than the build that added it omits the field
+    /// entirely. Unknown buys no speed in VmHangRecoveryPolicy, so an old worker degrades to the
+    /// patient path rather than to a wrong decision.
+    /// </summary>
+    internal static VmHeartbeatStatus TryReadVmHeartbeat(CommandResult status)
+    {
+        if (!TryReadVmStatusRoot(status, out var root)
+            || !root.TryGetProperty("Heartbeat", out var heartbeat)
+            || heartbeat.ValueKind != JsonValueKind.String)
+        {
+            return VmHeartbeatStatus.Unknown;
+        }
+
+        return VmHangRecoveryPolicy.ParseHeartbeat(heartbeat.GetString());
+    }
+
+    /// <summary>
+    /// Unwraps the PowerShell <c>output</c> string in a <c>vm_status</c> result into its JSON
+    /// object, collapsing the single-element array ConvertTo-Json emits for some shapes.
+    /// </summary>
+    private static bool TryReadVmStatusRoot(CommandResult status, out JsonElement root)
+    {
+        root = default;
+        if (status.Data is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var json = JsonSerializer.SerializeToElement(status.Data);
+            if (!json.TryGetProperty("output", out var output) || output.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            using var document = JsonDocument.Parse(output.GetString() ?? "");
+            var element = document.RootElement;
+            if (element.ValueKind == JsonValueKind.Array)
+            {
+                if (element.GetArrayLength() == 0)
+                {
+                    return false;
+                }
+
+                element = element[0];
+            }
+
+            // The document is disposed on the way out of this method, so hand back a detached copy.
+            root = element.Clone();
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

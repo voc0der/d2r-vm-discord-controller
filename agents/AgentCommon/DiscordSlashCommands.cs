@@ -59,6 +59,7 @@ public static class DiscordSlashCommands
                         Sub("status", "Get Hyper-V status for an account VM", Account()),
                         Sub("start", "Start an account VM", Account()),
                         Sub("stop", "Stop an account VM", Account()),
+                        Sub("turnoff", "Cut power to a hung account VM without asking the guest (unsaved work is lost)", Account()),
                         Sub("reboot", "Restart an account VM", Account()),
                         Sub("snapshot", "Create a Hyper-V checkpoint for an account VM", Account(), SnapshotName())))
                 .Build()

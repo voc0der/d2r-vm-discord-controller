@@ -48,7 +48,7 @@ stages:
 
 | Consecutive failures | Action |
 | --- | --- |
-| 5 | Power-cycle **that account's VM only**: `vm_stop`, confirm `Off`, `vm_start`, confirm `Running`, then wait for its agent to reconnect. The strike count restarts so the rebuilt guest gets a full budget. |
+| 5 | Power-cycle **that account's VM only**: `vm_stop`, confirm `Off`, `vm_start`, confirm `Running`, then wait for its agent to reconnect. A guest that freezes at either step gets its power cut - see [Wedged VM recovery](#wedged-vm-recovery-hard-power-cut). The strike count restarts so the rebuilt guest gets a full budget. |
 | 5 more (after a cycle) | Restart the **physical node** that owns the account, via the VM-safe path above: record and stop its Running VMs, restart the host, restore only what it stopped, and resume the follow run. |
 
 VM first, node second, because one wedged guest is the common case - a client that cannot
@@ -65,6 +65,67 @@ latched so it happens once.
 The confirmation reads `State` from `vm_status`, accepting both the numeric `VMState` that
 `ConvertTo-Json` emits and a string, so a worker node on an older build still confirms correctly.
 
+## Wedged VM recovery (hard power cut)
+
+A VM told to restart can freeze partway through it - typically sitting on the Windows boot logo,
+sometimes with the spinner underneath, never reaching a desktop. Nothing inside the guest can
+report that, because its agent never started, and **`vm_stop` cannot clear it either**: `Stop-VM
+-Force` is a *guest-cooperative* shutdown routed through the integration services, and a guest
+frozen that early is not running them. Only `Stop-VM -TurnOff` - the hypervisor equivalent of
+holding the power button - gets the machine back.
+
+Before this existed, both of the ladder's dead ends escalated straight to a node restart:
+
+| Dead end | Old behavior | Now |
+| --- | --- | --- |
+| Graceful stop never confirms `Off` | Recovery fails, next strike restarts the node | `vm_turnoff`, confirm `Off`, settle, continue the cycle |
+| VM reaches `Running` but the agent never reconnects | Recovery fails after 20 minutes, next strike restarts the node | Assess the guest; if wedged, `vm_turnoff`, settle, `vm_start`, and restart the reconnect budget |
+
+**A power cut is never a first resort, and never an assumption.** Three things enforce that:
+
+1. **Placement.** Every cut happens where the host had *already* given up and would otherwise
+   restart the whole physical node, taking every healthy sibling VM with it. A cut scoped to the
+   one wedged guest is strictly less disruptive than the action it replaces.
+2. **Evidence.** A live guest is never cut. Hyper-V's Heartbeat integration service is now read
+   alongside `State` in `vm_status`; if it reports contact with the guest OS, Windows is up and
+   scheduling, so this is not a frozen boot and the policy refuses - whatever is keeping the agent
+   away needs a different fix. Only a guest the hypervisor cannot reach is a candidate, and only
+   after a grace window long enough to cover an ordinary cold boot.
+3. **Bounds.** Cuts are capped per recovery. A guest that will not return after its allowance is a
+   host or hardware problem, and looping would only delay the node escalation that can help.
+
+Decision table (`VmHangRecoveryPolicy`, pinned by `VmHangRecoveryPolicyTests`):
+
+| Heartbeat | State | Elapsed since power-on | Verdict |
+| --- | --- | --- | --- |
+| `OK` | `Running` | any | **Never cut** - the guest OS is alive |
+| `No Contact` / `Lost Communication` | `Running` | < `hangSuspectedAfterSeconds` | Keep waiting (a cold boot shows no heartbeat too) |
+| `No Contact` / `Lost Communication` | `Running` | >= `hangSuspectedAfterSeconds` | Hard power cut |
+| Not reported | `Running` | < `noEvidenceGraceSeconds` | Keep waiting |
+| Not reported | `Running` | >= `noEvidenceGraceSeconds` | Hard power cut |
+| any | not `Running` | any | Keep waiting - another transition is in flight |
+
+`Lost Communication` is deliberately treated as a hang rather than an unknown: a guest that
+answered and then stopped is precisely the mid-restart freeze this exists for.
+
+A heartbeat that is **not reported** - the integration service disabled per VM, absent from the
+guest, or a worker node too old to send the field - is absence of evidence, not evidence of a hang.
+It buys no speed: the cut waits out the full `noEvidenceGraceSeconds`, which defaults to the same
+20 minutes the agent-reconnect budget already spent. An un-updated worker therefore degrades to the
+old patient behavior rather than to a wrong decision. Such a worker also cannot run `vm_turnoff` at
+all and answers `Unsupported worker command`; the recovery result says so explicitly and names
+updating that node as the fix.
+
+Configure under `vmHangRecovery` in the host config:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | `false` restores the previous behavior exactly: report a failed recovery and escalate to the node. |
+| `hangSuspectedAfterSeconds` | `300` | How long a powered-on guest may go with **no heartbeat contact** before it counts as wedged. Must clear a real cold boot; raise before lowering. |
+| `noEvidenceGraceSeconds` | `1200` | The longer window used when heartbeat is not reported. Validation refuses a value below `hangSuspectedAfterSeconds`. |
+| `settleSeconds` | `10` | How long the VM stays off before starting again. Hyper-V releases guest devices and memory asynchronously, and starting into that teardown is its own way to produce a wedged boot. |
+| `maxHardPowerCuts` | `2` | Cuts allowed per recovery before escalating to the node. |
+
 ## Troubleshooting
 
 If the Discord command says VM preparation failed and the host stays awake:
@@ -74,6 +135,18 @@ If the Discord command says VM preparation failed and the host stays awake:
 3. Confirm the config's `vmName` is exact and allowed by `allowedVmNamePrefixes`.
 4. Move a paused, saved, or transitional VM deliberately to either `Running` or `Off`, then retry.
 5. Check the node's `logs` directory for the underlying PowerShell error if state lookup, stop, or confirmation failed.
+
+If a VM keeps needing its power cut:
+
+1. The result and the follow-auto monitor both name the reason the policy acted (no heartbeat
+   contact for N minutes, or a forced shutdown that went unanswered). Start there.
+2. On the owning Hyper-V host, check the guest is not disabling its own integration services:
+   `Get-VMIntegrationService -VMName '<vmName>' -Name Heartbeat`. `Enabled: False` means the host
+   is running blind and always waiting out the full `noEvidenceGraceSeconds`.
+3. Repeated wedged boots on the same guest usually mean a damaged guest OS or a storage problem,
+   not a host bug. A power cut is an uncontrolled stop, and doing it repeatedly is itself a way to
+   corrupt a guest, which is why `maxHardPowerCuts` exists.
+4. Set `vmHangRecovery.enabled: false` to fall back to the previous behavior while investigating.
 
 If a host returns but an expected VM stays off:
 

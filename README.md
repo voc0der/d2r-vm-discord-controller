@@ -92,11 +92,14 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r vm status account`
 - `/d2r vm start account`
 - `/d2r vm stop account`
+- `/d2r vm turnoff account`
 - `/d2r vm reboot account`
 - `/d2r vm snapshot account [name]`
 - `/d2r config show`
 - `/d2r config stagger seconds`
 - `/d2r config notifications enabled [channel-id] [updates-enabled]`
+
+`/d2r vm stop` is a graceful shutdown routed through the guest's integration services. `/d2r vm turnoff` cuts power without asking the guest at all — the hypervisor equivalent of holding the power button — and is for a VM frozen partway through a restart, typically sitting on the Windows boot logo where a graceful stop can never land. Unsaved guest work is lost, so it is a separate verb rather than a flag on `stop`. Follow-auto reaches for the same thing on its own when a warmup recovery wedges; see [host-vm-power-lifecycle.md](docs/runbooks/host-vm-power-lifecycle.md#wedged-vm-recovery-hard-power-cut) for the evidence it requires first and the `vmHangRecovery` knobs that bound it.
 
 `/d2r game set` stores the current game details in SQLite. `join` and `create-game` use those stored values when options are omitted.
 
