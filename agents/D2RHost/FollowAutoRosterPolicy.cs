@@ -235,28 +235,98 @@ internal sealed class FollowAutoRosterWatchSnapshot
 }
 
 /// <summary>
-/// Thread-safe live bot target shared by the Discord gateway and follow run. Arming a local host
-/// restart freezes adjustments and returns the exact target that must be journaled; therefore a
+/// Thread-safe live bot target and party mode shared by the Discord gateway and follow run. Arming
+/// a local host restart freezes both and returns the exact pair that must be journaled; therefore a
 /// button press is either included in that snapshot or rejected, never acknowledged and lost.
 /// </summary>
+/// <remarks>
+/// The mode lives here rather than beside it because the two cannot move independently: public mode
+/// has a lower ceiling than private mode (<see cref="FollowAutoPublicModePolicy.MaxBotCount"/>), so
+/// switching modes is also a target change, and a reader that saw the new mode against the old
+/// target would offer a party size that mode cannot run.
+/// </remarks>
 internal sealed class FollowAutoTargetControl
 {
     private readonly object _sync = new();
     private int _targetBotCount = FollowAutoRosterPolicy.DefaultBotCount;
+    private int _mode = (int)FollowAutoPartyMode.Private;
     private int _localRestartArmed;
 
     public int TargetBotCount => Volatile.Read(ref _targetBotCount);
 
+    public FollowAutoPartyMode Mode => (FollowAutoPartyMode)Volatile.Read(ref _mode);
+
     public bool LocalRestartArmed => Volatile.Read(ref _localRestartArmed) != 0;
 
-    public void Reset(int targetBotCount)
+    /// <summary>Reads both halves under the lock, for callers that must not mix generations.</summary>
+    public (int TargetBotCount, FollowAutoPartyMode Mode) Snapshot
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return (_targetBotCount, (FollowAutoPartyMode)_mode);
+            }
+        }
+    }
+
+    public static int ClampTargetForMode(int requested, FollowAutoPartyMode mode)
+    {
+        return mode == FollowAutoPartyMode.Public
+            ? FollowAutoPublicModePolicy.ClampTarget(requested)
+            : FollowAutoRosterPolicy.ClampTarget(requested);
+    }
+
+    public void Reset(int targetBotCount, FollowAutoPartyMode mode = FollowAutoPartyMode.Private)
     {
         lock (_sync)
         {
-            Volatile.Write(
-                ref _targetBotCount,
-                FollowAutoRosterPolicy.ClampTarget(targetBotCount));
+            Volatile.Write(ref _mode, (int)mode);
+            Volatile.Write(ref _targetBotCount, ClampTargetForMode(targetBotCount, mode));
             Volatile.Write(ref _localRestartArmed, 0);
+        }
+    }
+
+    /// <summary>
+    /// Switches party mode, carrying the current target into the new mode's range. Switching to
+    /// public therefore trims a full-game target immediately, before any live sample arrives, so
+    /// the promise the button makes is kept from the press rather than from the first pulse.
+    /// </summary>
+    public FollowAutoPartyModeChange TrySetMode(FollowAutoPartyMode mode)
+    {
+        lock (_sync)
+        {
+            var currentMode = (FollowAutoPartyMode)_mode;
+            var currentTarget = _targetBotCount;
+            if (_localRestartArmed != 0)
+            {
+                return new FollowAutoPartyModeChange(
+                    FollowAutoPartyModeChangeOutcome.LocalRestartArmed,
+                    currentMode,
+                    currentMode,
+                    currentTarget,
+                    currentTarget);
+            }
+
+            if (currentMode == mode)
+            {
+                return new FollowAutoPartyModeChange(
+                    FollowAutoPartyModeChangeOutcome.Unchanged,
+                    currentMode,
+                    currentMode,
+                    currentTarget,
+                    currentTarget);
+            }
+
+            var target = ClampTargetForMode(currentTarget, mode);
+            Volatile.Write(ref _mode, (int)mode);
+            Volatile.Write(ref _targetBotCount, target);
+            return new FollowAutoPartyModeChange(
+                FollowAutoPartyModeChangeOutcome.Changed,
+                currentMode,
+                mode,
+                currentTarget,
+                target);
         }
     }
 
@@ -283,7 +353,7 @@ internal sealed class FollowAutoTargetControl
                     current);
             }
 
-            var target = FollowAutoRosterPolicy.ClampTarget(current + delta);
+            var target = ClampTargetForMode(current + delta, (FollowAutoPartyMode)_mode);
             if (target == current)
             {
                 return new FollowAutoTargetAdjustment(
@@ -300,12 +370,57 @@ internal sealed class FollowAutoTargetControl
         }
     }
 
-    public int ArmLocalRestart()
+    /// <summary>
+    /// Sets the target on behalf of a rule that only owns it while a particular mode is in force -
+    /// public mode's live player count, today. The mode is rechecked inside the lock because the
+    /// caller reads it, decides, and writes across three separate operations on a different task
+    /// from the gateway: without this, a Private press landing in that window is acknowledged and
+    /// then immediately overwritten by the derived target it was meant to stop.
+    /// </summary>
+    public FollowAutoTargetAdjustment TrySetTargetForMode(int target, FollowAutoPartyMode expectedMode)
+    {
+        lock (_sync)
+        {
+            var current = _targetBotCount;
+            if (_localRestartArmed != 0)
+            {
+                return new FollowAutoTargetAdjustment(
+                    FollowAutoTargetAdjustmentOutcome.LocalRestartArmed,
+                    current,
+                    current);
+            }
+
+            if ((FollowAutoPartyMode)_mode != expectedMode)
+            {
+                return new FollowAutoTargetAdjustment(
+                    FollowAutoTargetAdjustmentOutcome.Refused,
+                    current,
+                    current);
+            }
+
+            var clamped = ClampTargetForMode(target, expectedMode);
+            if (clamped == current)
+            {
+                return new FollowAutoTargetAdjustment(
+                    FollowAutoTargetAdjustmentOutcome.AtLimit,
+                    current,
+                    current);
+            }
+
+            Volatile.Write(ref _targetBotCount, clamped);
+            return new FollowAutoTargetAdjustment(
+                FollowAutoTargetAdjustmentOutcome.Changed,
+                current,
+                clamped);
+        }
+    }
+
+    public (int TargetBotCount, FollowAutoPartyMode Mode) ArmLocalRestart()
     {
         lock (_sync)
         {
             Volatile.Write(ref _localRestartArmed, 1);
-            return _targetBotCount;
+            return (_targetBotCount, (FollowAutoPartyMode)_mode);
         }
     }
 
@@ -317,6 +432,20 @@ internal sealed class FollowAutoTargetControl
         }
     }
 }
+
+internal enum FollowAutoPartyModeChangeOutcome
+{
+    Changed,
+    Unchanged,
+    LocalRestartArmed
+}
+
+internal sealed record FollowAutoPartyModeChange(
+    FollowAutoPartyModeChangeOutcome Outcome,
+    FollowAutoPartyMode PreviousMode,
+    FollowAutoPartyMode Mode,
+    int PreviousTarget,
+    int Target);
 
 internal enum FollowAutoTargetAdjustmentOutcome
 {

@@ -23,6 +23,7 @@ public sealed class DiscordBot
     private const string FollowAutoStopSleepButtonId = "d2r:follow:auto-stop:sleep";
     private const string FollowAutoRemoveBotButtonId = "d2r:follow:bots:remove";
     private const string FollowAutoAddBotButtonId = "d2r:follow:bots:add";
+    private const string FollowAutoPartyModeButtonId = "d2r:follow:party-mode";
     private const string GameSessionLeaveButtonId = "d2r:session:leave";
     private const string GameSessionQuitButtonId = "d2r:session:quit";
     private const string StartupFollowButtonId = "d2r:startup:follow";
@@ -133,6 +134,10 @@ public sealed class DiscordBot
     // Per-game high-water rather than the latest count: a low/degraded later vantage must not
     // reopen +1 after this game was observed full. Confirmed advancement resets it.
     private readonly FollowAutoPlayerCountHighWater _followAutoLivePlayers = new();
+    // Public mode's controller. It wants the opposite of the high-water above - the CURRENT party
+    // size, because bots have to come back as humans leave - so it keeps its own reading and
+    // guards against a bad sample with an agreement streak instead.
+    private readonly FollowAutoPublicModeTracker _followAutoPublicMode = new();
 
     private readonly FollowAutoRosterAdjustmentGate _followAutoRosterGate = new();
     private readonly FollowAutoLifecycle _followAutoLifecycle = new(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -691,7 +696,10 @@ public sealed class DiscordBot
                     intent.FriendRow,
                     intent.RecoveryAccountKeys,
                     intent.Reason,
-                    FollowAutoRosterPolicy.ClampTarget(intent.TargetBotCount));
+                    FollowAutoTargetControl.ClampTargetForMode(
+                        intent.TargetBotCount,
+                        intent.PublicMode ? FollowAutoPartyMode.Public : FollowAutoPartyMode.Private),
+                    intent.PublicMode ? FollowAutoPartyMode.Public : FollowAutoPartyMode.Private);
 
                 // The one-shot is consumed only after the in-memory run has been installed. A
                 // crash before this point leaves the intent available to the next process start.
@@ -1019,6 +1027,9 @@ public sealed class DiscordBot
                 case FollowAutoAddBotButtonId:
                     await HandleFollowAutoBotCountButtonAsync(component, delta: +1);
                     return;
+                case FollowAutoPartyModeButtonId:
+                    await HandleFollowAutoPartyModeButtonAsync(component);
+                    return;
                 case GameSessionLeaveButtonId:
                     await QueueSaveExitAllAsync(SlashContext.FromComponent(component, "save-exit"));
                     return;
@@ -1236,21 +1247,35 @@ public sealed class DiscordBot
 
         builder.WithButton("Stop", FollowAutoStopButtonId, ButtonStyle.Danger);
 
-        // -1 is offered whenever there is a bot to give up. +1 only when there is a benched VM to
-        // promote AND the live game has a free slot - offering a button that cannot work is worse
-        // than not offering it, since the operator cannot tell a rejected press from a slow one.
-        var target = _followAutoTarget.TargetBotCount;
+        var (target, mode) = _followAutoTarget.Snapshot;
         var availability = Volatile.Read(ref _followAutoRosterAvailability);
-        builder.WithButton(
-            "-1",
-            FollowAutoRemoveBotButtonId,
-            ButtonStyle.Secondary,
-            disabled: _followAutoTarget.LocalRestartArmed || !FollowAutoRosterPolicy.CanRemoveBot(target));
-        if (!_followAutoTarget.LocalRestartArmed
-            && availability.CanAddBot(target, _followAutoLivePlayers.Value))
+        // The manual count buttons only exist in private mode. In public mode the target is an
+        // output of the live player count, so a -1 the next pulse silently undoes would be a
+        // control that lies about what it does.
+        if (mode == FollowAutoPartyMode.Private)
         {
-            builder.WithButton("+1 VM", FollowAutoAddBotButtonId, ButtonStyle.Success);
+            // -1 is offered whenever there is a bot to give up. +1 only when there is a benched VM
+            // to promote AND the live game has a free slot - offering a button that cannot work is
+            // worse than not offering it, since the operator cannot tell a rejected press from a
+            // slow one.
+            builder.WithButton(
+                "-1",
+                FollowAutoRemoveBotButtonId,
+                ButtonStyle.Secondary,
+                disabled: _followAutoTarget.LocalRestartArmed || !FollowAutoRosterPolicy.CanRemoveBot(target));
+            if (!_followAutoTarget.LocalRestartArmed
+                && availability.CanAddBot(target, _followAutoLivePlayers.Value))
+            {
+                builder.WithButton("+1 VM", FollowAutoAddBotButtonId, ButtonStyle.Success);
+            }
         }
+
+        // Labelled with the mode it switches TO, so the button reads as the action it performs.
+        builder.WithButton(
+            mode == FollowAutoPartyMode.Private ? "Public" : "Private",
+            FollowAutoPartyModeButtonId,
+            mode == FollowAutoPartyMode.Private ? ButtonStyle.Success : ButtonStyle.Secondary,
+            disabled: _followAutoTarget.LocalRestartArmed);
 
         return builder.Build();
     }
@@ -4931,7 +4956,9 @@ public sealed class DiscordBot
                 context,
                 $"follow-auto started with {bots} bot(s), {FormatPartySize(bots)} with the leader"
                     + $"{(delaySeconds > 0 ? $", and a {delaySeconds}s delay between checks" : "")}. "
-                    + "I posted one live status message in this channel; its -1 / +1 buttons change the bot count mid-run."
+                    + "I posted one live status message in this channel; its -1 / +1 buttons change the bot count mid-run, "
+                    + $"and Public holds the game at {FollowAutoPublicModePolicy.TargetPlayerCount} of "
+                    + $"{FollowAutoRosterPolicy.MaxPlayersPerGame} players so a real player can always join."
                     + (watch ? " Watch diagnostics are enabled." : ""),
                 ephemeral: true);
 
@@ -5134,6 +5161,16 @@ public sealed class DiscordBot
                         FollowAutoBotCountControlOutcome.LocalRestartArmed);
                 }
 
+                // The monitor stops rendering these buttons in public mode, but the message ID is
+                // unchanged across that edit, so a client still showing the pre-switch components
+                // can land a press here. Public mode derives the target; honouring the press would
+                // be undone by the next pulse.
+                if (_followAutoTarget.Mode == FollowAutoPartyMode.Public)
+                {
+                    return new FollowAutoBotCountControl(
+                        FollowAutoBotCountControlOutcome.PublicMode);
+                }
+
                 // Each press moves a real client in or out of a live game and takes a cycle to
                 // land, so a double-click has to be refused rather than queued.
                 if (!_followAutoRosterGate.TryAdjust(DateTimeOffset.UtcNow, out var retryAfter))
@@ -5188,6 +5225,16 @@ public sealed class DiscordBot
             return;
         }
 
+        if (control.Outcome == FollowAutoBotCountControlOutcome.PublicMode)
+        {
+            await component.FollowupAsync(
+                "Public mode sets the bot count from the live player count, holding the game at "
+                    + $"{FollowAutoPublicModePolicy.TargetPlayerCount} of {FollowAutoRosterPolicy.MaxPlayersPerGame} "
+                    + "players. Press Private first to set it by hand.",
+                ephemeral: true);
+            return;
+        }
+
         if (control.Outcome == FollowAutoBotCountControlOutcome.RateLimited)
         {
             await component.FollowupAsync(
@@ -5226,6 +5273,116 @@ public sealed class DiscordBot
             ephemeral: true);
     }
 
+    /// <summary>
+    /// The live monitor's Public / Private toggle. Like the -1 / +1 buttons it only moves run
+    /// state; the roster watch notices the new target on its next comparison and the run loop does
+    /// the actual joining and leaving, so a press never blocks the gateway on a client operation.
+    /// </summary>
+    private async Task HandleFollowAutoPartyModeButtonAsync(SocketMessageComponent component)
+    {
+        await EnsureAcknowledgedAsync(component);
+
+        // Same lifecycle reasoning as HandleFollowAutoBotCountButtonAsync: validate and mutate
+        // inside one active-run operation so an old monitor's click cannot reconfigure a
+        // successor run after this handler resumes from an await.
+        var control = await _followAutoLifecycle.WithActiveRunAsync(
+            _ =>
+            {
+                var monitor = _followAutoMonitorMessage;
+                if (!IsCurrentFollowAutoMonitorMessage(component.Message.Id, monitor?.Id))
+                {
+                    return new FollowAutoPartyModeControl(
+                        FollowAutoBotCountControlOutcome.StaleMonitor);
+                }
+
+                var requested = _followAutoTarget.Mode == FollowAutoPartyMode.Private
+                    ? FollowAutoPartyMode.Public
+                    : FollowAutoPartyMode.Private;
+                var change = _followAutoTarget.TrySetMode(requested);
+                if (change.Outcome == FollowAutoPartyModeChangeOutcome.Changed
+                    && change.Target != change.PreviousTarget)
+                {
+                    // Switching into public mode trims a full-game target to public's ceiling.
+                    // That is a real target move and the gateway's +1 availability view has to
+                    // follow it, exactly as a button press does.
+                    PublishFollowAutoTargetAdjustment(new FollowAutoTargetAdjustment(
+                        FollowAutoTargetAdjustmentOutcome.Changed,
+                        change.PreviousTarget,
+                        change.Target));
+                }
+
+                return new FollowAutoPartyModeControl(
+                    change.Outcome switch
+                    {
+                        FollowAutoPartyModeChangeOutcome.Changed => FollowAutoBotCountControlOutcome.Changed,
+                        FollowAutoPartyModeChangeOutcome.LocalRestartArmed => FollowAutoBotCountControlOutcome.LocalRestartArmed,
+                        _ => FollowAutoBotCountControlOutcome.AtLimit
+                    },
+                    change,
+                    monitor);
+            },
+            new FollowAutoPartyModeControl(FollowAutoBotCountControlOutcome.NotRunning));
+
+        switch (control.Outcome)
+        {
+            case FollowAutoBotCountControlOutcome.NotRunning:
+                await component.FollowupAsync(
+                    "follow-auto is not running, so there is no party mode to change.",
+                    ephemeral: true);
+                return;
+            case FollowAutoBotCountControlOutcome.StaleMonitor:
+                await component.FollowupAsync(
+                    "That party-mode control belongs to an older follow-auto monitor; use the buttons on the current monitor.",
+                    ephemeral: true);
+                return;
+            case FollowAutoBotCountControlOutcome.LocalRestartArmed:
+                await component.FollowupAsync(
+                    "The party mode is locked while local host recovery is armed; the recorded run will resume in the mode shown on the monitor.",
+                    ephemeral: true);
+                return;
+            case FollowAutoBotCountControlOutcome.AtLimit:
+                await component.FollowupAsync(
+                    "The party mode did not change; the monitor is already showing the current one.",
+                    ephemeral: true);
+                return;
+        }
+
+        if (control.Change is not { } change)
+        {
+            return;
+        }
+
+        // A mode switch resets the shared throttle rather than consuming it: the operator has just
+        // handed the target over to (or taken it back from) the live player count, and making the
+        // first automatic correction wait out a previous press would leave the game visibly wrong.
+        _followAutoRosterGate.Reset();
+        _followAutoPublicMode.Reset();
+        _logger.LogInformation(
+            "follow-auto party mode changed from {Previous} to {Mode} by button; bot target {PreviousTarget} -> {Target}.",
+            change.PreviousMode,
+            change.Mode,
+            change.PreviousTarget,
+            change.Target);
+
+        var trimmed = change.Target != change.PreviousTarget
+            ? $" Bot target trimmed to {change.Target} to make room."
+            : "";
+        await UpdateFollowAutoMonitorAsync(
+            change.Mode == FollowAutoPartyMode.Public
+                ? $"Public mode: holding a {FollowAutoPublicModePolicy.TargetPlayerCount}-player game so a real player can always join.{trimmed} "
+                    + "The bot count now follows the live player count."
+                : $"Private mode: the bot count is back to {change.Target} and only the -1 / +1 buttons change it.",
+            expectedMonitor: control.Monitor);
+        await component.FollowupAsync(
+            change.Mode == FollowAutoPartyMode.Public
+                ? $"Public mode is on. The fleet holds the game at {FollowAutoPublicModePolicy.TargetPlayerCount} of "
+                    + $"{FollowAutoRosterPolicy.MaxPlayersPerGame} players, so bots leave as real players arrive and come "
+                    + $"back as they go. Bot target is {change.Target}; the -1 / +1 buttons are hidden while it is derived."
+                : $"Private mode is on. The bot target stays at {change.Target} ({FormatPartySize(change.Target)} with the "
+                    + "leader) until you press -1 / +1.",
+            ephemeral: true);
+    }
+
     private void PublishFollowAutoTargetAdjustment(FollowAutoTargetAdjustment adjustment)
     {
         while (true)
@@ -5251,6 +5408,91 @@ public sealed class DiscordBot
                 return;
             }
         }
+    }
+
+    /// <summary>
+    /// Feeds one in-game pulse to public mode and applies the target it asks for. Returns whether
+    /// the target moved, so the caller can hand the run loop a roster reconciliation immediately
+    /// instead of waiting a heartbeat for the watch to notice.
+    /// </summary>
+    /// <param name="botsInGame">
+    /// Fleet clients the run believes are inside the sampled game. Only call this from the
+    /// all-joined watch: mid join the party bar lags this number and the subtraction undercounts
+    /// the humans, which would grow the roster into the slot public mode exists to hold open.
+    /// </param>
+    /// <summary>
+    /// Fleet clients occupying slots in the current game: the ones the run is tracking, plus the
+    /// ones it gave up on removing and is not tracking any more. Both are in there taking up room.
+    /// </summary>
+    private static int CountFleetClientsInGame(FollowAutoAccountState accountState)
+    {
+        return accountState.JoinedCount + accountState.StrandedInGameCount;
+    }
+
+    private async Task<bool> TryApplyPublicPartyTargetAsync(FollowPulseSample sample, int botsInGame)
+    {
+        var (current, mode) = _followAutoTarget.Snapshot;
+        if (mode != FollowAutoPartyMode.Public)
+        {
+            return false;
+        }
+
+        var desired = _followAutoPublicMode.Observe(
+            sample.PlayerCount,
+            sample.PlayerCountFresh,
+            sample.InGame,
+            botsInGame,
+            current);
+        if (desired is not { } target || target == current)
+        {
+            return false;
+        }
+
+        // The same throttle the -1 / +1 buttons use, and for the same reason: each step moves a
+        // real client in or out of a live game and takes a cycle to land. It is load-bearing here
+        // rather than merely polite - a client that has left is out of the joined set before every
+        // vantage's party bar has caught up, and reading that gap as more humans would walk the
+        // target down a step at a time. Fifteen seconds is far longer than a party bar takes to
+        // settle. Both checks come after the target genuinely differs, so a no-op pulse never
+        // spends the interval.
+        if (_followAutoTarget.LocalRestartArmed
+            || !_followAutoRosterGate.TryAdjust(DateTimeOffset.UtcNow, out _))
+        {
+            return false;
+        }
+
+        // Mode-checked rather than a plain adjust: the mode was read at the top of this method and
+        // the gateway can flip it to Private in between, on its own task. Rechecking it inside the
+        // control's lock is what stops a derived target from landing on top of that press.
+        var adjustment = _followAutoTarget.TrySetTargetForMode(target, FollowAutoPartyMode.Public);
+        if (adjustment.Outcome != FollowAutoTargetAdjustmentOutcome.Changed)
+        {
+            return false;
+        }
+
+        PublishFollowAutoTargetAdjustment(adjustment);
+        // Recomputed from this sample rather than read back off the tracker, which a concurrent
+        // mode switch can clear - the message would then report no player count for a change that
+        // definitely happened. Observe only hands back a target for a usable sample, so the
+        // fallback is unreachable; it is the exact inverse of the rule that chose the target.
+        var humans = FollowAutoPublicModePolicy.CountHumans(
+                sample.PlayerCount,
+                sample.PlayerCountFresh,
+                sample.InGame,
+                botsInGame)
+            ?? FollowAutoPublicModePolicy.TargetPlayerCount - adjustment.Target;
+        _logger.LogInformation(
+            "follow-auto public mode moved the bot target from {Previous} to {Target} for {Humans} real player(s).",
+            adjustment.PreviousTarget,
+            adjustment.Target,
+            humans);
+        await UpdateFollowAutoMonitorAsync(
+            adjustment.Target < adjustment.PreviousTarget
+                ? $"Public mode: {humans} real player(s) in the game, so the bot count drops to {adjustment.Target}; "
+                    + $"{adjustment.PreviousTarget - adjustment.Target} bot(s) leave to keep a slot open."
+                : $"Public mode: {humans} real player(s) in the game, so the bot count rises to {adjustment.Target}; "
+                    + $"{adjustment.Target - adjustment.PreviousTarget} bot(s) come back in and a slot stays open.");
+        return true;
     }
 
     // "a 8-player game" reads badly in the one case that matters most - the default, full game.
@@ -5642,6 +5884,7 @@ public sealed class DiscordBot
         IMessageChannel channel,
         bool metricsEnabled,
         int targetBotCount,
+        FollowAutoPartyMode partyMode,
         IReadOnlySet<string> incumbents,
         FollowAutoRunLease run)
     {
@@ -5650,8 +5893,8 @@ public sealed class DiscordBot
         _followAutoGamesCompleted = 0;
         _followAutoJoined = 0;
         _followAutoTotal = 0;
-        var target = FollowAutoRosterPolicy.ClampTarget(targetBotCount);
-        _followAutoTarget.Reset(target);
+        var target = FollowAutoTargetControl.ClampTargetForMode(targetBotCount, partyMode);
+        _followAutoTarget.Reset(target, partyMode);
         // Seed from the same incumbent-aware roster the loop uses. A resumed run can have an
         // offline recovery incumbent occupying a target slot, which makes an online newcomer a
         // real connected bench even when online count equals target count.
@@ -5669,6 +5912,7 @@ public sealed class DiscordBot
                 onlineAccountKeys.Count,
                 initialRoster.Benched.Count(onlineAccountKeys.Contains)));
         _followAutoLivePlayers.Reset();
+        _followAutoPublicMode.Reset();
         _followAutoRosterGate.Reset();
         _followAutoMetricsEnabled = metricsEnabled;
         try
@@ -5771,7 +6015,7 @@ public sealed class DiscordBot
         var title = _followAutoGameNumber > 0
             ? $"follow-auto monitor - Game #{_followAutoGameNumber}"
             : "follow-auto monitor";
-        var target = _followAutoTarget.TargetBotCount;
+        var (target, mode) = _followAutoTarget.Snapshot;
         var availability = Volatile.Read(ref _followAutoRosterAvailability);
         var online = availability.OnlineAccountCount;
         var benchedCount = availability.ConnectedBenchedCount;
@@ -5790,6 +6034,7 @@ public sealed class DiscordBot
             // the roster. Spelling out the resulting party size avoids the bots-vs-players
             // ambiguity that makes "7" mean two different things.
             $"Bot target: {target} - {FormatPartySize(target)} with the leader ({rostered} of {online} VM(s) rostered{benched})",
+            $"Party mode: {FormatFollowAutoPartyMode(mode, target)}",
             $"Games completed: {_followAutoGamesCompleted}",
             $"Session elapsed: {FormatElapsed(elapsed)}"
         };
@@ -5800,6 +6045,43 @@ public sealed class DiscordBot
         }
 
         return string.Join("\n", lines);
+    }
+
+    /// <summary>
+    /// The one line that says which rule owns the bot count right now, and - in public mode - what
+    /// the live game actually looks like, since there the target is a consequence rather than a
+    /// setting. The last-vantage case is called out by name instead of being papered over: at that
+    /// point the game IS full, and the monitor must not claim a slot is being held.
+    /// </summary>
+    private string FormatFollowAutoPartyMode(FollowAutoPartyMode mode, int target)
+    {
+        if (mode == FollowAutoPartyMode.Private)
+        {
+            return "private - the -1 / +1 buttons set the bot count";
+        }
+
+        var aim = $"holding {FollowAutoPublicModePolicy.TargetPlayerCount} of "
+            + $"{FollowAutoRosterPolicy.MaxPlayersPerGame} players";
+        if (_followAutoPublicMode.LastHumanCount is not { } humanCount)
+        {
+            return $"public - {aim} so a real player can always join; waiting on the first live player count";
+        }
+
+        if (FollowAutoPublicModePolicy.IsHoldingLastVantage(target, humanCount))
+        {
+            return $"public - {humanCount} real player(s) leaves no room to give back; keeping 1 client in as the "
+                + "only vantage that can see this game end, so the game is currently full";
+        }
+
+        // Deliberately the count that was actually READ, not humans plus the target. Those differ
+        // whenever the fleet cannot supply the target - fewer VMs online than it asks for, or a
+        // client still on its way in - and this line would then assert a party size nobody is
+        // sitting in. It could also print a negative number of held-open slots in the window
+        // between a human arriving and the yield landing.
+        var seen = _followAutoPublicMode.LastPlayerCount is { } players
+            ? $"last read {players}/{FollowAutoRosterPolicy.MaxPlayersPerGame} in the game"
+            : "no live count yet";
+        return $"public - {humanCount} real player(s), {seen}; {aim}";
     }
 
     private async Task RunFollowAutoLoopAsync(
@@ -5849,6 +6131,7 @@ public sealed class DiscordBot
                 channel,
                 options.MetricsEnabled,
                 options.TargetBotCount,
+                options.PartyMode,
                 accountState.Incumbents,
                 run);
             if (!string.IsNullOrWhiteSpace(options.ResumeReason))
@@ -5993,6 +6276,11 @@ public sealed class DiscordBot
                     _followAutoLivePlayers.Observe(
                         initialPulse.PlayerCount,
                         initialPulse.PlayerCountFresh);
+                    // Every rostered bot is in the game at this point, so the party bar and the
+                    // joined set describe the same population and the humans can be counted out
+                    // of it. If this moves the target, the watch below sees its snapshot go stale
+                    // on the first comparison and hands the loop straight back a reconciliation.
+                    await TryApplyPublicPartyTargetAsync(initialPulse, CountFleetClientsInGame(accountState));
                     if (!currentGameActive)
                     {
                         _followAutoGameNumber++;
@@ -6118,10 +6406,12 @@ public sealed class DiscordBot
                     _followAutoGamesCompleted++;
                     currentGameActive = false;
                     _followAutoLivePlayers.Reset();
+                    _followAutoPublicMode.Reset();
                     isolatedAccountsResyncedThisGame.Clear();
                     outOfGameResyncsThisGame.Clear();
                     // The game the parked accounts were shut out of is over; they resume the
                     // normal join scan for the next one alongside everyone else.
+                    accountState.ClearStrandedInGame();
                     var unparkedAccounts = accountState.ClearGameFullParking();
                     var unparkedNote = unparkedAccounts.Length > 0
                         ? $" {string.Join(", ", unparkedAccounts)} sat out that full game and will rejoin with the fleet."
@@ -6205,10 +6495,12 @@ public sealed class DiscordBot
                         // reached the all-joined/"active" milestone. Do not carry a full-game
                         // high-water from the abandoned game into the next roster scan.
                         _followAutoLivePlayers.Reset();
+                        _followAutoPublicMode.Reset();
 
                         // The game everyone was parked out of is being abandoned; the rescan
                         // targets wherever the leader went next, a fresh capacity situation.
                         accountState.ClearGameFullParking();
+                        accountState.ClearStrandedInGame();
 
                         idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                         await DelayNextFollowCheckAsync(afterLeave: true);
@@ -7206,7 +7498,7 @@ public sealed class DiscordBot
                     Math.Ceiling(options.IdleTimeout.TotalMinutes),
                     1,
                     int.MaxValue);
-                var resumeTargetBotCount = _followAutoTarget.ArmLocalRestart();
+                var (resumeTargetBotCount, resumePartyMode) = _followAutoTarget.ArmLocalRestart();
                 try
                 {
                     _db.SaveFollowAutoResumeIntent(new FollowAutoResumeIntent(
@@ -7223,6 +7515,7 @@ public sealed class DiscordBot
                             .ToArray(),
                         $"{request.TriggerAccountKey} reached {request.ConsecutiveFailures} consecutive warmup failures on {request.NodeId}",
                         resumeTargetBotCount,
+                        resumePartyMode == FollowAutoPartyMode.Public,
                         run.RunId));
 
                     // Stop can publish cancellation while recovery owns the journal gate, then
@@ -7690,6 +7983,11 @@ public sealed class DiscordBot
             // Out of attempts. Release it so the all-joined watch - which requires the joined set
             // to match the active roster exactly - is not held up by a client that cannot leave.
             accountState.Bench(new HashSet<string>([failure.AccountKey], StringComparer.OrdinalIgnoreCase));
+            // Released, but almost certainly still sitting in the leader's game. Public mode has to
+            // keep counting it: reading an untracked bot as one more real player would make the
+            // fleet yield another slot to it, and then another, emptying the roster a step at a
+            // time while the game it is measuring never actually gets any less full.
+            accountState.MarkStrandedInGame(failure.AccountKey);
             abandoned.Add($"{failure.AccountKey} ({failure.Message})");
         }
 
@@ -8209,6 +8507,15 @@ public sealed class DiscordBot
             var sample = await TryFetchFollowPulseAsync(rotation++, _followAutoLockedNametag, accountState.Joined);
             await TryLockNametagFromSampleAsync(sample);
             _followAutoLivePlayers.Observe(sample.PlayerCount, sample.PlayerCountFresh);
+            if (await TryApplyPublicPartyTargetAsync(sample, CountFleetClientsInGame(accountState)))
+            {
+                // Yield now rather than letting the next iteration's snapshot comparison catch it:
+                // the run loop is what actually benches or promotes a client, and public mode's
+                // whole promise is that the slot is given back promptly.
+                return new FollowAutoGameWatchResult(
+                    "public mode changed the bot count to hold a slot open",
+                    ReconcileRoster: true);
+            }
 
             // Before interpreting the leader signal, check whether this vantage is even in a
             // game. A bot dropped back to the lobby after its join was already confirmed (a
@@ -9466,7 +9773,8 @@ public sealed class DiscordBot
         LocalRestartArmed,
         RateLimited,
         Refused,
-        AtLimit
+        AtLimit,
+        PublicMode
     }
 
     private sealed record FollowAutoBotCountControl(
@@ -9474,6 +9782,13 @@ public sealed class DiscordBot
         int PreviousTarget = 0,
         int Target = 0,
         TimeSpan RetryAfter = default,
+        IUserMessage? Monitor = null);
+
+    // Shares the bot-count outcome enum because the two buttons fail in exactly the same ways: no
+    // run, a click on a superseded monitor, or a frozen target while host recovery is armed.
+    private sealed record FollowAutoPartyModeControl(
+        FollowAutoBotCountControlOutcome Outcome,
+        FollowAutoPartyModeChange? Change = null,
         IUserMessage? Monitor = null);
 
     private sealed record FollowAutoStopSignalResult(int Attempted, int Succeeded);
@@ -9518,7 +9833,8 @@ public sealed class DiscordBot
         int? FriendRow,
         IReadOnlyList<string> InitialRecoveryAccountKeys,
         string? ResumeReason = null,
-        int TargetBotCount = FollowAutoRosterPolicy.DefaultBotCount);
+        int TargetBotCount = FollowAutoRosterPolicy.DefaultBotCount,
+        FollowAutoPartyMode PartyMode = FollowAutoPartyMode.Private);
 
     private sealed record FollowAutoNodeRecoveryRequest(
         string NodeId,

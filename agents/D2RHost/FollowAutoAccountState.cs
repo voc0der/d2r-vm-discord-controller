@@ -26,6 +26,7 @@ internal sealed class FollowAutoAccountState
     private readonly HashSet<string> _parkedGameFull = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _gameFullStrikes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _benchLeaveFailures = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _strandedInGame = new(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlySet<string> Joined => _joined;
 
@@ -36,6 +37,14 @@ internal sealed class FollowAutoAccountState
     public int JoinedCount => _joined.Count;
 
     public int ParkedGameFullCount => _parkedGameFull.Count;
+
+    /// <summary>
+    /// Clients this run gave up on removing from the current game. They are no longer tracked as
+    /// joined - the all-joined watch would stall forever waiting on a client that cannot leave -
+    /// but they are still sitting in the leader's game taking up a slot, so anything reasoning
+    /// about how full that game is has to count them.
+    /// </summary>
+    public int StrandedInGameCount => _strandedInGame.Count;
 
     /// <summary>
     /// Every account already committed to the current game - in it, recovering back into it, or
@@ -52,7 +61,31 @@ internal sealed class FollowAutoAccountState
         _recoveryPending.Remove(accountKey);
         _parkedGameFull.Remove(accountKey);
         _gameFullStrikes.Remove(accountKey);
+        // A stranded client that got back under the run's control is counted as joined again, not
+        // in both places at once.
+        _strandedInGame.Remove(accountKey);
         return _joined.Add(accountKey);
+    }
+
+    /// <summary>
+    /// Records that this run has stopped trying to take an account out of the current game, having
+    /// spent <see cref="MaxBenchLeaveAttempts"/> Save and Exit attempts on it. Call it after
+    /// <see cref="Bench"/> releases the account, which is what makes the fleet's occupancy of the
+    /// game observable again once the run has let go of it.
+    /// </summary>
+    public void MarkStrandedInGame(string accountKey)
+    {
+        _strandedInGame.Add(accountKey);
+    }
+
+    /// <summary>
+    /// Forgets stranded clients when the fleet moves on. The next game is a fresh situation: a
+    /// client left behind in the abandoned one is picked up by the normal menu recovery path the
+    /// next time it is rostered.
+    /// </summary>
+    public void ClearStrandedInGame()
+    {
+        _strandedInGame.Clear();
     }
 
     /// <summary>
@@ -128,6 +161,7 @@ internal sealed class FollowAutoAccountState
             _parkedGameFull.Remove(accountKey);
             _gameFullStrikes.Remove(accountKey);
             _benchLeaveFailures.Remove(accountKey);
+            _strandedInGame.Remove(accountKey);
         }
     }
 

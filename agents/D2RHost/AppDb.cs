@@ -401,11 +401,11 @@ public sealed class AppDb
                 insert into follow_auto_resume (
                   id, channel_id, delay_seconds, watch, idle_minutes, metrics_enabled,
                   character_slot, friend_row, recovery_account_keys, reason, recorded_utc,
-                  target_bot_count, recovery_generation)
+                  target_bot_count, public_mode, recovery_generation)
                 values (
                   'current', $channel_id, $delay_seconds, $watch, $idle_minutes, $metrics_enabled,
                   $character_slot, $friend_row, $recovery_account_keys, $reason, $recorded_utc,
-                  $target_bot_count, $recovery_generation)
+                  $target_bot_count, $public_mode, $recovery_generation)
                 on conflict(id) do update set
                   channel_id = excluded.channel_id,
                   delay_seconds = excluded.delay_seconds,
@@ -418,6 +418,7 @@ public sealed class AppDb
                   reason = excluded.reason,
                   recorded_utc = excluded.recorded_utc,
                   target_bot_count = excluded.target_bot_count,
+                  public_mode = excluded.public_mode,
                   recovery_generation = excluded.recovery_generation
                 """;
             command.Parameters.AddWithValue("$channel_id", intent.ChannelId.ToString());
@@ -433,6 +434,7 @@ public sealed class AppDb
             command.Parameters.AddWithValue("$reason", intent.Reason);
             command.Parameters.AddWithValue("$recorded_utc", DateTimeOffset.UtcNow.ToString("O"));
             command.Parameters.AddWithValue("$target_bot_count", intent.TargetBotCount);
+            command.Parameters.AddWithValue("$public_mode", intent.PublicMode ? 1 : 0);
             command.Parameters.AddWithValue("$recovery_generation", intent.RecoveryGeneration);
             command.ExecuteNonQuery();
         }
@@ -447,7 +449,7 @@ public sealed class AppDb
             command.CommandText = """
                 select channel_id, delay_seconds, watch, idle_minutes, metrics_enabled,
                        character_slot, friend_row, recovery_account_keys, reason, target_bot_count,
-                       recovery_generation
+                       public_mode, recovery_generation
                 from follow_auto_resume
                 where id = 'current'
                 """;
@@ -480,7 +482,8 @@ public sealed class AppDb
                 recoveryAccountKeys,
                 reader.GetString(8),
                 reader.IsDBNull(9) ? FollowAutoRosterPolicy.DefaultBotCount : reader.GetInt32(9),
-                reader.IsDBNull(10) ? 0 : reader.GetInt64(10));
+                !reader.IsDBNull(10) && reader.GetInt64(10) != 0,
+                reader.IsDBNull(11) ? 0 : reader.GetInt64(11));
         }
     }
 
@@ -608,6 +611,9 @@ public sealed class AppDb
             "follow_auto_resume",
             "target_bot_count",
             $"integer not null default {FollowAutoRosterPolicy.DefaultBotCount}");
+        // Public mode is journaled beside the count for the same reason: a resumed run that came
+        // back in private mode would quietly refill the slot the operator was holding open.
+        AddColumnIfMissing("follow_auto_resume", "public_mode", "integer not null default 0");
         // A delayed in-process fallback must only consume the exact restart record that scheduled
         // it. Without a generation, an older timer can see and erase a later run's replacement row.
         AddColumnIfMissing(
@@ -704,6 +710,8 @@ public sealed record FollowAutoResumeIntent(
     // Carried across the restart so a resumed run keeps the party size the operator chose. A row
     // written before this column existed reads as the default.
     int TargetBotCount = FollowAutoRosterPolicy.DefaultBotCount,
+    // Whether the run was holding a slot open for a real player when it was interrupted.
+    bool PublicMode = false,
     // Identifies the in-process run that scheduled a local-restart fallback. It is deliberately
     // ignored by normal startup resume; only a still-alive predecessor timer uses it to prove the
     // durable row has not since been replaced by another run.
