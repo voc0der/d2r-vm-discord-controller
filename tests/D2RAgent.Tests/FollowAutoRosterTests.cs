@@ -331,13 +331,14 @@ public sealed class FollowAutoRosterTests
         target.Reset(4);
         var beforeArm = target.TryAdjust(1, _ => true);
 
-        var persistedTarget = target.ArmLocalRestart();
+        var persisted = target.ArmLocalRestart();
         var afterArm = target.TryAdjust(-1, _ => true);
 
         Assert.Equal(FollowAutoTargetAdjustmentOutcome.Changed, beforeArm.Outcome);
-        Assert.Equal(5, persistedTarget);
+        Assert.Equal(5, persisted.TargetBotCount);
+        Assert.Equal(FollowAutoPartyMode.Private, persisted.Mode);
         Assert.Equal(FollowAutoTargetAdjustmentOutcome.LocalRestartArmed, afterArm.Outcome);
-        Assert.Equal(persistedTarget, target.TargetBotCount);
+        Assert.Equal(persisted.TargetBotCount, target.TargetBotCount);
     }
 
     [Fact]

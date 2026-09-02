@@ -41,8 +41,8 @@ public sealed class FollowAutoResumeBotCountTests : IDisposable
         var target = new FollowAutoTargetControl();
         target.Reset(4);
 
-        var frozenTarget = target.ArmLocalRestart();
-        db.SaveFollowAutoResumeIntent(NewIntent(frozenTarget));
+        var frozen = target.ArmLocalRestart();
+        db.SaveFollowAutoResumeIntent(NewIntent(frozen.TargetBotCount));
         var lateAdjustment = target.TryAdjust(1, _ => true);
 
         Assert.Equal(FollowAutoTargetAdjustmentOutcome.LocalRestartArmed, lateAdjustment.Outcome);
@@ -66,6 +66,34 @@ public sealed class FollowAutoResumeBotCountTests : IDisposable
         Assert.Equal(12345UL, intent.ChannelId);
         Assert.Equal(FollowAutoRosterPolicy.DefaultBotCount, intent.TargetBotCount);
         Assert.Equal(0, intent.RecoveryGeneration);
+    }
+
+    // A resumed run that came back in private mode would quietly refill the slot the operator was
+    // holding open, so the mode is journaled beside the count.
+    [Fact]
+    public void TheRestartJournalKeepsPublicMode()
+    {
+        var db = new AppDb(CreateConfig());
+
+        db.SaveFollowAutoResumeIntent(NewIntent(targetBotCount: 3) with { PublicMode = true });
+
+        var intent = db.GetFollowAutoResumeIntent();
+        Assert.NotNull(intent);
+        Assert.True(intent.PublicMode);
+        Assert.Equal(3, intent.TargetBotCount);
+    }
+
+    [Fact]
+    public void ADatabaseFromAnOlderHostResumesInPrivateMode()
+    {
+        var config = CreateConfig();
+        Directory.CreateDirectory(_directory);
+        SeedLegacyResumeRow(config.DatabasePath);
+
+        var intent = new AppDb(config).GetFollowAutoResumeIntent();
+
+        Assert.NotNull(intent);
+        Assert.False(intent.PublicMode);
     }
 
     [Fact]
