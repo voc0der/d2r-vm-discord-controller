@@ -31,20 +31,57 @@ public sealed class HyperVOperations : ILocalVmPowerOperations
         var vmName = RequireString(request.Args, "vmName");
         EnsureAllowedVmName(vmName);
 
-        return request.Command switch
+        if (request.Command == "vm_snapshot")
         {
-            "vm_status" => await RunForVmAsync(vmName, GetVmStatusCommand(vmName), cancellationToken),
-            "vm_start" => await RunForVmAsync(vmName, $"Start-VM -Name {PsQuote(vmName)} | Out-Null; {GetVmStatusCommand(vmName)}", cancellationToken),
-            "vm_stop" => await RunForVmAsync(vmName, $"Stop-VM -Name {PsQuote(vmName)} -Force | Out-Null; {GetVmStatusCommand(vmName)}", cancellationToken),
-            // The hypervisor equivalent of holding the power button. Unlike vm_stop's -Force, which
-            // still asks the guest through its integration services, -TurnOff needs nothing from
-            // the guest at all - which is the entire point, because the guests this exists for are
-            // frozen on the Windows boot logo and are not running integration services to ask.
-            // Never a first resort: see VmHangRecoveryPolicy for when the host is allowed to use it.
-            "vm_turnoff" => await RunForVmAsync(vmName, $"Stop-VM -Name {PsQuote(vmName)} -TurnOff -Force | Out-Null; {GetVmStatusCommand(vmName)}", cancellationToken),
-            "vm_reboot" => await RunForVmAsync(vmName, $"Restart-VM -Name {PsQuote(vmName)} -Force | Out-Null; {GetVmStatusCommand(vmName)}", cancellationToken),
-            "vm_snapshot" => await SnapshotVmAsync(vmName, request.Args, cancellationToken),
-            _ => CommandResult.Failure($"Unsupported Hyper-V command: {request.Command}")
+            return await SnapshotVmAsync(vmName, request.Args, cancellationToken);
+        }
+
+        var script = TryBuildVmPowerScript(request.Command, vmName);
+        return script is null
+            ? CommandResult.Failure($"Unsupported Hyper-V command: {request.Command}")
+            : await RunForVmAsync(vmName, script, cancellationToken);
+    }
+
+    /// <summary>
+    /// Builds the PowerShell one-liner behind each VM power verb, or null for a command this class
+    /// does not own. Every one of them ends by re-reading the VM's status, so a caller always gets
+    /// the post-action state back in the same round trip.
+    /// </summary>
+    /// <remarks>
+    /// The four verbs are deliberately distinct cmdlets rather than combinations of each other,
+    /// because they ask the guest for progressively less:
+    ///
+    /// <list type="bullet">
+    /// <item><description>
+    /// <c>vm_reboot</c> is one <c>Restart-VM</c>. It is NOT a stop followed by a start, and must not
+    /// become one - the guest stays powered on across it, so it is the cheapest way back for a guest
+    /// that is still answering its integration services, and it never passes through the Off state
+    /// where a separate Start-VM could fail and strand the VM.
+    /// </description></item>
+    /// <item><description>
+    /// <c>vm_stop</c> is <c>Stop-VM -Force</c>, which despite the name still asks the guest through
+    /// its integration services; <c>-Force</c> only suppresses the confirmation prompt.
+    /// </description></item>
+    /// <item><description>
+    /// <c>vm_turnoff</c> is the hypervisor equivalent of holding the power button. <c>-TurnOff</c>
+    /// needs nothing from the guest at all - which is the entire point, because the guests it exists
+    /// for are frozen on the Windows boot logo and are not running integration services to ask.
+    /// Never a first resort: see VmHangRecoveryPolicy for when the host is allowed to use it.
+    /// </description></item>
+    /// </list>
+    /// </remarks>
+    internal static string? TryBuildVmPowerScript(string command, string vmName)
+    {
+        var status = GetVmStatusCommand(vmName);
+        var name = PsQuote(vmName);
+        return command switch
+        {
+            "vm_status" => status,
+            "vm_start" => $"Start-VM -Name {name} | Out-Null; {status}",
+            "vm_stop" => $"Stop-VM -Name {name} -Force | Out-Null; {status}",
+            "vm_turnoff" => $"Stop-VM -Name {name} -TurnOff -Force | Out-Null; {status}",
+            "vm_reboot" => $"Restart-VM -Name {name} -Force | Out-Null; {status}",
+            _ => null
         };
     }
 

@@ -236,6 +236,38 @@ public static class HostConfigLoader
             throw new InvalidOperationException("vmHangRecovery.maxHardPowerCuts must be between 1 and 5.");
         }
 
+        if (config.StuckVmWatchdog.AgentOfflineGraceSeconds < 60)
+        {
+            throw new InvalidOperationException(
+                "stuckVmWatchdog.agentOfflineGraceSeconds must be at least 60; a shorter window power-cycles guests "
+                    + "that were still connecting.");
+        }
+
+        if (config.StuckVmWatchdog.NoHeartbeatEvidenceGraceSeconds
+            < config.StuckVmWatchdog.AgentOfflineGraceSeconds)
+        {
+            throw new InvalidOperationException(
+                "stuckVmWatchdog.noHeartbeatEvidenceGraceSeconds must be at least agentOfflineGraceSeconds; "
+                    + "the uncorroborated path must never act sooner than the one backed by a heartbeat reading.");
+        }
+
+        if (config.StuckVmWatchdog.MinimumVmUptimeSeconds < 60)
+        {
+            throw new InvalidOperationException(
+                "stuckVmWatchdog.minimumVmUptimeSeconds must be at least 60; a guest needs longer than that to boot.");
+        }
+
+        if (config.StuckVmWatchdog.MaxRecoveriesPerVm is < 1 or > 5)
+        {
+            throw new InvalidOperationException("stuckVmWatchdog.maxRecoveriesPerVm must be between 1 and 5.");
+        }
+
+        if (config.StuckVmWatchdog.SweepIntervalSeconds is < 15 or > 3600)
+        {
+            throw new InvalidOperationException(
+                "stuckVmWatchdog.sweepIntervalSeconds must be between 15 and 3600.");
+        }
+
         if (config.WindowsFirewall.ReconcileSeconds is < 5 or > 3600)
         {
             throw new InvalidOperationException(

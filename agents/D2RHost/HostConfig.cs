@@ -41,6 +41,7 @@ public sealed class HostConfig
     // broken is skipped rather than blocking the repair.
     public string? SettingsDonorAccountKey { get; set; }
     public VmHangRecoveryConfig VmHangRecovery { get; set; } = new();
+    public StuckVmWatchdogConfig StuckVmWatchdog { get; set; } = new();
     public Dictionary<string, HostAgentConfig> Agents { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, AccountConfig> Accounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
@@ -93,6 +94,53 @@ public sealed class VmHangRecoveryConfig
     /// that can actually help.
     /// </summary>
     public int MaxHardPowerCuts { get; set; } = 2;
+}
+
+/// <summary>
+/// The standing sweep that notices a VM whose agent has stopped answering while the VM itself is
+/// still powered on, and power-cycles it without waiting for follow-auto to work through its own
+/// ladders. See StuckVmWatchdogPolicy for why an offline agent - and not Hyper-V's power state -
+/// is the signal this keys on.
+/// </summary>
+public sealed class StuckVmWatchdogConfig
+{
+    /// <summary>
+    /// Set false to keep the pre-existing behavior: a stuck guest is noticed only when follow-auto
+    /// runs out of patience with it, or when an operator notices it offline.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// How long an agent may be continuously missing, on a VM Hyper-V still reports powered on,
+    /// before its guest is power-cycled. Must comfortably clear a cold boot plus the agent's own
+    /// connect: below that this recovers VMs that were about to arrive on their own.
+    /// </summary>
+    public int AgentOfflineGraceSeconds { get; set; } = 240;
+
+    /// <summary>
+    /// The longer window used when the Heartbeat integration service reports nothing for this VM,
+    /// so the offline streak has no corroboration at all. Enabling Heartbeat on the VM is what buys
+    /// the shorter window above.
+    /// </summary>
+    public int NoHeartbeatEvidenceGraceSeconds { get; set; } = 600;
+
+    /// <summary>
+    /// How long a VM must have been powered on before an absent agent means anything. This is the
+    /// guard against acting on guests that are legitimately still booting - after a host resume,
+    /// every VM is doing exactly that at once.
+    /// </summary>
+    public int MinimumVmUptimeSeconds { get; set; } = 180;
+
+    /// <summary>
+    /// Power cycles allowed per guest before the watchdog reports the dead end and stops. Refunded
+    /// once that guest's agent has stayed connected for <see cref="AgentOfflineGraceSeconds"/> - a
+    /// brief reappearance does not, or a guest whose agent connects and dies again would reclaim
+    /// its whole allowance every few minutes and never reach the dead-end notice.
+    /// </summary>
+    public int MaxRecoveriesPerVm { get; set; } = 2;
+
+    /// <summary>How often the sweep runs.</summary>
+    public int SweepIntervalSeconds { get; set; } = 60;
 }
 
 public sealed class WindowsFirewallConfig

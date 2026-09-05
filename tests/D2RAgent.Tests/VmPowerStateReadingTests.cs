@@ -77,4 +77,44 @@ public sealed class VmPowerStateReadingTests
     {
         Assert.Equal(VmHeartbeatStatus.Unknown, DiscordBot.TryReadVmHeartbeat(CommandResult.Success("no data")));
     }
+
+    // Uptime is what stops the stuck-VM watchdog from acting on a guest that is legitimately still
+    // booting - the case that would otherwise cycle the whole fleet at once right after a resume.
+    // ConvertTo-Json expands a TimeSpan into its properties rather than emitting a string, so Ticks
+    // is the shape to expect; the rest are accepted because a worker node can be on a different
+    // PowerShell major version than the master.
+    [Theory]
+    [InlineData("""{"State":2,"Uptime":{"Ticks":3000000000,"TotalSeconds":300.0}}""", 300)]
+    [InlineData("""{"State":2,"Uptime":{"TotalSeconds":300.0}}""", 300)]
+    [InlineData("""{"State":2,"Uptime":3000000000}""", 300)]
+    [InlineData("""{"State":2,"Uptime":"00:05:00"}""", 300)]
+    [InlineData("""[{"State":2,"Uptime":{"Ticks":3000000000}}]""", 300)]
+    public void ReadsTheUptimeFromEverySerializationANodeMightSend(string output, int expectedSeconds)
+    {
+        var status = CommandResult.Success("d2r-hc-01: ok", new { output });
+
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), DiscordBot.TryReadVmUptime(status));
+    }
+
+    // Every one of these is a node that did not tell us how long the VM has been up. None may read
+    // as zero: zero is "it just booted", which would suppress recovery on that guest forever. The
+    // policy treats null as missing evidence and falls through to its other guards instead.
+    [Theory]
+    [InlineData("""{"State":2}""")]
+    [InlineData("""{"State":2,"Uptime":null}""")]
+    [InlineData("""{"State":2,"Uptime":{"Days":0}}""")]
+    [InlineData("""{"State":2,"Uptime":"not a timespan"}""")]
+    [InlineData("not json")]
+    public void AnUnreportedUptimeIsNullRatherThanZero(string output)
+    {
+        var status = CommandResult.Success("d2r-hc-01: ok", new { output });
+
+        Assert.Null(DiscordBot.TryReadVmUptime(status));
+    }
+
+    [Fact]
+    public void ResultWithoutDataHasNoUptime()
+    {
+        Assert.Null(DiscordBot.TryReadVmUptime(CommandResult.Success("no data")));
+    }
 }
