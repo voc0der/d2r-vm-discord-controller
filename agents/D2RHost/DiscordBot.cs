@@ -56,6 +56,15 @@ public sealed class DiscordBot
     // so there is nothing to gain from sweeping often, and a repair closes a live client.
     private static readonly TimeSpan SettingsRepairSweepInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan SettingsRepairFirstSweepDelay = TimeSpan.FromMinutes(2);
+    // Nothing is power-cycled on the strength of one sweep - the policy's own grace windows decide
+    // that - so the first sweep only has to start the offline clocks. Delaying it past a fresh host
+    // start keeps those clocks from beginning while the fleet's VMs are still booting.
+    private static readonly TimeSpan StuckVmFirstSweepDelay = TimeSpan.FromMinutes(2);
+    // Shorter than the full recovery's budget on purpose. This rung is only tried on a guest whose
+    // integration services are answering, so if a restart is going to work at all it works on the
+    // same timescale as an ordinary reboot - and every minute spent waiting past that is a minute
+    // stolen from the power cycle that actually will.
+    private static readonly TimeSpan StuckVmRestartReconnectTimeout = TimeSpan.FromMinutes(6);
     private const int JoinAutoDefaultIdleMinutes = 60;
 
     private readonly HostConfig _config;
@@ -74,6 +83,16 @@ public sealed class DiscordBot
     private readonly SettingsRepairTracker _settingsRepairs = new();
     private CancellationTokenSource? _settingsRepairSweepCts;
     private Task? _settingsRepairSweepTask;
+    // Offline streaks and recovery budgets for the stuck-VM sweep. Also on the bot rather than on a
+    // run, for the same reason as the repair tracker above: a wedged guest survives follow-auto
+    // starting and stopping, and the sweep has to work when no run exists at all.
+    private readonly StuckVmWatchdogTracker _stuckVms = new();
+    private CancellationTokenSource? _stuckVmSweepCts;
+    private Task? _stuckVmSweepTask;
+    // Accounts whose guest is being power-cycled right now, by either the watchdog or follow-auto.
+    // Both paths call the same recovery, so without this a sweep could start a second stop/start on
+    // a VM follow-auto already had halfway through one.
+    private readonly HashSet<string> _vmRecoveriesInFlight = new(StringComparer.OrdinalIgnoreCase);
     private readonly DiscordSocketClient _client;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
     private readonly SemaphoreSlim _notificationLock = new(1, 1);
@@ -211,6 +230,13 @@ public sealed class DiscordBot
             () => RunSettingsRepairSweepAsync(_settingsRepairSweepCts.Token),
             CancellationToken.None);
 
+        // Same reasoning as the repair sweep: a guest that stops running its agent is a fleet
+        // problem, not a Discord feature, so it must still be recovered on a headless master.
+        _stuckVmSweepCts ??= new CancellationTokenSource();
+        _stuckVmSweepTask ??= Task.Run(
+            () => RunStuckVmSweepAsync(_stuckVmSweepCts.Token),
+            CancellationToken.None);
+
         if (_config.DisableDiscord)
         {
             _logger.LogWarning("Discord is disabled.");
@@ -267,6 +293,421 @@ public sealed class DiscordBot
                 return;
             }
         }
+    }
+
+    /// <summary>
+    /// Power-cycles any VM that has stopped running its agent while Hyper-V still reports it
+    /// powered on, whether or not follow-auto is running.
+    /// </summary>
+    /// <remarks>
+    /// The gap this closes: nothing was watching for a guest that goes quiet. Follow-auto's ladders
+    /// only count failures it can observe, and an account whose agent never reconnects is filtered
+    /// out as offline before those ladders ever see it - so the two most common shapes of this,
+    /// a guest wedged partway through boot and a guest that came back from a host resume without
+    /// its agent, could sit untouched for a whole session. When follow-auto did eventually notice,
+    /// it took nine failed checks to reach the same power cycle this reaches directly.
+    /// </remarks>
+    private async Task RunStuckVmSweepAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(StuckVmFirstSweepDelay, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        var lastTick = DateTimeOffset.UtcNow;
+        var lastSweepDuration = TimeSpan.Zero;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var interval = TimeSpan.FromSeconds(_config.StuckVmWatchdog.SweepIntervalSeconds);
+
+            // This sweep keeps its own resume detector rather than relying on the Discord wake
+            // monitor's, because that one does not run on a headless master - and a missed reset
+            // here is the worst bug this feature can have: every offline clock would carry the
+            // whole suspended duration and the first sweep back would cycle the entire fleet at
+            // once. A tick that arrives far later than its own interval is the same evidence the
+            // wake monitor uses, and needs nothing from Discord.
+            //
+            // The window measured is the WHOLE previous iteration, sweep included. Measuring only
+            // the delay left a hole: a machine that suspends while a sweep is running resumes with
+            // the gap already absorbed, and on a headless master nothing else would have caught it.
+            // The allowance therefore carries the previous sweep's own duration, timed with a
+            // monotonic clock so a suspension inside it cannot be mistaken for work.
+            //
+            // The asymmetry is deliberate. A false positive - a tick delayed because a recovery on
+            // one guest ran long - only makes the watchdog more patient. A false negative cycles
+            // healthy VMs. So this errs towards resetting.
+            var now = DateTimeOffset.UtcNow;
+            var gap = now - lastTick;
+            if (gap > interval + lastSweepDuration + HostSleepGapThreshold)
+            {
+                _logger.LogInformation(
+                    "Stuck-VM sweep saw a {Gap} gap between ticks; clearing every offline clock before sweeping.",
+                    gap);
+                _stuckVms.Reset();
+            }
+
+            lastTick = now;
+            var sweepClock = Stopwatch.StartNew();
+            try
+            {
+                await SweepStuckVmsAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "The stuck-VM sweep failed.");
+            }
+
+            lastSweepDuration = sweepClock.Elapsed;
+            try
+            {
+                await Task.Delay(interval, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+        }
+    }
+
+    internal async Task<int> SweepStuckVmsAsync(CancellationToken cancellationToken)
+    {
+        var options = BuildStuckVmWatchdogOptions();
+        if (!options.Enabled)
+        {
+            // The policy would refuse every guest anyway, but only after this sweep had already
+            // spent a Hyper-V round trip per silent VM asking about it. Disabled has to mean the
+            // pre-existing behavior including its cost, not the same cost for a fixed answer.
+            return 0;
+        }
+
+        var policy = new StuckVmWatchdogPolicy(options);
+        var recovered = 0;
+
+        // One connectivity snapshot for the whole sweep. FleetRegistry rebuilds the entire fleet -
+        // every worker's inventory JSON included - on each Accounts/GetAgent call, so asking it
+        // per account cost a full rebuild per VM per tick to answer one bit.
+        var (onlineAccounts, offlineAccounts) = GetAccountEntriesByConnectivity();
+        var sweptAt = DateTimeOffset.UtcNow;
+        foreach (var entry in onlineAccounts)
+        {
+            // Staying connected for as long as the silence that would have condemned it is the bar
+            // for refunding a guest's recovery budget. Anything cheaper - refunding on the first
+            // sighting - lets a guest whose agent connects and dies again reclaim its whole
+            // allowance every few minutes, so maxRecoveriesPerVm would bound nothing.
+            _stuckVms.RecordOnline(entry.Key, sweptAt, options.AgentOfflineGrace);
+        }
+
+        foreach (var (accountKey, account) in offlineAccounts)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Silence the host could not observe is not evidence about the guest. Every VM agent on
+            // a worker node reaches the master through that worker's own process, so a worker that
+            // restarts - a self-update is enough - takes all of its agents offline with it. Counting
+            // that would power-cycle a whole node's healthy guests the moment the worker came back,
+            // before its agents had finished re-registering.
+            if (!_hyperV.IsNodeOnline(_hyperV.ResolveNodeId(account)))
+            {
+                _stuckVms.RecordUnobserved(accountKey);
+                continue;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var offlineFor = _stuckVms.RecordOffline(accountKey, now);
+
+            // Everything below costs a PowerShell process on the owning node, so the cheapest
+            // precondition is checked first. A VM whose agent only just went quiet cannot be
+            // actionable yet no matter what Hyper-V would have said about it.
+            if (offlineFor < policy.ProbeAfter)
+            {
+                continue;
+            }
+
+            // Follow-auto may already be cycling this exact guest. Yield rather than queue behind
+            // it: its recovery ends with the same wait for the same agent, so if it works there is
+            // nothing left for the watchdog to do, and if it does not the next sweep still gets a
+            // turn.
+            if (IsVmRecoveryInFlight(accountKey))
+            {
+                continue;
+            }
+
+            var vmName = ResolveVmName(account);
+            if (string.IsNullOrWhiteSpace(vmName))
+            {
+                continue;
+            }
+
+            var args = JsonSerializer.SerializeToElement(new { accountKey, vmName });
+            var status = await SendVmPowerCommandAsync(account, "vm_status", args, cancellationToken);
+            if (!status.Ok)
+            {
+                // The owning node went unreachable between the check above and here, or Hyper-V
+                // would not answer. Either way the guest was not observed, so the streak restarts
+                // for the same reason it does for an offline node - a node-level outage is a
+                // separate problem with its own reporting.
+                _stuckVms.RecordUnobserved(accountKey);
+                _logger.LogDebug(
+                    "Stuck-VM sweep could not read {VmName} for {AccountKey}: {Message}",
+                    vmName,
+                    accountKey,
+                    status.Message);
+                continue;
+            }
+
+            var powerState = TryReadVmPowerState(status, out var observed) ? observed : null;
+            var assessment = policy.Assess(
+                agentOnline: false,
+                powerState,
+                TryReadVmHeartbeat(status),
+                TryReadVmUptime(status),
+                offlineFor,
+                _stuckVms.RecoveriesUsed(accountKey));
+
+            if (assessment.Verdict == VmWatchdogVerdict.GiveUp)
+            {
+                if (_stuckVms.TryClaimGiveUpNotice(accountKey))
+                {
+                    _notifications.Enqueue(
+                        $"{FormatAccountDisplayName(accountKey, account)}: still offline after "
+                            + $"{_config.StuckVmWatchdog.MaxRecoveriesPerVm} watchdog power cycle(s) of {vmName}. "
+                            + "Not cycling it again - this needs a look.");
+                    _logger.LogWarning(
+                        "Stuck-VM watchdog gave up on {AccountKey} ({VmName}): {Reason}",
+                        accountKey,
+                        vmName,
+                        assessment.Reason);
+                }
+
+                continue;
+            }
+
+            if (assessment.Verdict is not (VmWatchdogVerdict.Restart or VmWatchdogVerdict.PowerCycle))
+            {
+                _logger.LogDebug(
+                    "Stuck-VM sweep is holding off on {AccountKey} ({VmName}): {Reason}",
+                    accountKey,
+                    vmName,
+                    assessment.Reason);
+                continue;
+            }
+
+            if (!TryBeginVmRecovery(accountKey))
+            {
+                continue;
+            }
+
+            _logger.LogWarning(
+                "Stuck-VM watchdog is {Action} {VmName} for {AccountKey}: {Reason}",
+                assessment.Verdict == VmWatchdogVerdict.Restart ? "restarting" : "power-cycling",
+                vmName,
+                accountKey,
+                assessment.Reason);
+
+            // Charged before the attempt, not after. A recovery that throws or is cancelled partway
+            // still consumed a power cycle on that guest, and a budget that only counted clean
+            // completions would let a reliably-crashing recovery loop forever.
+            _stuckVms.RecordRecoveryAttempt(accountKey, DateTimeOffset.UtcNow);
+            CommandResult recovery;
+            var restartNote = "";
+            try
+            {
+                // A guest whose integration services still answer gets the cheap rung first: one
+                // Restart-VM, no Off state to get stranded in. Only its failure buys the full
+                // stop/start, and that escalation is charged to the same attempt - the two rungs
+                // are one recovery of one guest, not two.
+                if (assessment.Verdict == VmWatchdogVerdict.Restart)
+                {
+                    var restart = await RestartStuckVmAsync(accountKey, account, vmName, args, cancellationToken);
+                    if (restart.Ok)
+                    {
+                        recovered++;
+                        _notifications.Enqueue(
+                            $"{FormatAccountDisplayName(accountKey, account)}: {restart.Message}");
+                        continue;
+                    }
+
+                    restartNote = $"An in-place restart was tried first and did not bring it back: {restart.Message} ";
+                }
+
+                recovery = await RecoverVmAsync(accountKey, account, cancellationToken);
+            }
+            finally
+            {
+                // The clock is restarted here as well as when the attempt was charged. A recovery
+                // runs for as long as half an hour - an in-place restart plus a full stop/start,
+                // each waiting out its own reconnect budget - so by the time it returns the streak
+                // charged at the start already reads far past the grace window, and the next sweep
+                // a minute later would spend the rest of the budget on a guest that has been
+                // booting for sixty seconds.
+                _stuckVms.RestartClock(accountKey, DateTimeOffset.UtcNow);
+                EndVmRecovery(accountKey);
+            }
+
+            var displayName = FormatAccountDisplayName(accountKey, account);
+            if (recovery.Ok)
+            {
+                recovered++;
+                _notifications.Enqueue(
+                    $"{displayName}: {vmName} was powered on but its agent had stopped answering "
+                        + $"({assessment.Reason}). {restartNote}{recovery.Message}");
+            }
+            else
+            {
+                _notifications.Enqueue(
+                    $"{displayName}: tried to recover {vmName} because {assessment.Reason}, and it did not "
+                        + $"come back. {restartNote}{recovery.Message}");
+            }
+        }
+
+        return recovered;
+    }
+
+    /// <summary>
+    /// The cheap rung of the watchdog's ladder: one <c>Restart-VM</c> on a guest that is still
+    /// answering the hypervisor, then a wait for its agent.
+    /// </summary>
+    /// <remarks>
+    /// This is deliberately not a stop followed by a start. The guest keeps its virtual power the
+    /// whole way through, so there is no Off state in which a failed Start-VM could strand the VM -
+    /// which is the failure mode the full recovery has to guard against with confirm-Off polling
+    /// and a hard-cut escalation. It is also the only rung that can work at all without turning a
+    /// machine off, so it is worth trying before one that does.
+    ///
+    /// It can still fail, and silently: Restart-VM is routed through the same guest integration
+    /// services as a graceful stop, so a guest that is answering heartbeats but wedged above the
+    /// kernel may take the request and never act on it. That is why success is judged by the agent
+    /// coming back rather than by the cmdlet returning, and why the caller escalates on failure.
+    /// </remarks>
+    private async Task<CommandResult> RestartStuckVmAsync(
+        string accountKey,
+        AccountConfig account,
+        string vmName,
+        JsonElement args,
+        CancellationToken cancellationToken)
+    {
+        var restart = await SendVmPowerCommandAsync(account, "vm_reboot", args, cancellationToken);
+        if (!restart.Ok)
+        {
+            return CommandResult.Failure($"Restart-VM for {vmName} failed: {restart.Message}");
+        }
+
+        var reconnected = await WaitForAgentReconnectAsync(
+            accountKey,
+            StuckVmRestartReconnectTimeout,
+            cancellationToken);
+        return reconnected
+            ? CommandResult.Success(
+                $"{vmName} was powered on but its agent had stopped answering. Restarting the guest in place "
+                    + "brought it back; no power cycle was needed.")
+            : CommandResult.Failure(
+                $"its agent did not reconnect within {StuckVmRestartReconnectTimeout.TotalMinutes:N0} minutes "
+                    + "of the restart");
+    }
+
+    /// <summary>
+    /// The Hyper-V VM behind an account, falling back to its agent id for the fleets that named the
+    /// two the same. Empty means the account has no guest anything here can power-cycle.
+    /// </summary>
+    private static string ResolveVmName(AccountConfig account)
+    {
+        return string.IsNullOrWhiteSpace(account.VmName) ? account.AgentId : account.VmName!;
+    }
+
+    private bool IsAccountOnline(string accountKey)
+    {
+        return GetAccountEntriesByConnectivity().Online
+            .Any(entry => string.Equals(entry.Key, accountKey, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<bool> WaitForAgentReconnectAsync(
+        string accountKey,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsAccountOnline(accountKey))
+            {
+                return true;
+            }
+
+            await Task.Delay(FollowAutoNodeRecoveryPollInterval, cancellationToken);
+        }
+
+        return false;
+    }
+
+    private StuckVmWatchdogOptions BuildStuckVmWatchdogOptions()
+    {
+        var configured = _config.StuckVmWatchdog;
+        return new StuckVmWatchdogOptions(
+            configured.Enabled,
+            TimeSpan.FromSeconds(configured.AgentOfflineGraceSeconds),
+            TimeSpan.FromSeconds(configured.NoHeartbeatEvidenceGraceSeconds),
+            TimeSpan.FromSeconds(configured.MinimumVmUptimeSeconds),
+            configured.MaxRecoveriesPerVm);
+    }
+
+    /// <summary>
+    /// Claims the exclusive right to power-cycle one account's guest. Both the watchdog sweep and
+    /// follow-auto's failure ladders end at the same stop/start, and two of those interleaved on
+    /// one VM would have the second one's Start-VM land on a guest the first had just turned off.
+    /// </summary>
+    private bool TryBeginVmRecovery(string accountKey)
+    {
+        lock (_vmRecoveriesInFlight)
+        {
+            return _vmRecoveriesInFlight.Add(accountKey);
+        }
+    }
+
+    private void EndVmRecovery(string accountKey)
+    {
+        lock (_vmRecoveriesInFlight)
+        {
+            _vmRecoveriesInFlight.Remove(accountKey);
+        }
+    }
+
+    private bool IsVmRecoveryInFlight(string accountKey)
+    {
+        lock (_vmRecoveriesInFlight)
+        {
+            return _vmRecoveriesInFlight.Contains(accountKey);
+        }
+    }
+
+    /// <summary>
+    /// Takes the recovery latch for a caller that must not give up if the watchdog happens to hold
+    /// it, waiting out the sweep's cycle rather than skipping its own escalation.
+    /// </summary>
+    private async Task<bool> WaitToBeginVmRecoveryAsync(
+        string accountKey,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + FollowAutoNodeRecoveryTimeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (TryBeginVmRecovery(accountKey))
+            {
+                return true;
+            }
+
+            await Task.Delay(FollowAutoVmPowerStatePollInterval, cancellationToken);
+        }
+
+        return false;
     }
 
     internal async Task<int> SweepSettingsRepairsAsync(CancellationToken cancellationToken)
@@ -454,6 +895,13 @@ public sealed class DiscordBot
             }
 
             _logger.LogInformation("Host wake detected: pulse gap of {Gap}.", gap);
+
+            // Every offline clock the stuck-VM sweep is keeping just jumped by however long this
+            // machine was suspended, and none of that elapsed time is evidence about guests that
+            // were suspended along with it. Without this the first sweep after a resume would read
+            // the whole fleet as hours-stuck and power-cycle all of it at once.
+            _stuckVms.Reset();
+
             try
             {
                 await HandleHostWakeAsync(gap);
@@ -556,6 +1004,25 @@ public sealed class DiscordBot
             sweepCts.Dispose();
             _settingsRepairSweepCts = null;
             _settingsRepairSweepTask = null;
+        }
+
+        if (_stuckVmSweepCts is { } stuckVmCts)
+        {
+            stuckVmCts.Cancel();
+            if (_stuckVmSweepTask is { } stuckVmTask)
+            {
+                try
+                {
+                    await stuckVmTask;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
+            stuckVmCts.Dispose();
+            _stuckVmSweepCts = null;
+            _stuckVmSweepTask = null;
         }
 
         if (_config.DisableDiscord)
@@ -6682,7 +7149,28 @@ public sealed class DiscordBot
                         joined: accountState.JoinedCount,
                         total: accountState.CountExpectedAccounts(onlineAccountKeys));
 
-                    var vmRecovery = await RecoverFollowAutoVmAsync(request, cancellationToken);
+                    // Follow-auto is the authoritative escalation path, so unlike the watchdog it
+                    // waits for the latch instead of yielding it. If the watchdog got there first
+                    // this simply picks up after that cycle finishes, and the account's strikes are
+                    // still on the table if the guest came back just as broken.
+                    var latched = await WaitToBeginVmRecoveryAsync(request.AccountKey, cancellationToken);
+                    CommandResult vmRecovery;
+                    try
+                    {
+                        vmRecovery = latched
+                            ? await RecoverVmAsync(request.AccountKey, request.Account, cancellationToken)
+                            : CommandResult.Failure(
+                                $"another power cycle of {request.AccountKey}'s VM was still running after "
+                                    + $"{FollowAutoNodeRecoveryTimeout.TotalMinutes:N0} minutes; no second one was started.");
+                    }
+                    finally
+                    {
+                        if (latched)
+                        {
+                            EndVmRecovery(request.AccountKey);
+                        }
+                    }
+
                     if (vmRecovery.Ok)
                     {
                         warmupFailures.RecordVmRecovered(request.AccountKey, request.NodeId);
@@ -6691,19 +7179,27 @@ public sealed class DiscordBot
                         // being stuck one rung below the top for the rest of the run.
                         checkFailureLadder.RecordVmRecovered(request.AccountKey);
                     }
-                    else
+                    else if (latched)
                     {
                         // Keep the strikes: the next failure escalates straight to the node
                         // restart rather than retrying a cycle that has already proven impossible.
                         warmupFailures.RecordVmRecoveryUnavailable(request.AccountKey, request.NodeId);
                     }
 
+                    // Deliberately nothing recorded when the latch was never taken. Losing the race
+                    // to the watchdog is not proof this guest cannot be cycled - the watchdog was
+                    // running the very same cycle - and RecordVmRecoveryUnavailable would mark the
+                    // VM as already tried, escalating the next failure to a restart of the whole
+                    // physical node over a race. Recording nothing leaves both the strikes and the
+                    // not-yet-cycled flag, so the next failure asks for this VM again.
+                    var vmRecoveryOutlook = vmRecovery.Ok || !latched
+                        ? $"five new consecutive warmup failures escalate to restarting {request.NodeId}."
+                        : $"the next warmup failure escalates to restarting {request.NodeId}.";
                     await UpdateFollowAutoMonitorAsync(
                         vmRecovery.Ok
-                            ? $"{request.AccountKey}: {vmRecovery.Message} Follow-auto continues; five new consecutive "
-                                + $"warmup failures escalate to restarting {request.NodeId}."
-                            : $"{request.AccountKey}: VM power cycle failed: {vmRecovery.Message} The next warmup "
-                                + $"failure escalates to restarting {request.NodeId}.",
+                            ? $"{request.AccountKey}: {vmRecovery.Message} Follow-auto continues; {vmRecoveryOutlook}"
+                            : $"{request.AccountKey}: VM power cycle failed: {vmRecovery.Message} Follow-auto "
+                                + $"continues; {vmRecoveryOutlook}",
                         joined: accountState.JoinedCount,
                         total: accountState.CountExpectedAccounts(onlineAccountKeys));
                 }
@@ -6972,11 +7468,18 @@ public sealed class DiscordBot
 
     /// <summary>
     /// Stops one account's VM, confirms Hyper-V reports it Off, starts it again, confirms it is
-    /// Running, and waits for its agent to reconnect. This is the escalation for a guest whose
-    /// client will not warm up - most often a D2R that cannot initialize its graphics device,
-    /// which no amount of in-guest relaunching fixes because the guest's display driver is what
-    /// is broken.
+    /// Running, and waits for its agent to reconnect.
     /// </summary>
+    /// <remarks>
+    /// Two callers reach this, from opposite directions, and it is the right answer for both.
+    /// Follow-auto escalates here for a guest whose client will not warm up - most often a D2R that
+    /// cannot initialize its graphics device, which no amount of in-guest relaunching fixes because
+    /// the guest's display driver is what is broken. The stuck-VM watchdog arrives here for a guest
+    /// that stopped running its agent at all. Both want the same thing: a cooperative stop, a hard
+    /// cut only if the guest ignores it, and a fresh boot - which is exactly the ladder below.
+    /// Callers must hold this account's recovery latch (see <see cref="TryBeginVmRecovery"/>) so the
+    /// two paths cannot power-cycle the same guest at once.
+    /// </remarks>
     // First rung of the check-failure ladder. The client is reachable and answering - its warmup
     // keeps succeeding - so the cheapest thing that clears wedged lobby state is a fresh D2R
     // process. A failure here is not fatal: the ladder simply escalates on the next streak.
@@ -7004,25 +7507,24 @@ public sealed class DiscordBot
         }
     }
 
-    private async Task<CommandResult> RecoverFollowAutoVmAsync(
-        FollowAutoVmRecoveryRequest request,
+    private async Task<CommandResult> RecoverVmAsync(
+        string accountKey,
+        AccountConfig account,
         CancellationToken cancellationToken)
     {
-        var vmName = string.IsNullOrWhiteSpace(request.Account.VmName)
-            ? request.Account.AgentId
-            : request.Account.VmName!;
+        var vmName = ResolveVmName(account);
         if (string.IsNullOrWhiteSpace(vmName))
         {
-            return CommandResult.Failure($"{request.AccountKey} has no VM name or agent id to power-cycle.");
+            return CommandResult.Failure($"{accountKey} has no VM name or agent id to power-cycle.");
         }
 
-        var args = JsonSerializer.SerializeToElement(new { accountKey = request.AccountKey, vmName });
+        var args = JsonSerializer.SerializeToElement(new { accountKey, vmName });
 
         var policy = new VmHangRecoveryPolicy(BuildVmHangRecoveryOptions());
         var hardPowerCuts = 0;
         var notes = new List<string>();
 
-        var stop = await SendVmPowerCommandAsync(request.Account, "vm_stop", args, cancellationToken);
+        var stop = await SendVmPowerCommandAsync(account, "vm_stop", args, cancellationToken);
         if (!stop.Ok)
         {
             return CommandResult.Failure($"Stop-VM for {vmName} failed: {stop.Message}");
@@ -7033,14 +7535,14 @@ public sealed class DiscordBot
         // against a VM that is not actually Off fails, and that failure would be reported as a
         // completed recovery.
         var stopRequestedAt = DateTimeOffset.UtcNow;
-        var off = await WaitForVmPowerStateAsync(request.Account, args, "Off", cancellationToken);
+        var off = await WaitForVmPowerStateAsync(account, args, "Off", cancellationToken);
         if (!off.Ok)
         {
             // A forced shutdown went unanswered, which means the guest is not running the
             // integration services it is routed through. Before this existed, that ended the
             // recovery and escalated to restarting the entire physical node - taking every healthy
             // sibling VM on it down to fix one wedged guest.
-            var lastState = await ReadVmPowerStateAsync(request.Account, args, cancellationToken);
+            var lastState = await ReadVmPowerStateAsync(account, args, cancellationToken);
             var verdict = policy.AssessStuckShutdown(
                 lastState,
                 DateTimeOffset.UtcNow - stopRequestedAt,
@@ -7051,7 +7553,7 @@ public sealed class DiscordBot
                     $"{vmName} did not confirm Off after Stop-VM: {off.Message}. No power cut was attempted because {verdict.Reason}.");
             }
 
-            var cut = await HardPowerCutAsync(request.Account, args, vmName, verdict.Reason, cancellationToken);
+            var cut = await HardPowerCutAsync(account, args, vmName, verdict.Reason, cancellationToken);
             hardPowerCuts++;
             notes.Add(cut.Message);
             if (!cut.Ok)
@@ -7061,13 +7563,13 @@ public sealed class DiscordBot
             }
         }
 
-        var start = await SendVmPowerCommandAsync(request.Account, "vm_start", args, cancellationToken);
+        var start = await SendVmPowerCommandAsync(account, "vm_start", args, cancellationToken);
         if (!start.Ok)
         {
             return CommandResult.Failure($"{vmName} is Off, but Start-VM failed: {start.Message}");
         }
 
-        var running = await WaitForVmPowerStateAsync(request.Account, args, "Running", cancellationToken);
+        var running = await WaitForVmPowerStateAsync(account, args, "Running", cancellationToken);
         if (!running.Ok)
         {
             return CommandResult.Failure($"{vmName} did not confirm Running after Start-VM: {running.Message}");
@@ -7085,17 +7587,14 @@ public sealed class DiscordBot
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var onlineAccountKeys = GetAccountEntriesByConnectivity().Online
-                .Select(entry => entry.Key)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (onlineAccountKeys.Contains(request.AccountKey))
+            if (IsAccountOnline(accountKey))
             {
                 return CommandResult.Success(
                     $"{vmName} was powered off, confirmed Off, started again, and its agent reconnected."
                         + FormatVmRecoveryNotes(notes));
             }
 
-            var status = await SendVmPowerCommandAsync(request.Account, "vm_status", args, cancellationToken);
+            var status = await SendVmPowerCommandAsync(account, "vm_status", args, cancellationToken);
             var powerState = status.Ok && TryReadVmPowerState(status, out var observed) ? observed : null;
             var heartbeat = status.Ok ? TryReadVmHeartbeat(status) : VmHeartbeatStatus.Unknown;
             var assessment = policy.AssessBootHang(
@@ -7107,7 +7606,7 @@ public sealed class DiscordBot
 
             if (assessment.Verdict == VmHangVerdict.HardPowerCut)
             {
-                var cut = await HardPowerCutAsync(request.Account, args, vmName, assessment.Reason, cancellationToken);
+                var cut = await HardPowerCutAsync(account, args, vmName, assessment.Reason, cancellationToken);
                 hardPowerCuts++;
                 notes.Add(cut.Message);
                 if (!cut.Ok)
@@ -7116,14 +7615,14 @@ public sealed class DiscordBot
                         $"{vmName} appears wedged ({assessment.Reason}), and the power cut failed: {cut.Message}");
                 }
 
-                var restart = await SendVmPowerCommandAsync(request.Account, "vm_start", args, cancellationToken);
+                var restart = await SendVmPowerCommandAsync(account, "vm_start", args, cancellationToken);
                 if (!restart.Ok)
                 {
                     return CommandResult.Failure(
                         $"{vmName} was powered off after a wedged boot, but Start-VM failed: {restart.Message}");
                 }
 
-                var backUp = await WaitForVmPowerStateAsync(request.Account, args, "Running", cancellationToken);
+                var backUp = await WaitForVmPowerStateAsync(account, args, "Running", cancellationToken);
                 if (!backUp.Ok)
                 {
                     return CommandResult.Failure(
@@ -7276,6 +7775,63 @@ public sealed class DiscordBot
         }
 
         return VmHangRecoveryPolicy.ParseHeartbeat(heartbeat.GetString());
+    }
+
+    /// <summary>
+    /// Reads how long Hyper-V says the VM has been powered on out of a <c>vm_status</c> result.
+    /// </summary>
+    /// <remarks>
+    /// This is the hypervisor's own measurement, not the guest's, which is the whole reason it is
+    /// usable here: a guest wedged on the boot logo cannot report its uptime, and the host needs to
+    /// know exactly that guest has been powered on long enough to have finished booting.
+    ///
+    /// ConvertTo-Json expands a TimeSpan into its properties rather than emitting a string, so
+    /// <c>Ticks</c> is the shape to expect. The other forms are accepted because a worker node can
+    /// be running a different PowerShell major version than the master, and a missing or
+    /// unrecognized uptime must degrade to "unknown" - which the policy treats as no evidence -
+    /// rather than to zero, which would read as a VM that just booted and suppress recovery forever.
+    /// </remarks>
+    internal static TimeSpan? TryReadVmUptime(CommandResult status)
+    {
+        if (!TryReadVmStatusRoot(status, out var root)
+            || !root.TryGetProperty("Uptime", out var uptime))
+        {
+            return null;
+        }
+
+        switch (uptime.ValueKind)
+        {
+            case JsonValueKind.Object:
+                if (uptime.TryGetProperty("Ticks", out var ticks)
+                    && ticks.ValueKind == JsonValueKind.Number
+                    && ticks.TryGetInt64(out var tickValue))
+                {
+                    return TimeSpan.FromTicks(Math.Max(0, tickValue));
+                }
+
+                if (uptime.TryGetProperty("TotalSeconds", out var totalSeconds)
+                    && totalSeconds.ValueKind == JsonValueKind.Number
+                    && totalSeconds.TryGetDouble(out var secondsValue)
+                    && double.IsFinite(secondsValue))
+                {
+                    return TimeSpan.FromSeconds(Math.Max(0, secondsValue));
+                }
+
+                return null;
+            case JsonValueKind.Number:
+                return uptime.TryGetInt64(out var rawTicks)
+                    ? TimeSpan.FromTicks(Math.Max(0, rawTicks))
+                    : null;
+            case JsonValueKind.String:
+                return TimeSpan.TryParse(
+                    uptime.GetString(),
+                    CultureInfo.InvariantCulture,
+                    out var parsed) && parsed >= TimeSpan.Zero
+                    ? parsed
+                    : null;
+            default:
+                return null;
+        }
     }
 
     /// <summary>

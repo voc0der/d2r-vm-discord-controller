@@ -40,6 +40,18 @@
     "settleSeconds": 10,
     "maxHardPowerCuts": 2
   },
+  // The standing sweep for a VM that is powered on while its agent has stopped answering. Hyper-V
+  // reports "Running" for a hung guest just as it does for a healthy one, so the verdict comes from
+  // the agent's silence, corroborated by the heartbeat. A guest the hypervisor can still reach is
+  // restarted in place first; one it cannot reach goes straight to the full power cycle.
+  "stuckVmWatchdog": {
+    "enabled": true,
+    "agentOfflineGraceSeconds": 240,
+    "noHeartbeatEvidenceGraceSeconds": 600,
+    "minimumVmUptimeSeconds": 180,
+    "maxRecoveriesPerVm": 2,
+    "sweepIntervalSeconds": 60
+  },
   "agents": {
     "d2r-hc-01": {
       "kind": "vm",

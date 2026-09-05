@@ -126,6 +126,106 @@ Configure under `vmHangRecovery` in the host config:
 | `settleSeconds` | `10` | How long the VM stays off before starting again. Hyper-V releases guest devices and memory asynchronously, and starting into that teardown is its own way to produce a wedged boot. |
 | `maxHardPowerCuts` | `2` | Cuts allowed per recovery before escalating to the node. |
 
+## Stuck VM watchdog
+
+The recovery above is excellent and, until this existed, almost never reached: it only ran once
+follow-auto had worked through nine failed checks or five failed warmups on an account it could
+still see. An account whose agent never reconnects is filtered out as **offline** before those
+ladders ever count it, so the two commonest shapes of a stuck guest - one wedged partway through
+boot, and one that came back from a host resume without its agent - could sit untouched for an
+entire session.
+
+A standing sweep now closes that. Every `sweepIntervalSeconds` it looks at each configured account
+and asks one question: is this VM powered on while its agent has stopped answering?
+
+**Hyper-V's power state is not a health signal and is not used as one.** `Running` means virtual
+power is applied and nothing more - a hung guest, a bluescreened guest, one frozen forever on the
+boot logo, and a perfectly healthy one all report it identically. The only states that ever differ
+are transitions the host itself commanded. So `Running` appears in the decision exactly once, as a
+guard that some *other* transition is not already in flight, and contributes nothing to the verdict.
+
+What carries the verdict is the agent's connection, because it is the one signal that requires the
+guest to actually be doing work. The registry counts an agent connected only while its socket is
+open *and* it has been heard from inside the negotiated heartbeat window, so a guest that freezes
+stops counting within about a minute even though its socket may still look open from outside.
+
+The heartbeat then decides how much corroboration that silence has - and note that the strongest
+case is the one `VmHangRecoveryPolicy` deliberately refuses to act on:
+
+| Heartbeat | Agent | Meaning | Action |
+| --- | --- | --- | --- |
+| `OK` | connected | Everything is fine | None |
+| `OK` | gone past `agentOfflineGraceSeconds` | **Strongest evidence.** Windows is demonstrably up, so "still booting" is ruled out - the guest simply is not running our software | `vm_reboot` (in place), then the full cycle if that does not bring the agent back |
+| `No Contact` / `Lost Communication` | gone past `agentOfflineGraceSeconds` | The guest is not answering the hypervisor either | Full power cycle, which escalates to a hard cut on its own evidence |
+| Not reported | gone past `noHeartbeatEvidenceGraceSeconds` | No corroboration; the silence carries the decision alone | Full power cycle |
+| any | gone, VM up < `minimumVmUptimeSeconds` | Still booting | Keep waiting |
+| any | gone, VM not `Running` | Off deliberately, or mid-transition | Keep waiting |
+
+The `OK` + agent-gone row is why this policy exists separately. `VmHangRecoveryPolicy` correctly
+refuses to power-cut a guest whose heartbeat answers - a cut is the wrong tool for a live Windows -
+which means that case had no recovery anywhere. It gets one here, and a gentler one: a single
+`Restart-VM` that keeps the VM powered on throughout, so there is no `Off` state in which a failed
+`Start-VM` could strand it. Only if the agent does not come back within six minutes does the full
+stop/start run, and both rungs are charged to the same attempt.
+
+Two things bound the silence itself before any of that is consulted:
+
+- **Silence cannot predate the guest's current boot.** The streak is clamped to Hyper-V's own
+  uptime for the VM, because an agent cannot have been missing for longer than its guest has been
+  powered on. Without it, a VM rebooted by anything other than this watchdog - a follow-auto node
+  restart, the power lifecycle's resume, an operator's `Start-VM` - comes back still carrying the
+  silence from before that boot, and `minimumVmUptimeSeconds` becomes the only thing standing
+  between a booting guest and a power cycle.
+- **Silence the host could not observe does not count.** Every VM agent on a worker node reaches the
+  master through that worker's own process, so a worker that restarts - a self-update is enough -
+  takes all of its agents offline while its guests keep running perfectly. A sweep that finds the
+  owning node unreachable, or cannot read the VM, restarts that guest's clock instead of counting
+  the gap; otherwise the whole node's healthy VMs would be cycled the moment the worker came back.
+
+Two further guards keep a host resume from turning this into a fleet-wide power cycle:
+
+- **Resume resets every offline clock.** The wall clock jumps by however long the machine was
+  suspended, and every guest was suspended along with it, so none of that elapsed time is evidence.
+  Two independent detectors clear the streaks: the Discord host-wake monitor, and the sweep's own
+  tick-gap check. The sweep keeps its own because the wake monitor does not run on a headless
+  master (`disableDiscord: true`), and a missed reset there would cycle the whole fleet at once.
+  The tick-gap check measures the whole previous iteration, sweep included, carrying that sweep's
+  own monotonically-timed duration in the allowance - measuring only the delay left a machine that
+  suspends *during* a sweep undetected. Both err towards resetting — a spurious reset only makes
+  the watchdog more patient.
+- **`minimumVmUptimeSeconds`** refuses to act on a guest that has not been powered on long enough
+  to have finished booting - which, right after a resume, is all of them at once.
+
+Offline streaks are measured from this host process's own observations, never from an agent's
+persisted last-seen timestamp: that value can be hours old and survive a restart, which would make
+the first sweep after startup read the whole fleet as hung.
+
+The sweep and follow-auto share a per-account recovery latch, so the two cannot power-cycle one
+guest at the same time. The watchdog yields; follow-auto, as the authoritative escalation path,
+waits for the latch instead. If that wait times out, follow-auto records nothing: losing the race
+is not proof the cycle is impossible - the watchdog was running the very same one - and marking it
+unavailable would escalate follow-auto's next failure to a restart of the whole physical node over
+a race. The strikes and the not-yet-cycled flag both stay, so the next failure asks for this VM
+again.
+
+`enabled: false` stops the sweep before it probes anything, so a disabled watchdog costs no Hyper-V
+round trips at all.
+
+Configure under `stuckVmWatchdog` in the host config:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | `false` restores the previous behavior: a stuck guest is noticed only when follow-auto runs out of patience, or when an operator spots it offline. |
+| `agentOfflineGraceSeconds` | `240` | How long an agent may be continuously missing on a powered-on VM before its guest is recovered. Must comfortably clear a cold boot plus the agent's connect. |
+| `noHeartbeatEvidenceGraceSeconds` | `600` | The longer window used when heartbeat is not reported. Validation refuses a value below `agentOfflineGraceSeconds`. |
+| `minimumVmUptimeSeconds` | `180` | How long a VM must have been powered on before an absent agent means anything. |
+| `maxRecoveriesPerVm` | `2` | Recoveries allowed per guest before the watchdog reports the dead end and stops. Refunded once that agent has stayed connected for `agentOfflineGraceSeconds` — a brief reappearance does not, so a guest whose agent connects and dies again is stopped after two cycles and reported rather than cycled forever. |
+| `sweepIntervalSeconds` | `60` | How often the sweep runs. |
+
+Enabling Heartbeat on every VM (`Enable-VMIntegrationService -VMName <name> -Name Heartbeat`) is
+what buys the shorter window; without it every guest falls back to
+`noHeartbeatEvidenceGraceSeconds`.
+
 ## Troubleshooting
 
 If the Discord command says VM preparation failed and the host stays awake:
