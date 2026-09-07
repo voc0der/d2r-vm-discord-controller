@@ -65,6 +65,15 @@ public sealed class DiscordBot
     // same timescale as an ordinary reboot - and every minute spent waiting past that is a minute
     // stolen from the power cycle that actually will.
     private static readonly TimeSpan StuckVmRestartReconnectTimeout = TimeSpan.FromMinutes(6);
+
+    /// <summary>
+    /// How long to wait for a <c>Restart-VM</c> to visibly take effect before calling it a no-op.
+    /// Measured against the guest's uptime, which the hypervisor reports whether or not anything
+    /// inside the guest is working, so a frozen guest cannot fake it.
+    /// </summary>
+    private static readonly TimeSpan StuckVmRestartTransitionTimeout = TimeSpan.FromSeconds(90);
+
+    private static readonly TimeSpan StuckVmRestartTransitionPollInterval = TimeSpan.FromSeconds(5);
     private const int JoinAutoDefaultIdleMinutes = 60;
 
     private readonly HostConfig _config;
@@ -464,11 +473,15 @@ public sealed class DiscordBot
             }
 
             var powerState = TryReadVmPowerState(status, out var observed) ? observed : null;
+            // Held rather than passed inline: this is also the baseline the in-place restart
+            // proves itself against, since a guest that actually rebooted comes back with a
+            // smaller uptime than the one measured here.
+            var uptimeBeforeRecovery = TryReadVmUptime(status);
             var assessment = policy.Assess(
                 agentOnline: false,
                 powerState,
                 TryReadVmHeartbeat(status),
-                TryReadVmUptime(status),
+                uptimeBeforeRecovery,
                 offlineFor,
                 _stuckVms.RecoveriesUsed(accountKey));
 
@@ -526,7 +539,13 @@ public sealed class DiscordBot
                 // are one recovery of one guest, not two.
                 if (assessment.Verdict == VmWatchdogVerdict.Restart)
                 {
-                    var restart = await RestartStuckVmAsync(accountKey, account, vmName, args, cancellationToken);
+                    var restart = await RestartStuckVmAsync(
+                        accountKey,
+                        account,
+                        vmName,
+                        args,
+                        uptimeBeforeRecovery,
+                        cancellationToken);
                     if (restart.Ok)
                     {
                         recovered++;
@@ -592,6 +611,7 @@ public sealed class DiscordBot
         AccountConfig account,
         string vmName,
         JsonElement args,
+        TimeSpan? uptimeBeforeRestart,
         CancellationToken cancellationToken)
     {
         var restart = await SendVmPowerCommandAsync(account, "vm_reboot", args, cancellationToken);
@@ -600,17 +620,168 @@ public sealed class DiscordBot
             return CommandResult.Failure($"Restart-VM for {vmName} failed: {restart.Message}");
         }
 
-        var reconnected = await WaitForAgentReconnectAsync(
-            accountKey,
-            StuckVmRestartReconnectTimeout,
+        // A cmdlet that did not error is not a guest that restarted. Restart-VM goes through the
+        // same integration services that a wedged guest has already stopped answering, so it can
+        // return cleanly having done nothing at all - and this rung is chosen precisely when the
+        // guest looks answerable, which is exactly when that mistake is easiest to make. Without
+        // this check the only evidence either way was the agent reconnecting, so a restart that
+        // never happened was indistinguishable from one that happened and did not help, and both
+        // spent the full reconnect timeout before anything escalated.
+        var cycled = await WaitForVmRestartAsync(
+            account,
+            vmName,
+            args,
+            uptimeBeforeRestart,
             cancellationToken);
-        return reconnected
-            ? CommandResult.Success(
-                $"{vmName} was powered on but its agent had stopped answering. Restarting the guest in place "
-                    + "brought it back; no power cycle was needed.")
-            : CommandResult.Failure(
-                $"its agent did not reconnect within {StuckVmRestartReconnectTimeout.TotalMinutes:N0} minutes "
-                    + "of the restart");
+        if (cycled == VmRestartObservation.DidNotRestart)
+        {
+            return CommandResult.Failure(
+                $"Restart-VM reported success but {vmName}'s uptime never reset within "
+                    + $"{StuckVmRestartTransitionTimeout.TotalSeconds:N0}s, so the guest did not actually restart. "
+                    + "Escalating rather than waiting out the agent reconnect on a guest that never rebooted");
+        }
+
+        // Supervised, not slept. This used to be a flat six-minute wait for the agent, which spent
+        // the whole budget the same way whether the guest was mid-boot or frozen on the Windows
+        // logo - and a guest that is never coming back on its own looks identical to a slow one
+        // right up until the timeout expires. Ask the hypervisor what is actually happening on
+        // every poll instead, and stop the moment the answer is "the boot is wedged", so the
+        // remaining budget is spent on the power cycle that can fix it rather than on waiting.
+        //
+        // The verdict comes from VmHangRecoveryPolicy - the same policy the full recovery uses for
+        // the same question - so a guest whose heartbeat still answers is never condemned here.
+        // The escalation is handed to the caller rather than cut from here: RecoverVmAsync is what
+        // owns confirm-Off polling and the hard cut, and this rung deliberately never turns a
+        // machine off.
+        var restartedAt = DateTimeOffset.UtcNow;
+        var deadline = restartedAt + StuckVmRestartReconnectTimeout;
+        var hangPolicy = new VmHangRecoveryPolicy(BuildVmHangRecoveryOptions());
+        var lastAssessment = "the agent simply had not reconnected yet";
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsAccountOnline(accountKey))
+            {
+                return CommandResult.Success(
+                    $"{vmName} was powered on but its agent had stopped answering. Restarting the guest in place "
+                        + "brought it back; no power cycle was needed.");
+            }
+
+            var probe = await SendVmPowerCommandAsync(account, "vm_status", args, cancellationToken);
+            var powerState = probe.Ok && TryReadVmPowerState(probe, out var observed) ? observed : null;
+            var heartbeat = probe.Ok ? TryReadVmHeartbeat(probe) : VmHeartbeatStatus.Unknown;
+            var bootAssessment = hangPolicy.AssessBootHang(
+                powerState,
+                heartbeat,
+                DateTimeOffset.UtcNow - restartedAt,
+                hardPowerCutsUsed: 0);
+            lastAssessment = bootAssessment.Reason;
+            if (bootAssessment.Verdict == VmHangVerdict.HardPowerCut)
+            {
+                return CommandResult.Failure(
+                    $"{vmName} restarted, but its boot is wedged ({bootAssessment.Reason}). Escalating now instead of "
+                        + $"waiting out the remaining {(deadline - DateTimeOffset.UtcNow).TotalMinutes:N0} minutes of "
+                        + "reconnect budget");
+            }
+
+            await Task.Delay(FollowAutoNodeRecoveryPollInterval, cancellationToken);
+        }
+
+        return CommandResult.Failure(
+            $"its agent did not reconnect within {StuckVmRestartReconnectTimeout.TotalMinutes:N0} minutes "
+                + $"of the restart ({lastAssessment})");
+    }
+
+    internal enum VmRestartObservation
+    {
+        /// <summary>The guest's uptime reset, so it genuinely went down and came back.</summary>
+        Restarted,
+
+        /// <summary>Uptime never reset: the cmdlet returned but the guest kept running.</summary>
+        DidNotRestart,
+
+        /// <summary>No usable uptime to compare, so the restart can be neither proven nor denied.</summary>
+        Unverifiable
+    }
+
+    /// <summary>
+    /// Watches a guest's uptime to decide whether a <c>Restart-VM</c> actually restarted it.
+    /// </summary>
+    /// <remarks>
+    /// Uptime is the right signal because the hypervisor measures it from outside: a guest frozen
+    /// on the Windows boot logo reports it just as accurately as a healthy one, and it is the only
+    /// reading that distinguishes "restarted" from "still the same boot". Power state cannot do
+    /// this job - an in-place restart is not required to pass through any state this poll would be
+    /// fast enough to catch, so a guest that never moved and a guest that restarted between two
+    /// polls both read Running.
+    ///
+    /// A missing baseline is reported as Unverifiable rather than as a failure. Not being able to
+    /// prove a restart happened is not evidence that it did not, and escalating to a power cut on
+    /// an absent reading would turn a diagnostic gap into an outage.
+    /// </remarks>
+    private async Task<VmRestartObservation> WaitForVmRestartAsync(
+        AccountConfig account,
+        string vmName,
+        JsonElement args,
+        TimeSpan? uptimeBeforeRestart,
+        CancellationToken cancellationToken)
+    {
+        if (uptimeBeforeRestart is not { } before)
+        {
+            return VmRestartObservation.Unverifiable;
+        }
+
+        var deadline = DateTimeOffset.UtcNow + StuckVmRestartTransitionTimeout;
+        var sawAnyUptime = false;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(StuckVmRestartTransitionPollInterval, cancellationToken);
+
+            var status = await SendVmPowerCommandAsync(account, "vm_status", args, cancellationToken);
+            if (!status.Ok)
+            {
+                continue;
+            }
+
+            if (TryReadVmUptime(status) is not { } now)
+            {
+                continue;
+            }
+
+            sawAnyUptime = true;
+            if (now < before)
+            {
+                _logger.LogInformation(
+                    "{VmName} restarted in place: uptime fell from {Before} to {After}.",
+                    vmName,
+                    before,
+                    now);
+                return ClassifyRestartOutcome(sawAnyUptime: true, uptimeReset: true);
+            }
+        }
+
+        return ClassifyRestartOutcome(sawAnyUptime, uptimeReset: false);
+    }
+
+    /// <summary>
+    /// The terminal verdict once the transition window has closed without an uptime reset.
+    /// </summary>
+    /// <remarks>
+    /// Split out because the distinction it draws is the whole safety property. Never getting a
+    /// reading at all is a reachability problem - the owning node stopped answering, Hyper-V would
+    /// not report - and that is not evidence the guest ignored the restart. Reporting it as
+    /// DidNotRestart would escalate a guest to a power cycle on the strength of the host's own
+    /// blindness, so silence and a contradicted restart are deliberately different answers.
+    /// </remarks>
+    internal static VmRestartObservation ClassifyRestartOutcome(bool sawAnyUptime, bool uptimeReset)
+    {
+        if (uptimeReset)
+        {
+            return VmRestartObservation.Restarted;
+        }
+
+        return sawAnyUptime ? VmRestartObservation.DidNotRestart : VmRestartObservation.Unverifiable;
     }
 
     /// <summary>
