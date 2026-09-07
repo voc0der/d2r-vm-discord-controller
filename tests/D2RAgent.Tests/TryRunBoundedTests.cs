@@ -34,6 +34,7 @@ public sealed class TryRunBoundedTests
     public void DoesNotBlockPastTheTimeoutWhenTheActionHangs()
     {
         using var release = new ManualResetEventSlim(false);
+        var slotsBefore = BoundedCallSlots.Available;
         var stopwatch = Stopwatch.StartNew();
 
         var result = VmOperations.TryRunBounded(
@@ -52,7 +53,7 @@ public sealed class TryRunBoundedTests
             $"TryRunBounded should give up around {TimeoutMs}ms, not wait out the hung action; took {stopwatch.ElapsedMilliseconds}ms.");
 
         release.Set();
-        BoundedCallSlots.WaitForAll();
+        BoundedCallSlots.WaitForAtLeast(slotsBefore);
     }
 
     [Fact]
@@ -79,6 +80,7 @@ public sealed class TryRunBoundedTests
     public void GenericOverloadReturnsFallbackWhenTheActionHangs()
     {
         using var release = new ManualResetEventSlim(false);
+        var slotsBefore = BoundedCallSlots.Available;
         var stopwatch = Stopwatch.StartNew();
 
         var result = VmOperations.TryRunBounded(
@@ -98,7 +100,7 @@ public sealed class TryRunBoundedTests
             $"TryRunBounded should give up around {TimeoutMs}ms, not wait out the hung action; took {stopwatch.ElapsedMilliseconds}ms.");
 
         release.Set();
-        BoundedCallSlots.WaitForAll();
+        BoundedCallSlots.WaitForAtLeast(slotsBefore);
     }
 
     [Fact]
@@ -124,24 +126,24 @@ public sealed class TryRunBoundedTests
     [Fact]
     public async Task FailsFastInsteadOfSpawningAnotherThreadOnceConcurrencyCapIsSaturated()
     {
-        const int capacity = VmOperations.MaxConcurrentBoundedCalls;
-        using var allStarted = new CountdownEvent(capacity);
         using var release = new ManualResetEventSlim(false);
 
-        // Every sibling that deliberately hangs a bounded call now releases its action and waits
-        // for its own slot before returning (see BoundedCallSlots), so the semaphore is pristine
-        // here by construction rather than by out-waiting the thread pool. This used to be a fixed
-        // 6s delay plus a 15s drain loop, which still lost the race on a loaded CI runner and
-        // failed at 27 of 32 slots - a slow pool, not a broken cap (run 32546672295).
-        BoundedCallSlots.WaitForAll();
+        // The cap under test is process-global, so this saturates whatever share of it is actually
+        // free rather than assuming the whole thing is. Demanding all 32 made this test assert a
+        // property no single test can hold - the semaphore is static, so one slot held anywhere in
+        // the test host failed it before it began, and then failed every test after it. Run
+        // 34168441446 failed three that way at 25, 27 and 27 of 32. The behaviour being pinned is
+        // "once the cap is saturated, the next call fails fast instead of spawning another
+        // thread", and that is just as true of a cap with some slots already spoken for.
+        var slotsBefore = BoundedCallSlots.Available;
 
-        // Separately: the pool's default thread-injection rate is gradual under sudden burst
-        // load, and SetMinThreads only raises the target the pool grows toward - it doesn't force
-        // immediate creation. Without forcing real threads to exist first, this test saw up to 12
-        // of the 32 saturating calls never start even after a 10s wait. Queuing and waiting on
-        // trivial work items forces genuine creation, since each can only complete by actually
-        // running on a distinct thread.
-        const int warmupThreads = capacity + 8;
+        // The pool's default thread-injection rate is gradual under sudden burst load, and
+        // SetMinThreads only raises the target the pool grows toward - it doesn't force immediate
+        // creation. Without forcing real threads to exist first, this test saw up to 12 of the
+        // saturating calls never start even after a 10s wait. Queuing and waiting on trivial work
+        // items forces genuine creation, since each can only complete by actually running on a
+        // distinct thread.
+        const int warmupThreads = VmOperations.MaxConcurrentBoundedCalls + 8;
         ThreadPool.GetMinThreads(out var minWorkerThreads, out var minCompletionPortThreads);
         ThreadPool.SetMinThreads(Math.Max(minWorkerThreads, warmupThreads), minCompletionPortThreads);
         using (var warmupStarted = new CountdownEvent(warmupThreads))
@@ -164,9 +166,14 @@ public sealed class TryRunBoundedTests
             Assert.Same(warmupAll, warmupWinner); // "Thread-pool warmup tasks did not finish."
         }
 
-        // The warmup above queues and drains its own pool work, so re-check rather than trusting
-        // the state observed before it.
-        BoundedCallSlots.WaitForAll();
+        // The warmup above queues and drains its own pool work, so re-read the free capacity rather
+        // than trusting the count taken before it.
+        var capacity = BoundedCallSlots.Available;
+        Assert.True(
+            capacity > 0,
+            "No bounded-call slots were free, so there is no cap left to saturate in this test host.");
+
+        using var allStarted = new CountdownEvent(capacity);
 
         // Dedicated OS threads for the dispatch side, not Task.Run, so the 32 saturating calls
         // don't have to compete with their own 32 *inner* TryRunBounded-spawned tasks for pool
@@ -199,7 +206,7 @@ public sealed class TryRunBoundedTests
 
         Assert.True(
             allStarted.Wait(TimeSpan.FromSeconds(10)),
-            $"All 32 saturating calls should have started and acquired a slot within 10s. Remaining: {allStarted.CurrentCount}.");
+            $"All {capacity} saturating calls should have started and acquired a slot within 10s. Remaining: {allStarted.CurrentCount}.");
 
         var stopwatch = Stopwatch.StartNew();
         var result = VmOperations.TryRunBounded(() => true, 2000);
@@ -210,6 +217,8 @@ public sealed class TryRunBoundedTests
         {
             Assert.True(thread.Join(TimeSpan.FromSeconds(15)), "Saturating calls should release their slots once unblocked.");
         }
+
+        BoundedCallSlots.WaitForAtLeast(slotsBefore);
 
         Assert.False(result);
         Assert.True(

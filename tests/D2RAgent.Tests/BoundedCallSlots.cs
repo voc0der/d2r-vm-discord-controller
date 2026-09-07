@@ -34,13 +34,11 @@ internal static class BoundedCallSlots
     /// Raises the pool's floor once per test host so a released action is actually scheduled.
     /// </summary>
     /// <remarks>
-    /// This is the difference between "slow" and "failed" here. TryRunBounded takes its slot on
-    /// the calling thread but releases it inside the Task.Run body, so a slot only comes back when
-    /// that body gets a thread. The pool injects new threads gradually under burst load, and the
-    /// saturation test deliberately blocks 32 of them, so on a loaded runner the release body can
-    /// sit queued for a long time while these waits count against a deadline the runner cannot
-    /// meet. Raising the floor lets the pool create threads on demand instead of at its throttled
-    /// rate. The saturation test already does this for itself; doing it here covers every waiter.
+    /// TryRunBounded takes its slot on the calling thread but releases it inside the Task.Run
+    /// body, so a slot only comes back once that body gets a thread. The pool injects threads
+    /// gradually under burst load and the saturation test deliberately blocks a poolful of them,
+    /// so raising the floor lets a released action get a thread on demand instead of at the
+    /// throttled rate.
     /// </remarks>
     static BoundedCallSlots()
     {
@@ -52,33 +50,40 @@ internal static class BoundedCallSlots
     }
 
     /// <summary>
-    /// Blocks until every bounded-call slot is free again. The timeout is generous because this is
-    /// only ever reached after the work holding those slots has been told to finish: a slow thread
-    /// pool should delay this, never fail it.
+    /// Slots free right now. Capture this before making a bounded call, and wait for it to come
+    /// back afterwards with <see cref="WaitForAtLeast"/>.
+    /// </summary>
+    public static int Available => VmOperations.AvailableBoundedCallSlots;
+
+    /// <summary>
+    /// Blocks until at least <paramref name="expected"/> slots are free again.
     /// </summary>
     /// <remarks>
-    /// The 30s this used to allow was not generous enough to keep that promise. CI run
-    /// 34159650860 failed twice in one job at 26 and 28 of 32 slots, each after waiting the full
-    /// 30s, on a change that touches none of this - the third recorded instance of the same flake
-    /// (see the class remarks for run 32546672295 at 27 of 32). Nothing here is timing under test:
-    /// the loop exits the moment the slots come back, so a healthy run pays nothing for a longer
-    /// ceiling, and only a genuine leak - a slot never released at all - waits it out and fails.
+    /// Deliberately relative, and that is the whole fix. This used to assert the process-global
+    /// "all 32 slots are free", which is not a property any single test can hold: the semaphore is
+    /// static, so a slot held anywhere in the test host failed whichever test happened to look
+    /// next, and then failed every test after it as the shortfall cascaded. CI run 34168441446
+    /// failed three tests that way at 25, 27 and 27 of 32, each after waiting the full window -
+    /// slots that were genuinely never coming back, not a pool that was merely slow. Raising that
+    /// window from 30s to 120s (v0.2.247) only made the same failure take four minutes longer,
+    /// which is what proved the earlier "slow runner" reading wrong.
+    ///
+    /// A test can only be responsible for the slots it took, so that is what it asserts: the
+    /// baseline it started from, restored. A leak in the code under test still fails this - the
+    /// slot it took never comes back - while a slot held by anything else no longer does.
     /// </remarks>
-    public static void WaitForAll(TimeSpan? timeout = null)
+    public static void WaitForAtLeast(int expected, TimeSpan? timeout = null)
     {
-        var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromMinutes(2));
-        while (VmOperations.AvailableBoundedCallSlots != VmOperations.MaxConcurrentBoundedCalls
-            && DateTimeOffset.UtcNow < deadline)
+        var window = timeout ?? TimeSpan.FromSeconds(30);
+        var deadline = DateTimeOffset.UtcNow + window;
+        while (Available < expected && DateTimeOffset.UtcNow < deadline)
         {
             Thread.Sleep(10);
         }
 
-        // Named rather than bare so a future failure says how far short it fell and how long it
-        // waited, which is what distinguishes a leak from a runner that never got there.
         Assert.True(
-            VmOperations.AvailableBoundedCallSlots == VmOperations.MaxConcurrentBoundedCalls,
-            $"Expected all {VmOperations.MaxConcurrentBoundedCalls} bounded-call slots to be free, "
-                + $"but {VmOperations.AvailableBoundedCallSlots} were after waiting "
-                + $"{(timeout ?? TimeSpan.FromMinutes(2)).TotalSeconds:N0}s for the abandoned actions to finish.");
+            Available >= expected,
+            $"Expected at least {expected} bounded-call slots to be free again, but only {Available} were "
+                + $"after waiting {window.TotalSeconds:N0}s. The call under test did not return its slot.");
     }
 }
