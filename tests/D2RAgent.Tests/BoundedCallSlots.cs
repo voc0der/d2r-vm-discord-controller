@@ -31,19 +31,54 @@ namespace D2RAgent.Tests;
 internal static class BoundedCallSlots
 {
     /// <summary>
+    /// Raises the pool's floor once per test host so a released action is actually scheduled.
+    /// </summary>
+    /// <remarks>
+    /// This is the difference between "slow" and "failed" here. TryRunBounded takes its slot on
+    /// the calling thread but releases it inside the Task.Run body, so a slot only comes back when
+    /// that body gets a thread. The pool injects new threads gradually under burst load, and the
+    /// saturation test deliberately blocks 32 of them, so on a loaded runner the release body can
+    /// sit queued for a long time while these waits count against a deadline the runner cannot
+    /// meet. Raising the floor lets the pool create threads on demand instead of at its throttled
+    /// rate. The saturation test already does this for itself; doing it here covers every waiter.
+    /// </remarks>
+    static BoundedCallSlots()
+    {
+        const int headroom = 8;
+        ThreadPool.GetMinThreads(out var minWorkerThreads, out var minCompletionPortThreads);
+        ThreadPool.SetMinThreads(
+            Math.Max(minWorkerThreads, VmOperations.MaxConcurrentBoundedCalls + headroom),
+            minCompletionPortThreads);
+    }
+
+    /// <summary>
     /// Blocks until every bounded-call slot is free again. The timeout is generous because this is
     /// only ever reached after the work holding those slots has been told to finish: a slow thread
     /// pool should delay this, never fail it.
     /// </summary>
+    /// <remarks>
+    /// The 30s this used to allow was not generous enough to keep that promise. CI run
+    /// 34159650860 failed twice in one job at 26 and 28 of 32 slots, each after waiting the full
+    /// 30s, on a change that touches none of this - the third recorded instance of the same flake
+    /// (see the class remarks for run 32546672295 at 27 of 32). Nothing here is timing under test:
+    /// the loop exits the moment the slots come back, so a healthy run pays nothing for a longer
+    /// ceiling, and only a genuine leak - a slot never released at all - waits it out and fails.
+    /// </remarks>
     public static void WaitForAll(TimeSpan? timeout = null)
     {
-        var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromSeconds(30));
+        var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromMinutes(2));
         while (VmOperations.AvailableBoundedCallSlots != VmOperations.MaxConcurrentBoundedCalls
             && DateTimeOffset.UtcNow < deadline)
         {
             Thread.Sleep(10);
         }
 
-        Assert.Equal(VmOperations.MaxConcurrentBoundedCalls, VmOperations.AvailableBoundedCallSlots);
+        // Named rather than bare so a future failure says how far short it fell and how long it
+        // waited, which is what distinguishes a leak from a runner that never got there.
+        Assert.True(
+            VmOperations.AvailableBoundedCallSlots == VmOperations.MaxConcurrentBoundedCalls,
+            $"Expected all {VmOperations.MaxConcurrentBoundedCalls} bounded-call slots to be free, "
+                + $"but {VmOperations.AvailableBoundedCallSlots} were after waiting "
+                + $"{(timeout ?? TimeSpan.FromMinutes(2)).TotalSeconds:N0}s for the abandoned actions to finish.");
     }
 }
