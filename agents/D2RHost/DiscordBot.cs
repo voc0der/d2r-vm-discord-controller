@@ -6863,11 +6863,36 @@ public sealed class DiscordBot
                     var leaveFailures = leaveResults.Where(result => !result.Ok).ToArray();
                     if (leaveFailures.Length > 0)
                     {
-                        await CompleteFollowAutoMonitorAsync(
-                            ok: false,
+                        // A failed Save and Exit must not end the run. This ended it for years and
+                        // the symptom never looked like what it was: the fleet stops advancing
+                        // games, every client sits in the finished game, and the monitor's last
+                        // line is frozen mid-sentence - which reads as "next game is not being
+                        // detected" rather than "the run is over". One agent dropping its socket
+                        // mid-command was enough, and that is a transient: hc1 was back online,
+                        // in game, on the same version, minutes later.
+                        //
+                        // Every cause of a failed leave seen in practice is either transient or
+                        // local to one client - an agent that disconnected mid-command, a guest
+                        // mid-restart, a client wedged in a menu - and none of them are a reason
+                        // to stop advancing games for the other six. The comment on the target
+                        // scoping just above already names this hazard ("end the whole run on a
+                        // phantom leave failed") and defends against exactly one cause of it;
+                        // this defends against the rest.
+                        //
+                        // Advancing is safe without any retry here because the client that could
+                        // not leave is recovered by the path that already exists for it: the game
+                        // advance clears joined/stranded state, so the account rejoins the normal
+                        // join scan, and FollowAutoCheckAsync's own "confirmed unexpected game by
+                        // strict HUD globes; using Save and Exit" branch takes it out of the old
+                        // game before it joins the new one. That is the same safety net the
+                        // stale-game leave path below relies on for the identical failure.
+                        await UpdateFollowAutoMonitorAsync(
                             $"Game #{_followAutoGameNumber}: leave failed for "
-                                + string.Join("; ", leaveFailures.Select(result => $"{result.AccountKey}: {result.Message}")));
-                        break;
+                                + string.Join("; ", leaveFailures.Select(result => $"{result.AccountKey}: {result.Message}"))
+                                + ". Advancing anyway; those clients are taken out of the old game by the normal "
+                                + "menu recovery before they join the next one.",
+                            joined: accountState.JoinedCount,
+                            total: expectedAccountCount);
                     }
 
                     _followAutoGamesCompleted++;
