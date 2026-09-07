@@ -984,6 +984,20 @@ public sealed class VmOperations
             return dismissal;
         }
 
+        // Stamp the frame, not just the streak. Every status collected while a UI command is
+        // active is the process-only one, and that path never runs DetectVisibleD2RState - it
+        // reports _lastObservedFrame instead. A graphics-device failure is detected *from inside*
+        // a command (launch, ready loop, idle probe all reach here), so without this the frame
+        // keeps whatever the client was doing before it died and status contradicts itself:
+        // "visible InGame" alongside "Detected D2R's failed-to-initialize-graphics dialog".
+        //
+        // That is load-bearing, in the same way the missing gamma mapping was. MenuReadyPolicy
+        // reads this state: "GraphicsDeviceFailure" needs a ready pass - the comment there says a
+        // ready pass "is exactly what clears it" - while a stale "InGame" answers NeedsReady with
+        // false. So the wrong frame does not merely misreport a wedged client, it suppresses the
+        // one pass that would have recovered it, and the client sits on its error dialog until
+        // something coarser (a warmup-failure power cycle) notices.
+        RecordObservedFrame(VisibleD2RState.GraphicsDeviceFailure.ToString());
         RecordGraphicsDeviceFailureSighting(dismissal);
         if (!dismissal.DismissalSent)
         {

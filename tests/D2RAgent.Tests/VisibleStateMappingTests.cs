@@ -1,3 +1,4 @@
+using AgentCommon;
 using D2RAgent;
 using Xunit;
 
@@ -76,6 +77,30 @@ public sealed class VisibleStateMappingTests
         Assert.Equal(
             expected,
             VmOperations.ClassifyPulseInGame(Enum.Parse<VmOperations.VisibleD2RState>(state)));
+    }
+
+    // The frame recorded when D2R's graphics-initialization dialog is sighted is what decides
+    // whether the client gets recovered, so it is pinned here rather than left to the detector.
+    //
+    // Every status collected while a UI command is active is the process-only one, and that path
+    // reports _lastObservedFrame instead of running DetectVisibleD2RState. The graphics dialog is
+    // only ever detected from inside a command, so if the sighting does not stamp the frame, the
+    // frame keeps whatever the client was doing before it died - typically InGame. These two cases
+    // are the consequence: the correct frame asks for the ready pass that clears the dialog, and
+    // the stale one answers "nothing to do" and leaves the client sitting on its error dialog
+    // until something coarser power-cycles the guest.
+    [Theory]
+    [InlineData("GraphicsDeviceFailure", true)]
+    [InlineData("InGame", false)]
+    public void GraphicsDeviceFailureFrameIsWhatBuysAReadyPass(string visibleState, bool expected)
+    {
+        var statusJson = $$"""
+            {"d2rRunning":true,"d2rVisibleState":"{{visibleState}}"}
+            """;
+
+        Assert.Equal(
+            expected,
+            MenuReadyPolicy.ShouldRunReadyFirstFromStatusJson(connected: true, statusJson));
     }
 
     [Fact]
