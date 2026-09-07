@@ -22,6 +22,7 @@ public sealed class FollowFingerprintCaptureTests
     public void TryCaptureFriendFingerprintSamplesTimesOut()
     {
         using var release = new ManualResetEventSlim(false);
+        var slotsBefore = BoundedCallSlots.Available;
 
         var samples = VmOperations.TryCaptureFriendFingerprintSamples(
             () =>
@@ -34,6 +35,6 @@ public sealed class FollowFingerprintCaptureTests
         Assert.Null(samples);
 
         release.Set();
-        BoundedCallSlots.WaitForAll();
+        BoundedCallSlots.WaitForAtLeast(slotsBefore);
     }
 }
