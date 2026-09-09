@@ -148,7 +148,7 @@ public sealed class WorkerNodeOperations
                 // node could sit arbitrarily far behind the master - and a stale node is exactly
                 // the one whose own satellite auto-update has quietly stopped working.
                 "self_update" => await SelfUpdateAsync(durationCts.Token),
-                "vm_status" or "vm_start" or "vm_stop" or "vm_turnoff" or "vm_reboot" or "vm_snapshot" =>
+                "vm_status" or "vm_start" or "vm_stop" or "vm_turnoff" or "vm_reboot" or "vm_snapshot" or "vm_console" =>
                     await HandleHyperVCommandAsync(request with { Command = command }, durationCts.Token),
                 "system_sleep" => await QueueSystemActionAsync(HostSystemPowerAction.Sleep, durationCts.Token),
                 "system_shutdown" => await QueueSystemActionAsync(HostSystemPowerAction.Shutdown, durationCts.Token),

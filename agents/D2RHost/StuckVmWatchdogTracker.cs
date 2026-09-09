@@ -114,6 +114,80 @@ internal sealed class StuckVmWatchdogTracker
         }
     }
 
+    /// <summary>
+    /// Records that this guest's console is showing the Windows boot logo right now, and returns
+    /// how long it has been showing it without interruption.
+    /// </summary>
+    /// <remarks>
+    /// Continuity is the whole signal. A single sighting says nothing - every healthy VM shows this
+    /// logo on every boot - so what distinguishes a wedged guest is only that it never leaves. Any
+    /// frame that is not the logo clears the clock, so a guest that boots through normally can
+    /// never accumulate a streak no matter how often it is sampled mid-boot.
+    /// </remarks>
+    public TimeSpan RecordBootLogo(string accountKey, DateTimeOffset now)
+    {
+        accountKey = RequireKey(accountKey);
+        lock (_sync)
+        {
+            if (!_states.TryGetValue(accountKey, out var state))
+            {
+                state = new AccountState();
+                _states[accountKey] = state;
+            }
+
+            state.BootLogoSince ??= now;
+            var heldFor = now - state.BootLogoSince.Value;
+            return heldFor < TimeSpan.Zero ? TimeSpan.Zero : heldFor;
+        }
+    }
+
+    /// <summary>
+    /// Clears the boot-logo clock, for any observation that is not the logo - including one that
+    /// could not be taken at all, since a frame the host failed to capture is not evidence the
+    /// guest is still stuck.
+    /// </summary>
+    public void ClearBootLogo(string accountKey)
+    {
+        accountKey = RequireKey(accountKey);
+        lock (_sync)
+        {
+            if (_states.TryGetValue(accountKey, out var state))
+            {
+                state.BootLogoSince = null;
+            }
+        }
+    }
+
+    public int BootLogoCutsUsed(string accountKey)
+    {
+        accountKey = RequireKey(accountKey);
+        lock (_sync)
+        {
+            return _states.TryGetValue(accountKey, out var state) ? state.BootLogoCutsUsed : 0;
+        }
+    }
+
+    /// <summary>
+    /// Charges one boot-logo power cut and restarts the logo clock, so the guest gets a full fresh
+    /// window to boot before the watchdog considers cutting it again.
+    /// </summary>
+    public void RecordBootLogoCut(string accountKey, DateTimeOffset now)
+    {
+        accountKey = RequireKey(accountKey);
+        lock (_sync)
+        {
+            if (!_states.TryGetValue(accountKey, out var state))
+            {
+                state = new AccountState();
+                _states[accountKey] = state;
+            }
+
+            state.BootLogoCutsUsed++;
+            state.BootLogoSince = null;
+            state.OfflineSince = now;
+        }
+    }
+
     public int RecoveriesUsed(string accountKey)
     {
         accountKey = RequireKey(accountKey);
@@ -200,5 +274,13 @@ internal sealed class StuckVmWatchdogTracker
         public int RecoveriesUsed { get; set; }
 
         public bool GiveUpNotified { get; set; }
+
+        /// <summary>
+        /// When this guest's console was first seen showing the Windows boot logo without a break,
+        /// or null whenever the last frame was anything else.
+        /// </summary>
+        public DateTimeOffset? BootLogoSince { get; set; }
+
+        public int BootLogoCutsUsed { get; set; }
     }
 }
