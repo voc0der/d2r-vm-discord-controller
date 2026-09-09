@@ -68,6 +68,11 @@ public sealed class HyperVOperations : ILocalVmPowerOperations
     /// for are frozen on the Windows boot logo and are not running integration services to ask.
     /// Never a first resort: see VmHangRecoveryPolicy for when the host is allowed to use it.
     /// </description></item>
+    /// <item><description>
+    /// <c>vm_console</c> asks the guest for nothing at all - it reads the framebuffer from the
+    /// hypervisor side. It is the only verb here that is not a power action, and it exists because
+    /// a guest frozen on the boot logo answers every other question as if it were healthy.
+    /// </description></item>
     /// </list>
     /// </remarks>
     internal static string? TryBuildVmPowerScript(string command, string vmName)
@@ -81,8 +86,52 @@ public sealed class HyperVOperations : ILocalVmPowerOperations
             "vm_stop" => $"Stop-VM -Name {name} -Force | Out-Null; {status}",
             "vm_turnoff" => $"Stop-VM -Name {name} -TurnOff -Force | Out-Null; {status}",
             "vm_reboot" => $"Restart-VM -Name {name} -Force | Out-Null; {status}",
+            "vm_console" => GetVmConsoleCommand(vmName, DefaultConsoleWidth, DefaultConsoleHeight),
             _ => null
         };
+    }
+
+    internal const int DefaultConsoleWidth = 256;
+    internal const int DefaultConsoleHeight = 192;
+
+    /// <summary>
+    /// Reads the guest's console framebuffer straight off the hypervisor and returns it as
+    /// base64-encoded RGB565.
+    /// </summary>
+    /// <remarks>
+    /// Uses Msvm_VirtualSystemManagementService.GetVirtualSystemThumbnailImage, which needs nothing
+    /// from inside the guest - no agent, no integration services, no logged-in session. That is the
+    /// entire reason it can answer a question about a guest that has stopped being able to answer
+    /// questions.
+    ///
+    /// Captured small on purpose. At 256x192 the frame is 96 KB of RGB565 before base64, and the
+    /// boot logo still covers over a thousand pixels in a compact block, which is far more than the
+    /// classifier needs. A full-resolution grab would multiply the transport cost per VM per sweep
+    /// to tell the caller the same thing.
+    ///
+    /// Errors are returned in the payload rather than thrown, so a host that cannot capture (an
+    /// older worker, a VM mid-transition) degrades to "no frame" and the caller simply learns
+    /// nothing, instead of the sweep treating it as a failure.
+    /// </remarks>
+    private static string GetVmConsoleCommand(string vmName, int width, int height)
+    {
+        var name = PsQuote(vmName);
+        return "$ErrorActionPreference='Stop'; $ns='root\\virtualization\\v2'; "
+            + "$out=[pscustomobject]@{ Width=" + width + "; Height=" + height + "; Base64=$null; Error=$null }; "
+            + "try { "
+            + "$cs = Get-CimInstance -Namespace $ns -ClassName Msvm_ComputerSystem -Filter (\"ElementName='\" + "
+            + name + ".Replace(\"'\",\"''\") + \"'\"); "
+            + "if (-not $cs) { throw 'VM not found in WMI' }; "
+            + "$sd = Get-CimAssociatedInstance -InputObject $cs -ResultClassName Msvm_VirtualSystemSettingData | "
+            + "Where-Object { $_.VirtualSystemType -eq 'Microsoft:Hyper-V:System:Realized' } | Select-Object -First 1; "
+            + "if (-not $sd) { throw 'No realized system setting data' }; "
+            + "$svc = Get-CimInstance -Namespace $ns -ClassName Msvm_VirtualSystemManagementService; "
+            + "$r = Invoke-CimMethod -InputObject $svc -MethodName GetVirtualSystemThumbnailImage -Arguments @{ "
+            + "TargetSystem=[ciminstance]$sd; WidthPixels=[uint16]" + width + "; HeightPixels=[uint16]" + height + " }; "
+            + "if ($r.ReturnValue -ne 0) { throw (\"GetVirtualSystemThumbnailImage returned \" + $r.ReturnValue) }; "
+            + "$out.Base64=[Convert]::ToBase64String($r.ImageData) "
+            + "} catch { $out.Error=$_.Exception.Message }; "
+            + "$out | ConvertTo-Json -Compress";
     }
 
     public async Task<VmPowerStateResult> GetPowerStateAsync(

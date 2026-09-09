@@ -44,6 +44,11 @@
   // reports "Running" for a hung guest just as it does for a healthy one, so the verdict comes from
   // the agent's silence, corroborated by the heartbeat. A guest the hypervisor can still reach is
   // restarted in place first; one it cannot reach goes straight to the full power cycle.
+  "bootLogoWatchdog": {
+    "enabled": true,
+    "stuckAfterSeconds": 300,
+    "maxHardPowerCuts": 2
+  },
   "stuckVmWatchdog": {
     "enabled": true,
     "agentOfflineGraceSeconds": 240,

@@ -42,6 +42,8 @@ public sealed class HostConfig
     public string? SettingsDonorAccountKey { get; set; }
     public VmHangRecoveryConfig VmHangRecovery { get; set; } = new();
     public StuckVmWatchdogConfig StuckVmWatchdog { get; set; } = new();
+
+    public BootLogoWatchdogConfig BootLogoWatchdog { get; set; } = new();
     public Dictionary<string, HostAgentConfig> Agents { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, AccountConfig> Accounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
@@ -141,6 +143,34 @@ public sealed class StuckVmWatchdogConfig
 
     /// <summary>How often the sweep runs.</summary>
     public int SweepIntervalSeconds { get; set; } = 60;
+}
+
+/// <summary>
+/// The watchdog that reads a guest's console framebuffer and recovers one frozen on the Windows
+/// boot logo. See VmBootLogoPolicy for why no other signal can see this failure.
+/// </summary>
+public sealed class BootLogoWatchdogConfig
+{
+    /// <summary>
+    /// Set false to stop capturing console frames entirely. A guest wedged on the boot logo then
+    /// has no recovery at all, because it reports healthy to every other signal the host has.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// How long the boot logo must be shown continuously before the guest counts as wedged. This
+    /// is the only thing standing between the watchdog and power-cutting the whole fleet, because
+    /// every healthy VM shows this same logo on every boot - it must comfortably clear the slowest
+    /// legitimate boot on the slowest host.
+    /// </summary>
+    public int StuckAfterSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// Power cuts allowed per guest before the watchdog reports the dead end and stops. A guest
+    /// that keeps coming back to the boot logo has a problem below the guest, and more cuts will
+    /// not find it.
+    /// </summary>
+    public int MaxHardPowerCuts { get; set; } = 2;
 }
 
 public sealed class WindowsFirewallConfig
