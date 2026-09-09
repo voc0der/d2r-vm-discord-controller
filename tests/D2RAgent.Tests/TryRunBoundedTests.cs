@@ -166,33 +166,23 @@ public sealed class TryRunBoundedTests
             Assert.Same(warmupAll, warmupWinner); // "Thread-pool warmup tasks did not finish."
         }
 
-        // The warmup above queues and drains its own pool work, so re-read the free capacity rather
-        // than trusting the count taken before it.
-        var capacity = BoundedCallSlots.Available;
-        Assert.True(
-            capacity > 0,
-            "No bounded-call slots were free, so there is no cap left to saturate in this test host.");
-
-        using var allStarted = new CountdownEvent(capacity);
-
-        // Dedicated OS threads for the dispatch side, not Task.Run, so the 32 saturating calls
-        // don't have to compete with their own 32 *inner* TryRunBounded-spawned tasks for pool
-        // capacity on the dispatch side too.
-        // The saturating calls use a much longer timeoutMs than TimeoutMs (250ms) deliberately:
-        // TryRunBounded only returns once task.Wait(timeoutMs) is satisfied, and the slot is only
-        // released inside that nested task's own finally, after the action itself returns. A
-        // short timeoutMs would let TryRunBounded give up and return well before the action (and
-        // its Release()) actually finishes, making the dispatch thread's Join() below complete
-        // without proving the slot was freed - which is exactly what leaked saturation into the
-        // next test the first time this was written with TimeoutMs here instead.
+        // Saturate until the semaphore itself reports nothing free, rather than spawning a count
+        // measured up front. Measuring once was a race: slots held elsewhere in the test host can be
+        // released between the measurement and the probe, and then the probe finds a free slot,
+        // succeeds, and fails Assert.False - which is exactly how this failed on PR #45's run, with
+        // the cap under test working perfectly. Driving the loop from the live reading cannot race
+        // that, because the condition it stops on is the condition the probe depends on.
         const int saturatingCallTimeoutMs = 25_000;
-        var dispatchThreads = new Thread[capacity];
-        for (var i = 0; i < capacity; i++)
+        var dispatchThreads = new List<Thread>();
+        var saturateBy = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+
+        void SpawnSaturatingCall()
         {
+            var started = new ManualResetEventSlim(false);
             var thread = new Thread(() => VmOperations.TryRunBounded(
                 () =>
                 {
-                    allStarted.Signal();
+                    started.Set();
                     release.Wait(TimeSpan.FromSeconds(20));
                     return true;
                 },
@@ -200,13 +190,23 @@ public sealed class TryRunBoundedTests
             {
                 IsBackground = true
             };
-            dispatchThreads[i] = thread;
+            dispatchThreads.Add(thread);
             thread.Start();
+
+            // Wait for the action to actually be running before spawning the next, so the loop
+            // reads a settled slot count rather than one still in flight.
+            started.Wait(TimeSpan.FromSeconds(5));
+        }
+
+        while (BoundedCallSlots.Available > 0 && DateTimeOffset.UtcNow < saturateBy)
+        {
+            SpawnSaturatingCall();
         }
 
         Assert.True(
-            allStarted.Wait(TimeSpan.FromSeconds(10)),
-            $"All {capacity} saturating calls should have started and acquired a slot within 10s. Remaining: {allStarted.CurrentCount}.");
+            dispatchThreads.Count > 0,
+            "No bounded-call slots were free, so there was no cap left to saturate in this test host.");
+        Assert.Equal(0, BoundedCallSlots.Available);
 
         var stopwatch = Stopwatch.StartNew();
         var result = VmOperations.TryRunBounded(() => true, 2000);
