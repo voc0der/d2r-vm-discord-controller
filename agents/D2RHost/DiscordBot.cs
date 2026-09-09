@@ -497,6 +497,18 @@ public sealed class DiscordBot
             // proves itself against, since a guest that actually rebooted comes back with a
             // smaller uptime than the one measured here.
             var uptimeBeforeRecovery = TryReadVmUptime(status);
+
+            // Ask the screen before asking the health signals, because on this failure every health
+            // signal agrees - and they are all wrong. See VmBootLogoPolicy: a guest frozen on the
+            // boot logo for an hour reported Heartbeat OK, KvpOSName "Windows 10 Pro", Status
+            // "Operating normally" and 21% CPU, identical field for field to a sibling that was
+            // healthy and in-game. Left to the ladder below, that guest is read as heartbeat-OK and
+            // handed an in-place restart forever, because nothing it can be asked knows it is stuck.
+            if (await TryRecoverBootLoggedVmAsync(accountKey, account, vmName, args, powerState, cancellationToken))
+            {
+                continue;
+            }
+
             var assessment = policy.Assess(
                 agentOnline: false,
                 powerState,
@@ -802,6 +814,168 @@ public sealed class DiscordBot
         }
 
         return sawAnyUptime ? VmRestartObservation.DidNotRestart : VmRestartObservation.Unverifiable;
+    }
+
+    /// <summary>
+    /// Reads the guest's console and, if it has been sitting on the Windows boot logo longer than a
+    /// real boot takes, cuts its power and starts it again. Returns whether it took the guest.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately a hard cut rather than a stop or a restart. A guest wedged this way answers its
+    /// integration services - that is exactly why no other signal catches it - so a graceful stop
+    /// may well be accepted and change nothing, and a restart hands it back to the same boot that
+    /// already hung. Only removing power resolves it.
+    ///
+    /// Nothing here acts on a single frame. The tracker clears the clock on any frame that is not
+    /// the logo, and on any frame that could not be captured at all, so a guest booting normally
+    /// cannot accumulate a streak however often it is sampled mid-boot.
+    /// </remarks>
+    private async Task<bool> TryRecoverBootLoggedVmAsync(
+        string accountKey,
+        AccountConfig account,
+        string vmName,
+        JsonElement args,
+        string? powerState,
+        CancellationToken cancellationToken)
+    {
+        var options = BuildBootLogoWatchdogOptions();
+        if (!options.Enabled)
+        {
+            return false;
+        }
+
+        // Only a powered-on guest has a console worth reading, and anything else is a transition
+        // somebody already started.
+        if (!string.Equals(powerState?.Trim(), "Running", StringComparison.OrdinalIgnoreCase))
+        {
+            _stuckVms.ClearBootLogo(accountKey);
+            return false;
+        }
+
+        var console = await SendVmPowerCommandAsync(account, "vm_console", args, cancellationToken);
+        var frame = TryReadVmConsoleFrame(console);
+        if (frame is null || !VmBootLogoPolicy.IsWindowsBootLogo(frame))
+        {
+            _stuckVms.ClearBootLogo(accountKey);
+            return false;
+        }
+
+        var heldFor = _stuckVms.RecordBootLogo(accountKey, DateTimeOffset.UtcNow);
+        var assessment = new VmBootLogoPolicy(options).Assess(
+            frame,
+            heldFor,
+            _stuckVms.BootLogoCutsUsed(accountKey));
+
+        if (assessment.Verdict == VmBootLogoVerdict.GiveUp)
+        {
+            if (_stuckVms.TryClaimGiveUpNotice(accountKey))
+            {
+                _notifications.Enqueue(
+                    $"{FormatAccountDisplayName(accountKey, account)}: {vmName} keeps coming back to the Windows boot "
+                        + $"logo after {options.MaxHardPowerCuts} power cut(s). Not cutting it again - this needs a look.");
+            }
+
+            return true;
+        }
+
+        if (assessment.Verdict != VmBootLogoVerdict.HardPowerCut)
+        {
+            // KeepWatching still counts as taking the guest: it is demonstrably mid-boot, and the
+            // ladder below would otherwise spend a recovery attempt on a machine that is simply not
+            // finished starting.
+            return assessment.Verdict == VmBootLogoVerdict.KeepWatching;
+        }
+
+        if (!TryBeginVmRecovery(accountKey))
+        {
+            return true;
+        }
+
+        try
+        {
+            _logger.LogWarning(
+                "Boot-logo watchdog is cutting power to {VmName} for {AccountKey}: {Reason}",
+                vmName,
+                accountKey,
+                assessment.Reason);
+            _stuckVms.RecordBootLogoCut(accountKey, DateTimeOffset.UtcNow);
+
+            var cut = await HardPowerCutAsync(account, args, vmName, assessment.Reason, cancellationToken);
+            if (!cut.Ok)
+            {
+                _notifications.Enqueue(
+                    $"{FormatAccountDisplayName(accountKey, account)}: {vmName} has been frozen on the Windows boot "
+                        + $"logo, and cutting its power failed: {cut.Message}");
+                return true;
+            }
+
+            var start = await SendVmPowerCommandAsync(account, "vm_start", args, cancellationToken);
+            if (!start.Ok)
+            {
+                _notifications.Enqueue(
+                    $"{FormatAccountDisplayName(accountKey, account)}: {vmName} was powered off after freezing on the "
+                        + $"Windows boot logo, but starting it again failed: {start.Message}");
+                return true;
+            }
+
+            _notifications.Enqueue(
+                $"{FormatAccountDisplayName(accountKey, account)}: {vmName} was frozen on the Windows boot logo "
+                    + "(which reports as a perfectly healthy guest to every other signal), so its power was cut and "
+                    + "it was started again.");
+            return true;
+        }
+        finally
+        {
+            _stuckVms.RestartClock(accountKey, DateTimeOffset.UtcNow);
+            EndVmRecovery(accountKey);
+        }
+    }
+
+    private VmBootLogoOptions BuildBootLogoWatchdogOptions()
+    {
+        var configured = _config.BootLogoWatchdog;
+        return new VmBootLogoOptions(
+            configured.Enabled,
+            TimeSpan.FromSeconds(Math.Max(configured.StuckAfterSeconds, 120)),
+            Math.Clamp(configured.MaxHardPowerCuts, 1, 5));
+    }
+
+    /// <summary>
+    /// Decodes a vm_console reply into frame statistics, or null when no frame came back.
+    /// </summary>
+    /// <remarks>
+    /// Every failure here is null rather than an exception, and null means "learned nothing" rather
+    /// than "the guest is fine" - the caller clears the logo clock on it, so an unreadable console
+    /// can only ever delay a cut, never cause one. A worker too old to know vm_console lands here
+    /// too, and degrades to the previous behaviour instead of breaking the sweep.
+    /// </remarks>
+    internal static VmConsoleFrameStats? TryReadVmConsoleFrame(CommandResult console)
+    {
+        if (!console.Ok || string.IsNullOrWhiteSpace(console.Message))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(console.Message);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("Base64", out var base64)
+                || base64.ValueKind != JsonValueKind.String
+                || !root.TryGetProperty("Width", out var width)
+                || !root.TryGetProperty("Height", out var height))
+            {
+                return null;
+            }
+
+            var pixels = Convert.FromBase64String(base64.GetString() ?? "");
+            return VmConsoleFrame.FromRgb565(pixels, width.GetInt32(), height.GetInt32());
+        }
+        catch (Exception ex) when (ex is JsonException or FormatException or ArgumentException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

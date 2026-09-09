@@ -268,6 +268,21 @@ public static class HostConfigLoader
                 "stuckVmWatchdog.sweepIntervalSeconds must be between 15 and 3600.");
         }
 
+        // The floor is the safety property, not a sanity check. Every healthy VM shows the Windows
+        // boot logo on every boot, so a window shorter than a real boot would power-cut guests that
+        // were about to come up on their own - and keep doing it, forever.
+        if (config.BootLogoWatchdog.StuckAfterSeconds < 120)
+        {
+            throw new InvalidOperationException(
+                "bootLogoWatchdog.stuckAfterSeconds must be at least 120; a shorter window cuts power to guests "
+                    + "that are merely still booting, because a healthy boot shows the same logo.");
+        }
+
+        if (config.BootLogoWatchdog.MaxHardPowerCuts is < 1 or > 5)
+        {
+            throw new InvalidOperationException("bootLogoWatchdog.maxHardPowerCuts must be between 1 and 5.");
+        }
+
         if (config.WindowsFirewall.ReconcileSeconds is < 5 or > 3600)
         {
             throw new InvalidOperationException(
