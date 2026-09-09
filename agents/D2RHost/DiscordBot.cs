@@ -464,13 +464,33 @@ public sealed class DiscordBot
                 // for the same reason it does for an offline node - a node-level outage is a
                 // separate problem with its own reporting.
                 _stuckVms.RecordUnobserved(accountKey);
-                _logger.LogDebug(
-                    "Stuck-VM sweep could not read {VmName} for {AccountKey}: {Message}",
+
+                // But say so out loud. The node passed the online check moments ago, so this is not
+                // a node outage: the name the fleet is asking about does not resolve on the host
+                // that is supposed to own it - a renamed guest, a VM moved to another host, a wrong
+                // vmName in config. Restarting the clock is correct and also means this VM can never
+                // accumulate a streak, so it can never be recovered and no ladder will ever mention
+                // it. Reported once per incident because the sweep runs every minute, and no amount
+                // of waiting is going to fix it.
+                if (_stuckVms.TryClaimUnreadableNotice(accountKey))
+                {
+                    _notifications.Enqueue(
+                        $"{FormatAccountDisplayName(accountKey, account)}: {_hyperV.ResolveNodeId(account)} is online but "
+                            + $"cannot read VM \"{vmName}\" ({status.Message}). Nothing can recover this guest until that "
+                            + "name resolves on that node - check whether the VM was renamed or moved, or fix vmName in "
+                            + "host config.");
+                }
+
+                _logger.LogWarning(
+                    "Stuck-VM sweep could not read {VmName} for {AccountKey} on {NodeId}: {Message}",
                     vmName,
                     accountKey,
+                    _hyperV.ResolveNodeId(account),
                     status.Message);
                 continue;
             }
+
+            _stuckVms.ClearUnreadableNotice(accountKey);
 
             var powerState = TryReadVmPowerState(status, out var observed) ? observed : null;
             // Held rather than passed inline: this is also the baseline the in-place restart
@@ -7894,10 +7914,86 @@ public sealed class DiscordBot
         var hardPowerCuts = 0;
         var notes = new List<string>();
 
+        // Ask what the guest is before asking it to do anything. Stop-VM -Force is a *guest
+        // cooperative* shutdown routed through the integration services, so on a guest wedged on
+        // the Windows boot logo it is addressed to software that was never running. Issuing it
+        // anyway is not merely useless, it is where the recovery died: Hyper-V leaves the VM in
+        // Stopping and the cmdlet eventually errors, and a failed graceful stop used to return
+        // straight out of here - so the hard cut that is the actual fix for a wedged boot was
+        // never reached, and the guest sat powered on until someone noticed it by hand.
+        //
+        // When the hypervisor already reports no contact with the guest OS, that question is
+        // settled without touching the guest, and the cheapest correct action is the plug pull.
+        // VmHangRecoveryPolicy still owns the decision - a guest whose heartbeat answers is never
+        // cut here, it goes down the ordinary graceful path below.
+        var preStop = await SendVmPowerCommandAsync(account, "vm_status", args, cancellationToken);
+        if (preStop.Ok)
+        {
+            var preState = TryReadVmPowerState(preStop, out var observedPreState) ? observedPreState : null;
+            var preHeartbeat = TryReadVmHeartbeat(preStop);
+            var preUptime = TryReadVmUptime(preStop) ?? TimeSpan.Zero;
+            var preAssessment = policy.AssessBootHang(preState, preHeartbeat, preUptime, hardPowerCuts);
+            if (preAssessment.Verdict == VmHangVerdict.HardPowerCut)
+            {
+                var straightToCut = await HardPowerCutAsync(account, args, vmName, preAssessment.Reason, cancellationToken);
+                hardPowerCuts++;
+                notes.Add(straightToCut.Message);
+                if (!straightToCut.Ok)
+                {
+                    return CommandResult.Failure(
+                        $"{vmName} looked wedged before the recovery began ({preAssessment.Reason}), and the power cut "
+                            + $"failed: {straightToCut.Message}");
+                }
+
+                return await StartAfterPowerCutAsync(
+                    accountKey,
+                    account,
+                    args,
+                    vmName,
+                    policy,
+                    hardPowerCuts,
+                    notes,
+                    cancellationToken);
+            }
+        }
+
         var stop = await SendVmPowerCommandAsync(account, "vm_stop", args, cancellationToken);
         if (!stop.Ok)
         {
-            return CommandResult.Failure($"Stop-VM for {vmName} failed: {stop.Message}");
+            // A graceful stop that errors is evidence, not a dead end. It is the same guest-
+            // cooperative call failing for the same reason a wedged guest fails it, so hand the
+            // question to the policy rather than abandoning the recovery here.
+            var lastState = await ReadVmPowerStateAsync(account, args, cancellationToken);
+            var stopFailVerdict = policy.AssessStuckShutdown(lastState, TimeSpan.Zero, hardPowerCuts);
+            if (stopFailVerdict.Verdict != VmHangVerdict.HardPowerCut)
+            {
+                return CommandResult.Failure(
+                    $"Stop-VM for {vmName} failed: {stop.Message}. No power cut was attempted because {stopFailVerdict.Reason}.");
+            }
+
+            var cutAfterFailedStop = await HardPowerCutAsync(
+                account,
+                args,
+                vmName,
+                $"Stop-VM itself failed ({stop.Message}), which a guest not running its integration services is expected to do",
+                cancellationToken);
+            hardPowerCuts++;
+            notes.Add(cutAfterFailedStop.Message);
+            if (!cutAfterFailedStop.Ok)
+            {
+                return CommandResult.Failure(
+                    $"Stop-VM for {vmName} failed and so did the power cut: {cutAfterFailedStop.Message}");
+            }
+
+            return await StartAfterPowerCutAsync(
+                accountKey,
+                account,
+                args,
+                vmName,
+                policy,
+                hardPowerCuts,
+                notes,
+                cancellationToken);
         }
 
         // Stop-VM -Force returns when Hyper-V says the guest is down, but a guest that ignores
@@ -7933,6 +8029,37 @@ public sealed class DiscordBot
             }
         }
 
+        return await StartAfterPowerCutAsync(
+            accountKey,
+            account,
+            args,
+            vmName,
+            policy,
+            hardPowerCuts,
+            notes,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Brings a guest back up once it is Off, and watches the boot it starts.
+    /// </summary>
+    /// <remarks>
+    /// Shared by all three ways a recovery can reach Off - the ordinary graceful stop, a stop
+    /// that failed outright, and a guest cut straight from Running because the hypervisor had
+    /// already lost contact with it. They differ only in how the machine was powered down; what
+    /// has to happen afterwards is identical, and a guest can wedge on the very next boot no
+    /// matter which of them got it there.
+    /// </remarks>
+    private async Task<CommandResult> StartAfterPowerCutAsync(
+        string accountKey,
+        AccountConfig account,
+        JsonElement args,
+        string vmName,
+        VmHangRecoveryPolicy policy,
+        int hardPowerCuts,
+        List<string> notes,
+        CancellationToken cancellationToken)
+    {
         var start = await SendVmPowerCommandAsync(account, "vm_start", args, cancellationToken);
         if (!start.Ok)
         {

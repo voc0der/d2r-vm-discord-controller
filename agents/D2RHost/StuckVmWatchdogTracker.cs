@@ -219,6 +219,57 @@ internal sealed class StuckVmWatchdogTracker
     }
 
     /// <summary>
+    /// Claims the one-shot right to announce that this account's VM cannot be read on the node that
+    /// owns it, so a sweep running every minute reports it once instead of forever.
+    /// </summary>
+    /// <remarks>
+    /// Worth announcing because no amount of patience fixes it. A node that is offline is a
+    /// separate, self-announcing problem, but a node that answers and still cannot read the VM
+    /// means the name the fleet is asking about does not exist there - a renamed guest, a VM moved
+    /// to another host, a wrong vmName in config. The sweep treats every unreadable answer as "not
+    /// observed" and restarts the offline clock, which is right (silence the host cannot see is not
+    /// evidence about the guest) but has the effect of making that VM permanently invisible to the
+    /// watchdog: it can never accumulate a streak, so it can never be recovered, and until now it
+    /// said so only at Debug.
+    /// </remarks>
+    public bool TryClaimUnreadableNotice(string accountKey)
+    {
+        accountKey = RequireKey(accountKey);
+        lock (_sync)
+        {
+            if (!_states.TryGetValue(accountKey, out var state))
+            {
+                state = new AccountState();
+                _states[accountKey] = state;
+            }
+
+            if (state.UnreadableNotified)
+            {
+                return false;
+            }
+
+            state.UnreadableNotified = true;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Forgets the unreadable-VM notice once the VM can be read again, so a recurrence is reported
+    /// rather than silently swallowed by the first one.
+    /// </summary>
+    public void ClearUnreadableNotice(string accountKey)
+    {
+        accountKey = RequireKey(accountKey);
+        lock (_sync)
+        {
+            if (_states.TryGetValue(accountKey, out var state))
+            {
+                state.UnreadableNotified = false;
+            }
+        }
+    }
+
+    /// <summary>
     /// Claims the one-shot right to announce that a guest is out of recovery attempts, so a sweep
     /// running every minute reports the dead end once instead of forever.
     /// </summary>
@@ -274,6 +325,8 @@ internal sealed class StuckVmWatchdogTracker
         public int RecoveriesUsed { get; set; }
 
         public bool GiveUpNotified { get; set; }
+
+        public bool UnreadableNotified { get; set; }
 
         /// <summary>
         /// When this guest's console was first seen showing the Windows boot logo without a break,
