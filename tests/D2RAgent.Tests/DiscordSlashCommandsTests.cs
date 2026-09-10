@@ -1,11 +1,29 @@
 using AgentCommon;
 using Discord;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace D2RAgent.Tests;
 
-public sealed class DiscordSlashCommandsTests
+public sealed class DiscordSlashCommandsTests(ITestOutputHelper output)
 {
+    [Fact]
+    public void NoCommandExceedsDiscordsEightThousandCharacterLimit()
+    {
+        foreach (var command in DiscordSlashCommands.Build())
+        {
+            var slash = Assert.IsType<SlashCommandProperties>(command);
+            var count = CountLocalizedText(slash.Name.Value, slash.NameLocalizations?.Values)
+                + CountLocalizedText(slash.Description.Value, slash.DescriptionLocalizations?.Values)
+                + (slash.Options.IsSpecified ? slash.Options.Value.Sum(CountOptionText) : 0);
+
+            output.WriteLine($"/{slash.Name.Value}: {count}/8000 characters.");
+            Assert.True(count <= 8000,
+                $"/{slash.Name.Value} has {count} characters, over Discord's 8000-character cap. "
+                + "Shorten descriptions or split the command before registration.");
+        }
+    }
+
     [Fact]
     public void NoDescriptionExceedsDiscordsHundredCharacterLimit()
     {
@@ -217,6 +235,23 @@ public sealed class DiscordSlashCommandsTests
 
         Assert.Equal(ApplicationCommandOptionType.String, account.Type);
         Assert.False(account.IsRequired);
+    }
+
+    // Discord counts names, descriptions and string choice values throughout the command tree.
+    // Each localized field contributes only its longest value, including the default.
+    // https://docs.discord.com/developers/interactions/application-commands#slash-commands
+    private static int CountOptionText(ApplicationCommandOptionProperties option)
+    {
+        return CountLocalizedText(option.Name, option.NameLocalizations?.Values)
+            + CountLocalizedText(option.Description, option.DescriptionLocalizations?.Values)
+            + (option.Choices?.Sum(choice => CountLocalizedText(choice.Name, choice.NameLocalizations?.Values)
+                + (choice.Value is string value ? value.Length : 0)) ?? 0)
+            + (option.Options?.Sum(CountOptionText) ?? 0);
+    }
+
+    private static int CountLocalizedText(string text, IEnumerable<string>? localizations)
+    {
+        return Math.Max(text.Length, localizations?.Select(value => value.Length).DefaultIfEmpty(0).Max() ?? 0);
     }
 
     private static void AssertOptionDescriptions(string commandName, ApplicationCommandOptionProperties option)

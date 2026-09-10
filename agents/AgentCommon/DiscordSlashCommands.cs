@@ -8,64 +8,61 @@ public static class DiscordSlashCommands
     {
         return
         [
-            // Discord hard-caps a command at 25 options, and each Sub(...) below counts as one.
-            // Past 25, the registration call in DiscordBot.OnReadyAsync fails closed: Discord
-            // keeps the previously-registered set and the new/changed subcommands just never
-            // appear. Stay under 25, or split overflow into a subcommand group / second
-            // top-level command. (Not what caused the template/join-auto outage below - see
-            // the comment on Sub() for that one - but a real second way to hit the same
-            // "command silently never registers" symptom, so keeping the guard.)
+            // Discord caps each level at 25 options and the entire command tree at 8000
+            // characters across names, descriptions and choice values. Repeated option
+            // descriptions count every time. Keep them terse: exceeding either limit rejects
+            // registration and leaves the old commands in place. Tests enforce both limits.
             new SlashCommandBuilder()
                 .WithName("d2r")
-                .WithDescription("Operate Diablo II: Resurrected clients")
+                .WithDescription("Control D2R clients")
                 .AddOptions(
-                    Sub("status", "Show controller health plus one account or all account client statuses", OptionalAccount()),
-                    Sub("start", "Launch one account, or ready all accounts when all is true", OptionalAccount(), AllFlag()),
-                    Sub("stop", "Kill the D2R process for an account", Account()),
-                    Sub("quit", "Focus D2R and close it with Alt+F4", OptionalAccount(), AllFlag()),
-                    Sub("restart-client", "Restart the D2R process for an account", Account()),
-                    Sub("screenshot", "Capture the VM's current primary-screen screenshot", Account()),
-                    Sub("remote", "Show the configured remote-control URL for an account VM", Account()),
-                    Sub("ready", "Launch D2R and skip intros for one account, or all online accounts when omitted", OptionalAccount()),
+                    Sub("status", "Show host health and one or all client statuses", OptionalAccount()),
+                    Sub("start", "Launch one client; all:true readies all", OptionalAccount(), AllFlag()),
+                    Sub("stop", "Kill D2R for an account", Account()),
+                    Sub("quit", "Close D2R with Alt+F4", OptionalAccount(), AllFlag()),
+                    Sub("restart-client", "Restart D2R for an account", Account()),
+                    Sub("screenshot", "Capture the VM screen", Account()),
+                    Sub("remote", "Show the VM remote-control URL", Account()),
+                    Sub("ready", "Launch D2R and skip intros; omit account for all online", OptionalAccount()),
                     Sub("lobby", "Select character and open Lobby", Account(), CharacterSlot()),
                     Sub("play", "Select character and click Play", Account(), CharacterSlot()),
-                    Sub("join", "Join a game, or auto-join template games when auto is true", OptionalAccount(), AllFlag(), JoinAutoFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Delay(), IdleMinutes(), JoinAutoWatch()),
-                    Sub("create-game", "Create one game, or create and join across all accounts", OptionalAccount(), AllFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
-                    Sub("follow", "Follow the bound friend, bind a friend, or join by visible row", OptionalAccount(), AllFlag(), CharacterSlot(), FriendRow(), FollowBind(), FollowBindInGame(), FollowAutoFlag(), FollowBots(), Delay(), IdleMinutes(), Watch()),
-                    Sub("dclone", "Park every online bot in its own game and hold it open for a Diablo Clone hunt", DcloneBots(), DcloneDifficulty(), StopFlag(), Watch()),
-                    Sub("save-exit", "Open the in-game menu and click Save and Exit", OptionalAccount(), AllFlag()),
-                    Sub("template", "Set the create/join auto-naming template", RequiredGameName(), Password()),
-                    Sub("restart", "Respawn D2RHost so startup self-update can apply"),
-                    Group("game", "Track the current D2R game details",
-                        Sub("set", "Store the current game name/password for clients to join",
+                    Sub("join", "Join a game; auto:true follows the naming template", OptionalAccount(), AllFlag(), JoinAutoFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Delay(), IdleMinutes(), JoinAutoWatch()),
+                    Sub("create-game", "Create a game; all:true joins all accounts", OptionalAccount(), AllFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
+                    Sub("follow", "Follow or bind a friend, or join by row", OptionalAccount(), AllFlag(), CharacterSlot(), FriendRow(), FollowBind(), FollowBindInGame(), FollowAutoFlag(), FollowBots(), Delay(), IdleMinutes(), Watch()),
+                    Sub("dclone", "Park bots in separate games for a Diablo Clone hunt", DcloneBots(), DcloneDifficulty(), StopFlag(), Watch()),
+                    Sub("save-exit", "Save and exit the game", OptionalAccount(), AllFlag()),
+                    Sub("template", "Set the create/join naming template", RequiredGameName(), Password()),
+                    Sub("restart", "Restart D2RHost and apply updates"),
+                    Group("game", "Manage stored game details",
+                        Sub("set", "Store game details for clients to join",
                             RequiredGameName(),
                             Password(),
                             Difficulty(),
                             Notes()),
-                        Sub("show", "Show the stored game details"),
-                        Sub("clear", "Clear the stored game details")),
-                    Group("system", "Power actions on the D2RHost Windows machine",
-                        Sub("sleep", "Sleep every online D2RHost node, or just one via node/all:false", NodeTarget(), AllNodesFlag()),
-                        Sub("shutdown", "Shut down one D2RHost node, or every online node", NodeTarget(), AllNodesFlag()),
-                        Sub("restart", "Restart one D2RHost node, or every online node", NodeTarget(), AllNodesFlag())),
-                    Group("config", "Configure the D2R controller",
-                        Sub("show", "Show runtime controller config"),
-                        Sub("stagger", "Persist all-client stagger seconds and restart the host",
-                            Seconds("seconds", "Delay between all-client actions, in seconds")),
-                        Sub("api", "Turn the local HTTP command API on or off and mint its key",
-                            BoolOption("enabled", "Whether something other than Discord may drive this host over HTTP"),
-                            BoolOption("overwrite", "Required to replace a key that already exists; the old one stops working", required: false)),
-                        Sub("notifications", "Persist Discord notification settings and restart the host",
-                            BoolOption("enabled", "Whether to post game session updates"),
-                            StringOption("channel-id", "Discord text channel ID for notifications", required: false),
-                            BoolOption("updates-enabled", "Whether to post host availability/update notifications", required: false))),
-                    Group("vm", "Operate mapped Hyper-V virtual machines",
-                        Sub("status", "Get Hyper-V status for an account VM", Account()),
+                        Sub("show", "Show stored game details"),
+                        Sub("clear", "Clear stored game details")),
+                    Group("system", "Control host machine power",
+                        Sub("sleep", "Sleep all online hosts; node/all:false targets one", NodeTarget(), AllNodesFlag()),
+                        Sub("shutdown", "Shut down one or all online hosts", NodeTarget(), AllNodesFlag()),
+                        Sub("restart", "Restart one or all online hosts", NodeTarget(), AllNodesFlag())),
+                    Group("config", "Configure the controller",
+                        Sub("show", "Show active config"),
+                        Sub("stagger", "Save action spacing and restart host",
+                            Seconds("seconds", "Seconds between client actions")),
+                        Sub("api", "Enable/disable the HTTP API and issue its key",
+                            BoolOption("enabled", "Allow HTTP control of this host"),
+                            BoolOption("overwrite", "Replace an existing key, invalidating it", required: false)),
+                        Sub("notifications", "Save notification settings and restart host",
+                            BoolOption("enabled", "Post game session updates"),
+                            StringOption("channel-id", "Notification text channel ID", required: false),
+                            BoolOption("updates-enabled", "Post host availability and update notices", required: false))),
+                    Group("vm", "Control Hyper-V VMs",
+                        Sub("status", "Show an account VM's Hyper-V status", Account()),
                         Sub("start", "Start an account VM", Account()),
                         Sub("stop", "Stop an account VM", Account()),
-                        Sub("turnoff", "Cut power to a hung account VM without asking the guest (unsaved work is lost)", Account()),
+                        Sub("turnoff", "Force off an account VM; unsaved work is lost", Account()),
                         Sub("reboot", "Restart an account VM", Account()),
-                        Sub("snapshot", "Create a Hyper-V checkpoint for an account VM", Account(), SnapshotName())))
+                        Sub("snapshot", "Checkpoint an account VM", Account(), SnapshotName())))
                 .Build()
         ];
     }
@@ -115,30 +112,30 @@ public static class DiscordSlashCommands
 
     private static SlashCommandOptionBuilder Account()
     {
-        return StringOption("account", "Configured account key, for example hc1", required: true);
+        return StringOption("account", "Account key (e.g. hc1)", required: true);
     }
 
     private static SlashCommandOptionBuilder OptionalAccount()
     {
-        return StringOption("account", "Configured account key, for example hc1", required: false);
+        return StringOption("account", "Account key (e.g. hc1)", required: false);
     }
 
     private static SlashCommandOptionBuilder NodeTarget()
     {
-        return StringOption("node", "One D2RHost node ID; scopes the action to that node", required: false);
+        return StringOption("node", "Target host node ID", required: false);
     }
 
     private static SlashCommandOptionBuilder AllNodesFlag()
     {
         return BoolOption(
             "all",
-            "Every online D2RHost node; defaults true for sleep, false for shutdown/restart",
+            "All online hosts; default true for sleep, otherwise false",
             required: false);
     }
 
     private static SlashCommandOptionBuilder GameName()
     {
-        return StringOption("name", "Game name; defaults to /d2r game show value", required: false);
+        return StringOption("name", "Game name; default: /d2r game show", required: false);
     }
 
     private static SlashCommandOptionBuilder RequiredGameName()
@@ -148,22 +145,22 @@ public static class DiscordSlashCommands
 
     private static SlashCommandOptionBuilder Password()
     {
-        return StringOption("password", "Game password; defaults to /d2r game show value", required: false);
+        return StringOption("password", "Game password; default: /d2r game show", required: false);
     }
 
     private static SlashCommandOptionBuilder Notes()
     {
-        return StringOption("notes", "Optional short note, for example join off friend instead", required: false);
+        return StringOption("notes", "Optional game note", required: false);
     }
 
     private static SlashCommandOptionBuilder SnapshotName()
     {
-        return StringOption("name", "Optional snapshot/checkpoint name", required: false);
+        return StringOption("name", "Optional checkpoint name", required: false);
     }
 
     private static SlashCommandOptionBuilder Difficulty()
     {
-        return StringOption("difficulty", "Game difficulty; defaults to /d2r game show value or VM UI default", required: false)
+        return StringOption("difficulty", "Difficulty; default: /d2r game show or VM UI", required: false)
             .AddChoice("Normal", "normal")
             .AddChoice("Nightmare", "nightmare")
             .AddChoice("Hell", "hell");
@@ -173,7 +170,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("character-slot")
-            .WithDescription("Character slot to select, 1-8; defaults to VM config")
+            .WithDescription("Character slot 1-8; default: VM config")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(1)
@@ -184,7 +181,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("friend-row")
-            .WithDescription("Visible friends drawer row for follow/bind; defaults to VM config")
+            .WithDescription("Friend row to follow/bind; default: VM config")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(1)
@@ -206,7 +203,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("delay")
-            .WithDescription("Seconds to wait before each join attempt; default 0. Also used as the wait between retry attempts.")
+            .WithDescription("Seconds before each join/retry; default 0")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(0)
@@ -217,7 +214,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("stop")
-            .WithDescription("Stop the running loop instead of starting one")
+            .WithDescription("Stop the current loop")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
@@ -228,7 +225,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("bots")
-            .WithDescription("How many bots to park, one game each; defaults to every online account")
+            .WithDescription("Bots to park, one game each; default: all online")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(1)
@@ -239,7 +236,7 @@ public static class DiscordSlashCommands
     // whatever /d2r game set last stored would silently open 8 Normal games instead.
     private static SlashCommandOptionBuilder DcloneDifficulty()
     {
-        return StringOption("difficulty", "Difficulty for every parked game; defaults to Hell", required: false)
+        return StringOption("difficulty", "Parked game difficulty; default Hell", required: false)
             .AddChoice("Normal", "normal")
             .AddChoice("Nightmare", "nightmare")
             .AddChoice("Hell", "hell");
@@ -249,7 +246,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("all")
-            .WithDescription("Run across all online accounts; defaults to true")
+            .WithDescription("All online accounts; default true")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
@@ -258,7 +255,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("idle-minutes")
-            .WithDescription("Minutes to retry joining the next game before giving up and disabling; default 60")
+            .WithDescription("Minutes to retry the next game before stopping; default 60")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(1)
@@ -269,7 +266,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("bind")
-            .WithDescription("Capture (true) or clear (false) the friend to auto-follow from selected friend-row")
+            .WithDescription("Bind selected friend-row (true) or clear binding (false)")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
@@ -278,7 +275,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("bind-in-game")
-            .WithDescription("Bind the party-bar name at position 1-7 as a leader nametag (repeat per alt); 0 clears all")
+            .WithDescription("Bind party-bar leader 1-7; repeat per alt, 0 clears all")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(0)
@@ -289,7 +286,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("auto")
-            .WithDescription("Start (true) or stop (false) auto-following the bound friend across all accounts")
+            .WithDescription("Auto-follow bound friend on all accounts: true=start, false=stop")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
@@ -300,7 +297,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("bots")
-            .WithDescription("How many bots to put in the leader's game, 1-7; default 7 (a full 8-player game)")
+            .WithDescription("Bots in leader's game, 1-7; default 7 (full party)")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(1)
@@ -311,7 +308,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("auto")
-            .WithDescription("Start (true) or stop (false) template auto-join")
+            .WithDescription("Template auto-join: true=start, false=stop")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
@@ -320,7 +317,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("watch")
-            .WithDescription("Also post each failed join/leave attempt, not just successes and the final outcome")
+            .WithDescription("Also report failed join/leave attempts")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
@@ -329,7 +326,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("watch")
-            .WithDescription("Post a live-updating diagnostics message (frame/click attempts) while this runs")
+            .WithDescription("Show live frame/click diagnostics")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
@@ -338,7 +335,7 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("metric")
-            .WithDescription("Append host and VM RAM/CPU telemetry; defaults to false")
+            .WithDescription("Host/VM RAM/CPU; defaults to false")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
     }
