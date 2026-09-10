@@ -25,6 +25,13 @@ public sealed class DiscordBot
     private const string FollowAutoAddBotButtonId = "d2r:follow:bots:add";
     private const string FollowAutoPartyModeButtonId = "d2r:follow:party-mode";
     private const string DcloneStopButtonId = "d2r:dclone:stop";
+    // What an HTTP caller is recorded as in the database's updated-by columns, where a Discord
+    // user id would otherwise go. Deliberately not a number, so it can never be mistaken for one.
+    private const string ApiActorId = "api";
+    // How long an HTTP caller waits before it is told to poll instead. Sized above the slowest
+    // single command (menu_ready's 420s budget) so an ordinary slow warmup still answers inline,
+    // and the timeout only ever fires on something genuinely stuck.
+    private static readonly TimeSpan ApiCommandTimeout = TimeSpan.FromSeconds(600);
     private const string GameSessionLeaveButtonId = "d2r:session:leave";
     private const string GameSessionQuitButtonId = "d2r:session:quit";
     private const string StartupFollowButtonId = "d2r:startup:follow";
@@ -1761,48 +1768,7 @@ public sealed class DiscordBot
         try
         {
             context = SlashContext.From(command);
-            switch (command.CommandName)
-            {
-                case "d2r":
-                    if (context.GroupName == "config")
-                    {
-                        await HandleConfigAsync(context);
-                    }
-                    else if (context.GroupName == "vm")
-                    {
-                        await HandleVmAsync(context);
-                    }
-                    else if (context.GroupName == "game")
-                    {
-                        await HandleGameAsync(context);
-                    }
-                    else if (context.GroupName == "system")
-                    {
-                        await HandleSystemAsync(context);
-                    }
-                    else if (context.SubcommandName == "restart")
-                    {
-                        await HandleRestartAsync(context);
-                    }
-                    else
-                    {
-                        await HandleD2RAsync(context);
-                    }
-
-                    break;
-                case "vm":
-                    await HandleVmAsync(context);
-                    break;
-                case "game":
-                    await HandleGameAsync(context);
-                    break;
-                case "config":
-                    await HandleConfigAsync(context);
-                    break;
-                case "restart":
-                    await HandleRestartAsync(context);
-                    break;
-            }
+            await DispatchCommandAsync(command.CommandName, context);
         }
         catch (Exception ex)
         {
@@ -1818,6 +1784,213 @@ public sealed class DiscordBot
             {
                 await command.RespondAsync(content, ephemeral: true);
             }
+        }
+    }
+
+    /// <summary>
+    /// The live dclone park, as data rather than as a Discord message.
+    /// </summary>
+    /// <remarks>
+    /// This is what makes a monitor-less park usable: on a host with no Discord channel the minted
+    /// game names and passwords have nowhere to be written down, so the API has to be able to read
+    /// them back. It is also simply a better way for a caller to poll a park than scraping text.
+    /// </remarks>
+    public DcloneParkStatus GetDcloneParkStatus()
+    {
+        var run = Volatile.Read(ref _dcloneRun);
+        if (run is null)
+        {
+            return new DcloneParkStatus(false, null, null, 0, 0, Array.Empty<DcloneParkGame>());
+        }
+
+        var slots = run.Snapshot();
+        return new DcloneParkStatus(
+            Running: IsDcloneParkRunning(),
+            StartedUtc: run.StartedUtc,
+            Difficulty: run.Difficulty,
+            Parked: slots.Count(slot => slot.State == DcloneSlotState.Parked),
+            Total: slots.Count,
+            Games: slots.Select(slot => new DcloneParkGame(
+                slot.AccountKey,
+                slot.GameName,
+                slot.Password,
+                slot.State.ToString(),
+                slot.Detail,
+                slot.Reparks)).ToArray());
+    }
+
+    /// <summary>
+    /// Runs one <c>/d2r</c> command on behalf of an authenticated HTTP caller and returns what
+    /// Discord would have been told.
+    /// </summary>
+    /// <remarks>
+    /// This is the entire API implementation: it builds a context whose replies go to a sink
+    /// instead of an interaction, and hands it to the same dispatcher the gateway uses. Commands
+    /// are never listed or special-cased here, so the HTTP surface is the Discord surface by
+    /// construction.
+    /// </remarks>
+    public async Task<ApiCommandResult> ExecuteApiCommandAsync(
+        string? group,
+        string command,
+        IReadOnlyDictionary<string, object?> options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var descriptor = DiscordSlashCommandCatalog.Find(group, command);
+        if (descriptor is null)
+        {
+            var path = string.IsNullOrWhiteSpace(group) ? command : $"{group} {command}";
+            return new ApiCommandResult(
+                Ok: false,
+                $"Unknown command `{path}`. GET /api/commands lists what this host accepts.",
+                Array.Empty<string>(),
+                File: null,
+                Error: ApiCommandRejection.UnknownCommand.ToString());
+        }
+
+        if (RejectUnknownOptions(descriptor, options) is { } unknownOptionError)
+        {
+            return new ApiCommandResult(
+                Ok: false,
+                unknownOptionError,
+                Array.Empty<string>(),
+                File: null,
+                Error: ApiCommandRejection.UnknownCommand.ToString());
+        }
+
+        var sink = new ApiCommandSink();
+        var context = SlashContext.FromApi(
+            descriptor.Group,
+            descriptor.Command,
+            options,
+            sink,
+            ResolveNotificationChannel());
+
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            linked.CancelAfter(ApiCommandTimeout);
+            var work = DispatchCommandAsync("d2r", context);
+            var finished = await Task.WhenAny(work, Task.Delay(Timeout.Infinite, linked.Token));
+            if (!ReferenceEquals(finished, work))
+            {
+                // The command keeps running - a ready pass or a create is not something to abandon
+                // halfway - the caller just stops waiting for it.
+                _logger.LogWarning(
+                    "API command {Path} exceeded {Timeout} and the response was returned without it.",
+                    descriptor.Path,
+                    ApiCommandTimeout);
+                sink.AddDetail(
+                    $"Still running after {(int)ApiCommandTimeout.TotalSeconds}s; it was not cancelled. "
+                        + "Poll /api/status or the relevant mode endpoint for the outcome.");
+                return sink.ToResult(ok: false, error: "Timeout");
+            }
+
+            await work;
+            return sink.ToResult(ok: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "API command {Path} failed.", descriptor.Path);
+            sink.AddDetail(ex.Message);
+            return sink.ToResult(ok: false, error: ex.GetType().Name);
+        }
+    }
+
+    /// <summary>
+    /// A typo in an option name would otherwise be silently ignored and the command would run with
+    /// a default the caller did not intend - the kind of failure an automated caller cannot see.
+    /// </summary>
+    private static string? RejectUnknownOptions(
+        CommandDescriptor descriptor,
+        IReadOnlyDictionary<string, object?> options)
+    {
+        var unknown = options.Keys
+            .Where(name => !descriptor.Options.Any(option =>
+                string.Equals(option.Name, name, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (unknown.Length == 0)
+        {
+            return null;
+        }
+
+        var accepted = descriptor.Options.Count == 0
+            ? "it takes no options"
+            : "it accepts: " + string.Join(", ", descriptor.Options.Select(option => option.Name));
+        return $"`{descriptor.Path}` does not have option(s) {string.Join(", ", unknown)}; {accepted}.";
+    }
+
+    /// <summary>
+    /// The channel a mode's live monitor goes to when the command did not arrive from a Discord
+    /// channel of its own. Null when Discord is disabled, no channel is configured, or the
+    /// configured one is not visible to the bot.
+    /// </summary>
+    private IMessageChannel? ResolveNotificationChannel()
+    {
+        if (_config.DisableDiscord || _config.GuildChannel is not { } channelId)
+        {
+            return null;
+        }
+
+        try
+        {
+            return _client.GetChannel(channelId) as IMessageChannel;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not resolve the configured notification channel for an API command.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Routes one command to its handler. Shared by the Discord gateway and the HTTP API so both
+    /// doors reach the same code - the API is not a second implementation of the command surface.
+    /// </summary>
+    private async Task DispatchCommandAsync(string commandName, SlashContext context)
+    {
+        switch (commandName)
+        {
+            case "d2r":
+                if (context.GroupName == "config")
+                {
+                    await HandleConfigAsync(context);
+                }
+                else if (context.GroupName == "vm")
+                {
+                    await HandleVmAsync(context);
+                }
+                else if (context.GroupName == "game")
+                {
+                    await HandleGameAsync(context);
+                }
+                else if (context.GroupName == "system")
+                {
+                    await HandleSystemAsync(context);
+                }
+                else if (context.SubcommandName == "restart")
+                {
+                    await HandleRestartAsync(context);
+                }
+                else
+                {
+                    await HandleD2RAsync(context);
+                }
+
+                break;
+            case "vm":
+                await HandleVmAsync(context);
+                break;
+            case "game":
+                await HandleGameAsync(context);
+                break;
+            case "config":
+                await HandleConfigAsync(context);
+                break;
+            case "restart":
+                await HandleRestartAsync(context);
+                break;
         }
     }
 
@@ -2157,13 +2330,23 @@ public sealed class DiscordBot
             .Build();
     }
 
+    // The three response helpers are the seam the HTTP API rides in on: every command handler
+    // answers through one of them, so routing an API context's replies into its sink here is all
+    // it takes for the whole /d2r surface to work over HTTP. Buttons and metrics are Discord-only
+    // decoration and are simply dropped for an API caller.
     private Task RespondWithMetricsAsync(
         SlashContext context,
         string content,
         bool ephemeral = true,
         MessageComponent? components = null)
     {
-        return context.Command.RespondAsync(
+        if (context.Api is { } sink)
+        {
+            sink.SetMessage(content);
+            return Task.CompletedTask;
+        }
+
+        return context.Interaction!.RespondAsync(
             AppendMetrics(context, content),
             ephemeral: ephemeral,
             components: components);
@@ -2174,20 +2357,32 @@ public sealed class DiscordBot
         string content,
         Action<MessageProperties>? configure = null)
     {
-        return context.Command.ModifyOriginalResponseAsync(properties =>
+        if (context.Api is { } sink)
+        {
+            sink.SetMessage(content);
+            return Task.CompletedTask;
+        }
+
+        return context.Interaction!.ModifyOriginalResponseAsync(properties =>
         {
             properties.Content = AppendMetrics(context, content);
             configure?.Invoke(properties);
         });
     }
 
-    private async Task<IUserMessage> FollowupWithMetricsAsync(
+    private async Task<IUserMessage?> FollowupWithMetricsAsync(
         SlashContext context,
         string content,
         bool ephemeral = true,
         MessageComponent? components = null)
     {
-        return await context.Command.FollowupAsync(
+        if (context.Api is { } sink)
+        {
+            sink.AddDetail(content);
+            return null;
+        }
+
+        return await context.Interaction!.FollowupAsync(
             AppendMetrics(context, content),
             ephemeral: ephemeral,
             components: components);
@@ -2354,7 +2549,7 @@ public sealed class DiscordBot
         // command by long enough to send people chasing a command Discord never offers.
         if (subcommand == "status")
         {
-            await context.Command.DeferAsync(ephemeral: true);
+            await DeferIfInteractiveAsync(context);
             var accountKey = context.GetString("account");
             var content = accountKey is null
                 ? FormatHealth() + "\n\n" + await FormatAllAccountStatusesLiveAsync(CancellationToken.None)
@@ -2765,14 +2960,14 @@ public sealed class DiscordBot
             _ => throw new InvalidOperationException($"Unsupported VM subcommand: {context.SubcommandName}")
         };
 
-        await context.Command.DeferAsync(ephemeral: true);
+        await DeferIfInteractiveAsync(context);
         var args = JsonSerializer.SerializeToElement(new
         {
             accountKey,
             vmName,
             snapshotName = context.GetString("name")
         });
-        QueueDiscordWork(context, $"vm {commandName}", async () =>
+        await QueueDiscordWork(context, $"vm {commandName}", async () =>
         {
             var result = await _hyperV.HandleCommandAsync(
                 account,
@@ -2797,7 +2992,7 @@ public sealed class DiscordBot
                     BlankToNull(context.GetString("password")),
                     context.GetString("difficulty"),
                     BlankToNull(context.GetString("notes")),
-                    context.Command.User.Id.ToString());
+                    context.ActorId);
                 await SetInitialCommandResponseAsync(context, $"Stored current game:\n{FormatActiveGame(game)}", ephemeral: true);
                 return;
             case "show":
@@ -2896,14 +3091,19 @@ public sealed class DiscordBot
 
     private async Task AnnounceSystemPowerActionAsync(SlashContext context, HostSystemPowerAction action)
     {
+        if (context.Channel is not { } announceChannel)
+        {
+            return;
+        }
+
         try
         {
-            await context.Command.Channel.SendMessageAsync(
+            await announceChannel.SendMessageAsync(
                 AppendMetrics(
                     context,
                     HostSystemPowerActions.FormatDiscordAnnouncement(
                         action,
-                        FormatDiscordUser(context.Command.User))));
+                        context.ActorLabel)));
         }
         catch (Exception ex)
         {
@@ -2925,6 +3125,9 @@ public sealed class DiscordBot
                 await SaveConfigAndRespawnAsync(
                     context,
                     $"Set all-client stagger to {seconds}s.");
+                return;
+            case "api":
+                await HandleConfigApiAsync(context);
                 return;
             case "notifications":
                 var enabled = context.GetRequiredBool("enabled");
@@ -2956,6 +3159,95 @@ public sealed class DiscordBot
         }
     }
 
+    /// <summary>
+    /// Turns the HTTP command API on or off, minting a key the first time and only replacing an
+    /// existing one when explicitly told to.
+    /// </summary>
+    /// <remarks>
+    /// The key is shown exactly once, here, because only its hash is kept. Replacing it is
+    /// gated behind <c>overwrite</c> for the obvious reason: whatever is already driving this host
+    /// stops working the moment a new key is minted, and that should never be a side effect of
+    /// re-running a command to check whether the API is on.
+    ///
+    /// Unlike the other `/d2r config` subcommands this saves without respawning. The response
+    /// carries a secret the operator can never be shown again, and tearing the process down one
+    /// second after sending it is a needless way to lose it.
+    /// </remarks>
+    private async Task HandleConfigApiAsync(SlashContext context)
+    {
+        await EnsureAcknowledgedAsync(context);
+
+        if (!_config.IsMaster)
+        {
+            await SetInitialCommandResponseAsync(
+                context,
+                $"This node runs in {_config.Mode} mode. The HTTP command API is master-only: a worker "
+                    + "relays commands for its own VMs but has no view of the fleet, so it cannot answer for one.",
+                ephemeral: true);
+            return;
+        }
+
+        var enabled = context.GetRequiredBool("enabled");
+        var overwrite = context.GetBool("overwrite") == true;
+        var hasKey = !string.IsNullOrWhiteSpace(_config.Api.KeyHash);
+
+        if (!enabled)
+        {
+            // The key is deliberately left in place: turning the API off for the night should not
+            // force every caller to be re-keyed in the morning. `overwrite` is how a key is retired.
+            _config.Api.Enabled = false;
+            HostConfigLoader.Save(_runtime.ConfigPath, _config);
+            await SetInitialCommandResponseAsync(
+                context,
+                "HTTP command API disabled. Every /api request now returns 503. "
+                    + (hasKey
+                        ? "The existing key is kept, so re-enabling does not require re-keying callers."
+                        : "No key is stored.")
+                    + $"\nSaved `{_runtime.ConfigPath}`.",
+                ephemeral: true);
+            return;
+        }
+
+        if (hasKey && !overwrite)
+        {
+            _config.Api.Enabled = true;
+            HostConfigLoader.Save(_runtime.ConfigPath, _config);
+            await SetInitialCommandResponseAsync(
+                context,
+                $"HTTP command API enabled, still using the existing key `{_config.Api.KeyId}`. "
+                    + "I cannot show that key again - only its hash is stored. "
+                    + "To mint a replacement, run `/d2r config api enabled:true overwrite:true`; "
+                    + "the current key stops working the moment you do.",
+                ephemeral: true);
+            return;
+        }
+
+        // Captured before the overwrite below: the "previous key" line names the key being retired,
+        // and reading it back off the config afterwards would name the replacement instead.
+        var replacedKeyId = _config.Api.KeyId;
+        var generated = HostApiKey.Generate();
+        _config.Api.Enabled = true;
+        _config.Api.KeyHash = generated.Hash;
+        _config.Api.KeyId = generated.KeyId;
+        _config.Api.KeyCreatedUtc = DateTimeOffset.UtcNow;
+        HostConfigLoader.Save(_runtime.ConfigPath, _config);
+        _logger.LogWarning(
+            "A new HTTP API key was minted ({KeyId}) and the API was enabled.",
+            generated.KeyId);
+
+        await SetInitialCommandResponseAsync(
+            context,
+            (hasKey
+                ? $"Replaced the HTTP API key. The previous key (`{replacedKeyId}`) no longer works.\n\n"
+                : "HTTP command API enabled.\n\n")
+                + $"**Copy this now - it is shown once and only its hash is stored:**\n```\n{generated.Key}\n```\n"
+                + $"Use it against `http://<this-host>:{_config.HttpPort}`:\n"
+                + $"```\ncurl -s -H \"X-API-Key: {generated.Key}\" http://<this-host>:{_config.HttpPort}/api/commands\n```\n"
+                + "`Authorization: Bearer <key>` works too. "
+                + $"Saved `{_runtime.ConfigPath}`; the API is live now, no restart needed.",
+            ephemeral: true);
+    }
+
     private async Task HandleRestartAsync(SlashContext context)
     {
         await RespondWithMetricsAsync(
@@ -2980,8 +3272,29 @@ public sealed class DiscordBot
             $"Node: {_config.NodeId}",
             $"All-client stagger: {stagger}s",
             $"Session notifications: {notifications}",
-            $"Update notifications: {updateNotifications}"
+            $"Update notifications: {updateNotifications}",
+            $"HTTP command API: {FormatApiConfig()}"
         });
+    }
+
+    private string FormatApiConfig()
+    {
+        if (!_config.IsMaster)
+        {
+            return "unavailable on a worker node";
+        }
+
+        if (!_config.Api.Enabled)
+        {
+            return string.IsNullOrWhiteSpace(_config.Api.KeyHash)
+                ? "disabled, no key minted"
+                : $"disabled, key {_config.Api.KeyId} retained";
+        }
+
+        var created = _config.Api.KeyCreatedUtc is { } createdUtc
+            ? $", minted {createdUtc:yyyy-MM-dd}"
+            : "";
+        return $"enabled on port {_config.HttpPort}, key {_config.Api.KeyId}{created}";
     }
 
     private string FormatNotificationConfigSavedMessage()
@@ -3074,7 +3387,7 @@ public sealed class DiscordBot
         object args)
     {
         await EnsureAcknowledgedAsync(context);
-        QueueDiscordWork(context, "menu_join_friend", async () =>
+        await QueueDiscordWork(context, "menu_join_friend", async () =>
         {
             var watchCts = new CancellationTokenSource();
             var entries = new[] { new KeyValuePair<string, AccountConfig>(accountKey, account) };
@@ -3110,7 +3423,7 @@ public sealed class DiscordBot
         // (quit cancels follow-auto first) acknowledges before that work, and deferring twice
         // throws.
         await EnsureAcknowledgedAsync(context);
-        QueueDiscordWork(context, commandName, () => RunVmCommandDeferredAsync(
+        await QueueDiscordWork(context, commandName, () => RunVmCommandDeferredAsync(
             context,
             account,
             commandName,
@@ -3175,7 +3488,7 @@ public sealed class DiscordBot
     private async Task RunScreenshotAsync(SlashContext context, AccountConfig account, object args)
     {
         await EnsureAcknowledgedAsync(context);
-        QueueDiscordWork(context, "screenshot", () => RunScreenshotDeferredAsync(context, account, args));
+        await QueueDiscordWork(context, "screenshot", () => RunScreenshotDeferredAsync(context, account, args));
     }
 
     private async Task RunScreenshotDeferredAsync(SlashContext context, AccountConfig account, object args)
@@ -3193,36 +3506,64 @@ public sealed class DiscordBot
             return;
         }
 
+        var fileName = $"{account.AgentId}-screenshot.{extension}";
+        if (context.Api is { } sink)
+        {
+            // An HTTP caller gets the image inline, base64 in the JSON body, rather than a
+            // Discord attachment it has no way to fetch.
+            sink.AttachFile(fileName, extension == "jpg" ? "image/jpeg" : "image/png", bytes);
+            sink.SetMessage(result.Message);
+            return;
+        }
+
         await using var stream = new MemoryStream(bytes);
-        await context.Command.FollowupWithFileAsync(
+        await context.Interaction!.FollowupWithFileAsync(
             stream,
-            $"{account.AgentId}-screenshot.{extension}",
+            fileName,
             AppendMetrics(context, result.Message),
             ephemeral: true);
         await ModifyOriginalResponseWithMetricsAsync(context, "Screenshot attached.");
     }
 
-    private void QueueDiscordWork(SlashContext context, string operationName, Func<Task> work)
+    /// <summary>
+    /// Runs the slow half of a command off the gateway task.
+    /// </summary>
+    /// <remarks>
+    /// Discord can afford fire-and-forget here because the handler already deferred and the real
+    /// answer arrives later as a message edit. An HTTP caller has no later - its response body is
+    /// serialized the moment the handler returns - so an API context waits for the work instead.
+    /// This one branch is what makes every single-client command synchronous over HTTP without
+    /// touching any of the commands themselves.
+    /// </remarks>
+    private Task QueueDiscordWork(SlashContext context, string operationName, Func<Task> work)
     {
-        _ = Task.Run(async () =>
+        if (context.IsApi)
         {
-            try
-            {
-                await work();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Discord command background work failed for {OperationName}.", operationName);
-                await SetCommandResponseSafeAsync(context, $"Command failed: {ex.Message}");
-            }
-        });
+            return RunCommandWorkAsync(context, operationName, work);
+        }
+
+        _ = Task.Run(() => RunCommandWorkAsync(context, operationName, work));
+        return Task.CompletedTask;
+    }
+
+    private async Task RunCommandWorkAsync(SlashContext context, string operationName, Func<Task> work)
+    {
+        try
+        {
+            await work();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Discord command background work failed for {OperationName}.", operationName);
+            await SetCommandResponseSafeAsync(context, $"Command failed: {ex.Message}");
+        }
     }
 
     private async Task SetCommandResponseSafeAsync(SlashContext context, string content)
     {
         try
         {
-            if (context.Command.HasResponded)
+            if (context.HasResponded)
             {
                 await ModifyOriginalResponseWithMetricsAsync(context, content);
             }
@@ -3239,7 +3580,7 @@ public sealed class DiscordBot
 
     private Task SetInitialCommandResponseAsync(SlashContext context, string content, bool ephemeral)
     {
-        return context.Command.HasResponded
+        return context.HasResponded
             ? ModifyOriginalResponseWithMetricsAsync(context, content)
             : RespondWithMetricsAsync(context, content, ephemeral);
     }
@@ -3290,7 +3631,7 @@ public sealed class DiscordBot
             watchTask = RunGameAllWatchTickerAsync(context, "create-game-all", game.GameName, entries, watchCts.Token);
         }
 
-        _ = Task.Run(async () =>
+        var orchestration = Task.Run(async () =>
         {
             try
             {
@@ -3373,7 +3714,7 @@ public sealed class DiscordBot
                 // So a later plain join-all/create-game-all (no flags) sees what actually just
                 // got created, the same way a manual /d2r game set would - not just whatever was
                 // true before this run started.
-                _db.SetActiveGame(game.GameName, game.Password, game.Difficulty, notes: "create-game-all", context.Command.User.Id.ToString());
+                _db.SetActiveGame(game.GameName, game.Password, game.Difficulty, notes: "create-game-all", context.ActorId);
 
                 await UpdateGameSessionAsync(
                     $"Game created by {creator.Key}; joiners entering as they finish preparing.",
@@ -3420,6 +3761,13 @@ public sealed class DiscordBot
                 await AwaitWatchTickerStopAsync(watchTask, "create-game-all");
             }
         });
+
+        // Same reason as the all-client fan-out: an HTTP caller's response body closes when this
+        // returns, so it waits for the create/join flow rather than being told only that it started.
+        if (context.IsApi)
+        {
+            await orchestration;
+        }
     }
 
     // The regular game-session message only updates at orchestration milestones (creator ready,
@@ -3434,8 +3782,15 @@ public sealed class DiscordBot
         KeyValuePair<string, AccountConfig>[] entries,
         CancellationToken cancellationToken)
     {
+        // Watch output is a live Discord message and nothing else. With nowhere to post it, the
+        // command still runs; only the diagnostics the caller opted into are unavailable.
+        if (context.Channel is not { } channel)
+        {
+            return;
+        }
+
         await RunGameAllWatchTickerAsync(
-            context.Command.Channel,
+            channel,
             context.MetricsEnabled,
             label,
             gameName,
@@ -3450,8 +3805,13 @@ public sealed class DiscordBot
         Func<KeyValuePair<string, AccountConfig>[]> getEntries,
         CancellationToken cancellationToken)
     {
+        if (context.Channel is not { } channel)
+        {
+            return;
+        }
+
         await RunGameAllWatchTickerAsync(
-            context.Command.Channel,
+            channel,
             context.MetricsEnabled,
             label,
             gameName,
@@ -3573,8 +3933,13 @@ public sealed class DiscordBot
 
     private async Task SendWatchLogAttachmentAsync(SlashContext context, string gameName, string logPath)
     {
+        if (context.Channel is not { } channel)
+        {
+            return;
+        }
+
         await SendWatchLogAttachmentAsync(
-            context.Command.Channel,
+            channel,
             context.MetricsEnabled,
             gameName,
             logPath);
@@ -4199,7 +4564,7 @@ public sealed class DiscordBot
         // joined - the game already exists by definition, so this is true regardless of whether
         // every account's join below succeeds. This is a synchronous database write, which is why
         // both callers acknowledge before they get here.
-        _db.SetActiveGame(game.GameName, game.Password, game.Difficulty, notes: "join-all", context.Command.User.Id.ToString());
+        _db.SetActiveGame(game.GameName, game.Password, game.Difficulty, notes: "join-all", context.ActorId);
 
         var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
         var readyFirstCount = entries.Count(entry => ShouldRunReadyFirst(entry.Value));
@@ -4225,7 +4590,7 @@ public sealed class DiscordBot
             watchTask = RunGameAllWatchTickerAsync(context, "join-all", game.GameName, entries, watchCts.Token);
         }
 
-        _ = Task.Run(async () =>
+        var orchestration = Task.Run(async () =>
         {
             try
             {
@@ -4274,6 +4639,13 @@ public sealed class DiscordBot
                 await AwaitWatchTickerStopAsync(watchTask, "join-all");
             }
         });
+
+        // Same reason as the all-client fan-out: an HTTP caller's response body closes when this
+        // returns, so it waits for the create/join flow rather than being told only that it started.
+        if (context.IsApi)
+        {
+            await orchestration;
+        }
     }
 
     private async Task<JoinResult> RunJoinAllPrepareEntryAsync(
@@ -4663,9 +5035,7 @@ public sealed class DiscordBot
                 entries,
                 watchCts.Token);
 
-        foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
-        {
-            _ = Task.Run(async () =>
+        var dispatches = entries.Select((entry, index) => Task.Run(async () =>
             {
                 var ok = true;
                 try
@@ -4736,7 +5106,14 @@ public sealed class DiscordBot
                             offerOnCompletion);
                     }
                 }
-            });
+            }))
+            .ToArray();
+
+        // Discord watches the follow-ups arrive; an HTTP caller has one response body and needs
+        // the per-account outcomes to be in it, so it waits for the whole fan-out.
+        if (context.IsApi)
+        {
+            await Task.WhenAll(dispatches);
         }
     }
 
@@ -4766,6 +5143,13 @@ public sealed class DiscordBot
                 ? BuildQuickStartComponents(offer)
                 : null;
             var sent = await FollowupWithMetricsAsync(context, message, ephemeral: false, components);
+            if (sent is null)
+            {
+                // An API caller already has this text in its response body; the reaction and the
+                // quick-action buttons are Discord-only affordances with nothing to attach to.
+                return;
+            }
+
             await sent.AddReactionAsync(new Emoji(failed == 0 ? "✅" : "⛔"));
             if (components is not null)
             {
@@ -5178,6 +5562,15 @@ public sealed class DiscordBot
             return;
         }
 
+        // join-auto's whole output is a live monitor message plus per-attempt posts, so it is
+        // one of the two commands that genuinely cannot run with nowhere to post. Refused up
+        // front rather than started and then silently mute.
+        if (context.Channel is not { } joinAutoChannel)
+        {
+            await RespondWithMetricsAsync(context, NoChannelRefusal("join-auto"));
+            return;
+        }
+
         await _joinAutoLock.WaitAsync();
         CancellationTokenSource cts;
         try
@@ -5203,9 +5596,9 @@ public sealed class DiscordBot
             $"join-auto started{(delaySeconds > 0 ? $" with a {delaySeconds}s delay before each join attempt" : "")}. Updates will post in this channel until it's stopped.",
             ephemeral: true);
 
-        await StartJoinAutoMonitorAsync(context.Command.Channel, context.MetricsEnabled);
+        await StartJoinAutoMonitorAsync(joinAutoChannel, context.MetricsEnabled);
 
-        _ = Task.Run(() => RunJoinAutoLoopAsync(context, delaySeconds, watch, idleTimeout, cts.Token));
+        _ = Task.Run(() => RunJoinAutoLoopAsync(context, joinAutoChannel, delaySeconds, watch, idleTimeout, cts.Token));
     }
 
     private async Task StopJoinAutoAsync(SlashContext context)
@@ -5340,7 +5733,7 @@ public sealed class DiscordBot
     {
         // A monitor from an earlier park keeps its Stop button; pressing it must not reach into
         // whatever park is running now.
-        var stopComponent = context.Command as SocketMessageComponent;
+        var stopComponent = context.Interaction as SocketMessageComponent;
         if (stopComponent is not null && _dcloneMonitorMessage?.Id != stopComponent.Message.Id)
         {
             await EnsureAcknowledgedAsync(context);
@@ -5399,24 +5792,32 @@ public sealed class DiscordBot
 
         try
         {
-            // The monitor is the deliverable, not decoration: it is the only place the minted
-            // game names and passwords are ever written down. A park nobody can read the
-            // credentials off is worth nothing, so a monitor that will not post ends the run
-            // here rather than opening games in secret.
-            try
+            // The minted credentials have to be readable somewhere or the park is worthless.
+            // In Discord that is the monitor message, and a monitor that will not post ends the
+            // run rather than opening games in secret. An API caller has a second way to read
+            // them - GET /api/dclone - so there the park runs monitor-less instead.
+            if (context.Channel is { } monitorChannel)
             {
-                monitor = await context.Command.Channel.SendMessageAsync(
-                    AppendMetrics(_dcloneMetricsEnabled, FormatDcloneMonitorMessage(run, "Opening games...")),
-                    components: BuildDcloneMonitorComponents(running: true));
-                _dcloneMonitorMessage = monitor;
+                try
+                {
+                    monitor = await monitorChannel.SendMessageAsync(
+                        AppendMetrics(_dcloneMetricsEnabled, FormatDcloneMonitorMessage(run, "Opening games...")),
+                        components: BuildDcloneMonitorComponents(running: true));
+                    _dcloneMonitorMessage = monitor;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Could not post the dclone monitor message; the park was not started.");
+                    await SendFollowupSafeAsync(
+                        context,
+                        "dclone park did not start: I could not post the live game list in this channel, "
+                            + $"and without it the game names would go nowhere. {ex.Message}");
+                    return;
+                }
             }
-            catch (Exception ex)
+            else if (!context.IsApi)
             {
-                _logger.LogError(ex, "Could not post the dclone monitor message; the park was not started.");
-                await SendFollowupSafeAsync(
-                    context,
-                    "dclone park did not start: I could not post the live game list in this channel, "
-                        + $"and without it the game names would go nowhere. {ex.Message}");
+                _logger.LogError("No channel is available for the dclone monitor; the park was not started.");
                 return;
             }
 
@@ -5796,9 +6197,14 @@ public sealed class DiscordBot
             : char.ToUpperInvariant(difficulty[0]) + difficulty[1..].ToLowerInvariant();
     }
 
-    private async Task RunJoinAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, CancellationToken cancellationToken)
+    private async Task RunJoinAutoLoopAsync(
+        SlashContext context,
+        IMessageChannel channel,
+        int delaySeconds,
+        bool watch,
+        TimeSpan idleTimeout,
+        CancellationToken cancellationToken)
     {
-        var channel = context.Command.Channel;
         try
         {
             while (true)
@@ -5972,7 +6378,7 @@ public sealed class DiscordBot
 
         if (!bindFlag)
         {
-            await context.Command.DeferAsync(ephemeral: true);
+            await DeferIfInteractiveAsync(context);
             var followAutoCancel = await CancelFollowAutoIfRunningAsync("the follow-bind target was cleared");
             var stopSignals = await SignalFollowAutoStopAgentsAsync(followAutoCancel.RunId);
 
@@ -6017,7 +6423,7 @@ public sealed class DiscordBot
         }
 
         var (resolvedAccountKey, bindAccount) = RequireAccount(bindAccountKey);
-        await context.Command.DeferAsync(ephemeral: true);
+        await DeferIfInteractiveAsync(context);
 
         CommandResultInfo captureResult;
         try
@@ -6129,7 +6535,7 @@ public sealed class DiscordBot
 
         if (partyPosition == 0)
         {
-            await context.Command.DeferAsync(ephemeral: true);
+            await DeferIfInteractiveAsync(context);
 
             // Record the empty rolodex before pushing it. Without this the host would still hold
             // the nametags and the next sweep would hand them straight back to every agent that
@@ -6184,7 +6590,7 @@ public sealed class DiscordBot
             return;
         }
 
-        await context.Command.DeferAsync(ephemeral: true);
+        await DeferIfInteractiveAsync(context);
 
         CommandResultInfo captureResult;
         try
@@ -6389,10 +6795,19 @@ public sealed class DiscordBot
             return;
         }
 
+        // The other command whose output IS a Discord message: the monitor carries the live bot
+        // count, the -1/+1 controls and the Public/Private toggle, and a run without it cannot be
+        // steered at all.
+        if (context.Channel is not { } followAutoChannel)
+        {
+            await SetInitialCommandResponseAsync(context, NoChannelRefusal("follow-auto"), ephemeral: true);
+            return;
+        }
+
         var bots = FollowAutoRosterPolicy.ClampTarget(
             targetBotCount ?? context.GetInt("bots") ?? FollowAutoRosterPolicy.DefaultBotCount);
         var options = new FollowAutoRunOptions(
-            context.Command.Channel,
+            followAutoChannel,
             delaySeconds,
             watch,
             idleTimeout,
@@ -6488,7 +6903,21 @@ public sealed class DiscordBot
 
     private static Task EnsureAcknowledgedAsync(SlashContext context)
     {
-        return EnsureAcknowledgedAsync(context.Command);
+        // An API context has no interaction and no three-second deadline, so every
+        // "acknowledge before doing work" call in the handlers becomes a no-op rather than
+        // needing a branch of its own at each of the ~30 call sites.
+        return context.Interaction is { } interaction
+            ? EnsureAcknowledgedAsync(interaction)
+            : Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// The explicit-defer counterpart of <see cref="EnsureAcknowledgedAsync(SlashContext)"/>, for
+    /// the handlers that deliberately claim the interaction as a new ephemeral reply.
+    /// </summary>
+    private static Task DeferIfInteractiveAsync(SlashContext context)
+    {
+        return context.Interaction?.DeferAsync(ephemeral: true) ?? Task.CompletedTask;
     }
 
     private async Task<FollowAutoRunLease?> TryBeginFollowAutoRunAsync(
@@ -6539,12 +6968,12 @@ public sealed class DiscordBot
 
     private async Task StopFollowAutoAsync(SlashContext context)
     {
-        var stopComponent = context.Command as SocketMessageComponent;
+        var stopComponent = context.Interaction as SocketMessageComponent;
         var expectedRun = stopComponent is null
             ? null
             : await _followAutoLifecycle.TryCaptureMonitorRunAsync(stopComponent.Message.Id);
 
-        await context.Command.DeferAsync(ephemeral: true);
+        await DeferIfInteractiveAsync(context);
         if (stopComponent is not null && expectedRun is null)
         {
             await ModifyOriginalResponseWithMetricsAsync(
@@ -11443,6 +11872,16 @@ public sealed class DiscordBot
         return true;
     }
 
+    /// <summary>
+    /// Why a mode whose entire output is a live Discord message cannot start over HTTP on a host
+    /// that has no channel to post it in. Names the fix rather than just the failure.
+    /// </summary>
+    private static string NoChannelRefusal(string modeName)
+    {
+        return $"{modeName} posts a live monitor message and cannot run without a Discord channel. "
+            + "Set one with `/d2r config notifications enabled:true channel-id:<id>`, or start this mode from Discord.";
+    }
+
     private static string? BlankToNull(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -11651,38 +12090,77 @@ public sealed class DiscordBot
         bool AttemptTargetedLeave = true,
         bool ReconcileRoster = false);
 
+    /// <summary>
+    /// One invocation of a <c>/d2r</c> command, from whichever door it came in: a Discord slash
+    /// command, a button on one of the bot's own messages, or an authenticated HTTP request.
+    /// </summary>
+    /// <remarks>
+    /// The command handlers only ever read options and hand text back, so making this the single
+    /// thing they depend on is what lets the HTTP API reuse them verbatim instead of growing a
+    /// second, drifting implementation of every command. An API-originated context has no
+    /// interaction to answer, so its replies are collected into <see cref="Api"/> and returned as
+    /// the HTTP response body; anything that genuinely needs a Discord channel (the live monitors)
+    /// falls back to the configured notification channel and refuses cleanly when there is none.
+    /// </remarks>
     private sealed class SlashContext
     {
         private SlashContext(
-            SocketInteraction command,
+            SocketInteraction? interaction,
             string? groupName,
             string subcommandName,
-            IReadOnlyDictionary<string, SocketSlashCommandDataOption> options)
+            IReadOnlyDictionary<string, object?> options,
+            ApiCommandSink? api = null,
+            IMessageChannel? fallbackChannel = null)
         {
-            Command = command;
+            Interaction = interaction;
             GroupName = groupName;
             SubcommandName = subcommandName;
             _options = options;
+            Api = api;
+            _fallbackChannel = fallbackChannel;
         }
 
-        private readonly IReadOnlyDictionary<string, SocketSlashCommandDataOption> _options;
+        private readonly IReadOnlyDictionary<string, object?> _options;
+        private readonly IMessageChannel? _fallbackChannel;
 
-        public SocketInteraction Command { get; }
+        public SocketInteraction? Interaction { get; }
+        public ApiCommandSink? Api { get; }
         public string? GroupName { get; }
         public string SubcommandName { get; }
         public int OptionCount => _options.Count;
         public bool MetricsEnabled => GetBool("metric") ?? false;
+
+        /// <summary>True when this came in over HTTP rather than from Discord.</summary>
+        public bool IsApi => Api is not null;
+
+        /// <summary>
+        /// Where a live monitor or session message can be posted, or null when there is nowhere
+        /// to post one - a headless master, or an API call on a host with no notification channel
+        /// configured. Callers that need one must say so rather than assume.
+        /// </summary>
+        public IMessageChannel? Channel => Interaction?.Channel ?? _fallbackChannel;
+
+        /// <summary>Who issued this, for database attribution. "api" for an HTTP caller.</summary>
+        public string ActorId => Interaction?.User.Id.ToString() ?? ApiActorId;
+
+        /// <summary>Who issued this, for human-readable announcements.</summary>
+        public string ActorLabel => Interaction is { } interaction
+            ? FormatDiscordUser(interaction.User)
+            : "the HTTP API";
+
+        /// <summary>
+        /// An API context is treated as already answered: there is no three-second interaction
+        /// deadline to beat and nothing to defer, so every "acknowledge first" path becomes a
+        /// no-op instead of needing its own branch at each call site.
+        /// </summary>
+        public bool HasResponded => Interaction?.HasResponded ?? true;
 
         public static SlashContext From(SocketSlashCommand command)
         {
             var subcommand = command.Data.Options.FirstOrDefault();
             if (subcommand is null)
             {
-                return new SlashContext(
-                    command,
-                    groupName: null,
-                    "",
-                    new Dictionary<string, SocketSlashCommandDataOption>(StringComparer.OrdinalIgnoreCase));
+                return new SlashContext(command, groupName: null, "", EmptyOptions());
             }
 
             if (subcommand.Type == ApplicationCommandOptionType.SubCommandGroup)
@@ -11692,30 +12170,58 @@ public sealed class DiscordBot
                     command,
                     subcommand.Name,
                     nestedSubcommand?.Name ?? "",
-                    (nestedSubcommand?.Options ?? Array.Empty<SocketSlashCommandDataOption>())
-                        .ToDictionary(option => option.Name, StringComparer.OrdinalIgnoreCase));
+                    ToOptionValues(nestedSubcommand?.Options));
             }
 
             return new SlashContext(
                 command,
                 groupName: null,
                 subcommand.Name,
-                subcommand.Options.ToDictionary(option => option.Name, StringComparer.OrdinalIgnoreCase));
+                ToOptionValues(subcommand.Options));
         }
 
         public static SlashContext FromComponent(SocketMessageComponent component, string subcommandName)
         {
+            return new SlashContext(component, groupName: null, subcommandName, EmptyOptions());
+        }
+
+        public static SlashContext FromApi(
+            string? groupName,
+            string subcommandName,
+            IReadOnlyDictionary<string, object?> options,
+            ApiCommandSink sink,
+            IMessageChannel? fallbackChannel)
+        {
             return new SlashContext(
-                component,
-                groupName: null,
+                interaction: null,
+                groupName,
                 subcommandName,
-                new Dictionary<string, SocketSlashCommandDataOption>(StringComparer.OrdinalIgnoreCase));
+                new Dictionary<string, object?>(options, StringComparer.OrdinalIgnoreCase),
+                sink,
+                fallbackChannel);
+        }
+
+        private static Dictionary<string, object?> EmptyOptions()
+        {
+            return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static Dictionary<string, object?> ToOptionValues(
+            IEnumerable<SocketSlashCommandDataOption>? options)
+        {
+            var values = EmptyOptions();
+            foreach (var option in options ?? Array.Empty<SocketSlashCommandDataOption>())
+            {
+                values[option.Name] = option.Value;
+            }
+
+            return values;
         }
 
         public string? GetString(string name)
         {
             return _options.TryGetValue(name, out var option)
-                ? option.Value?.ToString()
+                ? option?.ToString()
                 : null;
         }
 
@@ -11727,12 +12233,12 @@ public sealed class DiscordBot
 
         public int? GetInt(string name)
         {
-            if (!_options.TryGetValue(name, out var option) || option.Value is null)
+            if (!_options.TryGetValue(name, out var option) || option is null)
             {
                 return null;
             }
 
-            return Convert.ToInt32(option.Value);
+            return Convert.ToInt32(option, CultureInfo.InvariantCulture);
         }
 
         public bool HasOption(string name)
@@ -11748,12 +12254,12 @@ public sealed class DiscordBot
 
         public bool? GetBool(string name)
         {
-            if (!_options.TryGetValue(name, out var option) || option.Value is null)
+            if (!_options.TryGetValue(name, out var option) || option is null)
             {
                 return null;
             }
 
-            return Convert.ToBoolean(option.Value);
+            return Convert.ToBoolean(option, CultureInfo.InvariantCulture);
         }
 
         public bool GetRequiredBool(string name)

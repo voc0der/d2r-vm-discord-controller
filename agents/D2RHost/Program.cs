@@ -178,6 +178,9 @@ try
     app.Map("/agent", AgentEndpoint("vm"));
     app.Map("/node", AgentEndpoint("host"));
 
+    // Master-only, and inert until /d2r config api mints a key. See HostApiEndpoints.
+    app.MapHostApi(config);
+
     DiscordBot? bot = null;
     Task? workerLinkTask = null;
     if (config.IsMaster)

@@ -29,6 +29,16 @@
     "d2r-"
   ],
   "settingsDonorAccountKey": null,
+  // The authenticated HTTP command API, on the same httpPort as everything else. Master-only, and
+  // off until `/d2r config api enabled:true` mints a key. Only the key's hash is ever written here
+  // - the key itself is shown once, in Discord, and never stored - so leave keyHash/keyId alone
+  // and let the command manage them.
+  "api": {
+    "enabled": false,
+    "keyHash": null,
+    "keyId": null,
+    "keyCreatedUtc": null
+  },
   // Recovery for a VM that freezes partway through a restart, typically on the Windows boot logo.
   // A graceful stop cannot clear that, so the host cuts power outright and starts it again. Only
   // ever runs where the host had already given up and would otherwise restart the whole node.
