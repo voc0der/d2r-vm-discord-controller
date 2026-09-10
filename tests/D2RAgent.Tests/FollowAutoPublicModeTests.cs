@@ -461,6 +461,60 @@ public sealed class FollowAutoPublicModeTests
         return control.TargetBotCount;
     }
 
+    // Public mode used to see nothing at all while any rostered bot was still pending, so one
+    // client that would not join froze the whole mode: humans could arrive, and the fleet held
+    // its full party against them until that client either joined or the run was restarted.
+    // A human's seat cannot wait on the fleet finishing its own assembly.
+    [Fact]
+    public void AHumanWhoArrivesWhileTheFleetIsStillAssemblingStillGetsTheSlotBack()
+    {
+        var tracker = new FollowAutoPublicModeTracker();
+
+        // Five bots are in, one is still pending; the party bar reads seven, so two of those are
+        // real players and the fleet is one over what public mode wants.
+        Assert.Null(ObserveMidJoin(tracker, playerCount: 7, botsInGame: 5, currentTarget: 6));
+        Assert.Equal(5, ObserveMidJoin(tracker, playerCount: 7, botsInGame: 5, currentTarget: 6));
+    }
+
+    // The mid-join error only points one way: a party bar that has not caught up with the joined
+    // set reads SMALL, which makes the humans look fewer and the target look bigger. Acting on
+    // that would send another bot into the seat the mode exists to keep empty, so a claim needs
+    // the fleet to be all in.
+    [Fact]
+    public void AMidJoinSampleIsNeverAllowedToClaimASlotBack()
+    {
+        var tracker = new FollowAutoPublicModeTracker();
+
+        for (var pulse = 0; pulse < 6; pulse++)
+        {
+            Assert.Null(ObserveMidJoin(tracker, playerCount: 6, botsInGame: 5, currentTarget: 5));
+        }
+
+        // The same reading, once everyone is in, is allowed to grow the roster again.
+        Assert.Null(Observe(tracker, playerCount: 6, botsInGame: 5, currentTarget: 5));
+        Assert.Null(Observe(tracker, playerCount: 6, botsInGame: 5, currentTarget: 5));
+        Assert.Equal(6, Observe(tracker, playerCount: 6, botsInGame: 5, currentTarget: 5));
+    }
+
+    // The monitor prints the age of an old reading, so the tracker has to know when it read.
+    [Fact]
+    public void AUsableSampleTimestampsItselfAndAResetForgetsIt()
+    {
+        var tracker = new FollowAutoPublicModeTracker();
+        Assert.Null(tracker.LastReadUtc);
+
+        ObserveMidJoin(tracker, playerCount: 7, botsInGame: 5, currentTarget: 6);
+        Assert.NotNull(tracker.LastReadUtc);
+
+        // A sample nobody could use is not a reading, and must not refresh the clock.
+        var stamped = tracker.LastReadUtc;
+        tracker.Observe(null, fresh: true, inGame: true, botsInGame: 5, currentTarget: 6);
+        Assert.Equal(stamped, tracker.LastReadUtc);
+
+        tracker.Reset();
+        Assert.Null(tracker.LastReadUtc);
+    }
+
     private static int? Observe(
         FollowAutoPublicModeTracker tracker,
         int playerCount,
@@ -468,5 +522,20 @@ public sealed class FollowAutoPublicModeTests
         int currentTarget)
     {
         return tracker.Observe(playerCount, fresh: true, inGame: true, botsInGame, currentTarget);
+    }
+
+    private static int? ObserveMidJoin(
+        FollowAutoPublicModeTracker tracker,
+        int playerCount,
+        int botsInGame,
+        int currentTarget)
+    {
+        return tracker.Observe(
+            playerCount,
+            fresh: true,
+            inGame: true,
+            botsInGame,
+            currentTarget,
+            allJoined: false);
     }
 }

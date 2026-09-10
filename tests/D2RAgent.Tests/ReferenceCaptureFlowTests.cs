@@ -361,4 +361,36 @@ public sealed class ReferenceCaptureFlowTests
         Assert.Equal(ReferenceReadyState.Unknown, ReferenceCaptureClassifier.ClassifyReady(capture));
         Assert.Equal(ReferenceVisibleState.InGame, ReferenceCaptureClassifier.Classify(capture));
     }
+
+    // Follow-auto's pending-client recovery does NOT go through the priority order above: it
+    // calls the HUD detector on its own, so the lobby check that normally runs first is not in
+    // front of it. A lobby capture that matched the broad in-game frame there would come back
+    // "might be in a game", and follow-auto answers that by refusing to click - every cycle,
+    // with nothing bounding how long it can keep refusing.
+    //
+    // No lobby capture does match, which is why a stalled client at the lobby is a bounded-call
+    // failure rather than a misclassification (see VmOperations.DescribeInconclusiveInGameDetection).
+    // That is a load-bearing fact about a stall the operator has to diagnose from a message, so
+    // it is asserted here rather than left as a measurement someone took once.
+    [Theory]
+    [InlineData("lobby_create_game_screen.png")]
+    [InlineData("lobby_create_game_filled.png")]
+    [InlineData("lobby_create_game_terror_zones_not_available.png")]
+    [InlineData("lobby_join_game_screen.png")]
+    [InlineData("lobby_join_game_screen_difficulty_dropdown.png")]
+    [InlineData("lobby_click_party_icon.png")]
+    [InlineData("lobby_click_party_icon_hover_friends_tab.png")]
+    [InlineData("lobby_hover_party_icon_chat.png")]
+    [InlineData("lobby_friends_tab_party.png")]
+    [InlineData("lobby_friends_list.png")]
+    [InlineData("lobby_friends_list_resorted.png")]
+    [InlineData("lobby_friends_list_resorted_2.png")]
+    [InlineData("lobby_follow_stuck_friends_panel_open.png")]
+    [InlineData("lobby_right_click_friend_join_game_available.png")]
+    [InlineData("lobby_right_click_friend_nojoin_game_available.png")]
+    [InlineData("lobby_stray_add_friend_modal.png")]
+    public void NoLobbyCaptureLooksLikeAnInGameFrameToTheFollowAutoRecoveryCheck(string capture)
+    {
+        Assert.False(ReferenceCaptureClassifier.IsInGameReady(capture));
+    }
 }

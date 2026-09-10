@@ -140,6 +140,49 @@ swallows and logs a failed write instead. Keep that split in mind when adding da
 write on a connection-handling path should be best-effort, a write a command's correctness depends
 on should not be.
 
+## 10. A bot that sits at the lobby while every status field reads healthy
+
+The symptom: the fleet is one client short of its bot target, `/d2r status` on the missing client
+says `online, Battle.net running, D2R running, visible LobbyOrGame`, and the follow-auto monitor
+repeats one line - *"Follow-auto suspected this pending client was already in a game, but a strict
+in-game HUD profile could not be confirmed; waiting for the next follow-auto cycle without
+clicking."* A screenshot shows it at the lobby with the Join Game panel open. It looks like a
+detection bug on the lobby screen. It is not.
+
+`FollowAutoCheckAsync` calls the HUD detector directly, so the lobby check that runs first in
+`DetectVisibleD2RState` is **not** in front of it. That makes "a lobby screen matched the broad
+in-game frame" a plausible-sounding theory. It is wrong: every lobby capture under
+`assets/d2r-ui/1366x768/` reads false against `IsInGameHudFrame`, asserted by
+`NoLobbyCaptureLooksLikeAnInGameFrameToTheFollowAutoRecoveryCheck`. A client genuinely at the
+lobby cannot produce a Frame match.
+
+What is left is the bounded call around the detector. `RunBounded` returns its fallback - `null`,
+which reads as "cannot decide", which follow-auto answers by refusing to click - for three
+different reasons, and the message used to name none of them:
+
+- **`NoSlot`**: all 32 `BoundedCallSlots` were held, so the detector never ran. A slot is released
+  in a `finally`, so the only way to lose one is a capture that never returned. **This is permanent
+  for the life of the agent process** and no amount of waiting or retrying clears it. `/d2r status`
+  now shows `screen-sampling slots N/32 free` whenever it is below the cap - check this first.
+- **`TimedOut`**: the sample overran its 2500ms bound. Transient, but it repeats under load, and
+  `DetectBestInGameHudMatch` pays for up to two full passes inside that one bound.
+- **`Completed`** with a Frame match: the only cause that is actually about what is on screen.
+
+The refusal message now names which. Read it before theorising about the classifier.
+
+The reason this could run for a whole session is separate from why it started. A refusal answers
+`ok=true` - the agent is reachable, prompt, and explaining itself clearly - so `FollowCheckFailure`
+counted it as a **success** and cleared the escalation ladder on every cycle. Meanwhile the fleet
+never reached all-joined, and the all-joined watch is the only thing that advances a game, so the
+run stopped advancing entirely while every status line still read healthy. Those refusals are now
+marked `localStall` by the agent and feed the ladder: three minutes of continuous refusals gets a
+D2R restart, then a VM power cycle. Only a client refusing to act on **its own screen** counts -
+waiting on the world (leader offline, no joinable game, D2R still starting) is the normal
+between-games state of the entire fleet at once and must never escalate.
+
+A D2R restart does not clear `NoSlot`: the slots live in the agent process, not the game. The VM
+power cycle one rung up is what fixes that one.
+
 ## Deployment basics (from `scripts/install-vm-agent.ps1`)
 
 The scheduled task is created with `-AtLogOn`, `LogonType Interactive`, `RunLevel Highest`, bound to whichever account ran the install script. If VMs are cloned from a template, re-run the install script per clone as that clone's actual interactive account, or the task's bound user won't match who's actually logged in.

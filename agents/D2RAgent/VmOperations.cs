@@ -330,6 +330,11 @@ public sealed class VmOperations
             lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
             threadPoolThreads = System.Threading.ThreadPool.ThreadCount,
             threadPoolPending = System.Threading.ThreadPool.PendingWorkItemCount,
+            // Alongside the thread count for the same reason it is here: a slot is only ever lost
+            // to a bounded call that never returned, so a number well below the cap is the direct
+            // measurement of the screen-sampling wedge that makes this client refuse to click.
+            freeBoundedCallSlots = AvailableBoundedCallSlots,
+            boundedCallSlots = MaxConcurrentBoundedCalls,
             lastCommandCheckpoint = _lastCommandCheckpoint,
             lastCommandCheckpointUtc = _lastCommandCheckpointUtc,
             d2rActivityState = activity.State.ToString(),
@@ -385,6 +390,11 @@ public sealed class VmOperations
             lastPartyMemberCountUtc = _lastPartyMemberCountUtc,
             threadPoolThreads = System.Threading.ThreadPool.ThreadCount,
             threadPoolPending = System.Threading.ThreadPool.PendingWorkItemCount,
+            // Alongside the thread count for the same reason it is here: a slot is only ever lost
+            // to a bounded call that never returned, so a number well below the cap is the direct
+            // measurement of the screen-sampling wedge that makes this client refuse to click.
+            freeBoundedCallSlots = AvailableBoundedCallSlots,
+            boundedCallSlots = MaxConcurrentBoundedCalls,
             lastCommandCheckpoint = _lastCommandCheckpoint,
             lastCommandCheckpointUtc = _lastCommandCheckpointUtc,
             d2rActivityState = activity.State.ToString(),
@@ -3231,12 +3241,23 @@ public sealed class VmOperations
 
         CommandResult? unexpectedGameLeave = null;
         var recoveredOpenModernPauseMenu = false;
+        // Captured out of the detector so the inconclusive branch below can say which of the
+        // three "no answer" events happened. Without it that branch reports the same sentence
+        // for a broad frame match, a slow sample, and an agent whose bounded-call slots are all
+        // held by hung captures - and only the last one means this client can never recover on
+        // its own, which is exactly what the operator needs to be told.
+        var inGameDetection = BoundedCallOutcome.Completed;
         var unexpectedGameRecovery = ShouldRunFollowAutoScreenClassifiers(usedExpectedPostSaveExitLobby)
             ? await RunFollowAutoInGameRecoveryAsync(
-            detectInGameMatch: () => TryRunBounded<InGameHudMatchKind?>(
-                () => DetectBestInGameHudMatch(input),
-                InGameSafetyCheckBoundMs,
-                fallback: null),
+            detectInGameMatch: () =>
+            {
+                var detection = RunBounded<InGameHudMatchKind?>(
+                    () => DetectBestInGameHudMatch(input),
+                    InGameSafetyCheckBoundMs,
+                    fallback: null);
+                inGameDetection = detection.Outcome;
+                return detection.Value;
+            },
             leaveGame: async token =>
             {
                 MarkCommandCheckpoint("FollowAutoCheckAsync: confirmed unexpected game by strict HUD globes; using Save and Exit");
@@ -3281,13 +3302,24 @@ public sealed class VmOperations
 
         if (unexpectedGameRecovery == FollowAutoInGameRecoveryOutcome.DetectionInconclusive)
         {
+            var stallDetail = DescribeInconclusiveInGameDetection(inGameDetection);
+            MarkCommandCheckpoint($"FollowAutoCheckAsync: in-game recovery inconclusive - {stallDetail}");
             return CommandResult.Success(
-                "Follow-auto suspected this pending client was already in a game, but a strict in-game HUD profile could not be confirmed; waiting for the next follow-auto cycle without clicking.",
+                "Follow-auto suspected this pending client was already in a game, but a strict in-game HUD profile "
+                    + $"could not be confirmed ({stallDetail}); waiting for the next follow-auto cycle without clicking.",
                 new
                 {
                     bound = true,
                     joined = false,
-                    d2rReady = false
+                    d2rReady = false,
+                    // This client declined to act on its OWN screen, which is not the same kind of
+                    // wait as "the leader has not made a game yet": nothing outside this VM is
+                    // going to resolve it, so the host's escalation ladder has to hear about it.
+                    localStall = true,
+                    stallReason = "inGameDetectionInconclusive",
+                    stallDetail,
+                    boundedCallOutcome = inGameDetection.ToString(),
+                    freeBoundedCallSlots = AvailableBoundedCallSlots
                 });
         }
 
@@ -3396,12 +3428,19 @@ public sealed class VmOperations
             if (!await ClickLobbyDirectAsync(input, cancellationToken, guardAgainstInGame: true))
             {
                 return CommandResult.Success(
-                    "Lobby navigation was skipped because the in-game safety check was inconclusive; waiting for the next follow-auto cycle.",
+                    "Lobby navigation was skipped because the in-game safety check was inconclusive; waiting for the next follow-auto cycle."
+                        + $" ({FormatBoundedCallSlotSuffix()})",
                     new
                     {
                         bound = true,
                         joined = false,
                         d2rReady = false,
+                        // Same class of stall as the in-game recovery check above: the client
+                        // refused to click because it could not rule out being in a game, and a
+                        // refusal that repeats is this VM's problem, not the fleet's.
+                        localStall = true,
+                        stallReason = "lobbyClickSafetyInconclusive",
+                        freeBoundedCallSlots = AvailableBoundedCallSlots,
                         templatePath = templateLoad.Path,
                         templateExists = templateLoad.Exists,
                         templateLength = templateLoad.ContentLength
@@ -5212,9 +5251,24 @@ public sealed class VmOperations
     // that caching IsInGameReady's result did in v0.2.71/72.
     internal static T TryRunBounded<T>(Func<T> action, int timeoutMs, T fallback)
     {
+        return RunBounded(action, timeoutMs, fallback).Value;
+    }
+
+    // Same bounding, but it says WHY the fallback came back. Every caller that treats a
+    // fallback as "cannot answer" used to see one value for three completely different
+    // events: the call ran and answered, the call ran and overran its bound, or the call
+    // never started because all MaxConcurrentBoundedCalls slots were held by earlier calls
+    // that never returned. The last one is the important one - it is permanent for the life
+    // of the agent process and no amount of retrying clears it - and it was indistinguishable
+    // from the ordinary slow-sample case in every message the operator could see.
+    internal static (BoundedCallOutcome Outcome, T Value) RunBounded<T>(
+        Func<T> action,
+        int timeoutMs,
+        T fallback)
+    {
         if (!BoundedCallSlots.Wait(0))
         {
-            return fallback;
+            return (BoundedCallOutcome.NoSlot, fallback);
         }
 
         try
@@ -5230,11 +5284,13 @@ public sealed class VmOperations
                     BoundedCallSlots.Release();
                 }
             });
-            return task.Wait(timeoutMs) ? task.Result : fallback;
+            return task.Wait(timeoutMs)
+                ? (BoundedCallOutcome.Completed, task.Result)
+                : (BoundedCallOutcome.TimedOut, fallback);
         }
         catch (Exception)
         {
-            return fallback;
+            return (BoundedCallOutcome.Faulted, fallback);
         }
     }
 
@@ -5306,6 +5362,36 @@ public sealed class VmOperations
                 : FollowAutoInGameRecoveryOutcome.LeaveFailed,
             _ => FollowAutoInGameRecoveryOutcome.DetectionInconclusive
         };
+    }
+
+    // The three ways an in-game check comes back with no answer look identical from outside -
+    // the client sits at the lobby and follow-auto refuses to click - but they are not the same
+    // problem and they do not have the same fix. Only one of them is about what is on screen.
+    //
+    // Every lobby capture under docs/runbooks/assets/d2r-ui/1366x768 reads false against the
+    // broad frame classifier, so a client genuinely at the lobby cannot produce a Frame match -
+    // pinned by NoLobbyCaptureLooksLikeAnInGameFrameToTheFollowAutoRecoveryCheck. That leaves the
+    // bounded-call outcomes as the realistic causes of a lobby client reporting "might be in a
+    // game", and NoSlot in particular never clears on its own, because a slot is only lost to a
+    // call that never returned.
+    internal static string DescribeInconclusiveInGameDetection(BoundedCallOutcome outcome)
+    {
+        return outcome switch
+        {
+            BoundedCallOutcome.NoSlot =>
+                $"the HUD was never sampled - all {MaxConcurrentBoundedCalls} bounded-call slots are held by captures that never returned, "
+                    + "so this agent's screen sampling is wedged and only a restart of it clears that",
+            BoundedCallOutcome.TimedOut =>
+                $"the HUD sample did not finish within {InGameSafetyCheckBoundMs}ms, {FormatBoundedCallSlotSuffix()}",
+            BoundedCallOutcome.Faulted =>
+                $"the HUD sample threw before it could answer, {FormatBoundedCallSlotSuffix()}",
+            _ => "only the broad in-game frame matched, which ordinary outdoor scenery also matches"
+        };
+    }
+
+    private static string FormatBoundedCallSlotSuffix()
+    {
+        return $"{AvailableBoundedCallSlots}/{MaxConcurrentBoundedCalls} bounded-call slots free";
     }
 
     internal static bool ShouldSkipMenuClickForInGameSafety(bool guardAgainstInGame, Func<bool> mightAlreadyBeInGame)
@@ -9681,6 +9767,28 @@ public sealed class VmOperations
         LeftGame,
         DetectionInconclusive,
         LeaveFailed
+    }
+
+    /// <summary>
+    /// What happened to a bounded call, for callers whose fallback value means "no answer".
+    /// </summary>
+    internal enum BoundedCallOutcome
+    {
+        /// <summary>The action ran and returned within its bound; the value is real.</summary>
+        Completed,
+
+        /// <summary>
+        /// Every bounded-call slot was already held, so the action never ran. Slots are only
+        /// held by calls that have not returned, and a call that hangs never returns one, so
+        /// this is a wedged agent process rather than a slow moment.
+        /// </summary>
+        NoSlot,
+
+        /// <summary>The action started but overran its bound. Its thread is abandoned.</summary>
+        TimedOut,
+
+        /// <summary>The action threw before it could answer.</summary>
+        Faulted
     }
 
     internal enum InGameHudMatchKind

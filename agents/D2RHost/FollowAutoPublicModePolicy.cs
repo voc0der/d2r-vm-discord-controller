@@ -116,11 +116,20 @@ internal static class FollowAutoPublicModePolicy
 /// </summary>
 /// <remarks>
 /// <para>
-/// Only samples taken while every rostered bot is already in the game are worth anything here. Mid
-/// join the party bar lags the roster - four clients confirmed joined while two are still on a
-/// loading screen reads as a smaller party than there is - and subtracting the roster from that
-/// undercounts the humans, which would raise the target and fill the very slot the mode is holding
-/// open. The all-joined watch is the only caller for exactly that reason.
+/// Mid join the party bar lags the joined set - four clients confirmed joined while two are still
+/// on a loading screen reads as a smaller party than there is - and subtracting the fleet from that
+/// undercounts the humans. That error only ever points one way: a party bar that under-reads makes
+/// the humans look fewer, which makes the target look BIGGER, which would fill the very slot the
+/// mode exists to hold open. So mid-join samples are accepted for yields and ignored for claims
+/// (<paramref name="allJoined"/> on <see cref="Observe"/>).
+/// </para>
+/// <para>
+/// The asymmetry matters because the alternative was going blind. Requiring all-joined for any
+/// answer at all meant one client stuck pending - a bot that will not click, a guest rebuilding,
+/// a slow rejoin - froze public mode completely: the fleet stopped noticing humans arriving, could
+/// not give a slot back to one, and the monitor kept showing the last count it had read as though
+/// it were current. The mode's whole promise lapsed for exactly as long as the fleet was short a
+/// bot, which is precisely when a human is most likely to walk in.
 /// </para>
 /// <para>
 /// Even there a single sample is not enough: one degraded capture that under-reads the party bar
@@ -136,6 +145,7 @@ internal sealed class FollowAutoPublicModeTracker
     private int _agreements;
     private int? _lastHumanCount;
     private int? _lastPlayerCount;
+    private DateTimeOffset? _lastReadUtc;
 
     /// <summary>Humans in the last usable sample, for the monitor. Null until one lands.</summary>
     public int? LastHumanCount
@@ -161,6 +171,22 @@ internal sealed class FollowAutoPublicModeTracker
     }
 
     /// <summary>
+    /// When the last usable sample landed. The monitor prints the age of anything old, because a
+    /// frozen reading rendered as a bare number is indistinguishable from a live one - which is
+    /// exactly how a stalled run reads as a healthy one.
+    /// </summary>
+    public DateTimeOffset? LastReadUtc
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _lastReadUtc;
+            }
+        }
+    }
+
+    /// <summary>
     /// Drops the streak and the last reading when the fleet leaves for a new game. The target
     /// itself deliberately carries over: it is the best prior available for the leader's next
     /// game, and re-deriving it from scratch would trickle the fleet back in one client at a time
@@ -174,6 +200,7 @@ internal sealed class FollowAutoPublicModeTracker
             _agreements = 0;
             _lastHumanCount = null;
             _lastPlayerCount = null;
+            _lastReadUtc = null;
         }
     }
 
@@ -182,7 +209,19 @@ internal sealed class FollowAutoPublicModeTracker
     /// watching". Unusable samples neither advance nor reset the streak - a flaky vantage should
     /// slow the decision down, not permanently block it.
     /// </summary>
-    public int? Observe(int? playerCount, bool fresh, bool? inGame, int botsInGame, int currentTarget)
+    /// <param name="allJoined">
+    /// Whether every rostered bot is in the sampled game. When false the sample can still take a
+    /// slot back for a human (a lagging party bar cannot invent extra players), but it may not
+    /// claim one for a bot, because the same lag would read as humans leaving. The reading is
+    /// recorded either way so the monitor keeps showing live numbers instead of frozen ones.
+    /// </param>
+    public int? Observe(
+        int? playerCount,
+        bool fresh,
+        bool? inGame,
+        int botsInGame,
+        int currentTarget,
+        bool allJoined = true)
     {
         var humans = FollowAutoPublicModePolicy.CountHumans(playerCount, fresh, inGame, botsInGame);
         if (humans is not { } humanCount)
@@ -195,6 +234,18 @@ internal sealed class FollowAutoPublicModeTracker
         {
             _lastHumanCount = humanCount;
             _lastPlayerCount = playerCount;
+            _lastReadUtc = DateTimeOffset.UtcNow;
+
+            // A mid-join sample that argues for MORE bots is recorded for the monitor and then
+            // dropped on the floor - not merely withheld this cycle. Letting it build the streak
+            // would mean three untrustworthy reads plus one good one claim a slot, which is the
+            // same wrong answer the all-joined rule exists to refuse, just spread over four
+            // cycles. The streak it leaves alone is whatever real evidence had accumulated.
+            if (!allJoined && desired > currentTarget)
+            {
+                return null;
+            }
+
             if (_candidate == desired)
             {
                 _agreements++;
