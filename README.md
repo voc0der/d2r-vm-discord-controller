@@ -80,6 +80,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r join [account] [all] [auto] [name] [password] [difficulty] [character-slot] [delay] [idle-minutes] [watch]`
 - `/d2r create-game [account] [all] [name] [password] [difficulty] [character-slot] [watch]`
 - `/d2r follow [account] [all] [character-slot] [friend-row] [bind] [bind-in-game] [auto] [bots] [delay] [idle-minutes] [watch]`
+- `/d2r dclone [bots] [difficulty] [stop] [watch]`
 - `/d2r save-exit [account] [all]`
 - `/d2r template name [password]`
 - `/d2r restart`
@@ -108,6 +109,20 @@ For folded commands, `all` defaults to true. Pass `all:false account:<x>` for on
 `/d2r create-game` with `all:true` uses the first online configured account by account key as the creator. After that create flow succeeds, the remaining online accounts join the same game with the configured all-client stagger. If you do not pass `character-slot`, the host uses each account's optional `characterSlot` value from `d2r-host.config.json`, then falls back to the VM agent's local default.
 
 Join/create session notifications include `Leave` and `Quit` buttons. `Leave` queues save-exit for all online accounts; `Quit` queues D2R quit for all online accounts.
+
+### Diablo Clone park
+
+`/d2r dclone` points the fleet at a Diablo Clone hunt: instead of gathering every bot into one game, it gives each online bot **its own** Hell game and holds all of them open. Clone walks into one game at a time, so N parked games is N times the coverage, and the point of the park is to be holding a game when it happens.
+
+Each game is created with a fresh seven-character random name and a one-character password (for example `ewk52we` / `q`), minted so no two games in a run ever share a name. The host posts one live message listing every bot's name/password as its game comes up — that list is what you hand to whoever is coming to help kill it. Names are short on purpose: they are typed by hand, in a hurry, by people who are not running this controller.
+
+- `bots` parks a subset; the default is every online account. Unlike `/d2r follow`, there is no 7-bot cap — that number exists because a follow puts everyone in one 8-player game, which a park never does.
+- `difficulty` defaults to Hell and does **not** inherit `/d2r game set`, so a stored Normal game cannot silently turn the hunt into eight Normal games.
+- `stop:true`, or the monitor's `Stop` button, ends the park. The bots stay in their games; the finished monitor offers `Leave` and `Quit` to pull them out.
+
+While the park runs the host polls each bot's screen state every 20 seconds and rebuilds any game that fell over — a crash, a dropped connection, a client sent back to the character screen — under a brand new name, because the old one is no longer joinable. A rebuild needs three consecutive out-of-game readings (a full minute) before it fires, so one ambiguous frame never tears down a healthy game whose name is already circulating. A bot that fails three creates in a row is reported as failed and retried once every ten minutes rather than hammered.
+
+A park and `/d2r follow auto:true` both own the whole fleet, so whichever starts first refuses the other until it is stopped. `/d2r quit`, `quit-all`, and `leave` for every account all stop a running park, on the same "if you quit, it should stop auto if it's running" rule as join-auto and follow-auto.
 
 `/d2r ready` queues the ready flow for every online account. Pass `account:<x>` to warm one account. `/d2r start` with `all:true` uses the same all-account ready flow, so cold-booted clients should land on character select instead of merely starting the D2R process.
 
