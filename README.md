@@ -99,6 +99,7 @@ $env:D2ROPS_DISABLE_UPDATE_CHECK = "true"
 - `/d2r config show`
 - `/d2r config stagger seconds`
 - `/d2r config notifications enabled [channel-id] [updates-enabled]`
+- `/d2r config api enabled [overwrite]`
 
 `/d2r vm stop` is a graceful shutdown routed through the guest's integration services. `/d2r vm turnoff` cuts power without asking the guest at all — the hypervisor equivalent of holding the power button — and is for a VM frozen partway through a restart, typically sitting on the Windows boot logo where a graceful stop can never land. Unsaved guest work is lost, so it is a separate verb rather than a flag on `stop`. Follow-auto reaches for the same thing on its own when a warmup recovery wedges; see [host-vm-power-lifecycle.md](docs/runbooks/host-vm-power-lifecycle.md#wedged-vm-recovery-hard-power-cut) for the evidence it requires first and the `vmHangRecovery` knobs that bound it.
 
@@ -125,6 +126,78 @@ While the park runs the host polls each bot's screen state every 20 seconds and 
 A park and `/d2r follow auto:true` both own the whole fleet, so whichever starts first refuses the other until it is stopped. `/d2r quit`, `quit-all`, and `leave` for every account all stop a running park, on the same "if you quit, it should stop auto if it's running" rule as join-auto and follow-auto.
 
 `/d2r ready` queues the ready flow for every online account. Pass `account:<x>` to warm one account. `/d2r start` with `all:true` uses the same all-account ready flow, so cold-booted clients should land on character select instead of merely starting the D2R process.
+
+## HTTP command API
+
+Everything `/d2r` can do is also reachable over HTTP from the trusted network, so something other than Discord — a local script, a home automation box, your own agent — can drive the fleet. It is **off by default**, **master-only**, and guarded by a single key.
+
+Turn it on from Discord:
+
+```text
+/d2r config api enabled:true
+```
+
+That mints a key, prints it **once**, and saves. Only a SHA-256 of the key is written to `d2r-host.config.json`, so the config file never contains a working credential and the key cannot be recovered — if you lose it, mint another. Re-running `enabled:true` on a host that already has a key does not silently replace it (that would lock out whatever is already calling); rotating is explicit:
+
+```text
+/d2r config api enabled:true overwrite:true
+```
+
+The old key stops working immediately. `enabled:false` closes the API but **keeps** the key, so turning it back on does not mean re-keying every caller. `/d2r config show` reports whether the API is on and which key id is installed, never the key.
+
+Master-only is deliberate: a worker node relays commands for its own VMs but has no view of the fleet, so an API there could answer for part of the estate while looking like it answered for all of it. On a worker these routes are not mapped at all.
+
+### Calling it
+
+The API listens on the same `httpPort` as the rest of the host (default 8080), which the managed firewall rule already opens to `windowsFirewall.trustedNetworks` (default `LocalSubnet`). Send the key as `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+
+| Route | Purpose |
+|---|---|
+| `GET /api/commands` | Every command this host accepts, with option names, types, required flags and choices |
+| `POST /api/command` | Run one command: `{"group":null,"command":"...","options":{...}}` |
+| `POST /api/d2r/{command}` | The same, with the command in the path and the options object as the body |
+| `POST /api/d2r/{group}/{command}` | For grouped commands — `vm`, `game`, `config`, `system` |
+| `GET /api/dclone` | The live dclone park as JSON: every bot's game name, password and state |
+
+```bash
+KEY=d2rk_...
+BASE=http://d2rhost.lan:8080
+
+# What can I call?
+curl -s -H "X-API-Key: $KEY" $BASE/api/commands | jq '.commands[].path'
+
+# Warm every online client.
+curl -s -H "X-API-Key: $KEY" -X POST $BASE/api/d2r/ready -d '{}' -H 'Content-Type: application/json'
+
+# Park the fleet for a Diablo Clone hunt, then read the game names back.
+curl -s -H "X-API-Key: $KEY" -X POST $BASE/api/command -H 'Content-Type: application/json' \
+  -d '{"command":"dclone","options":{"bots":6}}'
+curl -s -H "X-API-Key: $KEY" $BASE/api/dclone | jq '.games[] | {gameName, password, state}'
+
+# One client, one command.
+curl -s -H "X-API-Key: $KEY" -X POST $BASE/api/d2r/screenshot -H 'Content-Type: application/json' \
+  -d '{"account":"hc1"}'
+```
+
+`GET /api/commands` is generated from the same `DiscordSlashCommands.Build()` that registers the Discord commands, so the HTTP surface cannot drift from the Discord one: a subcommand added to one is added to both, and an option name the command does not have is rejected rather than silently ignored.
+
+### What to expect back
+
+Every command answers with the same JSON shape:
+
+```json
+{ "ok": true, "message": "...", "details": ["..."], "file": null, "error": null }
+```
+
+`message` is what Discord would have shown; `details` are the follow-ups a fan-out posts per account. Commands run **synchronously** — a request blocks until the work is done, so `ready` can legitimately take minutes and a fan-out returns every account's result rather than just "queued". Past 600 seconds the response returns with `ok:false` and `error:"Timeout"`; the command is **not** cancelled, and you poll for the outcome. `screenshot` returns the PNG inline as base64 in `file`.
+
+Two commands are the exception, because their entire output is a live Discord message with controls on it: `follow auto:true` and `join auto:true` refuse over HTTP unless a notification channel is configured, and say so. `dclone` does not — with no channel it runs without a monitor and you read the minted credentials from `GET /api/dclone` instead.
+
+The pre-existing unauthenticated reads (`/healthz`, `/agents`, `/nodes`, `/config/accounts`) are unchanged and stay open, so anything already pointed at them keeps working.
+
+### Blast radius
+
+The key is full parity with `/d2r`: it can create and join games, power VMs on and off, and sleep, shut down or restart nodes. Treat it as equivalent to Discord access to the controller. It is only reachable from `trustedNetworks`, but nothing narrower is enforced per key — if you want a caller that cannot turn machines off, do not give it this key.
 
 Discord health output reports agent connectivity and account availability separately. A connected VM agent is only a command target when its owning node's `accounts` entry survives fleet-wide identity validation. When a connected agent is not addressable because its account mapping is missing or rejected—for example, because its account key duplicates another node's—health and relevant all-client command responses name both the node and agent so the configuration can be corrected without guessing.
 

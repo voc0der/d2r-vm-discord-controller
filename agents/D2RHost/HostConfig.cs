@@ -40,6 +40,11 @@ public sealed class HostConfig
     // only sets the order candidates are tried in - a configured donor that is offline or itself
     // broken is skipped rather than blocking the repair.
     public string? SettingsDonorAccountKey { get; set; }
+    /// <summary>
+    /// The local HTTP command API. Master-only: a worker relays commands for its VMs but has no
+    /// view of the fleet, so an API there would be able to answer for only part of it.
+    /// </summary>
+    public HostApiConfig Api { get; set; } = new();
     public VmHangRecoveryConfig VmHangRecovery { get; set; } = new();
     public StuckVmWatchdogConfig StuckVmWatchdog { get; set; } = new();
 
@@ -171,6 +176,26 @@ public sealed class BootLogoWatchdogConfig
     /// not find it.
     /// </summary>
     public int MaxHardPowerCuts { get; set; } = 2;
+}
+
+/// <summary>
+/// The authenticated HTTP surface that lets something other than Discord drive this host.
+/// Off until <c>/d2r config api enabled:true</c> mints a key.
+/// </summary>
+public sealed class HostApiConfig
+{
+    public bool Enabled { get; set; }
+
+    /// <summary>
+    /// SHA-256 of the key, hex. The key itself is shown once at generation and never stored, so
+    /// this file staying readable does not hand anyone a working credential.
+    /// </summary>
+    public string? KeyHash { get; set; }
+
+    /// <summary>Non-secret handle for the installed key, for logs and `/d2r config show`.</summary>
+    public string? KeyId { get; set; }
+
+    public DateTimeOffset? KeyCreatedUtc { get; set; }
 }
 
 public sealed class WindowsFirewallConfig
