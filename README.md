@@ -131,6 +131,8 @@ A park and `/d2r follow auto:true` both own the whole fleet, so whichever starts
 
 Everything `/d2r` can do is also reachable over HTTP from the trusted network, so something other than Discord — a local script, a home automation box, your own agent — can drive the fleet. It is **off by default**, **master-only**, and guarded by a single key.
 
+This section is the walkthrough. **The full endpoint-by-endpoint reference — response envelope, status codes, option types, and the complete command catalog — is [docs/http-api.md](docs/http-api.md).**
+
 Turn it on from Discord:
 
 ```text
@@ -179,7 +181,7 @@ curl -s -H "X-API-Key: $KEY" -X POST $BASE/api/d2r/screenshot -H 'Content-Type: 
   -d '{"account":"hc1"}'
 ```
 
-`GET /api/commands` is generated from the same `DiscordSlashCommands.Build()` that registers the Discord commands, so the HTTP surface cannot drift from the Discord one: a subcommand added to one is added to both, and an option name the command does not have is rejected rather than silently ignored.
+`GET /api/commands` is generated from the same `DiscordSlashCommands.Build()` that registers the Discord commands, so the HTTP surface cannot drift from the Discord one: a subcommand added to one is added to both, and an option name the command does not have is rejected rather than silently ignored. [docs/http-api.md](docs/http-api.md) lists the same catalog for reading offline.
 
 ### What to expect back
 
@@ -189,7 +191,7 @@ Every command answers with the same JSON shape:
 { "ok": true, "message": "...", "details": ["..."], "file": null, "error": null }
 ```
 
-`message` is what Discord would have shown; `details` are the follow-ups a fan-out posts per account. Commands run **synchronously** — a request blocks until the work is done, so `ready` can legitimately take minutes and a fan-out returns every account's result rather than just "queued". Past 600 seconds the response returns with `ok:false` and `error:"Timeout"`; the command is **not** cancelled, and you poll for the outcome. `screenshot` returns the PNG inline as base64 in `file`.
+`message` is what Discord would have shown; `details` are the follow-ups a fan-out posts per account. Note that `ok:true` means the command *ran*, not that the fleet did what you asked — ordinary refusals are in-band, so check `message` too ([why](docs/http-api.md#ok-is-not-it-worked)). Commands run **synchronously** — a request blocks until the work is done, so `ready` can legitimately take minutes and a fan-out returns every account's result rather than just "queued". Past 600 seconds the response returns with `ok:false` and `error:"Timeout"`; the command is **not** cancelled, and you poll for the outcome. `screenshot` returns the PNG inline as base64 in `file`.
 
 Two commands are the exception, because their entire output is a live Discord message with controls on it: `follow auto:true` and `join auto:true` refuse over HTTP unless a notification channel is configured, and say so. `dclone` does not — with no channel it runs without a monitor and you read the minted credentials from `GET /api/dclone` instead.
 

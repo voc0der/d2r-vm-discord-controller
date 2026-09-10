@@ -7,6 +7,8 @@
 
 VM agents must point to their local D2RHost, not directly to the master. A worker gets its `/node` URL from `masterUrl`; when that URL has no path, the worker appends `/node`. The built-in listener is plain WebSocket; `wss://` is supported when a TLS-terminating reverse proxy fronts it.
 
+This document covers the machine-to-machine protocol only. The operator-facing HTTP command API on the same port — the one that runs `/d2r` commands for callers other than Discord — is documented separately in [http-api.md](http-api.md).
+
 ## Handshake
 
 The first message must be a hello:
