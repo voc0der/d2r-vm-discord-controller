@@ -167,6 +167,48 @@ public sealed class DiscordSlashCommandsTests
     }
 
     [Fact]
+    public void DcloneCommandExposesItsParkOptions()
+    {
+        var d2r = GetD2RCommand();
+        var dclone = Assert.Single(d2r.Options.Value, option => option.Name == "dclone");
+
+        var bots = Assert.Single(dclone.Options!, option => option.Name == "bots");
+        Assert.Equal(ApplicationCommandOptionType.Integer, bots.Type);
+        Assert.False(bots.IsRequired);
+        Assert.Equal(1, bots.MinValue);
+
+        var stop = Assert.Single(dclone.Options!, option => option.Name == "stop");
+        Assert.Equal(ApplicationCommandOptionType.Boolean, stop.Type);
+        Assert.False(stop.IsRequired);
+    }
+
+    // The park is a Hell hunt, and inheriting whatever /d2r game set last stored would silently
+    // open a fleet of Normal games instead - so dclone carries its own difficulty option.
+    [Fact]
+    public void DcloneDifficultyIsOptionalAndOffersHell()
+    {
+        var d2r = GetD2RCommand();
+        var dclone = Assert.Single(d2r.Options.Value, option => option.Name == "dclone");
+        var difficulty = Assert.Single(dclone.Options!, option => option.Name == "difficulty");
+
+        Assert.Equal(ApplicationCommandOptionType.String, difficulty.Type);
+        Assert.False(difficulty.IsRequired);
+        Assert.Contains(difficulty.Choices!, choice => (string?)choice.Value == "hell");
+    }
+
+    // dclone gives every bot its own game, so it must not carry the account/all pair that means
+    // "one client or the whole fleet" everywhere else - the roster is sized by bots.
+    [Fact]
+    public void DcloneCommandDoesNotTakeAnAccountOrAllFlag()
+    {
+        var d2r = GetD2RCommand();
+        var dclone = Assert.Single(d2r.Options.Value, option => option.Name == "dclone");
+
+        Assert.DoesNotContain(dclone.Options!, option => option.Name == "account");
+        Assert.DoesNotContain(dclone.Options!, option => option.Name == "all");
+    }
+
+    [Fact]
     public void ReadyCommandAccountOptionIsOptional()
     {
         var d2r = GetD2RCommand();

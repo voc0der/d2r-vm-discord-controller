@@ -24,6 +24,7 @@ public sealed class DiscordBot
     private const string FollowAutoRemoveBotButtonId = "d2r:follow:bots:remove";
     private const string FollowAutoAddBotButtonId = "d2r:follow:bots:add";
     private const string FollowAutoPartyModeButtonId = "d2r:follow:party-mode";
+    private const string DcloneStopButtonId = "d2r:dclone:stop";
     private const string GameSessionLeaveButtonId = "d2r:session:leave";
     private const string GameSessionQuitButtonId = "d2r:session:quit";
     private const string StartupFollowButtonId = "d2r:startup:follow";
@@ -140,6 +141,19 @@ public sealed class DiscordBot
     private int _joinAutoCyclesCompleted;
     private DateTimeOffset? _joinAutoStartedUtc;
     private bool _joinAutoMetricsEnabled;
+    // /d2r dclone: every rostered bot opens its OWN game and sits in it, so that whichever game
+    // Diablo Clone eventually walks into is one the operator can hand a name and password out
+    // for. Modelled on join-auto's lifecycle (one CTS under a lock) rather than follow-auto's
+    // lease machinery - there is no resume intent or local-restart journal to serialise against
+    // here, because a park is rebuilt from scratch on the next start rather than resumed.
+    private const string DcloneDefaultDifficulty = "hell";
+    private static readonly TimeSpan DcloneCreateGameTimeout = TimeSpan.FromSeconds(210);
+    private static readonly TimeSpan DcloneStatusTimeout = TimeSpan.FromSeconds(6);
+    private readonly SemaphoreSlim _dcloneLock = new(1, 1);
+    private CancellationTokenSource? _dcloneCts;
+    private DcloneParkRun? _dcloneRun;
+    private bool _dcloneMetricsEnabled;
+    private IUserMessage? _dcloneMonitorMessage;
     private const int FollowAutoDefaultIdleMinutes = 60;
     private const int FollowAutoDefaultCheckSeconds = 5;
     private const int FollowAutoPostLeaveCheckSeconds = 2;
@@ -1862,6 +1876,9 @@ public sealed class DiscordBot
                 case FollowAutoPartyModeButtonId:
                     await HandleFollowAutoPartyModeButtonAsync(component);
                     return;
+                case DcloneStopButtonId:
+                    await StopDcloneParkAsync(SlashContext.FromComponent(component, "dclone"));
+                    return;
                 case GameSessionLeaveButtonId:
                     await QueueSaveExitAllAsync(SlashContext.FromComponent(component, "save-exit"));
                     return;
@@ -2365,6 +2382,18 @@ public sealed class DiscordBot
             return;
         }
 
+        if (subcommand == "dclone")
+        {
+            if (context.GetBool("stop") == true)
+            {
+                await StopDcloneParkAsync(context);
+                return;
+            }
+
+            await StartDcloneParkAsync(context, context.GetBool("watch") == true);
+            return;
+        }
+
         if (subcommand == "join-auto"
             || (subcommand == "join" && (context.OptionCount == 0 || context.GetBool("auto") is not null)))
         {
@@ -2488,6 +2517,7 @@ public sealed class DiscordBot
             // than relying on the deferral inside RunVmCommandAsync further down.
             await EnsureAcknowledgedAsync(context);
             await CancelJoinAutoIfRunningAsync($"quit was called for {accountKey}");
+            await CancelDcloneParkIfRunningAsync($"quit was called for {accountKey}");
             var followAutoCancel = await CancelFollowAutoIfRunningAsync($"quit was called for {accountKey}");
             QueueFollowAutoStopSignal(followAutoCancel.RunId);
             await RunVmCommandAsync(context, account, "quit_d2r", BuildAccountArgs(accountKey, account), TimeSpan.FromSeconds(210));
@@ -2570,6 +2600,7 @@ public sealed class DiscordBot
                 // single-account quit branch above.
                 await EnsureAcknowledgedAsync(context);
                 await CancelJoinAutoIfRunningAsync($"quit was called for {singleAccountKey}");
+                await CancelDcloneParkIfRunningAsync($"quit was called for {singleAccountKey}");
                 var followAutoCancel = await CancelFollowAutoIfRunningAsync($"quit was called for {singleAccountKey}");
                 QueueFollowAutoStopSignal(followAutoCancel.RunId);
                 await RunVmCommandAsync(context, singleAccount, "quit_d2r", BuildAccountArgs(singleAccountKey, singleAccount), TimeSpan.FromSeconds(210));
@@ -2657,6 +2688,11 @@ public sealed class DiscordBot
         // After a leave everyone is parked warm at the character screen - the same state
         // ready-all ends in - so the completion follow-up offers the same set: Follow to
         // keep going, Quit/Sleep to wind down. Ready would be redundant.
+        // A leave-all empties every parked game, which a running dclone park would immediately
+        // undo by rebuilding all of them. Unlike follow-auto - which uses save-exit as a step of
+        // its own loop and so must not be cancelled here - a park never issues one itself, so any
+        // leave-all reaching this point is the operator ending the park.
+        await CancelDcloneParkIfRunningAsync("leave was called for every account");
         await QueueAllCommandsAsync(
             context,
             "menu_save_exit",
@@ -2695,6 +2731,7 @@ public sealed class DiscordBot
         // message) keep the acknowledgement they chose.
         await EnsureAcknowledgedAsync(context);
         await CancelJoinAutoIfRunningAsync(cancelReason);
+        await CancelDcloneParkIfRunningAsync(cancelReason);
         var followAutoCancel = await CancelFollowAutoIfRunningAsync(cancelReason);
         QueueFollowAutoStopSignal(followAutoCancel.RunId);
         // After a quit the clients are cold, so the completion follow-up re-offers both
@@ -5205,6 +5242,560 @@ public sealed class DiscordBot
         }
     }
 
+    /// <summary>
+    /// Starts a Diablo Clone park: every rostered bot creates its own game and stays in it, and
+    /// the loop rebuilds any park that falls over until the operator stops it.
+    /// </summary>
+    /// <remarks>
+    /// The point is coverage, not a party. Diablo Clone walks into one game at a time, so holding
+    /// N games open at once is N times the chance of catching a walk, and the monitor exists to
+    /// hand out the name/password of whichever game it walks into.
+    /// </remarks>
+    private async Task StartDcloneParkAsync(SlashContext context, bool watch)
+    {
+        // Acknowledge before anything else, for the reason spelled out on StartFollowAutoAsync:
+        // Discord.NET runs this inline on the gateway task, and reading fleet connectivity plus
+        // posting a monitor message does not fit inside the three-second interaction deadline.
+        await EnsureAcknowledgedAsync(context);
+
+        // follow-auto drives the same VMs towards one shared game; a park drives each of them to
+        // its own. Whichever started first keeps the fleet - silently interleaving the two would
+        // just make both look broken.
+        if (IsFollowAutoRunning())
+        {
+            await SetInitialCommandResponseAsync(
+                context,
+                "follow-auto is running and owns the same VMs. Stop it with `/d2r follow auto:false` first.",
+                ephemeral: true);
+            return;
+        }
+
+        var connectivity = _registry.GetAccountConnectivity();
+        var online = connectivity.Online;
+        var botCount = DcloneParkPolicy.ResolveBotCount(online.Length, context.GetInt("bots"));
+        if (botCount == 0)
+        {
+            await SetInitialCommandResponseAsync(
+                context,
+                "No online accounts are available to park."
+                    + FormatOfflineSkipSuffix(connectivity.Offline, connectivity.ConnectedUnaddressableAgents),
+                ephemeral: true);
+            return;
+        }
+
+        var roster = online.Take(botCount).ToArray();
+        var difficulty = BlankToNull(context.GetString("difficulty")) ?? DcloneDefaultDifficulty;
+        var run = new DcloneParkRun(
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            difficulty,
+            DateTimeOffset.UtcNow);
+        foreach (var entry in roster)
+        {
+            run.AddSlot(entry.Key, FormatAccountDisplayName(entry.Key, entry.Value), entry.Value.AgentId);
+        }
+
+        CancellationTokenSource? cts = null;
+        await _dcloneLock.WaitAsync();
+        try
+        {
+            if (_dcloneCts is null)
+            {
+                cts = new CancellationTokenSource();
+                _dcloneCts = cts;
+                _dcloneRun = run;
+                _dcloneMetricsEnabled = context.MetricsEnabled;
+            }
+        }
+        finally
+        {
+            _dcloneLock.Release();
+        }
+
+        if (cts is null)
+        {
+            await SetInitialCommandResponseAsync(
+                context,
+                "A dclone park is already running. Stop it with `/d2r dclone stop:true` first.",
+                ephemeral: true);
+            return;
+        }
+
+        var staggerSeconds = _config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds;
+        var notRostered = online.Length - roster.Length;
+        await SetInitialCommandResponseAsync(
+            context,
+            $"Parking {roster.Length} bot(s) in {roster.Length} separate {FormatDifficultyLabel(difficulty)} game(s) "
+                + $"with {staggerSeconds}s stagger. Each game gets its own random name and one-character password; "
+                + "I posted one live message in this channel that lists them as they come up, and its Stop button "
+                + "ends the park."
+                + (notRostered > 0 ? $" bots:{roster.Length} leaves {notRostered} online account(s) out of the park." : "")
+                + (watch ? " Watch diagnostics are enabled." : "")
+                + FormatOfflineSkipSuffix(connectivity.Offline, connectivity.ConnectedUnaddressableAgents),
+            ephemeral: true);
+
+        _ = Task.Run(() => RunDcloneParkLoopAsync(context, roster, run, cts, watch));
+    }
+
+    private async Task StopDcloneParkAsync(SlashContext context)
+    {
+        // A monitor from an earlier park keeps its Stop button; pressing it must not reach into
+        // whatever park is running now.
+        var stopComponent = context.Command as SocketMessageComponent;
+        if (stopComponent is not null && _dcloneMonitorMessage?.Id != stopComponent.Message.Id)
+        {
+            await EnsureAcknowledgedAsync(context);
+            await SetInitialCommandResponseAsync(
+                context,
+                "That Stop control belongs to an older dclone monitor; the current park was left unchanged.",
+                ephemeral: true);
+            return;
+        }
+
+        await EnsureAcknowledgedAsync(context);
+        var wasRunning = await CancelDcloneParkIfRunningAsync(reason: null);
+        await SetInitialCommandResponseAsync(
+            context,
+            wasRunning
+                ? "dclone park is stopping. The bots stay in their games - use `/d2r save-exit` or the Leave button to pull them out."
+                : "dclone park is not running.",
+            ephemeral: true);
+    }
+
+    // Same "if you quit, it should stop auto if its running" precedent as join-auto and
+    // follow-auto (issue #24) - wired into the same quit/leave call sites as theirs.
+    private async Task<bool> CancelDcloneParkIfRunningAsync(string? reason)
+    {
+        await _dcloneLock.WaitAsync();
+        try
+        {
+            if (_dcloneCts is null)
+            {
+                return false;
+            }
+
+            _dcloneRun?.RecordStopReason(reason);
+            _dcloneCts.Cancel();
+            _dcloneCts = null;
+            return true;
+        }
+        finally
+        {
+            _dcloneLock.Release();
+        }
+    }
+
+    private async Task RunDcloneParkLoopAsync(
+        SlashContext context,
+        KeyValuePair<string, AccountConfig>[] roster,
+        DcloneParkRun run,
+        CancellationTokenSource cts,
+        bool watch)
+    {
+        var cancellationToken = cts.Token;
+        var staggerSeconds = Math.Max(_config.ClientStaggerSeconds ?? _config.StartAllDelaySeconds, 0);
+        IUserMessage? monitor = null;
+        CancellationTokenSource? watchCts = null;
+        Task? watchTask = null;
+
+        try
+        {
+            // The monitor is the deliverable, not decoration: it is the only place the minted
+            // game names and passwords are ever written down. A park nobody can read the
+            // credentials off is worth nothing, so a monitor that will not post ends the run
+            // here rather than opening games in secret.
+            try
+            {
+                monitor = await context.Command.Channel.SendMessageAsync(
+                    AppendMetrics(_dcloneMetricsEnabled, FormatDcloneMonitorMessage(run, "Opening games...")),
+                    components: BuildDcloneMonitorComponents(running: true));
+                _dcloneMonitorMessage = monitor;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not post the dclone monitor message; the park was not started.");
+                await SendFollowupSafeAsync(
+                    context,
+                    "dclone park did not start: I could not post the live game list in this channel, "
+                        + $"and without it the game names would go nowhere. {ex.Message}");
+                return;
+            }
+
+            if (watch)
+            {
+                watchCts = new CancellationTokenSource();
+                watchTask = RunGameAllWatchTickerAsync(context, "dclone", "dclone", roster, watchCts.Token);
+            }
+
+            // Staggered like every other all-client fan-out: several VMs driving Battle.net and
+            // D2R menus at the same instant is what the configured stagger exists to spread out.
+            await Task.WhenAll(roster.Select((entry, index) => ParkOneBotAsync(
+                run,
+                entry.Key,
+                entry.Value,
+                TimeSpan.FromSeconds(index * staggerSeconds),
+                cancellationToken)));
+            await UpdateDcloneMonitorAsync(monitor, run, DescribeDcloneParkProgress(run));
+
+            while (true)
+            {
+                await Task.Delay(DcloneParkPolicy.CheckInterval, cancellationToken);
+                await SweepDcloneParkAsync(run, roster, cancellationToken);
+                await UpdateDcloneMonitorAsync(monitor, run, DescribeDcloneParkProgress(run));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Stop, quit-all, or leave-all. Not a failure.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "dclone park loop failed.");
+            await SendFollowupSafeAsync(context, $"dclone park stopped after an error: {ex.Message}");
+        }
+        finally
+        {
+            watchCts?.Cancel();
+            await AwaitWatchTickerStopAsync(watchTask, "dclone");
+            watchCts?.Dispose();
+
+            await _dcloneLock.WaitAsync();
+            try
+            {
+                if (ReferenceEquals(_dcloneCts, cts))
+                {
+                    _dcloneCts = null;
+                }
+
+                if (ReferenceEquals(_dcloneRun, run))
+                {
+                    _dcloneRun = null;
+                }
+
+                if (monitor is not null && _dcloneMonitorMessage?.Id == monitor.Id)
+                {
+                    _dcloneMonitorMessage = null;
+                }
+            }
+            finally
+            {
+                _dcloneLock.Release();
+            }
+
+            cts.Dispose();
+            await CompleteDcloneMonitorAsync(monitor, run);
+        }
+    }
+
+    /// <summary>
+    /// One poll of every rostered bot. Re-parks are started concurrently and never awaited under
+    /// the poll: a create takes minutes, and the other bots' games should not stop being watched
+    /// for that long.
+    /// </summary>
+    private async Task SweepDcloneParkAsync(
+        DcloneParkRun run,
+        KeyValuePair<string, AccountConfig>[] roster,
+        CancellationToken cancellationToken)
+    {
+        var readings = await Task.WhenAll(roster.Select(async entry =>
+            (entry, Presence: await ReadDcloneParkPresenceAsync(entry.Value, cancellationToken))));
+
+        var nowUtc = DateTimeOffset.UtcNow;
+        var reparks = new List<Task>();
+        foreach (var (entry, presence) in readings)
+        {
+            if (run.RegisterReadingAndTryBeginRepark(entry.Key, presence, nowUtc))
+            {
+                reparks.Add(ParkOneBotAsync(run, entry.Key, entry.Value, TimeSpan.Zero, cancellationToken, alreadyArmed: true));
+            }
+        }
+
+        if (reparks.Count > 0)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.WhenAll(reparks);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "A dclone re-park failed.");
+                }
+            }, CancellationToken.None);
+        }
+    }
+
+    private async Task<DcloneParkPresence> ReadDcloneParkPresenceAsync(
+        AccountConfig account,
+        CancellationToken cancellationToken)
+    {
+        if (_registry.GetAgent(account.AgentId)?.Connected != true)
+        {
+            return DcloneParkPresence.Offline;
+        }
+
+        try
+        {
+            // status never takes the agent's command gate, so this poll cannot be blocked by a
+            // sibling bot's in-flight create.
+            var result = await _registry.SendCommandAsync(
+                account.AgentId, "status", args: null, DcloneStatusTimeout, cancellationToken);
+            return result.Ok && result.Data is { } data
+                ? DcloneParkPolicy.Classify(connected: true, data.GetRawText())
+                : DcloneParkPresence.NoEvidence;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "dclone status poll failed for {AgentId}.", account.AgentId);
+            return DcloneParkPresence.NoEvidence;
+        }
+    }
+
+    /// <summary>
+    /// Warms one client if it needs it, then creates a game only that bot is in. Every attempt
+    /// mints a brand new name: the usual reason a create fails is that the name already exists on
+    /// the realm, and retrying with the same one would fail identically.
+    /// </summary>
+    private async Task ParkOneBotAsync(
+        DcloneParkRun run,
+        string accountKey,
+        AccountConfig account,
+        TimeSpan startDelay,
+        CancellationToken cancellationToken,
+        bool alreadyArmed = false)
+    {
+        if (startDelay > TimeSpan.Zero)
+        {
+            await Task.Delay(startDelay, cancellationToken);
+        }
+
+        if (!alreadyArmed && !run.TryBeginInitialPark(accountKey))
+        {
+            return;
+        }
+
+        var lastFailure = "the create never ran";
+        try
+        {
+            for (var attempt = 1; attempt <= DcloneParkPolicy.MaxCreateAttempts; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_registry.GetAgent(account.AgentId)?.Connected != true)
+                {
+                    run.MarkOffline(accountKey, "VM agent offline");
+                    return;
+                }
+
+                run.MarkPreparing(
+                    accountKey,
+                    attempt == 1 ? "warming up" : $"create attempt {attempt} of {DcloneParkPolicy.MaxCreateAttempts}");
+
+                // Both calls are caught per attempt rather than by the outer handler: a ready that
+                // times out or a create that throws is exactly the transient failure the retry
+                // budget exists for, and letting either escape would spend the whole budget at once.
+                try
+                {
+                    var accountArgs = BuildAccountArgs(accountKey, account);
+                    var ready = await SendReadyIfNotMenuReadyAsync(account, accountArgs);
+                    if (ready?.Ok == false)
+                    {
+                        lastFailure = $"ready failed: {ready.Message}";
+                        continue;
+                    }
+
+                    var (gameName, password) = run.MintCredentials();
+                    run.MarkPreparing(accountKey, $"creating {gameName}");
+                    var result = await _registry.SendCommandAsync(
+                        account.AgentId,
+                        "menu_create_game",
+                        BuildDcloneMenuArgs(accountKey, account, gameName, password, run.Difficulty),
+                        DcloneCreateGameTimeout,
+                        cancellationToken);
+                    if (result.Ok)
+                    {
+                        run.MarkParked(accountKey, gameName, password, "holding the game open");
+                        return;
+                    }
+
+                    lastFailure = result.Message;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "dclone park attempt failed for {AccountKey}.", accountKey);
+                    lastFailure = FormatExceptionWithAccountStatus(ex, accountKey, account);
+                }
+            }
+
+            run.MarkFailed(accountKey, lastFailure, DateTimeOffset.UtcNow);
+        }
+        finally
+        {
+            // Releases the latch on every exit, cancellation included, so a slot can never be
+            // left armed with no attempt behind it - which would make it unpollable for the rest
+            // of the run.
+            run.EndParkAttempt(accountKey);
+        }
+    }
+
+    private static object BuildDcloneMenuArgs(
+        string accountKey,
+        AccountConfig account,
+        string gameName,
+        string password,
+        string difficulty)
+    {
+        return new
+        {
+            accountKey,
+            displayName = account.DisplayName ?? accountKey,
+            vmName = account.VmName ?? account.AgentId,
+            gameName,
+            password,
+            difficulty,
+            characterSlot = account.CharacterSlot,
+            friendRow = (int?)null,
+            partyPosition = (int?)null,
+            followAutoRunId = (long?)null
+        };
+    }
+
+    private static MessageComponent BuildDcloneMonitorComponents(bool running)
+    {
+        var builder = new ComponentBuilder();
+        if (running)
+        {
+            builder.WithButton("Stop", DcloneStopButtonId, ButtonStyle.Danger);
+        }
+
+        return builder.Build();
+    }
+
+    private async Task UpdateDcloneMonitorAsync(IUserMessage? monitor, DcloneParkRun run, string status)
+    {
+        if (monitor is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await monitor.ModifyAsync(properties =>
+            {
+                properties.Content = AppendMetrics(_dcloneMetricsEnabled, FormatDcloneMonitorMessage(run, status));
+                properties.Components = BuildDcloneMonitorComponents(running: true);
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not update the dclone monitor message.");
+        }
+    }
+
+    private async Task CompleteDcloneMonitorAsync(IUserMessage? monitor, DcloneParkRun run)
+    {
+        if (monitor is null)
+        {
+            return;
+        }
+
+        var parked = run.ParkedCount();
+        var reason = run.StopReason is { } stopReason ? $" ({stopReason})" : "";
+        var status = parked > 0
+            ? $"Park stopped{reason}. {parked} bot(s) are still sitting in the games listed above - "
+                + "Leave pulls them out, Quit closes the clients."
+            : $"Park stopped{reason}. No bot is holding a game.";
+        try
+        {
+            await monitor.ModifyAsync(properties =>
+            {
+                properties.Content = AppendMetrics(_dcloneMetricsEnabled, FormatDcloneMonitorMessage(run, status));
+                // Reuses the game-session Leave/Quit pair rather than minting dclone-specific
+                // buttons: they already do exactly this (save-exit-all / quit-all) everywhere else.
+                properties.Components = parked > 0
+                    ? BuildGameSessionActionComponents()
+                    : new ComponentBuilder().Build();
+            });
+            await monitor.AddReactionAsync(new Emoji(parked > 0 ? "✅" : "⛔"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not complete the dclone monitor message.");
+        }
+    }
+
+    private static string DescribeDcloneParkProgress(DcloneParkRun run)
+    {
+        var slots = run.Snapshot();
+        var parked = slots.Count(slot => slot.State == DcloneSlotState.Parked);
+        if (parked == slots.Count)
+        {
+            return "All bots are parked. Join any game below to hunt it.";
+        }
+
+        var working = slots.Count(slot =>
+            slot.State is DcloneSlotState.Preparing or DcloneSlotState.Reparking);
+        return working > 0
+            ? $"{parked} game(s) open, {working} still coming up."
+            : $"{parked} game(s) open; the rest need attention.";
+    }
+
+    private string FormatDcloneMonitorMessage(DcloneParkRun run, string status)
+    {
+        var slots = run.Snapshot();
+        var parked = slots.Count(slot => slot.State == DcloneSlotState.Parked);
+        var elapsed = FormatElapsed(DateTimeOffset.UtcNow - run.StartedUtc);
+        var lines = new List<string>
+        {
+            $"**dclone park** - {parked}/{slots.Count} parked - {FormatDifficultyLabel(run.Difficulty)} - running {elapsed}",
+            status
+        };
+        lines.AddRange(slots.Select(FormatDcloneSlotLine));
+        return string.Join("\n", lines);
+    }
+
+    // Parked bots lead with the credentials because that is the whole point of the message: the
+    // operator is copying a name and a password into their own client, usually in a hurry.
+    private static string FormatDcloneSlotLine(DcloneParkSlotSnapshot slot)
+    {
+        var reparks = slot.Reparks == 0 ? "" : $" [rebuilt {slot.Reparks}x]";
+        if (slot.State == DcloneSlotState.Parked)
+        {
+            return $"`{slot.GameName}` / `{slot.Password}` - {slot.DisplayName}{reparks}";
+        }
+
+        return $"- {slot.DisplayName}: {FormatDcloneSlotState(slot.State)} - {slot.Detail}{reparks}";
+    }
+
+    private static string FormatDcloneSlotState(DcloneSlotState state)
+    {
+        return state switch
+        {
+            DcloneSlotState.Preparing => "opening",
+            DcloneSlotState.Reparking => "rebuilding",
+            DcloneSlotState.Failed => "failed",
+            DcloneSlotState.Offline => "offline",
+            _ => "parked"
+        };
+    }
+
+    private static string FormatDifficultyLabel(string difficulty)
+    {
+        return string.IsNullOrWhiteSpace(difficulty)
+            ? "Hell"
+            : char.ToUpperInvariant(difficulty[0]) + difficulty[1..].ToLowerInvariant();
+    }
+
     private async Task RunJoinAutoLoopAsync(SlashContext context, int delaySeconds, bool watch, TimeSpan idleTimeout, CancellationToken cancellationToken)
     {
         var channel = context.Command.Channel;
@@ -5787,6 +6378,17 @@ public sealed class DiscordBot
         // Awaiting the deferral also moves the rest of this method off the gateway task.
         await EnsureAcknowledgedAsync(context);
 
+        // The mirror of the check in StartDcloneParkAsync: a park has every VM sitting in its own
+        // game, and follow-auto would immediately start pulling them all into one.
+        if (IsDcloneParkRunning())
+        {
+            await SetInitialCommandResponseAsync(
+                context,
+                "A dclone park is running and owns the same VMs. Stop it with `/d2r dclone stop:true` first.",
+                ephemeral: true);
+            return;
+        }
+
         var bots = FollowAutoRosterPolicy.ClampTarget(
             targetBotCount ?? context.GetInt("bots") ?? FollowAutoRosterPolicy.DefaultBotCount);
         var options = new FollowAutoRunOptions(
@@ -5928,6 +6530,11 @@ public sealed class DiscordBot
     private bool IsFollowAutoRunning()
     {
         return _followAutoLifecycle.IsRunning;
+    }
+
+    private bool IsDcloneParkRunning()
+    {
+        return Volatile.Read(ref _dcloneCts) is not null;
     }
 
     private async Task StopFollowAutoAsync(SlashContext context)
@@ -6413,6 +7020,7 @@ public sealed class DiscordBot
         // method runs before anything answers the button that started it.
         await EnsureAcknowledgedAsync(context);
         await CancelJoinAutoIfRunningAsync("follow-auto sleep button was pressed");
+        await CancelDcloneParkIfRunningAsync("the sleep button was pressed");
         var followAutoCancel = await CancelFollowAutoIfRunningAsync("follow-auto sleep button was pressed");
         QueueFollowAutoStopSignal(followAutoCancel.RunId);
 

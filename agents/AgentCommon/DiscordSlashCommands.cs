@@ -32,6 +32,7 @@ public static class DiscordSlashCommands
                     Sub("join", "Join a game, or auto-join template games when auto is true", OptionalAccount(), AllFlag(), JoinAutoFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Delay(), IdleMinutes(), JoinAutoWatch()),
                     Sub("create-game", "Create one game, or create and join across all accounts", OptionalAccount(), AllFlag(), GameName(), Password(), Difficulty(), CharacterSlot(), Watch()),
                     Sub("follow", "Follow the bound friend, bind a friend, or join by visible row", OptionalAccount(), AllFlag(), CharacterSlot(), FriendRow(), FollowBind(), FollowBindInGame(), FollowAutoFlag(), FollowBots(), Delay(), IdleMinutes(), Watch()),
+                    Sub("dclone", "Park every online bot in its own game and hold it open for a Diablo Clone hunt", DcloneBots(), DcloneDifficulty(), StopFlag(), Watch()),
                     Sub("save-exit", "Open the in-game menu and click Save and Exit", OptionalAccount(), AllFlag()),
                     Sub("template", "Set the create/join auto-naming template", RequiredGameName(), Password()),
                     Sub("restart", "Respawn D2RHost so startup self-update can apply"),
@@ -213,9 +214,32 @@ public static class DiscordSlashCommands
     {
         return new SlashCommandOptionBuilder()
             .WithName("stop")
-            .WithDescription("Stop a running join-auto loop instead of starting one")
+            .WithDescription("Stop the running loop instead of starting one")
             .WithType(ApplicationCommandOptionType.Boolean)
             .WithRequired(false);
+    }
+
+    // Bots, not players, and unrelated to FollowBots' 7: a dclone park gives every bot its own
+    // game, so nothing about D2R's 8-player cap bounds this - only how many VMs are online.
+    private static SlashCommandOptionBuilder DcloneBots()
+    {
+        return new SlashCommandOptionBuilder()
+            .WithName("bots")
+            .WithDescription("How many bots to park, one game each; defaults to every online account")
+            .WithType(ApplicationCommandOptionType.Integer)
+            .WithRequired(false)
+            .WithMinValue(1)
+            .WithMaxValue(64);
+    }
+
+    // Its own option rather than Difficulty(): a dclone park always means Hell, and inheriting
+    // whatever /d2r game set last stored would silently open 8 Normal games instead.
+    private static SlashCommandOptionBuilder DcloneDifficulty()
+    {
+        return StringOption("difficulty", "Difficulty for every parked game; defaults to Hell", required: false)
+            .AddChoice("Normal", "normal")
+            .AddChoice("Nightmare", "nightmare")
+            .AddChoice("Hell", "hell");
     }
 
     private static SlashCommandOptionBuilder AllFlag()
