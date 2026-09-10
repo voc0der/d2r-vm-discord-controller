@@ -3858,6 +3858,38 @@ public sealed class DiscordBot
         }
     }
 
+    // Shown only while degraded, like the settings segment. A bounded-call slot is released in a
+    // finally block, so the only way to be short of them is a capture that never returned - the
+    // one condition that makes a client refuse every menu click for the rest of the agent's life
+    // while every other field on this line still reads healthy.
+    private static bool TryReadDegradedBoundedCallSlots(string? json, out string value)
+    {
+        value = "";
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!TryGetInt(document.RootElement, "freeBoundedCallSlots", out var free)
+                || !TryGetInt(document.RootElement, "boundedCallSlots", out var total)
+                || total <= 0
+                || free >= total)
+            {
+                return false;
+            }
+
+            value = $"{free}/{total}";
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private static bool TryReadCheckpointSummary(string? json, out string value)
     {
         value = "";
@@ -6243,16 +6275,6 @@ public sealed class DiscordBot
     }
 
     /// <summary>
-    /// Feeds one in-game pulse to public mode and applies the target it asks for. Returns whether
-    /// the target moved, so the caller can hand the run loop a roster reconciliation immediately
-    /// instead of waiting a heartbeat for the watch to notice.
-    /// </summary>
-    /// <param name="botsInGame">
-    /// Fleet clients the run believes are inside the sampled game. Only call this from the
-    /// all-joined watch: mid join the party bar lags this number and the subtraction undercounts
-    /// the humans, which would grow the roster into the slot public mode exists to hold open.
-    /// </param>
-    /// <summary>
     /// Fleet clients occupying slots in the current game: the ones the run is tracking, plus the
     /// ones it gave up on removing and is not tracking any more. Both are in there taking up room.
     /// </summary>
@@ -6261,7 +6283,25 @@ public sealed class DiscordBot
         return accountState.JoinedCount + accountState.StrandedInGameCount;
     }
 
-    private async Task<bool> TryApplyPublicPartyTargetAsync(FollowPulseSample sample, int botsInGame)
+    /// <summary>
+    /// Feeds one in-game pulse to public mode and applies the target it asks for. Returns whether
+    /// the target moved, so the caller can hand the run loop a roster reconciliation immediately
+    /// instead of waiting a heartbeat for the watch to notice.
+    /// </summary>
+    /// <param name="botsInGame">
+    /// Fleet clients the run believes are inside the sampled game.
+    /// </param>
+    /// <param name="allJoined">
+    /// Whether every rostered bot is in that game. False restricts the sample to giving a slot
+    /// back to a human - mid join the party bar lags this number and the subtraction undercounts
+    /// the humans, which could only ever grow the roster into the slot public mode exists to hold
+    /// open. Yields carry no such risk, and going silent instead is what used to freeze the whole
+    /// mode behind one client that would not join.
+    /// </param>
+    private async Task<bool> TryApplyPublicPartyTargetAsync(
+        FollowPulseSample sample,
+        int botsInGame,
+        bool allJoined = true)
     {
         var (current, mode) = _followAutoTarget.Snapshot;
         if (mode != FollowAutoPartyMode.Public)
@@ -6274,7 +6314,8 @@ public sealed class DiscordBot
             sample.PlayerCountFresh,
             sample.InGame,
             botsInGame,
-            current);
+            current,
+            allJoined);
         if (desired is not { } target || target == current)
         {
             return false;
@@ -6911,9 +6952,29 @@ public sealed class DiscordBot
         // sitting in. It could also print a negative number of held-open slots in the window
         // between a human arriving and the yield landing.
         var seen = _followAutoPublicMode.LastPlayerCount is { } players
-            ? $"last read {players}/{FollowAutoRosterPolicy.MaxPlayersPerGame} in the game"
+            ? $"last read {players}/{FollowAutoRosterPolicy.MaxPlayersPerGame} in the game{FormatPublicModeReadingAge()}"
             : "no live count yet";
         return $"public - {humanCount} real player(s), {seen}; {aim}";
+    }
+
+    /// <summary>
+    /// How long ago public mode last got a usable count, printed only once that is old enough to
+    /// matter. Silence on a fresh reading keeps the common line short; naming the age on an old one
+    /// is what stops the monitor asserting a party size the fleet stopped being able to see.
+    /// </summary>
+    internal static readonly TimeSpan PublicModeStaleReadingAge = TimeSpan.FromSeconds(90);
+
+    private string FormatPublicModeReadingAge()
+    {
+        if (_followAutoPublicMode.LastReadUtc is not { } readUtc)
+        {
+            return "";
+        }
+
+        var age = DateTimeOffset.UtcNow - readUtc;
+        return age < PublicModeStaleReadingAge
+            ? ""
+            : $" ({FormatElapsed(age)} ago - no fleet client has been able to count since)";
     }
 
     private async Task RunFollowAutoLoopAsync(
@@ -7298,6 +7359,20 @@ public sealed class DiscordBot
                 if (accountState.JoinedCount > 0 && online.Length > 0)
                 {
                     var probe = await ProbeMidJoinLeaderPresenceAsync(accountState.Joined, midJoinRotation++);
+                    // The same pulse public mode would have got from the all-joined watch, which
+                    // is not running while anyone is still pending. Restricted to yields (see
+                    // TryApplyPublicPartyTargetAsync): a human who walks in while the fleet is
+                    // short a bot gets their slot given back now instead of after the fleet
+                    // finishes assembling - which, if the missing bot is stuck, is never. The new
+                    // target is picked up by the roster resolve at the top of the next cycle.
+                    if (probe.Sample is { } midJoinSample)
+                    {
+                        await TryApplyPublicPartyTargetAsync(
+                            midJoinSample,
+                            CountFleetClientsInGame(accountState),
+                            allJoined: false);
+                    }
+
                     if (FollowAutoPulsePolicy.ShouldAbortStaleMidJoinGame(probe.LockedPresent, probe.ConfirmAgreed))
                     {
                         var partialGameNumber = currentGameActive
@@ -7474,16 +7549,30 @@ public sealed class DiscordBot
                     // Independent of the warmup ladder above. A check failure on a client whose
                     // warmup succeeded used to be reported and otherwise ignored, which is how a
                     // bot that dropped mid-session could sit at the lobby for an entire run.
-                    if (result.Outcome == FollowAutoCheckOutcome.CheckFailure)
+                    //
+                    // A local stall is fed to the same ladder for the same reason. It answers
+                    // ok=true - the agent is healthy, reachable, and explaining itself clearly -
+                    // so it used to count as a success and reset the ladder on every cycle. What
+                    // it actually means is that the client refused to click because it could not
+                    // rule out being in a game, and nothing outside that VM will ever change its
+                    // mind. One such client never joins, the fleet never reaches all-joined, and
+                    // the all-joined watch is the only thing that advances a game - so the whole
+                    // run stops advancing while every status line still reads healthy.
+                    var localStall = result.Outcome == FollowAutoCheckOutcome.Waiting
+                        && result.LocalStall;
+                    if (result.Outcome == FollowAutoCheckOutcome.CheckFailure || localStall)
                     {
-                        var checkFailure = checkFailureLadder.RecordFailure(result.AccountKey);
+                        var checkFailure = localStall
+                            ? checkFailureLadder.RecordStall(result.AccountKey, DateTimeOffset.UtcNow)
+                            : checkFailureLadder.RecordFailure(result.AccountKey);
                         if (checkFailure.ClientRestartRequested)
                         {
                             clientRestartRequests.Add(new FollowAutoClientRestartRequest(
                                 result.AccountKey,
                                 failedEntry.Value,
                                 checkFailure.TotalFailures,
-                                result.Message));
+                                result.Message,
+                                Stalled: localStall));
                         }
                         else if (checkFailure.VmRecoveryRequested)
                         {
@@ -7507,8 +7596,11 @@ public sealed class DiscordBot
                     idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
                     lastWaitingReport = null;
                     await UpdateFollowAutoMonitorAsync(
-                        $"{request.AccountKey} failed {request.TotalFailures} follow checks in a row "
-                            + $"({request.LastMessage}). Restarting D2R on that client before considering a VM power cycle.",
+                        (request.Stalled
+                            ? $"{request.AccountKey} has refused to click for {FollowCheckFailureTracker.StallEscalationWindow.TotalMinutes:N0}+ minutes "
+                                + $"because its own in-game safety check keeps coming back inconclusive ({request.LastMessage})."
+                            : $"{request.AccountKey} failed {request.TotalFailures} follow checks in a row ({request.LastMessage}).")
+                            + " Restarting D2R on that client before considering a VM power cycle.",
                         joined: accountState.JoinedCount,
                         total: accountState.CountExpectedAccounts(onlineAccountKeys));
 
@@ -9214,7 +9306,11 @@ public sealed class DiscordBot
 
         if (TryGetBoolean(data, "d2rReady", out var d2rReady) && !d2rReady)
         {
-            return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.Waiting, result.Message);
+            return new FollowAutoCheckResult(
+                accountKey,
+                FollowAutoCheckOutcome.Waiting,
+                result.Message,
+                LocalStall: TryGetBoolean(data, "localStall", out var notReadyStall) && notReadyStall);
         }
 
         if (TryGetBoolean(data, "joined", out var didJoin) && didJoin)
@@ -9229,7 +9325,11 @@ public sealed class DiscordBot
             return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.GameFull, result.Message);
         }
 
-        return new FollowAutoCheckResult(accountKey, FollowAutoCheckOutcome.Waiting, result.Message);
+        return new FollowAutoCheckResult(
+            accountKey,
+            FollowAutoCheckOutcome.Waiting,
+            result.Message,
+            LocalStall: TryGetBoolean(data, "localStall", out var localStall) && localStall);
     }
 
     // issue #24: "the join-auto feature should still make a game monitor like the other one
@@ -10081,7 +10181,7 @@ public sealed class DiscordBot
     // run whose first game never reaches all-joined - exactly the wedged-bot case this probe
     // exists for - previously never locked at all, which would leave every probe blind
     // (no lock -> presence always null -> never evidence of absence).
-    private async Task<(bool? LockedPresent, bool? ConfirmAgreed, string Detail)> ProbeMidJoinLeaderPresenceAsync(
+    private async Task<MidJoinLeaderProbe> ProbeMidJoinLeaderPresenceAsync(
         IReadOnlySet<string> joined,
         int rotation)
     {
@@ -10089,7 +10189,7 @@ public sealed class DiscordBot
         var joinedEntries = online.Where(entry => joined.Contains(entry.Key)).ToArray();
         if (joinedEntries.Length == 0)
         {
-            return (null, null, "");
+            return new MidJoinLeaderProbe(null, null, "", null);
         }
 
         var (accountKey, account) = joinedEntries[rotation % joinedEntries.Length];
@@ -10099,7 +10199,7 @@ public sealed class DiscordBot
         var (lockedPresent, _, _) = GetLockedNametagPresence(sample);
         if (lockedPresent != false)
         {
-            return (lockedPresent, null, "");
+            return new MidJoinLeaderProbe(lockedPresent, null, "", sample);
         }
 
         var flagger = sample.AccountKey ?? accountKey;
@@ -10107,7 +10207,7 @@ public sealed class DiscordBot
         var detail = agreed == true && confirmer is { } confirmedBy
             ? $" ({flagger} flagged it, {confirmedBy} confirmed)"
             : $" ({flagger} flagged it; {confirmDetail})";
-        return (false, agreed, detail);
+        return new MidJoinLeaderProbe(false, agreed, detail, sample);
     }
 
     // onlyAccounts scopes the vantage rotation to accounts actually IN the watched game. A
@@ -10417,11 +10517,14 @@ public sealed class DiscordBot
         var settings = SettingsRepairPolicy.IsSettingsCorrupt(statusJson)
             ? ", settings RESET BY D2R (first-run gamma screen; needs a donor Settings.json)"
             : "";
+        var boundedCalls = TryReadDegradedBoundedCallSlots(statusJson, out var boundedCallSlots)
+            ? $", screen-sampling slots {boundedCallSlots} free (a client with none refuses to click)"
+            : "";
         var version = string.IsNullOrWhiteSpace(agent.Version)
             ? ""
             : $", version {AgentVersion.Display(agent.Version)}";
         var lastSeen = agent.LastSeenAt?.ToLocalTime().ToString("G") ?? "unknown";
-        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{settings}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}{checkpoint}, seen {lastSeen}";
+        return $"{name}: online{version}, Battle.net {battleNet}, D2R {d2r}{visible}{settings}{boundedCalls}{activity}{statusMode}{statusError}{processDiscovery}{input}{lastInput}{checkpoint}, seen {lastSeen}";
     }
 
     private static Dictionary<string, bool?> ParseStatus(string? json)
@@ -10861,11 +10964,21 @@ public sealed class DiscordBot
         Failed
     }
 
+    /// <summary>
+    /// One account's answer to one follow-auto check.
+    /// </summary>
+    /// <param name="LocalStall">
+    /// Set when the agent declined to act on its OWN screen - it could not rule out being in a
+    /// game, so it refused to click. That is a different kind of wait from "the leader has not
+    /// made a game yet": no other client, and no amount of waiting, resolves it, so it feeds the
+    /// escalation ladder instead of clearing it. See VmOperations.DescribeInconclusiveInGameDetection.
+    /// </param>
     private sealed record FollowAutoCheckResult(
         string AccountKey,
         FollowAutoCheckOutcome Outcome,
         string Message,
-        FollowWarmupOutcome WarmupOutcome = FollowWarmupOutcome.Succeeded);
+        FollowWarmupOutcome WarmupOutcome = FollowWarmupOutcome.Succeeded,
+        bool LocalStall = false);
 
     private sealed record SettingsRepairAttempt(
         bool Ok,
@@ -10910,7 +11023,19 @@ public sealed class DiscordBot
         string AccountKey,
         AccountConfig Account,
         int TotalFailures,
-        string LastMessage);
+        string LastMessage,
+        bool Stalled = false);
+
+    /// <summary>
+    /// One mid-join probe of a joined vantage: what it saw of the bound leader, and the raw pulse
+    /// behind that verdict so public mode can count the party bar off the same sample instead of
+    /// spending a second command on it.
+    /// </summary>
+    private sealed record MidJoinLeaderProbe(
+        bool? LockedPresent,
+        bool? ConfirmAgreed,
+        string Detail,
+        FollowPulseSample? Sample);
 
     private sealed record FollowAutoGameWatchResult(
         string Reason,

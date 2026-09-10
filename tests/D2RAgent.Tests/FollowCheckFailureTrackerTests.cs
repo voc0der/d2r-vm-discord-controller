@@ -174,4 +174,102 @@ public sealed class FollowCheckFailureTrackerTests
 
         Assert.Throws<ArgumentException>(() => tracker.RecordFailure(accountKey));
     }
+
+    // The stall this ladder now covers: hc6_alt answered ok=true every cycle with "suspected this
+    // pending client was already in a game, but a strict in-game HUD profile could not be
+    // confirmed; waiting without clicking" while sitting visibly at the lobby. Every one of those
+    // answers cleared the ladder, so nothing ever escalated and the fleet ran a bot short - the
+    // leader's game held six players against a target of seven for the rest of the session.
+    [Fact]
+    public void AStallThatKeepsAnsweringOkStillClimbsTheLadder()
+    {
+        var tracker = new FollowCheckFailureTracker();
+        var start = DateTimeOffset.UtcNow;
+
+        Assert.False(tracker.RecordStall("hc6_alt", start).ClientRestartRequested);
+        Assert.False(tracker.RecordStall("hc6_alt", start + TimeSpan.FromSeconds(5)).ClientRestartRequested);
+
+        var escalated = tracker.RecordStall(
+            "hc6_alt",
+            start + FollowCheckFailureTracker.StallEscalationWindow);
+
+        Assert.True(escalated.ClientRestartRequested);
+    }
+
+    // The check cycle is five seconds and a stall answers almost instantly, so the count alone
+    // would restart a client fifteen seconds after one bad sample. Both halves have to be met.
+    [Fact]
+    public void ABurstOfStallsInsideTheWindowIsNotYetStuck()
+    {
+        var tracker = new FollowCheckFailureTracker();
+        var start = DateTimeOffset.UtcNow;
+
+        for (var cycle = 0; cycle < 12; cycle++)
+        {
+            var result = tracker.RecordStall("hc6_alt", start + TimeSpan.FromSeconds(5 * cycle));
+            Assert.False(result.ClientRestartRequested);
+            Assert.False(result.VmRecoveryRequested);
+        }
+    }
+
+    // A stall that resolves itself must leave no residue: the window restarts from the next one.
+    [Fact]
+    public void ProgressClearsTheStallStreak()
+    {
+        var tracker = new FollowCheckFailureTracker();
+        var start = DateTimeOffset.UtcNow;
+
+        tracker.RecordStall("hc6_alt", start);
+        tracker.RecordStall("hc6_alt", start + TimeSpan.FromSeconds(5));
+        tracker.RecordSuccess("hc6_alt");
+
+        Assert.Equal(0, tracker.GetConsecutiveStalls("hc6_alt"));
+        Assert.False(tracker
+            .RecordStall("hc6_alt", start + FollowCheckFailureTracker.StallEscalationWindow)
+            .ClientRestartRequested);
+    }
+
+    // Stalls and failures are the same question - is this client ever going to make progress? - so
+    // they share the rungs. A client that alternates must not collect two recovery budgets.
+    [Fact]
+    public void StallsAndFailuresShareTheSameRungs()
+    {
+        var tracker = new FollowCheckFailureTracker();
+        var start = DateTimeOffset.UtcNow;
+        var restarts = 0;
+        var vmCycles = 0;
+
+        for (var round = 0; round < 4; round++)
+        {
+            var at = start + TimeSpan.FromMinutes(4 * round);
+            tracker.RecordStall("hc6_alt", at);
+            tracker.RecordStall("hc6_alt", at + TimeSpan.FromSeconds(5));
+            var stalled = tracker.RecordStall("hc6_alt", at + FollowCheckFailureTracker.StallEscalationWindow);
+            if (stalled.ClientRestartRequested)
+            {
+                restarts++;
+            }
+
+            if (stalled.VmRecoveryRequested)
+            {
+                vmCycles++;
+            }
+        }
+
+        Assert.Equal(FollowCheckFailureTracker.MaxClientRestarts, restarts);
+        Assert.Equal(1, vmCycles);
+    }
+
+    [Fact]
+    public void AVmRecoveryClearsTheStallStreakToo()
+    {
+        var tracker = new FollowCheckFailureTracker();
+        var start = DateTimeOffset.UtcNow;
+
+        tracker.RecordStall("hc6_alt", start);
+        tracker.RecordStall("hc6_alt", start + TimeSpan.FromSeconds(5));
+        tracker.RecordVmRecovered("hc6_alt");
+
+        Assert.Equal(0, tracker.GetConsecutiveStalls("hc6_alt"));
+    }
 }

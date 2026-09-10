@@ -164,4 +164,43 @@ public sealed class MenuClickSafetyTests
 
         Assert.Equal(VmOperations.FollowAutoInGameRecoveryOutcome.LeaveFailed, outcome);
     }
+
+    // "A strict in-game HUD profile could not be confirmed" was the entire explanation a stalled
+    // client gave, forever, while sitting at the lobby. Three unrelated events produce it and only
+    // one is about the screen; the operator could not tell which, and neither could the next
+    // person reading the code. Every reference lobby capture reads false against the broad frame
+    // classifier, so at the lobby it is always one of the bounded-call outcomes.
+    [Fact]
+    public void AnInconclusiveInGameCheckNamesWhichEventProducedIt()
+    {
+        Assert.Contains(
+            "never sampled",
+            VmOperations.DescribeInconclusiveInGameDetection(VmOperations.BoundedCallOutcome.NoSlot));
+        Assert.Contains(
+            "did not finish",
+            VmOperations.DescribeInconclusiveInGameDetection(VmOperations.BoundedCallOutcome.TimedOut));
+        Assert.Contains(
+            "threw",
+            VmOperations.DescribeInconclusiveInGameDetection(VmOperations.BoundedCallOutcome.Faulted));
+        Assert.Contains(
+            "broad in-game frame",
+            VmOperations.DescribeInconclusiveInGameDetection(VmOperations.BoundedCallOutcome.Completed));
+    }
+
+    [Fact]
+    public void ABoundedCallReportsWhetherItRanAtAll()
+    {
+        var completed = VmOperations.RunBounded(() => 7, timeoutMs: 5000, fallback: -1);
+        Assert.Equal(VmOperations.BoundedCallOutcome.Completed, completed.Outcome);
+        Assert.Equal(7, completed.Value);
+
+        var faulted = VmOperations.RunBounded<int>(
+            () => throw new InvalidOperationException("no"),
+            timeoutMs: 5000,
+            fallback: -1);
+        // The task's exception surfaces through Wait as an AggregateException, so this is the
+        // faulted path rather than a completed call returning the fallback.
+        Assert.Equal(VmOperations.BoundedCallOutcome.Faulted, faulted.Outcome);
+        Assert.Equal(-1, faulted.Value);
+    }
 }

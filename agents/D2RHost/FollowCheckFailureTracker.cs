@@ -43,6 +43,25 @@ internal sealed class FollowCheckFailureTracker
     /// </summary>
     internal const int MaxClientRestarts = 2;
 
+    /// <summary>
+    /// Consecutive local stalls before acting. A stall is an <c>ok=true</c> answer, so unlike a
+    /// failure it also has to clear a wall-clock window (<see cref="StallEscalationWindow"/>)
+    /// before it counts as stuck.
+    /// </summary>
+    internal const int StallEscalationThreshold = 3;
+
+    /// <summary>
+    /// How long an account must stall continuously before the ladder acts on it.
+    /// </summary>
+    /// <remarks>
+    /// The check cycle is five seconds by default and a stall answers almost instantly, so a
+    /// count alone would escalate a client roughly fifteen seconds after its first bad sample -
+    /// far too fast for a guest that is merely busy. Three minutes is longer than any transient
+    /// this has been seen to survive (a load spike, one slow capture) and still short enough that
+    /// the rest of the fleet is not left standing in a game waiting on it.
+    /// </remarks>
+    internal static readonly TimeSpan StallEscalationWindow = TimeSpan.FromMinutes(3);
+
     private readonly object _sync = new();
     private readonly Dictionary<string, AccountCheckState> _states =
         new(StringComparer.OrdinalIgnoreCase);
@@ -94,9 +113,80 @@ internal sealed class FollowCheckFailureTracker
     }
 
     /// <summary>
-    /// Records a check that produced any usable outcome - joined, waiting, game-full, or unbound.
-    /// Only a clean result clears the ladder; a client that alternates between failing and
-    /// answering must still escalate rather than resetting itself forever.
+    /// Records a check that answered <c>ok=true</c> but reported that this client refused to act
+    /// on its own screen - the in-game safety check could not decide, so it did not click. Returns
+    /// what, if anything, should be done about it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the gap that let one bot sit at the lobby for a whole session while the other six
+    /// played. A stall is a successful check by every measure the host had: the agent answered,
+    /// promptly, with <c>ok=true</c> and a perfectly clear explanation of why it was not clicking.
+    /// So it landed in <see cref="RecordSuccess"/>, which CLEARS the ladder - every cycle, forever.
+    /// The client never joined, the fleet never reached all-joined, and because the all-joined
+    /// watch is the only thing that advances a game, the run stopped advancing entirely.
+    /// </para>
+    /// <para>
+    /// Only stalls the agent itself marks local are counted (see the <c>localStall</c> flag on
+    /// menu_follow_auto_check). Waiting on the world - the bound friend offline, no joinable game
+    /// yet, D2R still starting - is the normal between-games state of every account in the fleet
+    /// at once, and restarting clients over it would be a self-inflicted outage.
+    /// </para>
+    /// <para>
+    /// Stalls and failures share the ladder's rungs (<see cref="MaxClientRestarts"/>, then the VM)
+    /// because they are the same question - "is this client ever going to make progress?" - and a
+    /// client that alternates between the two must not get twice the recovery budget.
+    /// </para>
+    /// </remarks>
+    public FollowCheckFailureResult RecordStall(string accountKey, DateTimeOffset nowUtc)
+    {
+        accountKey = RequireKey(accountKey);
+        lock (_sync)
+        {
+            if (!_states.TryGetValue(accountKey, out var state))
+            {
+                state = new AccountCheckState();
+                _states[accountKey] = state;
+            }
+
+            state.StallingSinceUtc ??= nowUtc;
+            state.ConsecutiveStalls++;
+            var totalFailures = state.TotalFailures + 1;
+            state.TotalFailures = totalFailures;
+
+            if (state.ConsecutiveStalls < StallEscalationThreshold
+                || nowUtc - state.StallingSinceUtc.Value < StallEscalationWindow)
+            {
+                return new FollowCheckFailureResult(state.ConsecutiveStalls, totalFailures, false, false);
+            }
+
+            // Acted on: restart both halves of the streak so the next rung needs another full
+            // window rather than firing on every cycle from here on.
+            var streak = state.ConsecutiveStalls;
+            state.ConsecutiveStalls = 0;
+            state.StallingSinceUtc = null;
+
+            if (state.ClientRestartsUsed < MaxClientRestarts)
+            {
+                state.ClientRestartsUsed++;
+                return new FollowCheckFailureResult(streak, totalFailures, true, false);
+            }
+
+            if (!state.VmRecoveryRequested)
+            {
+                state.VmRecoveryRequested = true;
+                return new FollowCheckFailureResult(streak, totalFailures, false, true);
+            }
+
+            return new FollowCheckFailureResult(streak, totalFailures, false, false);
+        }
+    }
+
+    /// <summary>
+    /// Records a check that produced real progress - joined, game-full, or unbound - or an
+    /// ordinary wait on something outside this client. Only a clean result clears the ladder; a
+    /// client that alternates between failing and answering must still escalate rather than
+    /// resetting itself forever.
     /// </summary>
     public void RecordSuccess(string accountKey)
     {
@@ -121,6 +211,8 @@ internal sealed class FollowCheckFailureTracker
                 state.VmRecoveryRequested = false;
                 state.ClientRestartsUsed = 0;
                 state.ConsecutiveFailures = 0;
+                state.ConsecutiveStalls = 0;
+                state.StallingSinceUtc = null;
             }
         }
     }
@@ -144,9 +236,24 @@ internal sealed class FollowCheckFailureTracker
         return accountKey;
     }
 
+    /// <summary>Consecutive local stalls currently recorded for an account, for the monitor.</summary>
+    public int GetConsecutiveStalls(string accountKey)
+    {
+        accountKey = RequireKey(accountKey);
+        lock (_sync)
+        {
+            return _states.TryGetValue(accountKey, out var state) ? state.ConsecutiveStalls : 0;
+        }
+    }
+
     private sealed class AccountCheckState
     {
         public int ConsecutiveFailures { get; set; }
+
+        public int ConsecutiveStalls { get; set; }
+
+        /// <summary>When the current stall streak began, for the wall-clock half of the rule.</summary>
+        public DateTimeOffset? StallingSinceUtc { get; set; }
 
         public int TotalFailures { get; set; }
 
