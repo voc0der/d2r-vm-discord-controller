@@ -90,12 +90,17 @@ public enum ApiCommandRejection
 }
 
 /// <summary>The live state of a <c>/d2r dclone</c> park, for <c>GET /api/dclone</c>.</summary>
+/// <remarks>
+/// <see cref="Total"/> grows while the park runs: VMs that connect later are admitted, up to
+/// <see cref="MaxBots"/> when the park was started with a <c>bots</c> cap (null means no cap).
+/// </remarks>
 public sealed record DcloneParkStatus(
     bool Running,
     DateTimeOffset? StartedUtc,
     string? Difficulty,
     int Parked,
     int Total,
+    int? MaxBots,
     IReadOnlyList<DcloneParkGame> Games);
 
 public sealed record DcloneParkGame(

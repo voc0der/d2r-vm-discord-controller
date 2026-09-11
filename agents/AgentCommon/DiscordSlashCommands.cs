@@ -220,12 +220,13 @@ public static class DiscordSlashCommands
     }
 
     // Bots, not players, and unrelated to FollowBots' 7: a dclone park gives every bot its own
-    // game, so nothing about D2R's 8-player cap bounds this - only how many VMs are online.
+    // game, so nothing about D2R's 8-player cap bounds this. It caps the roster, which otherwise
+    // keeps growing as VMs connect - a worker node waking mid-park has its VMs parked too.
     private static SlashCommandOptionBuilder DcloneBots()
     {
         return new SlashCommandOptionBuilder()
             .WithName("bots")
-            .WithDescription("Bots to park, one game each; default: all online")
+            .WithDescription("Max bots to park, one game each; default: every VM, even late ones")
             .WithType(ApplicationCommandOptionType.Integer)
             .WithRequired(false)
             .WithMinValue(1)

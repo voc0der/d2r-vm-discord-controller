@@ -117,13 +117,28 @@ Join/create session notifications include `Leave` and `Quit` buttons. `Leave` qu
 
 Each game is created with a fresh seven-character random name and a one-character password (for example `ewk52we` / `q`), minted so no two games in a run ever share a name. The host posts one live message listing every bot's name/password as its game comes up — that list is what you hand to whoever is coming to help kill it. Names are short on purpose: they are typed by hand, in a hurry, by people who are not running this controller.
 
-- `bots` parks a subset; the default is every online account. Unlike `/d2r follow`, there is no 7-bot cap — that number exists because a follow puts everyone in one 8-player game, which a park never does.
+Park is a **fleet mode**, not a one-off command: it keeps parking VMs as they come online. Start it with four VMs up and it parks four; when a second node wakes, its VMs are parked on the next 20-second sweep; a third node five minutes later, the same. Nothing needs to be re-run. It can even be started with no VM online and simply waits for the first one. First creates stay one client-stagger apart across the whole park, so a node whose VMs connect seconds apart does not drive Battle.net on all of them at once.
+
+- `bots` caps the park at that many bots in total; the default is no cap, so every VM that connects is parked. A bot whose VM goes offline keeps its place against the cap and is rebuilt when it returns. Unlike `/d2r follow`, there is no 7-bot ceiling — that number exists because a follow puts everyone in one 8-player game, which a park never does.
 - `difficulty` defaults to Hell and does **not** inherit `/d2r game set`, so a stored Normal game cannot silently turn the hunt into eight Normal games.
 - `stop:true`, or the monitor's `Stop` button, ends the park. The bots stay in their games; the finished monitor offers `Leave` and `Quit` to pull them out.
 
+A bot that is already in a game when its park attempt runs — the leader's game after follow-auto, a `create-game all` game, a create that outlived its timeout — is Saved-and-Exited first. Creating a game from inside one is not safe: the agent would type the create form into the live game and then report success for a game that was never made.
+
 While the park runs the host polls each bot's screen state every 20 seconds and rebuilds any game that fell over — a crash, a dropped connection, a client sent back to the character screen — under a brand new name, because the old one is no longer joinable. A rebuild needs three consecutive out-of-game readings (a full minute) before it fires, so one ambiguous frame never tears down a healthy game whose name is already circulating. A bot that fails three creates in a row is reported as failed and retried once every ten minutes rather than hammered.
 
-A park and `/d2r follow auto:true` both own the whole fleet, so whichever starts first refuses the other until it is stopped. `/d2r quit`, `quit-all`, and `leave` for every account all stop a running park, on the same "if you quit, it should stop auto if it's running" rule as join-auto and follow-auto.
+#### Private, Public, Park
+
+The fleet is always doing one of three things, and each mode's live monitor carries a button for the other two:
+
+| Monitor | Buttons | Switches to |
+|---|---|---|
+| follow-auto | `Public` / `Private`, `Park` | The other party mode in place, or a park |
+| dclone park | `Private`, `Public` | follow-auto in that party mode |
+
+`Park` on the follow-auto monitor stops the run and starts a park on every online VM; each bot leaves the leader's game and opens its own. `Private` or `Public` on the park monitor stops the park and starts follow-auto in that mode; the bots are left in their games, and follow-auto's own check Saves-and-Exits each one before it joins the leader. Either switch waits for the outgoing mode — including any create or join it had in flight — to finish unwinding before the new one takes the fleet, and gives up with a message rather than overlapping them if that takes more than two minutes. After a switch to follow-auto the old park monitor offers no `Leave`/`Quit`: those act on the whole fleet, which follow-auto now owns.
+
+A park, `/d2r follow auto:true` and `/d2r join auto:true` all own the whole fleet, so a park refuses to start while either is running and neither starts while a park is. `/d2r quit`, `quit-all`, and `leave` for every account all stop a running park, on the same "if you quit, it should stop auto if it's running" rule as join-auto and follow-auto. A park does not survive a master restart.
 
 `/d2r ready` queues the ready flow for every online account. Pass `account:<x>` to warm one account. `/d2r start` with `all:true` uses the same all-account ready flow, so cold-booted clients should land on character select instead of merely starting the D2R process.
 
