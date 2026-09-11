@@ -7,27 +7,159 @@ namespace D2RAgent.Tests;
 public sealed class DcloneParkTests
 {
     [Fact]
-    public void BotCountDefaultsToEveryOnlineAccount()
+    public void WithNoCapEveryOnlineAccountIsAdmitted()
     {
-        Assert.Equal(9, DcloneParkPolicy.ResolveBotCount(onlineAccounts: 9, requested: null));
+        Assert.Equal(
+            new[] { "hc1", "hc2", "hc3" },
+            DcloneParkPolicy.SelectNewcomers(["hc1", "hc2", "hc3"], [], maxBots: null));
     }
 
     [Fact]
-    public void BotCountNeverExceedsTheOnlineAccounts()
+    public void ACapParksASubsetInTheOrderGiven()
     {
-        Assert.Equal(3, DcloneParkPolicy.ResolveBotCount(onlineAccounts: 3, requested: 20));
+        Assert.Equal(
+            new[] { "hc1", "hc2" },
+            DcloneParkPolicy.SelectNewcomers(["hc1", "hc2", "hc3"], [], maxBots: 2));
     }
 
     [Fact]
-    public void BotCountParksASubsetWhenAskedFor()
+    public void NobodyIsAdmittedWhileNoVmIsOnline()
     {
-        Assert.Equal(2, DcloneParkPolicy.ResolveBotCount(onlineAccounts: 7, requested: 2));
+        Assert.Empty(DcloneParkPolicy.SelectNewcomers([], [], maxBots: 4));
+    }
+
+    // The user's own example: four VMs up, park four; node 2 wakes, park those too.
+    [Fact]
+    public void ALateNodesVmsJoinWithoutReadmittingTheOnesAlreadyParked()
+    {
+        var firstNode = new[] { "hc1", "hc2", "hc3", "hc4" };
+        var bothNodes = firstNode.Concat(["nr1", "nr2", "nr3"]).ToArray();
+
+        Assert.Equal(
+            new[] { "nr1", "nr2", "nr3" },
+            DcloneParkPolicy.SelectNewcomers(bothNodes, firstNode, maxBots: null));
     }
 
     [Fact]
-    public void BotCountIsZeroWithNoOnlineAccounts()
+    public void ACapStopsTheRosterGrowingPastIt()
     {
-        Assert.Equal(0, DcloneParkPolicy.ResolveBotCount(onlineAccounts: 0, requested: 4));
+        Assert.Equal(
+            new[] { "nr1" },
+            DcloneParkPolicy.SelectNewcomers(["hc1", "hc2", "nr1", "nr2"], ["hc1", "hc2"], maxBots: 3));
+        Assert.Empty(DcloneParkPolicy.SelectNewcomers(["hc1", "hc2", "nr1"], ["hc1", "hc2", "hc3"], maxBots: 3));
+    }
+
+    // A rostered VM that went offline keeps its place: a node that sleeps and wakes gets its own
+    // bots back rather than having the slots taken by whoever connected in the meantime.
+    [Fact]
+    public void AnOfflineRosteredVmStillCountsAgainstTheCap()
+    {
+        Assert.Empty(DcloneParkPolicy.SelectNewcomers(["hc1", "nr1"], ["hc1", "hc2"], maxBots: 2));
+    }
+
+    [Fact]
+    public void AdmissionIgnoresKeyCase()
+    {
+        Assert.Empty(DcloneParkPolicy.SelectNewcomers(["HC1"], ["hc1"], maxBots: null));
+    }
+
+    [Fact]
+    public void AClientAlreadyInAGameLeavesBeforeItCreates()
+    {
+        Assert.Equal(DcloneParkPreflight.LeaveGameFirst, DcloneParkPolicy.DecidePreflight(DcloneParkPresence.Parked));
+    }
+
+    // Save and Exit is blind input: only a positive in-game reading may trigger it.
+    [Theory]
+    [InlineData(nameof(DcloneParkPresence.OutOfGame))]
+    [InlineData(nameof(DcloneParkPresence.NoEvidence))]
+    public void ANonInGameReadingGoesStraightToTheCreate(string presence)
+    {
+        Assert.Equal(
+            DcloneParkPreflight.Create,
+            DcloneParkPolicy.DecidePreflight(Enum.Parse<DcloneParkPresence>(presence)));
+    }
+
+    [Fact]
+    public void AnOfflineReadingNeverAttemptsACreate()
+    {
+        Assert.Equal(DcloneParkPreflight.Offline, DcloneParkPolicy.DecidePreflight(DcloneParkPresence.Offline));
+    }
+
+    [Fact]
+    public void TheRunAdmitsNewcomersAsSlotsAwaitingTheirFirstCreate()
+    {
+        var run = new DcloneParkRun(1, "hell", DateTimeOffset.UtcNow, maxBots: null);
+
+        Assert.Equal(new[] { "hc1", "hc2" }, run.AdmitNewcomers([("hc1", "hc1", "agent-1"), ("hc2", "hc2", "agent-2")]));
+        Assert.Equal(new[] { "nr1" }, run.AdmitNewcomers([("hc1", "hc1", "agent-1"), ("hc2", "hc2", "agent-2"), ("nr1", "nr1", "agent-9")]));
+
+        Assert.Equal(new[] { "hc1", "hc2", "nr1" }, run.Snapshot().Select(slot => slot.AccountKey));
+        Assert.All(run.Snapshot(), slot => Assert.Equal(DcloneSlotState.Preparing, slot.State));
+        Assert.True(run.TryBeginInitialPark("nr1"));
+    }
+
+    [Fact]
+    public void TheRunHonoursItsCapAcrossAdmissions()
+    {
+        var run = new DcloneParkRun(1, "hell", DateTimeOffset.UtcNow, maxBots: 2);
+
+        run.AdmitNewcomers([("hc1", "hc1", "agent-1")]);
+        run.AdmitNewcomers([("hc1", "hc1", "agent-1"), ("hc2", "hc2", "agent-2"), ("hc3", "hc3", "agent-3")]);
+
+        Assert.Equal(2, run.SlotCount());
+        Assert.Equal(2, run.MaxBots);
+    }
+
+    // First creates stay a stagger apart across the whole run. A node's VMs connect seconds apart
+    // and land in separate sweeps; resetting per sweep would start all of them at once.
+    [Fact]
+    public void InitialParksStayStaggeredAcrossSeparateAdmissions()
+    {
+        var run = NewRun();
+        var stagger = TimeSpan.FromSeconds(20);
+        var nowUtc = DateTimeOffset.UtcNow;
+
+        Assert.Equal(TimeSpan.Zero, run.ReserveInitialParkDelay(nowUtc, stagger));
+        Assert.Equal(TimeSpan.FromSeconds(20), run.ReserveInitialParkDelay(nowUtc, stagger));
+        Assert.Equal(TimeSpan.FromSeconds(35), run.ReserveInitialParkDelay(nowUtc + TimeSpan.FromSeconds(5), stagger));
+    }
+
+    [Fact]
+    public void AnIdleRunStartsTheNextInitialParkImmediately()
+    {
+        var run = NewRun();
+        var stagger = TimeSpan.FromSeconds(20);
+        var nowUtc = DateTimeOffset.UtcNow;
+        run.ReserveInitialParkDelay(nowUtc, stagger);
+
+        Assert.Equal(TimeSpan.Zero, run.ReserveInitialParkDelay(nowUtc + TimeSpan.FromMinutes(5), stagger));
+    }
+
+    // A newcomer waiting out its stagger already has a create queued. If the sweep could rebuild
+    // it meanwhile, the queued create would then run on a bot that is already parked.
+    [Fact]
+    public void TheSweepNeverRebuildsASlotStillWaitingForItsFirstCreate()
+    {
+        var run = NewRun();
+        var nowUtc = DateTimeOffset.UtcNow;
+
+        for (var read = 0; read < DcloneParkPolicy.ReparkAfterConsecutiveOutOfGameReads * 2; read++)
+        {
+            Assert.False(run.RegisterReadingAndTryBeginRepark("hc1", DcloneParkPresence.OutOfGame, nowUtc));
+        }
+
+        Assert.True(run.TryBeginInitialPark("hc1"));
+    }
+
+    [Fact]
+    public void AWaitingSlotStillReportsItsVmGoingOffline()
+    {
+        var run = NewRun();
+
+        run.RegisterReadingAndTryBeginRepark("hc1", DcloneParkPresence.Offline, DateTimeOffset.UtcNow);
+
+        Assert.Equal(DcloneSlotState.Offline, Slot(run, "hc1").State);
     }
 
     [Fact]
@@ -192,6 +324,75 @@ public sealed class DcloneParkTests
         Assert.Equal("ewk52we", slot.GameName);
     }
 
+    // LobbyOrGame counts as a drop but can be rendered from inside a game. A rebuild that then finds
+    // its bot in a game must hand back the game whose name is already circulating, not leave it.
+    [Fact]
+    public void ARebuildArmedByAMisreadRestoresTheOriginalGame()
+    {
+        var run = ArmRebuildOfParkedSlot();
+
+        Assert.True(run.TryRestoreMisreadPark("hc1"));
+
+        var slot = Slot(run, "hc1");
+        Assert.Equal(DcloneSlotState.Parked, slot.State);
+        Assert.Equal("ewk52we", slot.GameName);
+        Assert.Equal("q", slot.Password);
+        Assert.Equal(0, slot.Reparks);
+    }
+
+    [Fact]
+    public void AMisreadCanOnlyBeRestoredOnce()
+    {
+        var run = ArmRebuildOfParkedSlot();
+
+        Assert.True(run.TryRestoreMisreadPark("hc1"));
+        Assert.False(run.TryRestoreMisreadPark("hc1"));
+    }
+
+    // A failed slot has no game to go back to; finding it in one means an unknown game.
+    [Fact]
+    public void AFailedSlotsRetryNeverRestoresAGame()
+    {
+        var run = NewRun();
+        var failedAt = DateTimeOffset.UtcNow;
+        run.MarkParked("hc1", "ewk52we", "q", "holding the game open");
+        run.MarkFailed("hc1", "the client never entered the game", failedAt);
+        Assert.True(run.RegisterReadingAndTryBeginRepark(
+            "hc1",
+            DcloneParkPresence.Parked,
+            failedAt + DcloneParkPolicy.FailedSlotRetryDelay));
+
+        Assert.False(run.TryRestoreMisreadPark("hc1"));
+    }
+
+    [Fact]
+    public void ANewGameReplacesThePreviousOneForGood()
+    {
+        var run = ArmRebuildOfParkedSlot();
+
+        run.MarkParked("hc1", "zz3kq7p", "x", "holding the game open");
+
+        Assert.False(run.TryRestoreMisreadPark("hc1"));
+        Assert.Equal("zz3kq7p", Slot(run, "hc1").GameName);
+    }
+
+    [Fact]
+    public void ASlotThatReturnsInAnUnrecordedGameIsRebuiltRatherThanListedBlank()
+    {
+        var run = ArmRebuildOfParkedSlot();
+        var nowUtc = DateTimeOffset.UtcNow;
+        run.MarkOffline("hc1", "VM agent offline");
+        run.EndParkAttempt("hc1");
+
+        Assert.True(run.RegisterReadingAndTryBeginRepark("hc1", DcloneParkPresence.Parked, nowUtc));
+
+        var slot = Slot(run, "hc1");
+        Assert.Equal(DcloneSlotState.Reparking, slot.State);
+        Assert.Null(slot.GameName);
+        // The game it came back in is not the one it was first given - that one is not restorable.
+        Assert.False(run.TryRestoreMisreadPark("hc1"));
+    }
+
     [Fact]
     public void AFailedSlotIsLeftAloneUntilItsRetryIsDue()
     {
@@ -221,15 +422,32 @@ public sealed class DcloneParkTests
     }
 
     [Fact]
-    public void AParkAttemptIsOnlyArmedOnce()
+    public void AnInitialParkIsOnlyEverArmedOnce()
     {
         var run = NewRun();
 
         Assert.True(run.TryBeginInitialPark("hc1"));
         Assert.False(run.TryBeginInitialPark("hc1"));
 
+        // Once the first create has run, every later create belongs to the sweep.
         run.EndParkAttempt("hc1");
+        Assert.False(run.TryBeginInitialPark("hc1"));
+    }
+
+    [Fact]
+    public void AfterTheFirstCreateTheSweepOwnsRebuilds()
+    {
+        var run = NewRun();
+        var nowUtc = DateTimeOffset.UtcNow;
         Assert.True(run.TryBeginInitialPark("hc1"));
+        run.EndParkAttempt("hc1");
+
+        for (var read = 1; read < DcloneParkPolicy.ReparkAfterConsecutiveOutOfGameReads; read++)
+        {
+            Assert.False(run.RegisterReadingAndTryBeginRepark("hc1", DcloneParkPresence.OutOfGame, nowUtc));
+        }
+
+        Assert.True(run.RegisterReadingAndTryBeginRepark("hc1", DcloneParkPresence.OutOfGame, nowUtc));
     }
 
     [Fact]
@@ -295,6 +513,45 @@ public sealed class DcloneParkTests
         run.RecordStopReason("leave was called for every account");
 
         Assert.Equal("quit-all was called", run.StopReason);
+    }
+
+    [Fact]
+    public void AHandOffIsRecordedWithTheReasonThatStoppedThePark()
+    {
+        var run = NewRun();
+
+        run.RecordStopReason("switched to follow-auto, public mode", handedOff: true);
+        run.RecordStopReason("quit-all was called");
+
+        Assert.True(run.HandedOff);
+        Assert.Equal("switched to follow-auto, public mode", run.StopReason);
+    }
+
+    // A later hand-off must not relabel a park that a quit or leave had already stopped: the
+    // finished monitor would then hide the Leave/Quit buttons its bots still need.
+    [Fact]
+    public void AHandOffAfterAnotherStopDoesNotRelabelIt()
+    {
+        var run = NewRun();
+
+        run.RecordStopReason("leave was called for every account");
+        run.RecordStopReason("switched to follow-auto, private mode", handedOff: true);
+
+        Assert.False(run.HandedOff);
+    }
+
+    private static DcloneParkRun ArmRebuildOfParkedSlot()
+    {
+        var run = NewRun();
+        run.MarkParked("hc1", "ewk52we", "q", "holding the game open");
+        var nowUtc = DateTimeOffset.UtcNow;
+        for (var read = 0; read < DcloneParkPolicy.ReparkAfterConsecutiveOutOfGameReads; read++)
+        {
+            run.RegisterReadingAndTryBeginRepark("hc1", DcloneParkPresence.OutOfGame, nowUtc);
+        }
+
+        Assert.Equal(DcloneSlotState.Reparking, Slot(run, "hc1").State);
+        return run;
     }
 
     private static DcloneParkRun NewRun()

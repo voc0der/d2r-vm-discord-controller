@@ -20,8 +20,20 @@ internal enum DcloneParkPresence
     NoEvidence
 }
 
+internal enum DcloneParkPreflight
+{
+    /// <summary>The VM agent is gone; report the slot offline and wait for it to return.</summary>
+    Offline,
+
+    /// <summary>The client is inside some game already and must Save and Exit before creating.</summary>
+    LeaveGameFirst,
+
+    /// <summary>Nothing says the client is in a game; warm it if needed and create.</summary>
+    Create
+}
+
 /// <summary>
-/// The rules behind <c>/d2r dclone</c>: how many bots to park, how a park is judged from a status
+/// The rules behind <c>/d2r dclone</c>: which bots to park, how a park is judged from a status
 /// read, and how patient the loop is before it tears a park down and rebuilds it.
 /// </summary>
 internal static class DcloneParkPolicy
@@ -59,20 +71,60 @@ internal static class DcloneParkPolicy
     public static readonly TimeSpan FailedSlotRetryDelay = TimeSpan.FromMinutes(10);
 
     /// <summary>
-    /// How many bots to park. Unlike follow-auto's 7, there is no cap from the game: every bot
-    /// opens its OWN game, so the only limit is how many VMs are online. A smaller explicit
-    /// <paramref name="requested"/> parks a subset and leaves the rest alone.
+    /// Which online accounts join a running park that does not hold them yet, in the order given.
     /// </summary>
-    public static int ResolveBotCount(int onlineAccounts, int? requested)
+    /// <remarks>
+    /// A park is a fleet mode, not a snapshot of whoever happened to be online when it started: a
+    /// worker node that wakes an hour in has its VMs parked the moment they connect. Unlike
+    /// follow-auto's 7 there is no cap from the game - every bot opens its OWN game - so the only
+    /// limit is an explicit <paramref name="maxBots"/>. It bounds the roster, not the number
+    /// currently parked: a slot whose VM went offline keeps its place, so a node that sleeps and
+    /// wakes gets its own bots back rather than having them taken by whoever connected meanwhile.
+    /// </remarks>
+    public static IReadOnlyList<string> SelectNewcomers(
+        IEnumerable<string> onlineAccountKeys,
+        IEnumerable<string> rosteredAccountKeys,
+        int? maxBots)
     {
-        if (onlineAccounts <= 0)
+        var rostered = rosteredAccountKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var room = maxBots is { } cap
+            ? Math.Max(Math.Max(cap, 1) - rostered.Count, 0)
+            : int.MaxValue;
+        var newcomers = new List<string>();
+        foreach (var accountKey in onlineAccountKeys)
         {
-            return 0;
+            if (newcomers.Count >= room)
+            {
+                break;
+            }
+
+            if (rostered.Add(accountKey))
+            {
+                newcomers.Add(accountKey);
+            }
         }
 
-        return requested is not { } wanted
-            ? onlineAccounts
-            : Math.Clamp(wanted, 1, onlineAccounts);
+        return newcomers;
+    }
+
+    /// <summary>
+    /// What a park attempt must do before it may create a game, given a fresh reading.
+    /// </summary>
+    /// <remarks>
+    /// <c>menu_create_game</c> has no "already in a game" guard: the agent trusts its remembered
+    /// lobby state, clicks and types the create form into the live game, and then confirms entry by
+    /// the in-game HUD it was already looking at - so the create reports success for a game that
+    /// was never made. A bot is in a game whenever a park starts after follow-auto or a
+    /// create/join, and after any create that outlived its timeout, so the attempt leaves first.
+    /// </remarks>
+    public static DcloneParkPreflight DecidePreflight(DcloneParkPresence presence)
+    {
+        return presence switch
+        {
+            DcloneParkPresence.Offline => DcloneParkPreflight.Offline,
+            DcloneParkPresence.Parked => DcloneParkPreflight.LeaveGameFirst,
+            _ => DcloneParkPreflight.Create
+        };
     }
 
     /// <summary>

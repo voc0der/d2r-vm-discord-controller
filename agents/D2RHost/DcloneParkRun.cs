@@ -20,6 +20,16 @@ internal enum DcloneSlotState
     Offline
 }
 
+internal enum DcloneParkCancelOutcome
+{
+    NotRunning,
+
+    /// <summary>The control was pressed on a monitor that belongs to an earlier park.</summary>
+    StaleMonitor,
+
+    Stopped
+}
+
 internal sealed record DcloneParkSlotSnapshot(
     string AccountKey,
     string DisplayName,
@@ -38,6 +48,9 @@ internal sealed record DcloneParkSlotSnapshot(
 /// Re-parks run concurrently across accounts, so every read and write goes through one lock and
 /// callers only ever see immutable snapshots. Names are never recycled inside a run - a game that
 /// looked dead can still be alive on the realm, and re-minting its name would just collide.
+///
+/// The roster grows while the run is live: VMs that connect after the start are admitted and
+/// parked too, up to <see cref="MaxBots"/> when one was given.
 /// </remarks>
 internal sealed class DcloneParkRun
 {
@@ -45,17 +58,39 @@ internal sealed class DcloneParkRun
     private readonly HashSet<string> _spentNames = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Slot> _slots = new();
     private string? _stopReason;
+    private bool _handedOff;
+    private DateTimeOffset _nextInitialParkUtc = DateTimeOffset.MinValue;
 
-    public DcloneParkRun(long runId, string difficulty, DateTimeOffset startedUtc)
+    public DcloneParkRun(long runId, string difficulty, DateTimeOffset startedUtc, int? maxBots = null)
     {
         RunId = runId;
         Difficulty = difficulty;
         StartedUtc = startedUtc;
+        MaxBots = maxBots;
     }
 
     public long RunId { get; }
     public string Difficulty { get; }
     public DateTimeOffset StartedUtc { get; }
+
+    /// <summary>The explicit <c>bots</c> cap on the roster, or null to park every VM that connects.</summary>
+    public int? MaxBots { get; }
+
+    /// <summary>
+    /// True when the park ended because the operator switched the fleet to follow-auto. The
+    /// finished monitor then must not offer Leave/Quit: those act on the whole fleet, which the
+    /// successor mode now owns.
+    /// </summary>
+    public bool HandedOff
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _handedOff;
+            }
+        }
+    }
 
     /// <summary>
     /// Why the park ended, when something other than the operator's own Stop ended it (a quit-all
@@ -72,11 +107,15 @@ internal sealed class DcloneParkRun
         }
     }
 
-    public void RecordStopReason(string? reason)
+    public void RecordStopReason(string? reason, bool handedOff = false)
     {
         lock (_sync)
         {
-            _stopReason ??= reason;
+            if (_stopReason is null && reason is not null)
+            {
+                _stopReason = reason;
+                _handedOff = handedOff;
+            }
         }
     }
 
@@ -85,6 +124,46 @@ internal sealed class DcloneParkRun
         lock (_sync)
         {
             _slots.Add(new Slot(accountKey, displayName, agentId));
+        }
+    }
+
+    /// <summary>
+    /// Adds a slot for every online account the park does not hold yet, within
+    /// <see cref="MaxBots"/>, and returns the keys it added. Each one still needs its first create.
+    /// </summary>
+    public IReadOnlyList<string> AdmitNewcomers(
+        IReadOnlyList<(string AccountKey, string DisplayName, string AgentId)> online)
+    {
+        lock (_sync)
+        {
+            var admitted = DcloneParkPolicy.SelectNewcomers(
+                online.Select(candidate => candidate.AccountKey),
+                _slots.Select(slot => slot.AccountKey),
+                MaxBots);
+            foreach (var accountKey in admitted)
+            {
+                var candidate = online.First(entry =>
+                    string.Equals(entry.AccountKey, accountKey, StringComparison.OrdinalIgnoreCase));
+                _slots.Add(new Slot(candidate.AccountKey, candidate.DisplayName, candidate.AgentId));
+            }
+
+            return admitted;
+        }
+    }
+
+    /// <summary>
+    /// How long a newly admitted slot waits before its first create, so that first creates stay
+    /// <paramref name="stagger"/> apart across the whole run rather than only within one batch. A
+    /// node's VMs connect a few seconds apart and would otherwise land in separate sweeps that each
+    /// start at zero, all driving Battle.net at the same instant.
+    /// </summary>
+    public TimeSpan ReserveInitialParkDelay(DateTimeOffset nowUtc, TimeSpan stagger)
+    {
+        lock (_sync)
+        {
+            var startAt = _nextInitialParkUtc > nowUtc ? _nextInitialParkUtc : nowUtc;
+            _nextInitialParkUtc = startAt + (stagger > TimeSpan.Zero ? stagger : TimeSpan.Zero);
+            return startAt - nowUtc;
         }
     }
 
@@ -131,9 +210,12 @@ internal sealed class DcloneParkRun
             slot.State = DcloneSlotState.Parked;
             slot.GameName = gameName;
             slot.Password = password;
+            slot.PreviousGameName = null;
+            slot.PreviousPassword = null;
             slot.Detail = detail;
             slot.OutOfGameStreak = 0;
             slot.ReparkInFlight = false;
+            slot.AwaitingInitialPark = false;
             slot.FailedAtUtc = null;
         });
     }
@@ -145,9 +227,12 @@ internal sealed class DcloneParkRun
             slot.State = DcloneSlotState.Failed;
             slot.GameName = null;
             slot.Password = null;
+            slot.PreviousGameName = null;
+            slot.PreviousPassword = null;
             slot.Detail = detail;
             slot.OutOfGameStreak = 0;
             slot.ReparkInFlight = false;
+            slot.AwaitingInitialPark = false;
             slot.FailedAtUtc = nowUtc;
         });
     }
@@ -188,6 +273,14 @@ internal sealed class DcloneParkRun
                 return false;
             }
 
+            // A newcomer still waiting out its stagger has a first create queued. Arming a rebuild
+            // here would race it: whichever finished first, the other would then create a second
+            // game on the same bot.
+            if (slot.AwaitingInitialPark)
+            {
+                return false;
+            }
+
             // A slot that exhausted its creates is not re-armed by the streak - that would just
             // reproduce the same failure a minute later. It gets one slow retry instead.
             if (slot.State == DcloneSlotState.Failed)
@@ -204,6 +297,14 @@ internal sealed class DcloneParkRun
             slot.OutOfGameStreak = DcloneParkPolicy.NextOutOfGameStreak(slot.OutOfGameStreak, presence);
             if (presence == DcloneParkPresence.Parked && slot.State == DcloneSlotState.Offline)
             {
+                if (slot.GameName is null)
+                {
+                    // It dropped mid-create and came back inside a game this run never recorded a
+                    // name for. Nobody can be handed that game, so it is rebuilt under a known one
+                    // rather than listed as parked with a blank name and password.
+                    return BeginRepark(slot, "back online in a game with no recorded name; rebuilding");
+                }
+
                 // It came back on its own, still holding the game it was given before it dropped.
                 slot.State = DcloneSlotState.Parked;
                 slot.Detail = "back online, still in its game";
@@ -220,6 +321,9 @@ internal sealed class DcloneParkRun
         slot.OutOfGameStreak = 0;
         slot.Reparks++;
         slot.State = DcloneSlotState.Reparking;
+        // Kept aside rather than discarded, for TryRestoreMisreadPark.
+        slot.PreviousGameName = slot.GameName;
+        slot.PreviousPassword = slot.Password;
         slot.GameName = null;
         slot.Password = null;
         slot.Detail = detail;
@@ -228,19 +332,55 @@ internal sealed class DcloneParkRun
     }
 
     /// <summary>
-    /// Arms a slot that is not in a game yet for its first create, without waiting out the
-    /// out-of-game streak a running park would have to accumulate.
+    /// Undoes a rebuild whose bot turns out to still be in the game it was parked in, and answers
+    /// whether it did.
+    /// </summary>
+    /// <remarks>
+    /// A rebuild is armed by three out-of-game readings, and <c>LobbyOrGame</c> - which counts as
+    /// one - is a frame D2R can also render from inside a game. A bot cannot enter a game on its
+    /// own, so when the rebuild's own first reading finds it in one, the drop was a misread and the
+    /// game it is in is the one whose name is already circulating. Leaving it to create a new one
+    /// would tear down exactly the game people are joining. Only valid before this rebuild has sent
+    /// any create; after that the bot may be in the new game instead.
+    /// </remarks>
+    public bool TryRestoreMisreadPark(string accountKey)
+    {
+        lock (_sync)
+        {
+            var slot = Find(accountKey);
+            if (slot?.PreviousGameName is not { } gameName || slot.PreviousPassword is not { } password)
+            {
+                return false;
+            }
+
+            slot.State = DcloneSlotState.Parked;
+            slot.GameName = gameName;
+            slot.Password = password;
+            slot.PreviousGameName = null;
+            slot.PreviousPassword = null;
+            slot.Detail = "still in its game; the drop was a misread";
+            slot.OutOfGameStreak = 0;
+            slot.Reparks = Math.Max(slot.Reparks - 1, 0);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Arms a newly admitted slot for its first create, without waiting out the out-of-game streak
+    /// a running park would have to accumulate. Only ever succeeds once per slot: after that the
+    /// sweep owns every rebuild.
     /// </summary>
     public bool TryBeginInitialPark(string accountKey)
     {
         lock (_sync)
         {
             var slot = Find(accountKey);
-            if (slot is null || slot.ReparkInFlight)
+            if (slot is null || slot.ReparkInFlight || !slot.AwaitingInitialPark)
             {
                 return false;
             }
 
+            slot.AwaitingInitialPark = false;
             slot.ReparkInFlight = true;
             slot.State = DcloneSlotState.Preparing;
             return true;
@@ -315,11 +455,14 @@ internal sealed class DcloneParkRun
         public string AgentId { get; }
         public string? GameName { get; set; }
         public string? Password { get; set; }
+        public string? PreviousGameName { get; set; }
+        public string? PreviousPassword { get; set; }
         public DcloneSlotState State { get; set; } = DcloneSlotState.Preparing;
         public string Detail { get; set; } = "queued";
         public int Reparks { get; set; }
         public int OutOfGameStreak { get; set; }
         public bool ReparkInFlight { get; set; }
+        public bool AwaitingInitialPark { get; set; } = true;
         public DateTimeOffset? FailedAtUtc { get; set; }
     }
 }

@@ -83,10 +83,10 @@ Generated from the same `DiscordSlashCommands.Build()` that registers the Discor
       "path": "dclone",
       "group": null,
       "command": "dclone",
-      "description": "Park every online bot in its own game and hold it open for a Diablo Clone hunt",
+      "description": "Park bots in separate games for a Diablo Clone hunt",
       "options": [
-        { "name": "bots", "type": "Integer", "required": false, "description": "How many bots to park, one game each; defaults to every online account", "choices": null },
-        { "name": "difficulty", "type": "String", "required": false, "description": "Difficulty for every parked game; defaults to Hell", "choices": ["normal", "nightmare", "hell"] }
+        { "name": "bots", "type": "Integer", "required": false, "description": "Max bots to park, one game each; default: every VM, even late ones", "choices": null },
+        { "name": "difficulty", "type": "String", "required": false, "description": "Parked game difficulty; default Hell", "choices": ["normal", "nightmare", "hell"] }
       ]
     }
   ]
@@ -124,6 +124,7 @@ Reads back a running park as data instead of scraping the Discord monitor. This 
   "difficulty": "hell",
   "parked": 5,
   "total": 6,
+  "maxBots": null,
   "games": [
     { "accountKey": "hc1", "gameName": "ewk52we", "password": "q", "state": "Parked", "detail": "holding the game open", "reparks": 0 },
     { "accountKey": "hc2", "gameName": null, "password": null, "state": "Reparking", "detail": "left its game; building a replacement", "reparks": 1 }
@@ -131,7 +132,9 @@ Reads back a running park as data instead of scraping the Discord monitor. This 
 }
 ```
 
-`state` is one of `Preparing`, `Parked`, `Reparking`, `Failed`, `Offline`. `gameName`/`password` are `null` for any slot not currently holding a game. With no park ever started: `{"running": false, "startedUtc": null, "difficulty": null, "parked": 0, "total": 0, "games": []}`.
+`state` is one of `Preparing`, `Parked`, `Reparking`, `Failed`, `Offline`. `gameName`/`password` are `null` for any slot not currently holding a game. With no park ever started: `{"running": false, "startedUtc": null, "difficulty": null, "parked": 0, "total": 0, "maxBots": null, "games": []}`.
+
+A park keeps admitting VMs as they connect, so `total` and `games` grow while it runs — poll rather than reading once. `maxBots` is the `bots` cap it was started with, or `null` for no cap.
 
 ## The response envelope
 
@@ -159,8 +162,8 @@ Every command answers with the same shape:
 
 **`ok:true` means the handler ran and answered. It does not mean the fleet did what you asked.** Every ordinary refusal is in-band, exactly as it is in Discord — read `message`:
 
-- `"No online accounts are available to park."`
 - `"A dclone park is already running. Stop it with /d2r dclone stop:true first."`
+- `"join-auto is running and owns the same VMs. Stop it with /d2r join auto:false first."`
 - `"follow-auto is running and owns the same VMs. Stop it with /d2r follow auto:false first."`
 - `"follow-auto posts a live monitor message and cannot run without a Discord channel. ..."`
 
@@ -244,7 +247,7 @@ Ungrouped commands are called as `{"command": "<name>"}`; grouped ones as `{"gro
 | `join` | `account`, `all`, `auto`, `name`, `password`, `difficulty` `{normal\|nightmare\|hell}`, `character-slot`, `delay`, `idle-minutes`, `watch` | Join a game, or auto-join template games when `auto` is true |
 | `create-game` | `account`, `all`, `name`, `password`, `difficulty`, `character-slot`, `watch` | Create one game, or create and join across all accounts |
 | `follow` | `account`, `all`, `character-slot`, `friend-row`, `bind`, `bind-in-game`, `auto`, `bots`, `delay`, `idle-minutes`, `watch` | Follow the bound friend, bind a friend, or join by visible row |
-| `dclone` | `bots`, `difficulty`, `stop`, `watch` | Park every online bot in its own game for a Diablo Clone hunt |
+| `dclone` | `bots`, `difficulty`, `stop`, `watch` | Park every bot in its own game for a Diablo Clone hunt, including VMs that connect later; `bots` caps the total |
 | `template` | `!name`, `password` | Set the create/join auto-naming template |
 | `game set` | `!name`, `password`, `difficulty`, `notes` | Store the current game name/password for clients to join |
 | `game show` | — | Show the stored game details |
