@@ -31,7 +31,7 @@ A bare `Authorization: <key>` with no scheme is also accepted, because it is a c
 
 ### Managing the key
 
-The key lifecycle lives in Discord, not in the API — an API that could mint its own credentials would not be much of a gate.
+The key lifecycle lives in Discord, not in the API — an API that could mint its own credentials would not be much of a gate. `config api` is still callable over HTTP (so a caller can close the API), but any call that would mint a key is refused in-band: the new key would come back in the response body, so a leaked key could replace itself and lock out the operator.
 
 | Command | Effect |
 |---|---|
@@ -171,7 +171,7 @@ A caller that only checks the status code will read all of those as success. Che
 | Code | When |
 |---|---|
 | `200` | `ok:true` |
-| `400` | `ok:false` — unknown command, unknown option, a handler that threw, **and timeouts** |
+| `400` | `ok:false` — unknown command, unknown option, a handler that threw (including a single-client command whose agent call threw), **and timeouts** |
 | `401` | Missing or wrong key |
 | `404` | Route not mounted — this node is a worker, not the master |
 | `503` | API disabled, or enabled with no stored key |
@@ -272,7 +272,7 @@ Ungrouped commands are called as `{"command": "<name>"}`; grouped ones as `{"gro
 | `config show` | — | Show runtime controller config |
 | `config stagger` | `!seconds` | Persist all-client stagger seconds and **restart the host** |
 | `config notifications` | `!enabled`, `channel-id`, `updates-enabled` | Persist notification settings and **restart the host** |
-| `config api` | `!enabled`, `overwrite` | Turn this API on/off and mint its key — the minted key is only ever shown in Discord |
+| `config api` | `!enabled`, `overwrite` | Turn this API on/off and mint its key — minting is refused over HTTP, so the key is only ever shown in Discord |
 
 `config stagger`, `config notifications`, `restart`, and `system restart`/`shutdown`/`sleep` all tear down or suspend the process answering your request. Expect the connection to drop rather than a tidy response.
 

@@ -3222,6 +3222,20 @@ public sealed class DiscordBot
             return;
         }
 
+        // Only Discord mints. Over HTTP this reply is the response body, so the replacement key
+        // would go straight back to whoever holds the current one - a leaked key could rotate
+        // itself and lock out the operator, which is the one thing re-keying exists to undo.
+        // (A caller without a key never reaches here: the API is closed until one exists.)
+        if (context.IsApi)
+        {
+            await SetInitialCommandResponseAsync(
+                context,
+                "API keys are only minted from Discord, so a key can never replace itself. "
+                    + "Run `/d2r config api enabled:true overwrite:true` there.",
+                ephemeral: true);
+            return;
+        }
+
         // Captured before the overwrite below: the "previous key" line names the key being retired,
         // and reading it back off the config afterwards would name the replacement instead.
         var replacedKeyId = _config.Api.KeyId;
@@ -3552,7 +3566,10 @@ public sealed class DiscordBot
         {
             await work();
         }
-        catch (Exception ex)
+        // An HTTP caller is awaiting this inline, so the failure goes back up to
+        // ExecuteApiCommandAsync and becomes ok:false with the exception type as the error.
+        // Answering it here would bury it in an ok:true "Command failed: ..." message instead.
+        catch (Exception ex) when (!context.IsApi)
         {
             _logger.LogError(ex, "Discord command background work failed for {OperationName}.", operationName);
             await SetCommandResponseSafeAsync(context, $"Command failed: {ex.Message}");
