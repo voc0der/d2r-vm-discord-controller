@@ -240,10 +240,18 @@ internal sealed class FollowAutoRosterWatchSnapshot
 /// button press is either included in that snapshot or rejected, never acknowledged and lost.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The mode lives here rather than beside it because the two cannot move independently: public mode
 /// has a lower ceiling than private mode (<see cref="FollowAutoPublicModePolicy.MaxBotCount"/>), so
 /// switching modes is also a target change, and a reader that saw the new mode against the old
 /// target would offer a party size that mode cannot run.
+/// </para>
+/// <para>
+/// The join hold (<see cref="FollowAutoJoinDelayPolicy"/>) rides along because it is read and
+/// written by the same two tasks, but it is deliberately NOT part of that invariant: it constrains
+/// neither the target nor the mode. It is also the one piece of run state here that is never
+/// journaled - see <see cref="Reset"/>.
+/// </para>
 /// </remarks>
 internal sealed class FollowAutoTargetControl
 {
@@ -251,12 +259,19 @@ internal sealed class FollowAutoTargetControl
     private int _targetBotCount = FollowAutoRosterPolicy.DefaultBotCount;
     private int _mode = (int)FollowAutoPartyMode.Private;
     private int _localRestartArmed;
+    private int _joinDelayArmed;
 
     public int TargetBotCount => Volatile.Read(ref _targetBotCount);
 
     public FollowAutoPartyMode Mode => (FollowAutoPartyMode)Volatile.Read(ref _mode);
 
     public bool LocalRestartArmed => Volatile.Read(ref _localRestartArmed) != 0;
+
+    /// <summary>
+    /// Whether the fleet is holding back before entering a new game, to give the leader a head
+    /// start at low monster density. Off unless somebody armed it during this run.
+    /// </summary>
+    public bool JoinDelayArmed => Volatile.Read(ref _joinDelayArmed) != 0;
 
     /// <summary>Reads both halves under the lock, for callers that must not mix generations.</summary>
     public (int TargetBotCount, FollowAutoPartyMode Mode) Snapshot
@@ -277,6 +292,12 @@ internal sealed class FollowAutoTargetControl
             : FollowAutoRosterPolicy.ClampTarget(requested);
     }
 
+    /// <remarks>
+    /// Every run start calls this, including the resume after a host recovery, and it is what keeps
+    /// the join hold from outliving the run that armed it. The target and mode are handed in
+    /// because they ARE carried across a restart; the hold deliberately is not, so it always starts
+    /// off rather than quietly slowing down a fleet nobody asked to slow down.
+    /// </remarks>
     public void Reset(int targetBotCount, FollowAutoPartyMode mode = FollowAutoPartyMode.Private)
     {
         lock (_sync)
@@ -284,6 +305,7 @@ internal sealed class FollowAutoTargetControl
             Volatile.Write(ref _mode, (int)mode);
             Volatile.Write(ref _targetBotCount, ClampTargetForMode(targetBotCount, mode));
             Volatile.Write(ref _localRestartArmed, 0);
+            Volatile.Write(ref _joinDelayArmed, 0);
         }
     }
 
@@ -319,6 +341,11 @@ internal sealed class FollowAutoTargetControl
             }
 
             var target = ClampTargetForMode(currentTarget, mode);
+            // Only private mode holds, so a mode switch drops the hold rather than parking it.
+            // Leaving the flag set would mean the hold came back by itself the next time someone
+            // pressed Private - a control re-arming without a press.
+            var joinDelayCleared = _joinDelayArmed != 0;
+            Volatile.Write(ref _joinDelayArmed, 0);
             Volatile.Write(ref _mode, (int)mode);
             Volatile.Write(ref _targetBotCount, target);
             return new FollowAutoPartyModeChange(
@@ -326,7 +353,8 @@ internal sealed class FollowAutoTargetControl
                 currentMode,
                 mode,
                 currentTarget,
-                target);
+                target,
+                joinDelayCleared);
         }
     }
 
@@ -415,6 +443,40 @@ internal sealed class FollowAutoTargetControl
         }
     }
 
+    /// <summary>
+    /// Flips the join hold, from the live monitor's delay button.
+    /// </summary>
+    /// <remarks>
+    /// Refused outside private mode even though the monitor stops rendering the button there: the
+    /// message ID does not change across that edit, so a client still showing the pre-switch
+    /// components can land a press here. Refused while a local restart is armed for the same reason
+    /// the bot count and party mode are - the run state has been journaled, and a press accepted
+    /// after that snapshot would vanish when the host came back.
+    /// </remarks>
+    public FollowAutoJoinDelayChange TryToggleJoinDelay()
+    {
+        lock (_sync)
+        {
+            if (_localRestartArmed != 0)
+            {
+                return new FollowAutoJoinDelayChange(
+                    FollowAutoJoinDelayChangeOutcome.LocalRestartArmed,
+                    _joinDelayArmed != 0);
+            }
+
+            if ((FollowAutoPartyMode)_mode != FollowAutoPartyMode.Private)
+            {
+                return new FollowAutoJoinDelayChange(
+                    FollowAutoJoinDelayChangeOutcome.NotPrivateMode,
+                    _joinDelayArmed != 0);
+            }
+
+            var armed = _joinDelayArmed == 0;
+            Volatile.Write(ref _joinDelayArmed, armed ? 1 : 0);
+            return new FollowAutoJoinDelayChange(FollowAutoJoinDelayChangeOutcome.Changed, armed);
+        }
+    }
+
     public (int TargetBotCount, FollowAutoPartyMode Mode) ArmLocalRestart()
     {
         lock (_sync)
@@ -445,7 +507,19 @@ internal sealed record FollowAutoPartyModeChange(
     FollowAutoPartyMode PreviousMode,
     FollowAutoPartyMode Mode,
     int PreviousTarget,
-    int Target);
+    int Target,
+    bool JoinDelayCleared = false);
+
+internal enum FollowAutoJoinDelayChangeOutcome
+{
+    Changed,
+    NotPrivateMode,
+    LocalRestartArmed
+}
+
+internal sealed record FollowAutoJoinDelayChange(
+    FollowAutoJoinDelayChangeOutcome Outcome,
+    bool Armed);
 
 internal enum FollowAutoTargetAdjustmentOutcome
 {

@@ -25,6 +25,7 @@ public sealed class DiscordBot
     private const string FollowAutoAddBotButtonId = "d2r:follow:bots:add";
     private const string FollowAutoPartyModeButtonId = "d2r:follow:party-mode";
     private const string FollowAutoParkButtonId = "d2r:follow:park";
+    private const string FollowAutoJoinDelayButtonId = "d2r:follow:join-delay";
     private const string DcloneStopButtonId = "d2r:dclone:stop";
     private const string DclonePrivateButtonId = "d2r:dclone:private";
     private const string DclonePublicButtonId = "d2r:dclone:public";
@@ -2063,6 +2064,9 @@ public sealed class DiscordBot
                 case FollowAutoParkButtonId:
                     await HandleFollowAutoParkButtonAsync(component);
                     return;
+                case FollowAutoJoinDelayButtonId:
+                    await HandleFollowAutoJoinDelayButtonAsync(component);
+                    return;
                 case DcloneStopButtonId:
                     await StopDcloneParkAsync(SlashContext.FromComponent(component, "dclone"));
                     return;
@@ -2310,6 +2314,19 @@ public sealed class DiscordBot
             {
                 builder.WithButton("+1 VM", FollowAutoAddBotButtonId, ButtonStyle.Success);
             }
+
+            // Labelled with what the press does, like the mode toggle above it: the hold is either
+            // being added or taken away. Private only - public mode derives its count from a client
+            // that has to be inside the game to read it, and a deliberate half-minute with nobody
+            // in there yet is a half-minute of no samples at all.
+            var joinDelayArmed = _followAutoTarget.JoinDelayArmed;
+            builder.WithButton(
+                joinDelayArmed
+                    ? $"-{FollowAutoJoinDelayPolicy.DelaySeconds}s Delay"
+                    : $"+{FollowAutoJoinDelayPolicy.DelaySeconds}s Delay",
+                FollowAutoJoinDelayButtonId,
+                joinDelayArmed ? ButtonStyle.Secondary : ButtonStyle.Success,
+                disabled: _followAutoTarget.LocalRestartArmed);
         }
 
         // Labelled with the mode it switches TO, so the button reads as the action it performs.
@@ -7518,11 +7535,16 @@ public sealed class DiscordBot
         var trimmed = change.Target != change.PreviousTarget
             ? $" Bot target trimmed to {change.Target} to make room."
             : "";
+        // Said out loud rather than left for the operator to notice from the missing button: the
+        // hold is private mode's alone, so switching modes drops it.
+        var joinDelayCleared = change.JoinDelayCleared
+            ? $" The {FollowAutoJoinDelayPolicy.DelaySeconds}s join delay was turned off with the mode switch."
+            : "";
         await UpdateFollowAutoMonitorAsync(
             change.Mode == FollowAutoPartyMode.Public
                 ? $"Public mode: holding a {FollowAutoPublicModePolicy.TargetPlayerCount}-player game so a real player can always join.{trimmed} "
                     + "The bot count now follows the live player count."
-                : $"Private mode: the bot count is back to {change.Target} and only the -1 / +1 buttons change it.",
+                : $"Private mode: the bot count is back to {change.Target} and only the -1 / +1 buttons change it.{joinDelayCleared}",
             expectedMonitor: control.Monitor);
         await component.FollowupAsync(
             change.Mode == FollowAutoPartyMode.Public
@@ -7531,6 +7553,86 @@ public sealed class DiscordBot
                     + $"back as they go. Bot target is {change.Target}; the -1 / +1 buttons are hidden while it is derived."
                 : $"Private mode is on. The bot target stays at {change.Target} ({FormatPartySize(change.Target)} with the "
                     + "leader) until you press -1 / +1.",
+            ephemeral: true);
+    }
+
+    /// <summary>
+    /// The live monitor's +30s / -30s delay toggle. Like the other monitor controls it only moves
+    /// run state - the run loop reads the flag when it is about to walk clients into a new game -
+    /// so a press never blocks the gateway on a client operation.
+    /// </summary>
+    private async Task HandleFollowAutoJoinDelayButtonAsync(SocketMessageComponent component)
+    {
+        await EnsureAcknowledgedAsync(component);
+
+        // Same lifecycle reasoning as the bot-count and party-mode buttons: validate and mutate
+        // inside one active-run operation, so a click on an old monitor cannot reconfigure a
+        // successor run after this handler resumes from an await.
+        var control = await _followAutoLifecycle.WithActiveRunAsync(
+            _ =>
+            {
+                var monitor = _followAutoMonitorMessage;
+                if (!IsCurrentFollowAutoMonitorMessage(component.Message.Id, monitor?.Id))
+                {
+                    return new FollowAutoJoinDelayControl(
+                        FollowAutoBotCountControlOutcome.StaleMonitor);
+                }
+
+                var change = _followAutoTarget.TryToggleJoinDelay();
+                return new FollowAutoJoinDelayControl(
+                    change.Outcome switch
+                    {
+                        FollowAutoJoinDelayChangeOutcome.Changed
+                            => FollowAutoBotCountControlOutcome.Changed,
+                        FollowAutoJoinDelayChangeOutcome.LocalRestartArmed
+                            => FollowAutoBotCountControlOutcome.LocalRestartArmed,
+                        _ => FollowAutoBotCountControlOutcome.PublicMode
+                    },
+                    change.Armed,
+                    monitor);
+            },
+            new FollowAutoJoinDelayControl(FollowAutoBotCountControlOutcome.NotRunning));
+
+        switch (control.Outcome)
+        {
+            case FollowAutoBotCountControlOutcome.NotRunning:
+                await component.FollowupAsync(
+                    "follow-auto is not running, so there is no join delay to change.",
+                    ephemeral: true);
+                return;
+            case FollowAutoBotCountControlOutcome.StaleMonitor:
+                await component.FollowupAsync(
+                    "That delay control belongs to an older follow-auto monitor; use the buttons on the current monitor.",
+                    ephemeral: true);
+                return;
+            case FollowAutoBotCountControlOutcome.LocalRestartArmed:
+                await component.FollowupAsync(
+                    "The join delay is locked while local host recovery is armed; the recorded run resumes without it.",
+                    ephemeral: true);
+                return;
+            case FollowAutoBotCountControlOutcome.PublicMode:
+                await component.FollowupAsync(
+                    "The join delay is a private-mode control. Public mode reads the live player count off a client that "
+                        + "is inside the game, so holding the fleet out of it would leave the mode blind. Press Private first.",
+                    ephemeral: true);
+                return;
+        }
+
+        _logger.LogInformation(
+            "follow-auto join delay {State} by button.",
+            control.Armed ? "armed" : "cleared");
+        await UpdateFollowAutoMonitorAsync(
+            control.Armed
+                ? $"Join delay on: the fleet waits {FollowAutoJoinDelayPolicy.DelaySeconds}s before entering each new "
+                    + "game, so the leader can reach the boss before it scales up."
+                : "Join delay off: the fleet joins each new game as soon as the leader is found.",
+            expectedMonitor: control.Monitor);
+        await component.FollowupAsync(
+            control.Armed
+                ? $"Join delay is on. Bots wait {FollowAutoJoinDelayPolicy.DelaySeconds}s at the lobby before entering "
+                    + "each new game. New games only - a bot rejoining a game the fleet is already in is not held - and it "
+                    + "turns itself off when this run ends."
+                : "Join delay is off. Bots join each new game as soon as the leader is found.",
             ephemeral: true);
     }
 
@@ -8326,10 +8428,19 @@ public sealed class DiscordBot
             // the roster. Spelling out the resulting party size avoids the bots-vs-players
             // ambiguity that makes "7" mean two different things.
             $"Bot target: {target} - {FormatPartySize(target)} with the leader ({rostered} of {online} VM(s) rostered{benched})",
-            $"Party mode: {FormatFollowAutoPartyMode(mode, target)}",
-            $"Games completed: {_followAutoGamesCompleted}",
-            $"Session elapsed: {FormatElapsed(elapsed)}"
+            $"Party mode: {FormatFollowAutoPartyMode(mode, target)}"
         };
+
+        // Only rendered while the hold is armed. It is off for most runs, where a permanent line
+        // saying nothing is happening would be noise.
+        if (_followAutoTarget.JoinDelayArmed)
+        {
+            lines.Add(
+                $"Join delay: {FollowAutoJoinDelayPolicy.DelaySeconds}s head start before the fleet enters a new game");
+        }
+
+        lines.Add($"Games completed: {_followAutoGamesCompleted}");
+        lines.Add($"Session elapsed: {FormatElapsed(elapsed)}");
 
         if (!string.IsNullOrWhiteSpace(_followTemplates.BoundAccountKey))
         {
@@ -8912,6 +9023,31 @@ public sealed class DiscordBot
 
                     await DelayNextFollowCheckAsync();
                     continue;
+                }
+
+                // The leader's head start, held here rather than anywhere earlier because this is
+                // the line that actually walks clients into the game. Everything above is leaving,
+                // watching, or bookkeeping, and a wait placed there would delay recovery work that
+                // has nothing to do with monster density.
+                if (FollowAutoJoinDelayPolicy.ShouldHoldBeforeJoin(
+                        _followAutoTarget.JoinDelayArmed,
+                        _followAutoTarget.Mode,
+                        CountFleetClientsInGame(accountState)))
+                {
+                    // Announced before it happens. A fleet that is online, bound, and simply not
+                    // joining for half a minute is otherwise indistinguishable from the stalls that
+                    // have been misread as healthy here before.
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Holding {pending.Length} client(s) at the lobby for {FollowAutoJoinDelayPolicy.DelaySeconds}s "
+                            + "so the leader can reach the boss before the game scales up.",
+                        joined: accountState.JoinedCount,
+                        total: expectedAccountCount);
+                    // Cancellable, so Stop stays responsive through the hold instead of taking up
+                    // to half a minute to be noticed. A press that lands mid-hold takes effect on
+                    // the next game rather than cutting this one short.
+                    await Task.Delay(
+                        TimeSpan.FromSeconds(FollowAutoJoinDelayPolicy.DelaySeconds),
+                        cancellationToken);
                 }
 
                 var anyBound = false;
@@ -12374,6 +12510,13 @@ public sealed class DiscordBot
     private sealed record FollowAutoPartyModeControl(
         FollowAutoBotCountControlOutcome Outcome,
         FollowAutoPartyModeChange? Change = null,
+        IUserMessage? Monitor = null);
+
+    // Shares that same outcome enum, with PublicMode standing in for "this is a private-mode
+    // control" - the toggle is hidden there, but a stale client can still land a press.
+    private sealed record FollowAutoJoinDelayControl(
+        FollowAutoBotCountControlOutcome Outcome,
+        bool Armed = false,
         IUserMessage? Monitor = null);
 
     private sealed record FollowAutoStopSignalResult(int Attempted, int Succeeded);
