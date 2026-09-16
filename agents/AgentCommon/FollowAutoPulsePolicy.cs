@@ -10,7 +10,7 @@ public enum FollowAutoPulseAction
     RebaselineAndWait,
 
     // This vantage cannot see the bound leader. The host forces an immediate second opinion
-    // from a different VM before acting (see WaitForFollowAutoGameEndAsync) - one screen's
+    // from a different VM before acting (see PollFollowAutoGameAsync) - one screen's
     // word is not enough to leave on.
     LeaderMissingHere,
 

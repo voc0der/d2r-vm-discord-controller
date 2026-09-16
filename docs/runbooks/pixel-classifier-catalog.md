@@ -531,7 +531,7 @@ is online does leader-departure detection fall back to two back-to-back misses.
 Live consumers: `VmOperations.FollowBindInGameCapture` (bind), `VmOperations.SampleLeaderMatches`
 inside `sample_player_count` (the follow-auto pulse); classified per-sample by
 `FollowAutoPulsePolicy.Classify` against the run's locked nametag and orchestrated by
-`DiscordBot.WaitForFollowAutoGameEndAsync` / `TryLockNametagFromSampleAsync` /
+`DiscordBot.PollFollowAutoGameAsync` / `TryLockNametagFromSampleAsync` /
 `ConfirmLeaderGoneFromAnotherVantageAsync`, with the bind verification in
 `HandleFollowBindInGameAsync`.
 
