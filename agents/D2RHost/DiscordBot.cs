@@ -8512,7 +8512,9 @@ public sealed class DiscordBot
         FollowAutoRunLease run)
     {
         var runId = run.RunId;
-        var cancellationToken = run.Token;
+        using var workCts = CancellationTokenSource.CreateLinkedTokenSource(run.Token);
+        var cancellationToken = workCts.Token;
+        var work = new FollowAutoWorkQueue<FollowAutoWorkResult>(cancellationToken);
         var channel = options.Channel;
         var delaySeconds = options.DelaySeconds;
         var watch = options.Watch;
@@ -8524,7 +8526,9 @@ public sealed class DiscordBot
         // succeeded, and nothing used to escalate that. See FollowCheckFailureTracker.
         var checkFailureLadder = new FollowCheckFailureTracker();
         var idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-        var midJoinRotation = 0;
+        var gameWatch = new FollowAutoGameWatchState();
+        var completedChecks = new List<FollowAutoCheckResult>();
+        var joinHoldApplied = false;
         var currentGameActive = false;
         var isolatedAccountsResyncedThisGame = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // Per-account rejoin attempts spent this game on "this vantage is verifiably at the menus".
@@ -8536,6 +8540,7 @@ public sealed class DiscordBot
         var lastWaitingReportUtc = DateTimeOffset.MinValue;
         CancellationTokenSource? watchCts = null;
         Task? watchTask = null;
+        Task<FollowTemplateSyncResult>? templateSync = null;
         try
         {
             if (watch)
@@ -8566,25 +8571,9 @@ public sealed class DiscordBot
                         GetAccountEntriesByConnectivity().Online.Select(entry => entry.Key).ToArray()));
             }
 
-            // Sync before the first check rather than waiting for the periodic sweep: a VM brought
-            // online moments before Follow was pressed is the single most likely one to be holding
-            // a stale or missing bind, and one round of pushes here saves it from sitting out the
-            // first game entirely.
-            try
-            {
-                var startupSync = await _followTemplates.ReconcileAsync(cancellationToken);
-                if (startupSync.DidWork)
-                {
-                    _logger.LogInformation(
-                        "follow-auto start synced follow templates: repaired {Repaired}, failures {Failures}.",
-                        startupSync.RepairedAccountList,
-                        string.Join("; ", startupSync.Failures));
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "follow-auto start follow-template sync failed.");
-            }
+            // Reconcile binds alongside checks: pushing to a recovering VM can itself time
+            // out, and must not suspend the healthy fleet's game watcher.
+            templateSync = _followTemplates.ReconcileAsync(cancellationToken);
 
             async Task DelayNextFollowCheckAsync(bool afterLeave = false)
             {
@@ -8595,13 +8584,109 @@ public sealed class DiscordBot
                 var seconds = afterLeave
                     ? FollowAutoPostLeaveCheckSeconds
                     : (delaySeconds > 0 ? delaySeconds : FollowAutoDefaultCheckSeconds);
-                await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
+                var delay = !afterLeave && accountState.JoinedCount > 0
+                    ? gameWatch.NextDelay ?? GetFollowHeartbeat(GetFollowAutoPlayerCountDropPollDelay)
+                    : TimeSpan.FromSeconds(seconds);
+                await Task.Delay(delay, cancellationToken);
+            }
+
+            void QueueLeave(string accountKey)
+            {
+                accountState.BeginRecovery(accountKey);
+                _ = work.Enqueue([accountKey], gameScoped: false, async token =>
+                {
+                    var results = await LeaveAllJoinAutoAsync(
+                        channel,
+                        "follow-auto",
+                        postResult: false,
+                        metricsEnabled: options.MetricsEnabled,
+                        onlyAccounts: new HashSet<string>([accountKey], StringComparer.OrdinalIgnoreCase),
+                        followAutoRunId: runId,
+                        cancellationToken: token);
+                    return new FollowAutoWorkResult(Leave: results.FirstOrDefault());
+                });
             }
 
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                if (templateSync is { IsCompleted: true })
+                {
+                    try
+                    {
+                        var sync = await templateSync;
+                        if (sync.DidWork)
+                        {
+                            _logger.LogInformation(
+                                "follow-auto synced follow templates: repaired {Repaired}, failures {Failures}.",
+                                sync.RepairedAccountList,
+                                string.Join("; ", sync.Failures));
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger.LogWarning(ex, "follow-auto follow-template sync failed.");
+                    }
+
+                    templateSync = null;
+                }
+
+                // Completed accounts advance independently. Only this loop applies results to
+                // the roster, monitor and failure ladders; background jobs perform I/O only.
+                var completedWork = work.TakeCompleted();
+                foreach (var completed in completedWork)
+                {
+                    if (completed.Leave is { Ok: false } leave)
+                    {
+                        await UpdateFollowAutoMonitorAsync(
+                            $"{leave.AccountKey}: leave was not confirmed ({leave.Message}); its next follow check will recover it. Healthy accounts continue following.");
+                    }
+                    else if (completed.ClientRestart is { } client)
+                    {
+                        await UpdateFollowAutoMonitorAsync(
+                            $"{client.AccountKey}: {completed.Command!.Message} Follow checks resume independently of the other accounts.");
+                    }
+                    else if (completed.VmRecovery is { } vm)
+                    {
+                        if (completed.Command!.Ok)
+                        {
+                            warmupFailures.RecordVmRecovered(vm.AccountKey, vm.NodeId);
+                            checkFailureLadder.RecordVmRecovered(vm.AccountKey);
+                        }
+                        else if (completed.Latched)
+                        {
+                            warmupFailures.RecordVmRecoveryUnavailable(vm.AccountKey, vm.NodeId);
+                        }
+
+                        await UpdateFollowAutoMonitorAsync(
+                            $"{vm.AccountKey}: VM recovery {(completed.Command.Ok ? "completed" : "failed")}: {completed.Command.Message} Follow-auto continues.");
+                    }
+                    else if (completed.NodeRecovery is { } node)
+                    {
+                        var recovery = completed.NodeResult!;
+                        warmupFailures.ResetNode(node.NodeId);
+                        if (recovery.LocalRestartQueued)
+                        {
+                            await CompleteFollowAutoMonitorAsync(
+                                ok: true,
+                                $"{recovery.Message} This run is closed; its recovery record will resume after D2RHost starts again unless an operator Stop clears it.",
+                                allowPostStopActions: false);
+                            return;
+                        }
+
+                        await UpdateFollowAutoMonitorAsync(
+                            recovery.RecoveryComplete
+                                ? recovery.Message + " The recovered accounts can rejoin the active follow run."
+                                : $"Recovery for {node.NodeId} did not complete: {recovery.Message} Healthy accounts continue following; missing accounts remain pending.");
+                    }
+                }
+
+                completedChecks.AddRange(completedWork.Where(result => result.Check is not null)
+                    .Select(result => result.Check!));
+                var checkResults = completedChecks.ToArray();
+                var completedCheckAccounts = checkResults.Select(result => result.AccountKey)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 var (allOnline, _) = GetAccountEntriesByConnectivity();
                 // The roster is resolved fresh every cycle against whoever is reachable right now,
                 // so a worker node that connects mid-run contributes its VMs the moment they are
@@ -8635,6 +8720,7 @@ public sealed class DiscordBot
                     // Release their known capacity immediately; a later fresh sample can still
                     // raise the count again if another player filled a slot.
                     _followAutoLivePlayers.RecordConfirmedDepartures(benchedNowJoined.Length);
+                    gameWatch.Baseline = null;
                     await UpdateFollowAutoMonitorAsync(
                         $"Bot count lowered to {roster.TargetBotCount}: {string.Join(", ", benchedNowJoined)} left the game and "
                             + "will wait warm at the lobby.",
@@ -8649,6 +8735,10 @@ public sealed class DiscordBot
                 if (currentGameActive)
                 {
                     isolatedAccountsResyncedThisGame.UnionWith(newlyOfflineJoinedAccounts);
+                }
+                if (newlyOfflineJoinedAccounts.Length > 0)
+                {
+                    gameWatch.Baseline = null;
                 }
 
                 // Parked accounts are online and expected, but must not re-attempt the current
@@ -8689,351 +8779,16 @@ public sealed class DiscordBot
                     }
                 }
 
-                if (accountState.CanWatch(onlineAccountKeys))
-                {
-                    var initialPulse = await TryFetchFollowPulseAsync(rotation: 0, _followAutoLockedNametag, accountState.Joined);
-                    await TryLockNametagFromSampleAsync(initialPulse);
-                    // Feeds the +1 button: a full game's free slot belongs to whoever left it.
-                    // Null and lower samples leave the per-game high-water alone, so a degraded or
-                    // lagging vantage cannot reopen the button after any screen observed a full game.
-                    _followAutoLivePlayers.Observe(
-                        initialPulse.PlayerCount,
-                        initialPulse.PlayerCountFresh);
-                    // Every rostered bot is in the game at this point, so the party bar and the
-                    // joined set describe the same population and the humans can be counted out
-                    // of it. If this moves the target, the watch below sees its snapshot go stale
-                    // on the first comparison and hands the loop straight back a reconciliation.
-                    await TryApplyPublicPartyTargetAsync(initialPulse, CountFleetClientsInGame(accountState));
-                    if (!currentGameActive)
-                    {
-                        _followAutoGameNumber++;
-                        currentGameActive = true;
-                        isolatedAccountsResyncedThisGame.Clear();
-                        outOfGameResyncsThisGame.Clear();
-                        var parkedNote = accountState.ParkedGameFullCount > 0
-                            ? $" ({FormatParkedGameFullNote(accountState)})"
-                            : "";
-                        await UpdateFollowAutoMonitorAsync(
-                            initialPulse.LeaderBound
-                                ? $"Game #{_followAutoGameNumber}: all joinable accounts joined.{parkedNote} Watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(initialPulse)}"
-                                : $"Game #{_followAutoGameNumber}: all joinable accounts joined.{parkedNote} Watching for someone to leave...",
-                            joined: accountState.JoinedCount,
-                            total: expectedAccountCount);
-                    }
-
-                    var watchResult = await WaitForFollowAutoGameEndAsync(
-                        initialPulse.PlayerCount,
-                        GetFollowAutoPlayerCountDropPollDelay,
-                        new FollowAutoRosterWatchSnapshot(roster.TargetBotCount, connectedAccountKeys),
-                        accountState,
-                        isolatedAccountsResyncedThisGame,
-                        outOfGameResyncsThisGame,
-                        cancellationToken);
-                    if (watchResult.ReconcileRoster)
-                    {
-                        // This is not game advancement. Keep joined/parking/per-game resync state
-                        // intact and immediately let the outer loop apply the new target or fleet
-                        // connectivity snapshot.
-                        rosterRefreshPending = true;
-                        continue;
-                    }
-
-                    if (watchResult.IsolatedAccountKey is { } isolatedAccountKey)
-                    {
-                        // Once recovery starts, this account is no longer allowed to contribute
-                        // to the all-joined decision. Remember the exact key before sending the
-                        // leave: a timeout, ambiguous reply, or disconnect must still route it
-                        // through normal menu recovery when it next becomes reachable.
-                        accountState.BeginRecovery(isolatedAccountKey);
-                        isolatedAccountsResyncedThisGame.Add(isolatedAccountKey);
-                        if (!watchResult.AttemptTargetedLeave)
-                        {
-                            await UpdateFollowAutoMonitorAsync(
-                                $"Game #{_followAutoGameNumber}: {watchResult.Reason} {isolatedAccountKey} is marked recovery-pending and must complete the normal menu recovery and rejoin before the all-joined watch resumes; the healthy accounts remain in the current game.",
-                                joined: accountState.JoinedCount,
-                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
-                            idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                            await DelayNextFollowCheckAsync();
-                            continue;
-                        }
-
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Game #{_followAutoGameNumber}: {watchResult.Reason} Leaving only {isolatedAccountKey} so it can rejoin the current game.",
-                            joined: accountState.JoinedCount,
-                            total: accountState.CountExpectedAccounts(onlineAccountKeys));
-
-                        var isolatedAccount = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                        {
-                            isolatedAccountKey
-                        };
-                        var resyncLeaveResults = await LeaveAllJoinAutoAsync(
-                            channel,
-                            "follow-auto",
-                            postResult: false,
-                            metricsEnabled: _followAutoMetricsEnabled,
-                            onlyAccounts: isolatedAccount,
-                            followAutoRunId: runId,
-                            cancellationToken: cancellationToken);
-                        var resyncLeave = resyncLeaveResults.FirstOrDefault();
-                        if (resyncLeave is { Ok: true })
-                        {
-                            await UpdateFollowAutoMonitorAsync(
-                                $"Game #{_followAutoGameNumber}: {isolatedAccountKey} left its divergent game and will rejoin the bound friend on the next cycle.",
-                                joined: accountState.JoinedCount,
-                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
-                        }
-                        else
-                        {
-                            await UpdateFollowAutoMonitorAsync(
-                                $"Game #{_followAutoGameNumber}: {isolatedAccountKey}'s leave was not confirmed ({resyncLeave?.Message ?? "the account was no longer online"}). It remains pending and the normal menu recovery path will retry it.",
-                                joined: accountState.JoinedCount,
-                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
-                        }
-
-                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                        await DelayNextFollowCheckAsync(afterLeave: true);
-                        continue;
-                    }
-
-                    await UpdateFollowAutoMonitorAsync(
-                        $"Game #{_followAutoGameNumber}: {watchResult.Reason}. Leaving the bound friend's game...",
-                        joined: accountState.JoinedCount,
-                        total: expectedAccountCount);
-                    // Scope the leave to the accounts actually in the game and still online.
-                    // A game-full-parked account sits at the lobby - sending it save-exit would
-                    // burn its command gate on a guaranteed failure and end the whole run on a
-                    // phantom "leave failed".
-                    var (leaveOnline, _) = GetAccountEntriesByConnectivity();
-                    var joinedLeaveTargets = accountState.Joined
-                        .Where(accountKey => leaveOnline.Any(entry =>
-                            string.Equals(entry.Key, accountKey, StringComparison.OrdinalIgnoreCase)))
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    var leaveResults = await LeaveAllJoinAutoAsync(
-                        channel,
-                        "follow-auto",
-                        postResult: false,
-                        metricsEnabled: _followAutoMetricsEnabled,
-                        onlyAccounts: joinedLeaveTargets,
-                        followAutoRunId: runId,
-                        cancellationToken: cancellationToken);
-                    var leaveFailures = leaveResults.Where(result => !result.Ok).ToArray();
-                    if (leaveFailures.Length > 0)
-                    {
-                        // A failed Save and Exit must not end the run. This ended it for years and
-                        // the symptom never looked like what it was: the fleet stops advancing
-                        // games, every client sits in the finished game, and the monitor's last
-                        // line is frozen mid-sentence - which reads as "next game is not being
-                        // detected" rather than "the run is over". One agent dropping its socket
-                        // mid-command was enough, and that is a transient: hc1 was back online,
-                        // in game, on the same version, minutes later.
-                        //
-                        // Every cause of a failed leave seen in practice is either transient or
-                        // local to one client - an agent that disconnected mid-command, a guest
-                        // mid-restart, a client wedged in a menu - and none of them are a reason
-                        // to stop advancing games for the other six. The comment on the target
-                        // scoping just above already names this hazard ("end the whole run on a
-                        // phantom leave failed") and defends against exactly one cause of it;
-                        // this defends against the rest.
-                        //
-                        // Advancing is safe without any retry here because the client that could
-                        // not leave is recovered by the path that already exists for it: the game
-                        // advance clears joined/stranded state, so the account rejoins the normal
-                        // join scan, and FollowAutoCheckAsync's own "confirmed unexpected game by
-                        // strict HUD globes; using Save and Exit" branch takes it out of the old
-                        // game before it joins the new one. That is the same safety net the
-                        // stale-game leave path below relies on for the identical failure.
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Game #{_followAutoGameNumber}: leave failed for "
-                                + string.Join("; ", leaveFailures.Select(result => $"{result.AccountKey}: {result.Message}"))
-                                + ". Advancing anyway; those clients are taken out of the old game by the normal "
-                                + "menu recovery before they join the next one.",
-                            joined: accountState.JoinedCount,
-                            total: expectedAccountCount);
-                    }
-
-                    _followAutoGamesCompleted++;
-                    currentGameActive = false;
-                    _followAutoLivePlayers.Reset();
-                    _followAutoPublicMode.Reset();
-                    isolatedAccountsResyncedThisGame.Clear();
-                    outOfGameResyncsThisGame.Clear();
-                    // The game the parked accounts were shut out of is over; they resume the
-                    // normal join scan for the next one alongside everyone else.
-                    accountState.ClearStrandedInGame();
-                    var unparkedAccounts = accountState.ClearGameFullParking();
-                    var unparkedNote = unparkedAccounts.Length > 0
-                        ? $" {string.Join(", ", unparkedAccounts)} sat out that full game and will rejoin with the fleet."
-                        : "";
-                    await UpdateFollowAutoMonitorAsync(
-                        $"Game #{_followAutoGameNumber}: all accounts left.{unparkedNote} Preparing Game #{_followAutoGameNumber + 1}...",
-                        joined: 0,
-                        total: online.Length);
-
-                    accountState.ClearJoined();
-                    idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                    await DelayNextFollowCheckAsync(afterLeave: true);
-                    continue;
-                }
-
-                // Partial join in progress: some accounts are in the game, some aren't. The
-                // all-joined watch above never runs in this state, so without this probe a
-                // leader who moves on (typically because one bot wedged and the operator got
-                // tired of waiting) leaves the joined majority stranded in the abandoned game
-                // until the wedged bot's own recovery eventually completes the joined set -
-                // and then the stale vantages force everyone, including the bot that just
-                // correctly joined the NEW game, through a leave/rejoin churn. One pulse of a
-                // joined vantage per cycle catches the departure early: leave the stale game,
-                // clear those accounts, and let the normal scan rejoin everyone wherever the
-                // leader actually is. See FollowAutoPulsePolicy.ClassifyMidJoinProbe for the
-                // decision table.
-                if (accountState.JoinedCount > 0 && online.Length > 0)
-                {
-                    var probe = await ProbeMidJoinLeaderPresenceAsync(accountState.Joined, midJoinRotation++);
-                    // The same pulse public mode would have got from the all-joined watch, which
-                    // is not running while anyone is still pending. Restricted to yields (see
-                    // TryApplyPublicPartyTargetAsync): a human who walks in while the fleet is
-                    // short a bot gets their slot given back now instead of after the fleet
-                    // finishes assembling - which, if the missing bot is stuck, is never. The new
-                    // target is picked up by the roster resolve at the top of the next cycle.
-                    if (probe.Sample is { } midJoinSample)
-                    {
-                        await TryApplyPublicPartyTargetAsync(
-                            midJoinSample,
-                            CountFleetClientsInGame(accountState),
-                            allJoined: false);
-                    }
-
-                    if (FollowAutoPulsePolicy.ShouldAbortStaleMidJoinGame(probe.LockedPresent, probe.ConfirmAgreed))
-                    {
-                        var partialGameNumber = currentGameActive
-                            ? _followAutoGameNumber
-                            : _followAutoGameNumber + 1;
-                        var departureTiming = currentGameActive
-                            ? "while an isolated account was rejoining"
-                            : "before everyone joined";
-                        var staleAccountKeys = accountState.Joined
-                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                        var staleJoinedCount = staleAccountKeys.Count;
-                        // These accounts need a fresh menu check even when save-exit times out
-                        // or one target disconnects before dispatch. Move every intended target
-                        // to recovery first; command replies only improve the status message.
-                        accountState.BeginRecovery(staleAccountKeys);
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Game #{partialGameNumber}: the bound leader left {departureTiming} ({staleJoinedCount}/{expectedAccountCount} in game); leaving the stale game so the fleet can rescan.{probe.Detail}",
-                            joined: accountState.JoinedCount,
-                            total: accountState.CountExpectedAccounts(onlineAccountKeys));
-                        var staleLeaveResults = await LeaveAllJoinAutoAsync(
-                            channel,
-                            "follow-auto",
-                            postResult: false,
-                            metricsEnabled: _followAutoMetricsEnabled,
-                            onlyAccounts: staleAccountKeys,
-                            followAutoRunId: runId,
-                            cancellationToken: cancellationToken);
-
-                        var staleLeaveFailures = staleLeaveResults.Where(result => !result.Ok).ToArray();
-                        if (staleLeaveFailures.Length > 0)
-                        {
-                            // Unlike the all-joined leave, a failure here doesn't end the run.
-                            // Every target is already recovery-pending, so its next normal
-                            // follow check performs the same safe in-game recovery before join.
-                            await UpdateFollowAutoMonitorAsync(
-                                $"Game #{partialGameNumber}: stale-game leave failed for "
-                                    + string.Join("; ", staleLeaveFailures.Select(result => $"{result.AccountKey}: {result.Message}"))
-                                    + ". Those accounts remain pending for normal menu recovery.",
-                                joined: accountState.JoinedCount,
-                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
-                        }
-
-                        if (currentGameActive)
-                        {
-                            _followAutoGamesCompleted++;
-                            currentGameActive = false;
-                            isolatedAccountsResyncedThisGame.Clear();
-                            outOfGameResyncsThisGame.Clear();
-                        }
-
-                        // The bound leader advanced whether or not this partial game had ever
-                        // reached the all-joined/"active" milestone. Do not carry a full-game
-                        // high-water from the abandoned game into the next roster scan.
-                        _followAutoLivePlayers.Reset();
-                        _followAutoPublicMode.Reset();
-
-                        // The game everyone was parked out of is being abandoned; the rescan
-                        // targets wherever the leader went next, a fresh capacity situation.
-                        accountState.ClearGameFullParking();
-                        accountState.ClearStrandedInGame();
-
-                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                        await DelayNextFollowCheckAsync(afterLeave: true);
-                        continue;
-                    }
-                }
-
-                var offlineRecoveryAccounts = accountState.GetOfflineRecoveryAccounts(onlineAccountKeys);
-                if (pending.Length == 0 && offlineRecoveryAccounts.Length > 0)
-                {
-                    var waitingReport = "waiting for recovery account(s) to reconnect: "
-                        + string.Join(", ", offlineRecoveryAccounts);
-                    if (!string.Equals(waitingReport, lastWaitingReport, StringComparison.Ordinal)
-                        || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
-                    {
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Waiting: {waitingReport}. The online peers will not be treated as an all-joined fleet.",
-                            joined: accountState.JoinedCount,
-                            total: expectedAccountCount);
-                        lastWaitingReport = waitingReport;
-                        lastWaitingReportUtc = DateTimeOffset.UtcNow;
-                    }
-
-                    if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
-                    {
-                        await CompleteFollowAutoMonitorAsync(ok: false, "Idle timeout detected; follow-auto disabled.");
-                        break;
-                    }
-
-                    await DelayNextFollowCheckAsync();
-                    continue;
-                }
-
-                // Every online account is parked on a full game and none ever made it inside:
-                // there is no vantage to observe the game ending, so the fleet cannot un-park
-                // itself. Without this guard the empty pending set would fall through to the
-                // no-results scan below and end the run with a bogus "no fingerprint" stop.
-                if (pending.Length == 0 && accountState.JoinedCount == 0 && accountState.ParkedGameFullCount > 0)
-                {
-                    var parkedStallReport = $"{FormatParkedGameFullNote(accountState)}. No fleet account is inside that game to watch it end, "
-                        + "so they stay warm at the lobby; restart follow-auto (Stop, then Follow) if the leader has already moved on.";
-                    if (!string.Equals(parkedStallReport, lastWaitingReport, StringComparison.Ordinal)
-                        || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
-                    {
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Waiting: {parkedStallReport}",
-                            joined: 0,
-                            total: expectedAccountCount);
-                        lastWaitingReport = parkedStallReport;
-                        lastWaitingReportUtc = DateTimeOffset.UtcNow;
-                    }
-
-                    if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
-                    {
-                        await CompleteFollowAutoMonitorAsync(ok: false, "Idle timeout detected; follow-auto disabled.");
-                        break;
-                    }
-
-                    await DelayNextFollowCheckAsync();
-                    continue;
-                }
-
-                // The leader's head start, held here rather than anywhere earlier because this is
-                // the line that actually walks clients into the game. Everything above is leaving,
-                // watching, or bookkeeping, and a wait placed there would delay recovery work that
-                // has nothing to do with monster density.
-                if (FollowAutoJoinDelayPolicy.ShouldHoldBeforeJoin(
+                // Apply the optional head start once per game, before dispatching its first
+                // join. A pending recovery must not make every scheduler tick repeat the hold.
+                if (!joinHoldApplied && pending.Any(entry => !work.IsBusy(entry.Key))
+                    && completedCheckAccounts.Count == 0
+                    && FollowAutoJoinDelayPolicy.ShouldHoldBeforeJoin(
                         _followAutoTarget.JoinDelayArmed,
                         _followAutoTarget.Mode,
                         CountFleetClientsInGame(accountState)))
                 {
+                    joinHoldApplied = true;
                     // Announced before it happens. A fleet that is online, bound, and simply not
                     // joining for half a minute is otherwise indistinguishable from the stalls that
                     // have been misread as healthy here before.
@@ -9050,13 +8805,23 @@ public sealed class DiscordBot
                         cancellationToken);
                 }
 
-                var anyBound = false;
+                completedChecks.Clear();
+                var anyBound = accountState.JoinedCount > 0 || accountState.ParkedGameFullCount > 0;
                 var unboundReports = new List<string>();
                 var checkFailures = new List<string>();
                 var waitingReports = new List<string>();
-                var checkResults = await Task.WhenAll(
-                    pending.Select(entry => RunFollowAutoCheckEntryAsync(options, entry, runId, cancellationToken)));
-                var pendingByAccount = pending.ToDictionary(entry => entry.Key, StringComparer.OrdinalIgnoreCase);
+                foreach (var entry in pending)
+                {
+                    if (!work.IsBusy(entry.Key) && !completedCheckAccounts.Contains(entry.Key))
+                    {
+                        accountState.BeginRecovery(entry.Key);
+                        _ = work.Enqueue([entry.Key], gameScoped: true, async token =>
+                            new FollowAutoWorkResult(Check: await RunFollowAutoCheckEntryAsync(options, entry, runId, token)));
+                    }
+                }
+
+                anyBound |= work.HasWork;
+                var pendingByAccount = _registry.Accounts.ToDictionary(entry => entry.Key, StringComparer.OrdinalIgnoreCase);
                 var recoveryRequests = new Dictionary<string, FollowAutoNodeRecoveryRequest>(
                     StringComparer.OrdinalIgnoreCase);
                 var vmRecoveryRequests = new List<FollowAutoVmRecoveryRequest>();
@@ -9145,198 +8910,89 @@ public sealed class DiscordBot
                 }
 
                 foreach (var request in clientRestartRequests
-                             .OrderBy(request => request.AccountKey, StringComparer.OrdinalIgnoreCase))
+                             .Where(request => !recoveryRequests.ContainsKey(_hyperV.ResolveNodeId(request.Account))
+                                 && !vmRecoveryRequests.Any(vm => string.Equals(vm.AccountKey, request.AccountKey, StringComparison.OrdinalIgnoreCase))))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                    lastWaitingReport = null;
+                    accountState.BeginRecovery(request.AccountKey);
+                    _ = work.Enqueue([request.AccountKey], gameScoped: false, async token =>
+                        new FollowAutoWorkResult(
+                            ClientRestart: request,
+                            Command: await RestartFollowAutoClientAsync(request, token)));
                     await UpdateFollowAutoMonitorAsync(
-                        (request.Stalled
-                            ? $"{request.AccountKey} has refused to click for {FollowCheckFailureTracker.StallEscalationWindow.TotalMinutes:N0}+ minutes "
-                                + $"because its own in-game safety check keeps coming back inconclusive ({request.LastMessage})."
-                            : $"{request.AccountKey} failed {request.TotalFailures} follow checks in a row ({request.LastMessage}).")
-                            + " Restarting D2R on that client before considering a VM power cycle.",
-                        joined: accountState.JoinedCount,
-                        total: accountState.CountExpectedAccounts(onlineAccountKeys));
-
-                    var restart = await RestartFollowAutoClientAsync(request, cancellationToken);
-                    await UpdateFollowAutoMonitorAsync(
-                        restart.Ok
-                            ? $"{request.AccountKey}: {restart.Message} It rejoins on the next follow check; "
-                                + $"{FollowCheckFailureTracker.EscalationThreshold} more consecutive failures escalate further."
-                            : $"{request.AccountKey}: could not restart D2R: {restart.Message} The next "
-                                + $"{FollowCheckFailureTracker.EscalationThreshold} consecutive failures escalate further.",
+                        $"{request.AccountKey}: restarting D2R after repeated follow failures. Healthy accounts continue following.",
                         joined: accountState.JoinedCount,
                         total: accountState.CountExpectedAccounts(onlineAccountKeys));
                 }
 
                 foreach (var request in vmRecoveryRequests
-                             .OrderBy(request => request.AccountKey, StringComparer.OrdinalIgnoreCase))
+                             .Where(request => !recoveryRequests.ContainsKey(request.NodeId))
+                             .DistinctBy(request => request.AccountKey, StringComparer.OrdinalIgnoreCase))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    // Only this account's guest goes down, so only this account is held back
-                    // from the all-joined calculation while it rebuilds.
                     accountState.BeginRecovery(request.AccountKey);
-                    idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                    lastWaitingReport = null;
-                    await UpdateFollowAutoMonitorAsync(
-                        $"{request.AccountKey} failed desktop-to-lobby warmup {request.ConsecutiveFailures} consecutive "
-                            + $"times. Powering its VM off and back on before considering a {request.NodeId} restart.",
-                        joined: accountState.JoinedCount,
-                        total: accountState.CountExpectedAccounts(onlineAccountKeys));
-
-                    // Follow-auto is the authoritative escalation path, so unlike the watchdog it
-                    // waits for the latch instead of yielding it. If the watchdog got there first
-                    // this simply picks up after that cycle finishes, and the account's strikes are
-                    // still on the table if the guest came back just as broken.
-                    var latched = await WaitToBeginVmRecoveryAsync(request.AccountKey, cancellationToken);
-                    CommandResult vmRecovery;
-                    try
+                    _ = work.Enqueue([request.AccountKey], gameScoped: false, async token =>
                     {
-                        vmRecovery = latched
-                            ? await RecoverVmAsync(request.AccountKey, request.Account, cancellationToken)
-                            : CommandResult.Failure(
-                                $"another power cycle of {request.AccountKey}'s VM was still running after "
-                                    + $"{FollowAutoNodeRecoveryTimeout.TotalMinutes:N0} minutes; no second one was started.");
-                    }
-                    finally
-                    {
-                        if (latched)
+                        var latched = await WaitToBeginVmRecoveryAsync(request.AccountKey, token);
+                        try
                         {
-                            EndVmRecovery(request.AccountKey);
+                            var result = latched
+                                ? await RecoverVmAsync(request.AccountKey, request.Account, token)
+                                : CommandResult.Failure("Another power cycle is still running; no second one was started.");
+                            return new FollowAutoWorkResult(VmRecovery: request, Command: result, Latched: latched);
                         }
-                    }
-
-                    if (vmRecovery.Ok)
-                    {
-                        warmupFailures.RecordVmRecovered(request.AccountKey, request.NodeId);
-                        // Release the check-failure latch too. The guest this account runs on is
-                        // new, so a client that fails again has earned a fresh ladder rather than
-                        // being stuck one rung below the top for the rest of the run.
-                        checkFailureLadder.RecordVmRecovered(request.AccountKey);
-                    }
-                    else if (latched)
-                    {
-                        // Keep the strikes: the next failure escalates straight to the node
-                        // restart rather than retrying a cycle that has already proven impossible.
-                        warmupFailures.RecordVmRecoveryUnavailable(request.AccountKey, request.NodeId);
-                    }
-
-                    // Deliberately nothing recorded when the latch was never taken. Losing the race
-                    // to the watchdog is not proof this guest cannot be cycled - the watchdog was
-                    // running the very same cycle - and RecordVmRecoveryUnavailable would mark the
-                    // VM as already tried, escalating the next failure to a restart of the whole
-                    // physical node over a race. Recording nothing leaves both the strikes and the
-                    // not-yet-cycled flag, so the next failure asks for this VM again.
-                    var vmRecoveryOutlook = vmRecovery.Ok || !latched
-                        ? $"five new consecutive warmup failures escalate to restarting {request.NodeId}."
-                        : $"the next warmup failure escalates to restarting {request.NodeId}.";
+                        finally
+                        {
+                            if (latched)
+                            {
+                                EndVmRecovery(request.AccountKey);
+                            }
+                        }
+                    });
                     await UpdateFollowAutoMonitorAsync(
-                        vmRecovery.Ok
-                            ? $"{request.AccountKey}: {vmRecovery.Message} Follow-auto continues; {vmRecoveryOutlook}"
-                            : $"{request.AccountKey}: VM power cycle failed: {vmRecovery.Message} Follow-auto "
-                                + $"continues; {vmRecoveryOutlook}",
+                        $"{request.AccountKey}: recovering its VM after repeated failures. Healthy accounts continue following.",
                         joined: accountState.JoinedCount,
                         total: accountState.CountExpectedAccounts(onlineAccountKeys));
                 }
 
-                if (recoveryRequests.Count > 0)
+                var restartingAccounts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var request in recoveryRequests.Values)
                 {
-                    foreach (var request in recoveryRequests.Values
-                                 .OrderBy(request => _hyperV.IsLocalNode(request.NodeId) ? 1 : 0)
-                                 .ThenBy(request => request.NodeId, StringComparer.OrdinalIgnoreCase))
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        var nodeAccounts = GetFollowAutoAccountsForNode(request.NodeId);
-                        var nodeAccountKeys = SelectExpectedRecoveryAccountKeys(
-                            nodeAccounts.Select(entry => entry.Key),
-                            onlineAccountKeys,
-                            accountState.Joined,
-                            accountState.RecoveryPending,
-                            accountState.ParkedGameFull);
+                    var nodeAccounts = GetFollowAutoAccountsForNode(request.NodeId);
+                    var nodeAccountKeys = SelectExpectedRecoveryAccountKeys(
+                        nodeAccounts.Select(entry => entry.Key),
+                        onlineAccountKeys,
+                        accountState.Joined,
+                        accountState.RecoveryPending,
+                        accountState.ParkedGameFull);
+                    accountState.BeginRecovery(nodeAccountKeys);
+                    restartingAccounts.UnionWith(nodeAccounts.Select(entry => entry.Key));
+                    work.InvalidateChecks(nodeAccounts.Select(entry => entry.Key));
+                    var resumeKeys = _hyperV.IsLocalNode(request.NodeId)
+                        ? SelectFollowAutoResumeRecoveryAccountKeys(onlineAccountKeys, accountState.RecoveryPending)
+                        : nodeAccountKeys;
+                    _ = work.Enqueue(nodeAccounts.Select(entry => entry.Key), gameScoped: false, async token =>
+                        new FollowAutoWorkResult(
+                            NodeRecovery: request,
+                            NodeResult: await RecoverFollowAutoNodeAsync(request, nodeAccountKeys, resumeKeys, options, run, token)));
+                    await UpdateFollowAutoMonitorAsync(
+                        $"{request.NodeId}: restarting after repeated warmup failures on {request.TriggerAccountKey}. Other nodes continue following.",
+                        joined: accountState.JoinedCount,
+                        total: accountState.CountExpectedAccounts(onlineAccountKeys));
+                }
 
-                        // Mark every account this run currently expects on the physical node
-                        // before its VM-agent sockets disappear. Deliberately omit configured
-                        // accounts that were already offline: the VM lifecycle restores only VMs
-                        // that were Running, so waiting for an intentionally-Off VM would deadlock
-                        // recovery forever. Otherwise expected offline accounts are omitted from
-                        // the all-joined calculation and healthy peers can advance without them.
-                        accountState.BeginRecovery(nodeAccountKeys);
-                        var resumeRecoveryAccountKeys = _hyperV.IsLocalNode(request.NodeId)
-                            ? SelectFollowAutoResumeRecoveryAccountKeys(
-                                onlineAccountKeys,
-                                accountState.RecoveryPending)
-                            : nodeAccountKeys;
-                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                        lastWaitingReport = null;
-                        await UpdateFollowAutoMonitorAsync(
-                            $"{request.TriggerAccountKey} failed desktop-to-lobby warmup "
-                                + $"{request.ConsecutiveFailures} consecutive times. Recording and stopping the Running VMs on "
-                                + $"{request.NodeId}, then restarting that node.",
-                            joined: accountState.JoinedCount,
-                            total: accountState.CountExpectedAccounts(onlineAccountKeys));
-
-                        var recovery = await RecoverFollowAutoNodeAsync(
-                            request,
-                            nodeAccountKeys,
-                            resumeRecoveryAccountKeys,
-                            options,
-                            run,
-                            cancellationToken);
-                        cancellationToken.ThrowIfCancellationRequested();
-                        if (!recovery.RestartQueued)
-                        {
-                            // The node never rebooted. Allow a fresh incident to accumulate
-                            // instead of leaving a permanent latch that can never request again.
-                            warmupFailures.ResetNode(request.NodeId);
-                            await UpdateFollowAutoMonitorAsync(
-                                $"Could not start recovery for {request.NodeId}: {recovery.Message} "
-                                    + $"Follow-auto remains active; five new consecutive warmup failures are required before another restart attempt.",
-                                joined: accountState.JoinedCount,
-                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
-                            continue;
-                        }
-
-                        if (recovery.LocalRestartQueued)
-                        {
-                            // This loop is terminal once its own host restart is queued. Retire the
-                            // static Stop button now: leaving it on an old monitor lets a click
-                            // minutes later cancel whichever successor run happens to be current.
-                            await CompleteFollowAutoMonitorAsync(
-                                ok: true,
-                                $"{recovery.Message} This run is closed; its exact recovery record will resume after D2RHost starts again unless an operator Stop clears it.",
-                                allowPostStopActions: false);
-                            cancellationToken.ThrowIfCancellationRequested();
-                            return;
-                        }
-
-                        if (!recovery.RecoveryComplete)
-                        {
-                            await CompleteFollowAutoMonitorAsync(
-                                ok: false,
-                                $"Node recovery did not complete for {request.NodeId}: {recovery.Message}");
-                            return;
-                        }
-
-                        warmupFailures.ResetNode(request.NodeId);
-                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
-                        await UpdateFollowAutoMonitorAsync(
-                            recovery.Message + " Resuming the active follow run.",
-                            joined: accountState.JoinedCount,
-                            total: accountState.CountExpectedAccounts(
-                                GetAccountEntriesByConnectivity().Online.Select(entry => entry.Key).ToArray()));
-                    }
-
-                    // Every result in this batch predates at least one node restart. Re-sample
-                    // fresh status rather than applying stale joined/waiting outcomes.
-                    await DelayNextFollowCheckAsync();
-                    continue;
+                if (clientRestartRequests.Count > 0 || vmRecoveryRequests.Count > 0 || recoveryRequests.Count > 0)
+                {
+                    idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                    lastWaitingReport = null;
                 }
 
                 foreach (var result in checkResults)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    if (restartingAccounts.Contains(result.AccountKey))
+                    {
+                        continue;
+                    }
 
                     switch (result.Outcome)
                     {
@@ -9344,6 +9000,8 @@ public sealed class DiscordBot
                             anyBound = true;
                             var completedRecovery = accountState.RecoveryPending.Contains(result.AccountKey);
                             accountState.MarkJoined(result.AccountKey);
+                            gameWatch.OutOfGameStreaks.Remove(result.AccountKey);
+                            gameWatch.IsolatedMissStreaks.Remove(result.AccountKey);
                             // The monitor is about to show concrete progress. Clear the
                             // de-duplication key so an unchanged restriction/wait reason from
                             // another pending account can immediately replace that progress
@@ -9392,24 +9050,185 @@ public sealed class DiscordBot
                     }
                 }
 
-                // An unbound VM used to be invisible whenever any other VM was bound: its report
-                // only reached the operator through the all-unbound stop path below, so a client
-                // that missed the bind - offline at the time, rebuilt, or added to the fleet
-                // afterwards - sat out whole sessions in silence while the rest of the fleet ran.
-                // Repair it from the host's authoritative copy and put it on the monitor either
-                // way. ReconcileAsync is a no-op for agents that already agree, so this costs
-                // nothing on the overwhelmingly common path where nothing diverged.
-                if (unboundReports.Count > 0 && anyBound)
+                if (accountState.CanMonitorGame)
                 {
-                    var repair = await _followTemplates.ReconcileAsync(cancellationToken);
-                    waitingReports.Add(repair.Repaired.Count > 0
-                        ? $"unbound: {string.Join("; ", unboundReports)} - pushed the bound friend to {repair.RepairedAccountList}, joining on the next check"
-                        : $"unbound: {string.Join("; ", unboundReports)}"
-                            + (_followTemplates.State.Recorded
-                                ? ""
-                                : " (no bind is recorded on the host yet - run /d2r follow bind:true once so late VMs are synced automatically)"));
+                    // Watching a live game is activity, even when the leader stays in it longer
+                    // than the idle timeout or a missing account spends that time recovering.
+                    idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                    if (!currentGameActive)
+                    {
+                        _followAutoGameNumber++;
+                        currentGameActive = true;
+                        isolatedAccountsResyncedThisGame.Clear();
+                        outOfGameResyncsThisGame.Clear();
+                        var parkedNote = accountState.ParkedGameFullCount > 0
+                            ? $" ({FormatParkedGameFullNote(accountState)})"
+                            : "";
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: watching joined accounts while pending accounts join or recover.{parkedNote}",
+                            joined: accountState.JoinedCount,
+                            total: expectedAccountCount);
+                    }
+
+                    var watchResult = await PollFollowAutoGameAsync(
+                        gameWatch,
+                        accountState,
+                        accountState.CanWatch(onlineAccountKeys),
+                        isolatedAccountsResyncedThisGame,
+                        outOfGameResyncsThisGame,
+                        cancellationToken);
+                    if (watchResult is not null)
+                    {
+                        if (watchResult.ReconcileRoster)
+                        {
+                            // This is not game advancement. Keep joined/parking/per-game resync state
+                            // intact and immediately let the outer loop apply the new target or fleet
+                            // connectivity snapshot.
+                            rosterRefreshPending = true;
+                            continue;
+                        }
+
+                        if (watchResult.IsolatedAccountKey is { } isolatedAccountKey)
+                        {
+                            // Once recovery starts, this account is no longer allowed to contribute
+                            // to the all-joined decision. Remember the exact key before sending the
+                            // leave: a timeout, ambiguous reply, or disconnect must still route it
+                            // through normal menu recovery when it next becomes reachable.
+                            accountState.BeginRecovery(isolatedAccountKey);
+                            gameWatch.Baseline = null;
+                            isolatedAccountsResyncedThisGame.Add(isolatedAccountKey);
+                            if (!watchResult.AttemptTargetedLeave)
+                            {
+                                await UpdateFollowAutoMonitorAsync(
+                                    $"Game #{_followAutoGameNumber}: {watchResult.Reason} {isolatedAccountKey} is marked recovery-pending and will recover independently; the healthy accounts continue watching the leader.",
+                                    joined: accountState.JoinedCount,
+                                    total: accountState.CountExpectedAccounts(onlineAccountKeys));
+                                idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                                await DelayNextFollowCheckAsync();
+                                continue;
+                            }
+
+                            await UpdateFollowAutoMonitorAsync(
+                                $"Game #{_followAutoGameNumber}: {watchResult.Reason} Leaving only {isolatedAccountKey} so it can rejoin the current game.",
+                                joined: accountState.JoinedCount,
+                                total: accountState.CountExpectedAccounts(onlineAccountKeys));
+
+                            QueueLeave(isolatedAccountKey);
+
+                            idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                            await DelayNextFollowCheckAsync(afterLeave: true);
+                            continue;
+                        }
+
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: {watchResult.Reason}. Leaving the bound friend's game...",
+                            joined: accountState.JoinedCount,
+                            total: expectedAccountCount);
+                        // Each account leaves and becomes eligible to rejoin independently. A
+                        // wedged Save and Exit must not hold healthy clients at the old game's exit.
+                        foreach (var accountKey in accountState.Joined.ToArray())
+                        {
+                            QueueLeave(accountKey);
+                        }
+
+                        _followAutoGamesCompleted++;
+                        currentGameActive = false;
+                        _followAutoLivePlayers.Reset();
+                        _followAutoPublicMode.Reset();
+                        isolatedAccountsResyncedThisGame.Clear();
+                        outOfGameResyncsThisGame.Clear();
+                        // The game the parked accounts were shut out of is over; they resume the
+                        // normal join scan for the next one alongside everyone else.
+                        accountState.ClearStrandedInGame();
+                        var unparkedAccounts = accountState.ClearGameFullParking();
+                        var unparkedNote = unparkedAccounts.Length > 0
+                            ? $" {string.Join(", ", unparkedAccounts)} sat out that full game and will rejoin with the fleet."
+                            : "";
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: accounts are leaving independently.{unparkedNote} Preparing Game #{_followAutoGameNumber + 1}...",
+                            joined: 0,
+                            total: online.Length);
+
+                        accountState.ClearJoined();
+                        work.InvalidateChecks();
+                        completedChecks.Clear();
+                        gameWatch = new FollowAutoGameWatchState();
+                        joinHoldApplied = false;
+                        idleDeadlineUtc = DateTimeOffset.UtcNow + idleTimeout;
+                        await DelayNextFollowCheckAsync(afterLeave: true);
+                        continue;
+                    }
                 }
 
+                var offlineRecoveryAccounts = accountState.GetOfflineRecoveryAccounts(onlineAccountKeys);
+                if (checkResults.Length == 0 && !work.HasWork && pending.Length == 0 && offlineRecoveryAccounts.Length > 0)
+                {
+                    var waitingReport = "waiting for recovery account(s) to reconnect: "
+                        + string.Join(", ", offlineRecoveryAccounts);
+                    if (!string.Equals(waitingReport, lastWaitingReport, StringComparison.Ordinal)
+                        || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
+                    {
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Waiting: {waitingReport}. Healthy accounts continue watching and following the leader.",
+                            joined: accountState.JoinedCount,
+                            total: expectedAccountCount);
+                        lastWaitingReport = waitingReport;
+                        lastWaitingReportUtc = DateTimeOffset.UtcNow;
+                    }
+
+                    if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
+                    {
+                        await CompleteFollowAutoMonitorAsync(ok: false, "Idle timeout detected; follow-auto disabled.");
+                        break;
+                    }
+
+                    await DelayNextFollowCheckAsync();
+                    continue;
+                }
+
+                // Every online account is parked on a full game and none ever made it inside:
+                // there is no vantage to observe the game ending, so the fleet cannot un-park
+                // itself. Without this guard the empty pending set would fall through to the
+                // no-results scan below and end the run with a bogus "no fingerprint" stop.
+                if (checkResults.Length == 0 && !work.HasWork && pending.Length == 0 && accountState.JoinedCount == 0 && accountState.ParkedGameFullCount > 0)
+                {
+                    var parkedStallReport = $"{FormatParkedGameFullNote(accountState)}. No fleet account is inside that game to watch it end, "
+                        + "so they stay warm at the lobby; restart follow-auto (Stop, then Follow) if the leader has already moved on.";
+                    if (!string.Equals(parkedStallReport, lastWaitingReport, StringComparison.Ordinal)
+                        || DateTimeOffset.UtcNow - lastWaitingReportUtc >= TimeSpan.FromMinutes(5))
+                    {
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Waiting: {parkedStallReport}",
+                            joined: 0,
+                            total: expectedAccountCount);
+                        lastWaitingReport = parkedStallReport;
+                        lastWaitingReportUtc = DateTimeOffset.UtcNow;
+                    }
+
+                    if (DateTimeOffset.UtcNow >= idleDeadlineUtc)
+                    {
+                        await CompleteFollowAutoMonitorAsync(ok: false, "Idle timeout detected; follow-auto disabled.");
+                        break;
+                    }
+
+                    await DelayNextFollowCheckAsync();
+                    continue;
+                }
+
+                if (unboundReports.Count > 0)
+                {
+                    if (_followTemplates.State.Recorded)
+                    {
+                        templateSync ??= _followTemplates.ReconcileAsync(cancellationToken);
+                    }
+
+                    waitingReports.Add($"unbound: {string.Join("; ", unboundReports)}"
+                        + (_followTemplates.State.Recorded
+                            ? " - synchronizing the bound friend in the background"
+                            : " (run /d2r follow bind:true once to sync late VMs automatically)"));
+                }
+
+                anyBound |= work.HasWork || (templateSync is not null && _followTemplates.State.Recorded);
                 if (!anyBound)
                 {
                     if (checkFailures.Count > 0 && unboundReports.Count == 0)
@@ -9486,6 +9305,19 @@ public sealed class DiscordBot
         }
         finally
         {
+            workCts.Cancel();
+            try
+            {
+                await Task.WhenAll(work.DrainAsync(), templateSync ?? Task.CompletedTask);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Follow-auto work failed while the run was unwinding.");
+            }
+
             watchCts?.Cancel();
             await AwaitWatchTickerStopAsync(watchTask, "follow-auto");
             watchCts?.Dispose();
@@ -10135,7 +9967,6 @@ public sealed class DiscordBot
         }
 
         var deadline = DateTimeOffset.UtcNow + FollowAutoNodeRecoveryTimeout;
-        var observedNewConnection = false;
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -10144,22 +9975,13 @@ public sealed class DiscordBot
                     snapshot.Id,
                     request.NodeId,
                     StringComparison.OrdinalIgnoreCase));
-            observedNewConnection |= HasNewWorkerConnection(
-                node,
-                previousConnectedAt,
-                restartRequestedUtc);
-
-            var onlineAccountKeys = GetAccountEntriesByConnectivity().Online
-                .Select(entry => entry.Key)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (observedNewConnection
-                && AreRecoveryAccountsOnline(nodeAccountKeys, onlineAccountKeys))
+            if (HasNewWorkerConnection(node, previousConnectedAt, restartRequestedUtc))
             {
                 return new FollowAutoNodeRecoveryResult(
                     RestartQueued: true,
                     RecoveryComplete: true,
                     LocalRestartQueued: false,
-                    $"{request.NodeId} reconnected after restart and all {nodeAccountKeys.Count} node account(s) are online.");
+                    $"{request.NodeId} reconnected after restart; its {nodeAccountKeys.Count} expected account(s) will rejoin as each agent returns.");
             }
 
             await Task.Delay(FollowAutoNodeRecoveryPollInterval, cancellationToken);
@@ -10171,9 +9993,7 @@ public sealed class DiscordBot
                 StringComparer.OrdinalIgnoreCase)
             .OrderBy(accountKey => accountKey, StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        var connectionDetail = observedNewConnection
-            ? "the worker reconnected, but its VM agents did not all return"
-            : "the worker never established a new connection generation";
+        const string connectionDetail = "the worker never established a new connection generation";
         return new FollowAutoNodeRecoveryResult(
             RestartQueued: true,
             RecoveryComplete: false,
@@ -10327,13 +10147,6 @@ public sealed class DiscordBot
 
         return connectedAt >= restartRequestedUtc
             && (previousConnectedAt is not { } previous || connectedAt > previous);
-    }
-
-    internal static bool AreRecoveryAccountsOnline(
-        IReadOnlyCollection<string> recoveryAccountKeys,
-        IReadOnlySet<string> onlineAccountKeys)
-    {
-        return recoveryAccountKeys.All(onlineAccountKeys.Contains);
     }
 
     internal static string[] SelectExpectedRecoveryAccountKeys(
@@ -10728,7 +10541,7 @@ public sealed class DiscordBot
         CommandResultInfo? readyResult;
         try
         {
-            readyResult = await SendReadyIfNotMenuReadyAsync(account, args);
+            readyResult = await SendReadyIfNotMenuReadyAsync(account, args, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -10773,7 +10586,7 @@ public sealed class DiscordBot
                     : repair.Message;
                 try
                 {
-                    readyResult = await SendReadyIfNotMenuReadyAsync(account, args);
+                    readyResult = await SendReadyIfNotMenuReadyAsync(account, args, cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -10829,6 +10642,7 @@ public sealed class DiscordBot
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         CommandResultInfo result;
         try
         {
@@ -11170,262 +10984,242 @@ public sealed class DiscordBot
     // that should be removed from the joined set and resynchronized.
     // Join-auto keeps using WaitForPlayerCountDropAsync above: its games are the accounts' own
     // private games, where "someone left" really does mean the game is over.
-    private async Task<FollowAutoGameWatchResult> WaitForFollowAutoGameEndAsync(
-        int? baseline,
-        Func<TimeSpan> pollDelay,
-        FollowAutoRosterWatchSnapshot rosterSnapshot,
+    private async Task<FollowAutoGameWatchResult?> PollFollowAutoGameAsync(
+        FollowAutoGameWatchState state,
         FollowAutoAccountState accountState,
+        bool allJoined,
         IReadOnlySet<string> isolatedAccountsResyncedThisGame,
         IDictionary<string, int> outOfGameResyncsThisGame,
         CancellationToken cancellationToken)
     {
-        var singleVantageMissStreak = 0;
-        var isolatedMissStreaks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var outOfGameStreaks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var cappedOutOfGameReports = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var rotation = 0;
-        var warnedCountDropWhileLeaderVisible = false;
-        var lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
-        var nextDelay = GetFollowHeartbeat(pollDelay);
-        while (true)
+        cancellationToken.ThrowIfCancellationRequested();
+        var (connectedEntries, _) = GetAccountEntriesByConnectivity();
+        var onlineAccountKeys = connectedEntries.Select(entry => entry.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var disconnectedAccounts = accountState.BeginRecoveryForOfflineJoined(onlineAccountKeys);
+        if (disconnectedAccounts.FirstOrDefault() is { } disconnectedAccountKey)
         {
-            await Task.Delay(nextDelay, cancellationToken);
-            var (connectedEntries, _) = GetAccountEntriesByConnectivity();
-            var onlineAccountKeys = connectedEntries
-                .Select(entry => entry.Key)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (rosterSnapshot.RequiresReconciliation(
-                    _followAutoTarget.TargetBotCount,
-                    onlineAccountKeys))
-            {
-                return new FollowAutoGameWatchResult(
-                    "the requested bot roster or connected fleet changed",
-                    ReconcileRoster: true);
-            }
+            return new FollowAutoGameWatchResult(
+                $"{disconnectedAccountKey} disconnected while it was marked joined.",
+                disconnectedAccountKey,
+                AttemptTargetedLeave: false);
+        }
 
-            var disconnectedAccounts = accountState.BeginRecoveryForOfflineJoined(onlineAccountKeys);
-            if (disconnectedAccounts.FirstOrDefault() is { } disconnectedAccountKey)
+        var sample = await TryFetchFollowPulseAsync(state.Rotation++, _followAutoLockedNametag, accountState.Joined);
+        await TryLockNametagFromSampleAsync(sample);
+        _followAutoLivePlayers.Observe(sample.PlayerCount, sample.PlayerCountFresh);
+        if (await TryApplyPublicPartyTargetAsync(sample, CountFleetClientsInGame(accountState),
+                allJoined: allJoined))
+        {
+            // Yield now rather than letting the next iteration's snapshot comparison catch it:
+            // the run loop is what actually benches or promotes a client, and public mode's
+            // whole promise is that the slot is given back promptly.
+            return new FollowAutoGameWatchResult(
+                "public mode changed the bot count to hold a slot open",
+                ReconcileRoster: true);
+        }
+
+        // Before interpreting the leader signal, check whether this vantage is even in a
+        // game. A bot dropped back to the lobby after its join was already confirmed (a
+        // post-join "Connection Interrupted") reports nothing but null counts and null
+        // nametag reads, which classify as Wait - so it used to sit out the whole game while
+        // the monitor still counted it in. Nothing here can be confirmed by another VM: only
+        // this client can see its own screen, so the guard is consecutive reads instead.
+        if (sample.AccountKey is { } pulsedAccountKey)
+        {
+            state.OutOfGameStreaks.TryGetValue(pulsedAccountKey, out var priorOutOfGameStreak);
+            var outOfGameStreak = FollowAutoPulsePolicy.NextOutOfGameStreak(
+                priorOutOfGameStreak, sample.InGame);
+            state.OutOfGameStreaks[pulsedAccountKey] = outOfGameStreak;
+            outOfGameResyncsThisGame.TryGetValue(pulsedAccountKey, out var priorResyncs);
+            if (FollowAutoPulsePolicy.ShouldResyncOutOfGameVantage(outOfGameStreak, priorResyncs))
             {
+                outOfGameResyncsThisGame[pulsedAccountKey] = priorResyncs + 1;
                 return new FollowAutoGameWatchResult(
-                    $"{disconnectedAccountKey} disconnected while it was marked joined.",
-                    disconnectedAccountKey,
+                    $"{pulsedAccountKey} is at the menus, not in the game it was counted in "
+                        + $"({outOfGameStreak} consecutive checks; it was most likely dropped by a connection interruption after its join was confirmed).",
+                    pulsedAccountKey,
+                    // It is already out of the game - a save-exit would only burn its command
+                    // gate on a guaranteed failure. The normal join path takes it from here.
                     AttemptTargetedLeave: false);
             }
 
-            var sample = await TryFetchFollowPulseAsync(rotation++, _followAutoLockedNametag, accountState.Joined);
-            await TryLockNametagFromSampleAsync(sample);
-            _followAutoLivePlayers.Observe(sample.PlayerCount, sample.PlayerCountFresh);
-            if (await TryApplyPublicPartyTargetAsync(sample, CountFleetClientsInGame(accountState)))
+            if (outOfGameStreak >= FollowAutoPulsePolicy.OutOfGameVantageResyncSamples
+                && state.CappedOutOfGameReports.Add(pulsedAccountKey))
             {
-                // Yield now rather than letting the next iteration's snapshot comparison catch it:
-                // the run loop is what actually benches or promotes a client, and public mode's
-                // whole promise is that the slot is given back promptly.
-                return new FollowAutoGameWatchResult(
-                    "public mode changed the bot count to hold a slot open",
-                    ReconcileRoster: true);
+                await UpdateFollowAutoMonitorAsync(
+                    $"Game #{_followAutoGameNumber}: {pulsedAccountKey} keeps reading as out of the game but has already used its "
+                        + $"{FollowAutoPulsePolicy.MaxOutOfGameResyncsPerGame} rejoin attempts this game, so it stays as-is. "
+                        + "If it is visibly in the game, its screen is being misclassified - check the VM's resolution (1366x768) and reference images.");
             }
+        }
 
-            // Before interpreting the leader signal, check whether this vantage is even in a
-            // game. A bot dropped back to the lobby after its join was already confirmed (a
-            // post-join "Connection Interrupted") reports nothing but null counts and null
-            // nametag reads, which classify as Wait - so it used to sit out the whole game while
-            // the monitor still counted it in. Nothing here can be confirmed by another VM: only
-            // this client can see its own screen, so the guard is consecutive reads instead.
-            if (sample.AccountKey is { } pulsedAccountKey)
-            {
-                outOfGameStreaks.TryGetValue(pulsedAccountKey, out var priorOutOfGameStreak);
-                var outOfGameStreak = FollowAutoPulsePolicy.NextOutOfGameStreak(
-                    priorOutOfGameStreak, sample.InGame);
-                outOfGameStreaks[pulsedAccountKey] = outOfGameStreak;
-                outOfGameResyncsThisGame.TryGetValue(pulsedAccountKey, out var priorResyncs);
-                if (FollowAutoPulsePolicy.ShouldResyncOutOfGameVantage(outOfGameStreak, priorResyncs))
+        // Only the session-locked nametag can drive the leave decision. Before a lock
+        // exists (first game, nothing spotted yet), presence reads null and Classify falls
+        // back to count-drop semantics - none of the bound alt nametags may trigger a leave
+        // until one of them has actually been SEEN in this run.
+        var (lockedPresent, _, _) = GetLockedNametagPresence(sample);
+        switch (FollowAutoPulsePolicy.Classify(sample.LeaderBound, lockedPresent, sample.PlayerCount, state.Baseline))
+        {
+            case FollowAutoPulseAction.CountDropLeave:
+                // A missing nametag never leaves on one screen's word - it forces an
+                // independent second opinion first. A count drop did, and that asymmetry only
+                // held while every vantage sampled at roughly the same instant. Pulses
+                // round-robin across vantages, the baseline is fleet-wide, and a worker-relayed
+                // agent answers through an extra hop (master -> worker -> agent), so its count
+                // lags the locally-connected ones. A baseline raised by a fast vantage then
+                // reads as a drop on the next slow one, the fleet leaves, and follow-auto
+                // immediately rejoins the same game because the leader never went anywhere.
+                // Same rule as the nametag path: one screen is not enough to leave on.
+                var countConfirm = await ConfirmPlayerCountDropFromAnotherVantageAsync(
+                    sample.AccountKey, state.Baseline, accountState.Joined);
+                if (countConfirm.Confirmed)
                 {
-                    outOfGameResyncsThisGame[pulsedAccountKey] = priorResyncs + 1;
-                    return new FollowAutoGameWatchResult(
-                        $"{pulsedAccountKey} is at the menus, not in the game it was counted in "
-                            + $"({outOfGameStreak} consecutive checks; it was most likely dropped by a connection interruption after its join was confirmed).",
-                        pulsedAccountKey,
-                        // It is already out of the game - a save-exit would only burn its command
-                        // gate on a guaranteed failure. The normal join path takes it from here.
-                        AttemptTargetedLeave: false);
+                    return new FollowAutoGameWatchResult("player count dropped");
                 }
 
-                if (outOfGameStreak >= FollowAutoPulsePolicy.OutOfGameVantageResyncSamples
-                    && cappedOutOfGameReports.Add(pulsedAccountKey))
+                state.Baseline = FollowAutoPulsePolicy.RaiseCountBaseline(
+                    state.Baseline, countConfirm.HighestSeen ?? sample.PlayerCount);
+                if (DateTimeOffset.UtcNow - state.LastLeaderVisibleReportUtc >= TimeSpan.FromSeconds(30))
                 {
+                    state.LastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
                     await UpdateFollowAutoMonitorAsync(
-                        $"Game #{_followAutoGameNumber}: {pulsedAccountKey} keeps reading as out of the game but has already used its "
-                            + $"{FollowAutoPulsePolicy.MaxOutOfGameResyncsPerGame} rejoin attempts this game, so it stays as-is. "
-                            + "If it is visibly in the game, its screen is being misclassified - check the VM's resolution (1366x768) and reference images.");
+                        $"Game #{_followAutoGameNumber}: {sample.AccountKey ?? "a vantage"} saw the player count drop, "
+                            + $"but {countConfirm.Detail} - staying. Bind your character with `/d2r follow bind-in-game` "
+                            + "so leaving is driven by your nametag instead of the player count.");
                 }
-            }
 
-            // Only the session-locked nametag can drive the leave decision. Before a lock
-            // exists (first game, nothing spotted yet), presence reads null and Classify falls
-            // back to count-drop semantics - none of the bound alt nametags may trigger a leave
-            // until one of them has actually been SEEN in this run.
-            var (lockedPresent, _, _) = GetLockedNametagPresence(sample);
-            switch (FollowAutoPulsePolicy.Classify(sample.LeaderBound, lockedPresent, sample.PlayerCount, baseline))
-            {
-                case FollowAutoPulseAction.CountDropLeave:
-                    // A missing nametag never leaves on one screen's word - it forces an
-                    // independent second opinion first. A count drop did, and that asymmetry only
-                    // held while every vantage sampled at roughly the same instant. Pulses
-                    // round-robin across vantages, the baseline is fleet-wide, and a worker-relayed
-                    // agent answers through an extra hop (master -> worker -> agent), so its count
-                    // lags the locally-connected ones. A baseline raised by a fast vantage then
-                    // reads as a drop on the next slow one, the fleet leaves, and follow-auto
-                    // immediately rejoins the same game because the leader never went anywhere.
-                    // Same rule as the nametag path: one screen is not enough to leave on.
-                    var countConfirm = await ConfirmPlayerCountDropFromAnotherVantageAsync(
-                        sample.AccountKey, baseline, accountState.Joined);
-                    if (countConfirm.Confirmed)
+                break;
+            case FollowAutoPulseAction.RebaselineAndWait:
+                if (sample.AccountKey is { } visibleAccountKey)
+                {
+                    state.IsolatedMissStreaks.Remove(visibleAccountKey);
+                }
+
+                // A count drop with the locked nametag still visible is legitimate in a
+                // public game (a stranger left), but when the operator themselves left and
+                // this branch keeps swallowing it, the locked template is matching someone
+                // who stayed - a bot's name captured at the wrong bind position, or a name
+                // visually ambiguous with the leader's. Surface the tell once per game so
+                // a wrong lock self-diagnoses instead of reading as "won't follow".
+                if (!state.WarnedCountDropWhileLeaderVisible
+                    && sample.PlayerCount is { } seenCount
+                    && state.Baseline is { } knownBaseline
+                    && seenCount < knownBaseline)
+                {
+                    state.WarnedCountDropWhileLeaderVisible = true;
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Game #{_followAutoGameNumber}: player count dropped {knownBaseline}->{seenCount} but the locked nametag is still visible, so staying. If it was YOU who left, the bound nametag is matching someone else's name - rebind with `/d2r follow bind-in-game`.{FormatBoundLeaderWatchDetail(sample)}");
+                }
+
+                state.Baseline = sample.PlayerCount ?? state.Baseline;
+                state.SingleVantageMissStreak = 0;
+                if (DateTimeOffset.UtcNow - state.LastLeaderVisibleReportUtc >= TimeSpan.FromSeconds(30))
+                {
+                    state.LastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Game #{_followAutoGameNumber}: watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(sample)}");
+                }
+
+                break;
+            case FollowAutoPulseAction.LeaderMissingHere:
+                var (online, _) = GetAccountEntriesByConnectivity();
+                // Count joined vantages only: a game-full-parked account is online but sits
+                // at the lobby, so it can neither confirm nor deny the leader's absence.
+                var joinedOnlineCount = online.Count(entry => accountState.Joined.Contains(entry.Key));
+                if (joinedOnlineCount > 1)
+                {
+                    state.SingleVantageMissStreak = 0;
+                    var flaggerName = sample.AccountKey ?? "a VM";
+                    var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(sample.AccountKey, accountState.Joined);
+                    if (agreed == true)
                     {
-                        return new FollowAutoGameWatchResult("player count dropped");
+                        return new FollowAutoGameWatchResult(
+                            sample.AccountKey is { } flagger && confirmer is { } confirmedBy
+                                ? $"the bound leader left the game ({flagger} flagged it, {confirmedBy} confirmed)"
+                                : "the bound leader left the game");
                     }
 
-                    baseline = FollowAutoPulsePolicy.RaiseCountBaseline(
-                        baseline, countConfirm.HighestSeen ?? sample.PlayerCount);
-                    if (DateTimeOffset.UtcNow - lastLeaderVisibleReportUtc >= TimeSpan.FromSeconds(30))
+                    if (agreed == false)
                     {
-                        lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Game #{_followAutoGameNumber}: {sample.AccountKey ?? "a vantage"} saw the player count drop, "
-                                + $"but {countConfirm.Detail} - staying. Bind your character with `/d2r follow bind-in-game` "
-                                + "so leaving is driven by your nametag instead of the player count.");
-                    }
-
-                    break;
-                case FollowAutoPulseAction.RebaselineAndWait:
-                    if (sample.AccountKey is { } visibleAccountKey)
-                    {
-                        isolatedMissStreaks.Remove(visibleAccountKey);
-                    }
-
-                    // A count drop with the locked nametag still visible is legitimate in a
-                    // public game (a stranger left), but when the operator themselves left and
-                    // this branch keeps swallowing it, the locked template is matching someone
-                    // who stayed - a bot's name captured at the wrong bind position, or a name
-                    // visually ambiguous with the leader's. Surface the tell once per game so
-                    // a wrong lock self-diagnoses instead of reading as "won't follow".
-                    if (!warnedCountDropWhileLeaderVisible
-                        && sample.PlayerCount is { } seenCount
-                        && baseline is { } knownBaseline
-                        && seenCount < knownBaseline)
-                    {
-                        warnedCountDropWhileLeaderVisible = true;
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Game #{_followAutoGameNumber}: player count dropped {knownBaseline}->{seenCount} but the locked nametag is still visible, so staying. If it was YOU who left, the bound nametag is matching someone else's name - rebind with `/d2r follow bind-in-game`.{FormatBoundLeaderWatchDetail(sample)}");
-                    }
-
-                    baseline = sample.PlayerCount ?? baseline;
-                    singleVantageMissStreak = 0;
-                    if (DateTimeOffset.UtcNow - lastLeaderVisibleReportUtc >= TimeSpan.FromSeconds(30))
-                    {
-                        lastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
-                        await UpdateFollowAutoMonitorAsync(
-                            $"Game #{_followAutoGameNumber}: watching for the bound leader to leave.{FormatBoundLeaderWatchDetail(sample)}");
-                    }
-
-                    break;
-                case FollowAutoPulseAction.LeaderMissingHere:
-                    var (online, _) = GetAccountEntriesByConnectivity();
-                    // Count joined vantages only: a game-full-parked account is online but sits
-                    // at the lobby, so it can neither confirm nor deny the leader's absence.
-                    var joinedOnlineCount = online.Count(entry => accountState.Joined.Contains(entry.Key));
-                    if (joinedOnlineCount > 1)
-                    {
-                        singleVantageMissStreak = 0;
-                        var flaggerName = sample.AccountKey ?? "a VM";
-                        var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(sample.AccountKey, accountState.Joined);
-                        if (agreed == true)
+                        // A different VM still sees the leader (and no VM verified absence).
+                        // One such split read can be transient; repeated split reads from the
+                        // same account mean that account is probably in another game while
+                        // the host's joined set still counts it as healthy.
+                        state.Baseline = sample.PlayerCount ?? state.Baseline;
+                        var isolatedMissStreak = 0;
+                        var alreadyResyncedThisGame = false;
+                        if (sample.AccountKey is { } isolatedAccountKey)
                         {
-                            return new FollowAutoGameWatchResult(
-                                sample.AccountKey is { } flagger && confirmer is { } confirmedBy
-                                    ? $"the bound leader left the game ({flagger} flagged it, {confirmedBy} confirmed)"
-                                    : "the bound leader left the game");
-                        }
-
-                        if (agreed == false)
-                        {
-                            // A different VM still sees the leader (and no VM verified absence).
-                            // One such split read can be transient; repeated split reads from the
-                            // same account mean that account is probably in another game while
-                            // the host's joined set still counts it as healthy.
-                            baseline = sample.PlayerCount ?? baseline;
-                            var isolatedMissStreak = 0;
-                            var alreadyResyncedThisGame = false;
-                            if (sample.AccountKey is { } isolatedAccountKey)
+                            state.IsolatedMissStreaks.TryGetValue(isolatedAccountKey, out var priorMissStreak);
+                            isolatedMissStreak = FollowAutoPulsePolicy.NextIsolatedVantageMissStreak(
+                                priorMissStreak,
+                                lockedPresent,
+                                agreed);
+                            state.IsolatedMissStreaks[isolatedAccountKey] = isolatedMissStreak;
+                            alreadyResyncedThisGame = isolatedAccountsResyncedThisGame.Contains(isolatedAccountKey);
+                            if (FollowAutoPulsePolicy.ShouldResyncIsolatedVantage(
+                                    isolatedMissStreak,
+                                    alreadyResyncedThisGame))
                             {
-                                isolatedMissStreaks.TryGetValue(isolatedAccountKey, out var priorMissStreak);
-                                isolatedMissStreak = FollowAutoPulsePolicy.NextIsolatedVantageMissStreak(
-                                    priorMissStreak,
-                                    lockedPresent,
-                                    agreed);
-                                isolatedMissStreaks[isolatedAccountKey] = isolatedMissStreak;
-                                alreadyResyncedThisGame = isolatedAccountsResyncedThisGame.Contains(isolatedAccountKey);
-                                if (FollowAutoPulsePolicy.ShouldResyncIsolatedVantage(
-                                        isolatedMissStreak,
-                                        alreadyResyncedThisGame))
-                                {
-                                    return new FollowAutoGameWatchResult(
-                                        $"{isolatedAccountKey} missed the bound leader on {isolatedMissStreak} independently-confirmed checks while the other bots still saw it.{confirmDetail}",
-                                        isolatedAccountKey);
-                                }
+                                return new FollowAutoGameWatchResult(
+                                    $"{isolatedAccountKey} missed the bound leader on {isolatedMissStreak} independently-confirmed checks while the other bots still saw it.{confirmDetail}",
+                                    isolatedAccountKey);
                             }
-
-                            var isolationDetail = sample.AccountKey is not null
-                                ? alreadyResyncedThisGame
-                                    ? " It already had one targeted resync this game, so it will not be cycled repeatedly."
-                                    : $" Confirmed-isolation miss {isolatedMissStreak}/{FollowAutoPulsePolicy.IsolatedVantageResyncSamples}."
-                                : "";
-                            await UpdateFollowAutoMonitorAsync(
-                                $"Game #{_followAutoGameNumber}: {flaggerName} lost sight of the bound leader, but {confirmer} still sees it.{isolationDetail} {confirmDetail}{FormatBoundLeaderWatchDetail(sample)}");
                         }
-                        else
-                        {
-                            if (sample.AccountKey is { } inconclusiveAccountKey)
-                            {
-                                isolatedMissStreaks.Remove(inconclusiveAccountKey);
-                            }
 
-                            // agreed == null: no other vantage could get a clean read this
-                            // instant. Don't leave on one screen's word - the next heartbeat
-                            // pulse tries again - but say WHY on the monitor: a fleet that can
-                            // never confirm (diverged lists, old agent builds) used to cycle
-                            // here invisibly for entire sessions.
-                            await UpdateFollowAutoMonitorAsync(
-                                $"Game #{_followAutoGameNumber}: {flaggerName} lost sight of the bound leader and no other VM could verify it either way; staying until a vantage gets a clean read. {confirmDetail}{FormatBoundLeaderWatchDetail(sample)}");
-                        }
+                        var isolationDetail = sample.AccountKey is not null
+                            ? alreadyResyncedThisGame
+                                ? " It already had one targeted resync this game, so it will not be cycled repeatedly."
+                                : $" Confirmed-isolation miss {isolatedMissStreak}/{FollowAutoPulsePolicy.IsolatedVantageResyncSamples}."
+                            : "";
+                        await UpdateFollowAutoMonitorAsync(
+                            $"Game #{_followAutoGameNumber}: {flaggerName} lost sight of the bound leader, but {confirmer} still sees it.{isolationDetail} {confirmDetail}{FormatBoundLeaderWatchDetail(sample)}");
                     }
                     else
                     {
-                        // Only one VM online: no independent screen to confirm with, so require
-                        // the lone vantage to miss the leader on two back-to-back scans.
-                        if (++singleVantageMissStreak >= FollowAutoPulsePolicy.LeaderGoneConfirmationSamples)
+                        if (sample.AccountKey is { } inconclusiveAccountKey)
                         {
-                            return new FollowAutoGameWatchResult("the bound leader left the game");
+                            state.IsolatedMissStreaks.Remove(inconclusiveAccountKey);
                         }
 
+                        // agreed == null: no other vantage could get a clean read this
+                        // instant. Don't leave on one screen's word - the next heartbeat
+                        // pulse tries again - but say WHY on the monitor: a fleet that can
+                        // never confirm (diverged lists, old agent builds) used to cycle
+                        // here invisibly for entire sessions.
                         await UpdateFollowAutoMonitorAsync(
-                            $"Game #{_followAutoGameNumber}: bound leader not visible; re-checking before leaving.{FormatBoundLeaderWatchDetail(sample)}");
-                        nextDelay = TimeSpan.FromSeconds(FollowAutoPulsePolicy.SingleVantageRescanSeconds);
-                        continue;
+                            $"Game #{_followAutoGameNumber}: {flaggerName} lost sight of the bound leader and no other VM could verify it either way; staying until a vantage gets a clean read. {confirmDetail}{FormatBoundLeaderWatchDetail(sample)}");
                     }
-
-                    break;
-                default:
-                    if (sample.AccountKey is { } unsampledAccountKey)
+                }
+                else
+                {
+                    // Only one VM online: no independent screen to confirm with, so require
+                    // the lone vantage to miss the leader on two back-to-back scans.
+                    if (++state.SingleVantageMissStreak >= FollowAutoPulsePolicy.LeaderGoneConfirmationSamples)
                     {
-                        isolatedMissStreaks.Remove(unsampledAccountKey);
+                        return new FollowAutoGameWatchResult("the bound leader left the game");
                     }
 
-                    baseline = FollowAutoPulsePolicy.RaiseCountBaseline(baseline, sample.PlayerCount);
-                    break;
-            }
+                    await UpdateFollowAutoMonitorAsync(
+                        $"Game #{_followAutoGameNumber}: bound leader not visible; re-checking before leaving.{FormatBoundLeaderWatchDetail(sample)}");
+                    state.NextDelay = TimeSpan.FromSeconds(FollowAutoPulsePolicy.SingleVantageRescanSeconds);
+                    return null;
+                }
 
-            nextDelay = GetFollowHeartbeat(pollDelay);
+                break;
+            default:
+                if (sample.AccountKey is { } unsampledAccountKey)
+                {
+                    state.IsolatedMissStreaks.Remove(unsampledAccountKey);
+                }
+
+                state.Baseline = FollowAutoPulsePolicy.RaiseCountBaseline(state.Baseline, sample.PlayerCount);
+                break;
         }
+
+        state.NextDelay = GetFollowHeartbeat(GetFollowAutoPlayerCountDropPollDelay);
+        return null;
     }
 
     private TimeSpan GetFollowHeartbeat(Func<TimeSpan> pollDelay)
@@ -11722,47 +11516,6 @@ public sealed class DiscordBot
             false => $" Locked nametag{ordinal} not visible{account}{scoreText}.",
             _ => $" Locked nametag{ordinal} check unavailable{account}."
         };
-    }
-
-    // Samples the (rotation % online-count)th online account, so consecutive pulses take turns
-    // across the fleet. LeaderPresent stays null whenever it wasn't actually verified (no fresh
-    // sample, no leader bound, or the agent couldn't check) - the cached-status fallback can
-    // only ever supply a count, and pretending it said anything about the leader would turn
-    // "couldn't check" into a leave trigger.
-    // Probes one JOINED vantage (rotating over the joined set) for the locked leader nametag
-    // while the fleet is still in the join phase. Returns the locked nametag's presence from
-    // that vantage and, when it read verified-absent, the cross-vantage confirmation verdict.
-    // Mid-join sightings must engage the session lock too (TryLockNametagFromSampleAsync): a
-    // run whose first game never reaches all-joined - exactly the wedged-bot case this probe
-    // exists for - previously never locked at all, which would leave every probe blind
-    // (no lock -> presence always null -> never evidence of absence).
-    private async Task<MidJoinLeaderProbe> ProbeMidJoinLeaderPresenceAsync(
-        IReadOnlySet<string> joined,
-        int rotation)
-    {
-        var (online, _) = GetAccountEntriesByConnectivity();
-        var joinedEntries = online.Where(entry => joined.Contains(entry.Key)).ToArray();
-        if (joinedEntries.Length == 0)
-        {
-            return new MidJoinLeaderProbe(null, null, "", null);
-        }
-
-        var (accountKey, account) = joinedEntries[rotation % joinedEntries.Length];
-        var sample = await TryFetchFollowPulseForAsync(accountKey, account, _followAutoLockedNametag);
-        _followAutoLivePlayers.Observe(sample.PlayerCount, sample.PlayerCountFresh);
-        await TryLockNametagFromSampleAsync(sample);
-        var (lockedPresent, _, _) = GetLockedNametagPresence(sample);
-        if (lockedPresent != false)
-        {
-            return new MidJoinLeaderProbe(lockedPresent, null, "", sample);
-        }
-
-        var flagger = sample.AccountKey ?? accountKey;
-        var (agreed, confirmer, confirmDetail) = await ConfirmLeaderGoneFromAnotherVantageAsync(flagger, joined);
-        var detail = agreed == true && confirmer is { } confirmedBy
-            ? $" ({flagger} flagged it, {confirmedBy} confirmed)"
-            : $" ({flagger} flagged it; {confirmDetail})";
-        return new MidJoinLeaderProbe(false, agreed, detail, sample);
     }
 
     // onlyAccounts scopes the vantage rotation to accounts actually IN the watched game. A
@@ -12536,6 +12289,16 @@ public sealed class DiscordBot
         Failed
     }
 
+    private sealed record FollowAutoWorkResult(
+        FollowAutoCheckResult? Check = null,
+        FollowAutoClientRestartRequest? ClientRestart = null,
+        FollowAutoVmRecoveryRequest? VmRecovery = null,
+        FollowAutoNodeRecoveryRequest? NodeRecovery = null,
+        CommandResult? Command = null,
+        bool Latched = false,
+        FollowAutoNodeRecoveryResult? NodeResult = null,
+        JoinResult? Leave = null);
+
     /// <summary>
     /// One account's answer to one follow-auto check.
     /// </summary>
@@ -12598,16 +12361,18 @@ public sealed class DiscordBot
         string LastMessage,
         bool Stalled = false);
 
-    /// <summary>
-    /// One mid-join probe of a joined vantage: what it saw of the bound leader, and the raw pulse
-    /// behind that verdict so public mode can count the party bar off the same sample instead of
-    /// spending a second command on it.
-    /// </summary>
-    private sealed record MidJoinLeaderProbe(
-        bool? LockedPresent,
-        bool? ConfirmAgreed,
-        string Detail,
-        FollowPulseSample? Sample);
+    private sealed class FollowAutoGameWatchState
+    {
+        public int? Baseline;
+        public int SingleVantageMissStreak;
+        public Dictionary<string, int> IsolatedMissStreaks { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> OutOfGameStreaks { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> CappedOutOfGameReports { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public int Rotation;
+        public bool WarnedCountDropWhileLeaderVisible;
+        public DateTimeOffset LastLeaderVisibleReportUtc = DateTimeOffset.UtcNow;
+        public TimeSpan? NextDelay;
+    }
 
     private sealed record FollowAutoGameWatchResult(
         string Reason,

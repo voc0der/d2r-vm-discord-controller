@@ -2,8 +2,8 @@ namespace D2RHost;
 
 /// <summary>
 /// Tracks the accounts the follow-auto host believes are in its current game, plus exact
-/// accounts that must complete the normal menu recovery/join path before the all-joined
-/// watcher may resume, plus accounts parked because the current game reported full.
+/// accounts that must complete the normal menu recovery/join path before being counted as
+/// joined, plus accounts parked because the current game reported full.
 /// </summary>
 internal sealed class FollowAutoAccountState
 {
@@ -35,6 +35,9 @@ internal sealed class FollowAutoAccountState
     public IReadOnlySet<string> ParkedGameFull => _parkedGameFull;
 
     public int JoinedCount => _joined.Count;
+
+    // A recovering account must never prevent healthy vantages from noticing the leader leave.
+    public bool CanMonitorGame => _joined.Count > 0;
 
     public int ParkedGameFullCount => _parkedGameFull.Count;
 
@@ -205,11 +208,9 @@ internal sealed class FollowAutoAccountState
     }
 
     /// <summary>
-    /// The all-joined watch may run once every online, non-parked account is in the game and
-    /// nothing is recovery-pending. Parked accounts are deliberately excluded from the joined
-    /// comparison: they intentionally sit at the lobby for the rest of the current game, and
-    /// requiring them would freeze the watch (and therefore game advancement - the only thing
-    /// that un-parks them) forever.
+    /// Strict all-joined milestone used for public-mode roster growth. Leader monitoring uses
+    /// CanMonitorGame instead and continues during recovery. Parked accounts intentionally sit
+    /// at the lobby for the current game, so they are excluded from this comparison.
     /// </summary>
     public bool CanWatch(IReadOnlyCollection<string> onlineAccountKeys)
     {

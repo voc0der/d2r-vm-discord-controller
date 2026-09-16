@@ -15,6 +15,7 @@ public sealed class FollowAutoAccountStateTests
         Assert.Equal(3, state.JoinedCount);
         Assert.Contains("hc4", state.RecoveryPending);
         Assert.False(state.CanWatch(AccountSet("hc1", "hc2", "hc3")));
+        Assert.True(state.CanMonitorGame);
         Assert.Equal(new[] { "hc4" }, state.GetOfflineRecoveryAccounts(AccountSet("hc1", "hc2", "hc3")));
         Assert.Equal(4, state.CountExpectedAccounts(new[] { "hc1", "hc2", "hc3" }));
 
@@ -35,6 +36,7 @@ public sealed class FollowAutoAccountStateTests
         Assert.Equal(0, state.JoinedCount);
         Assert.True(AccountSet("hc1", "hc2", "hc3", "hc4").SetEquals(state.RecoveryPending));
         Assert.False(state.CanWatch(AccountSet("hc1", "hc2", "hc3")));
+        Assert.False(state.CanMonitorGame);
         Assert.Equal(new[] { "hc4" }, state.GetOfflineRecoveryAccounts(AccountSet("hc1", "hc2", "hc3")));
     }
 
@@ -48,6 +50,7 @@ public sealed class FollowAutoAccountStateTests
 
         Assert.Contains("hc4", state.RecoveryPending);
         Assert.False(state.CanWatch(AccountSet("hc1", "hc2", "hc3", "hc4")));
+        Assert.True(state.CanMonitorGame);
 
         state.MarkJoined("HC4");
 

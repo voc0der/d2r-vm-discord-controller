@@ -62,16 +62,19 @@ public sealed class FollowAutoNodeRecoveryTests
     }
 
     [Fact]
-    public void EveryRecoveryAccountMustBeOnlineBeforeFollowResumes()
+    public void ReturningWorkerCanFollowWhileOneOfItsVmAgentsIsStillRecovering()
     {
-        var expected = new[] { "hc1", "HC2" };
+        var previous = RestartRequested.AddMinutes(-10);
+        var snapshot = Node(connected: true, RestartRequested.AddMinutes(1));
+        var accounts = new FollowAutoAccountState();
+        accounts.BeginRecovery(["hc1", "hc2"]);
 
-        Assert.False(DiscordBot.AreRecoveryAccountsOnline(
-            expected,
-            new HashSet<string>(["hc1"], StringComparer.OrdinalIgnoreCase)));
-        Assert.True(DiscordBot.AreRecoveryAccountsOnline(
-            expected,
-            new HashSet<string>(["HC1", "hc2", "hc3"], StringComparer.OrdinalIgnoreCase)));
+        Assert.True(DiscordBot.HasNewWorkerConnection(snapshot, previous, RestartRequested));
+        accounts.MarkJoined("hc1");
+
+        Assert.True(accounts.CanMonitorGame);
+        Assert.Contains("hc2", accounts.RecoveryPending);
+        Assert.False(accounts.CanWatch(AccountSet("hc1")));
     }
 
     [Fact]
