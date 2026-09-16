@@ -4932,20 +4932,41 @@ public sealed class VmOperations
             return unsupported;
         }
 
+        return DetectVisibleD2RState(
+            d2rRunning,
+            () => DetectGraphicsDeviceFailureDialog().Detected,
+            () => DetectVisibleD2RState(new WindowsInput()));
+    }
+
+    internal VisibleD2RState DetectVisibleD2RState(
+        bool d2rRunning,
+        Func<bool> detectGraphicsDeviceFailure,
+        Func<VisibleD2RState> detectRenderedState)
+    {
         // Checked before any pixel sampling: this modal renders over a black screen that every
         // pixel classifier reads as Unknown, which is indistinguishable from a load screen or a
         // degraded capture. Naming it here is what puts it in /d2r status (visible
         // GraphicsDeviceFailure) and what makes MenuReadyPolicy run a ready pass instead of
         // assuming a client that is never coming up on its own.
-        if (DetectGraphicsDeviceFailureDialog().Detected)
+        if (detectGraphicsDeviceFailure())
         {
             RecordObservedFrame(VisibleD2RState.GraphicsDeviceFailure.ToString());
             return VisibleD2RState.GraphicsDeviceFailure;
         }
 
+        // Without a D2R process these pixels belong to the desktop or another application.
+        // A coincidental healthy-screen match would clear a confirmed settings-repair incident
+        // and its durable journal. Keep the semantic graphics-error probe above: a launcher
+        // can still own that dialog after the game process exits.
+        if (!d2rRunning)
+        {
+            RecordObservedFrame(VisibleD2RState.NotRunning.ToString());
+            return VisibleD2RState.NotRunning;
+        }
+
         try
         {
-            var visibleState = DetectVisibleD2RState(new WindowsInput());
+            var visibleState = detectRenderedState();
             if (visibleState != VisibleD2RState.Unknown)
             {
                 RecordObservedFrame(visibleState.ToString());
@@ -4956,9 +4977,8 @@ public sealed class VmOperations
         {
         }
 
-        var fallback = d2rRunning ? VisibleD2RState.Unknown : VisibleD2RState.NotRunning;
-        RecordObservedFrame(fallback.ToString());
-        return fallback;
+        RecordObservedFrame(VisibleD2RState.Unknown.ToString());
+        return VisibleD2RState.Unknown;
     }
 
     private VisibleD2RState DetectVisibleD2RState(WindowsInput input)

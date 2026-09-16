@@ -15,6 +15,51 @@ namespace D2RAgent.Tests;
 // the enum cannot repeat it.
 public sealed class VisibleStateMappingTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GraphicsErrorIsReportedWithoutSamplingPixelsEvenAfterD2RExits(bool d2rRunning)
+    {
+        var vm = new VmOperations(new VmAgentConfig());
+        var renderedProbeCalled = false;
+
+        var state = vm.DetectVisibleD2RState(
+            d2rRunning,
+            detectGraphicsDeviceFailure: () => true,
+            detectRenderedState: () =>
+            {
+                renderedProbeCalled = true;
+                return VmOperations.VisibleD2RState.CharacterScreen;
+            });
+
+        Assert.Equal(VmOperations.VisibleD2RState.GraphicsDeviceFailure, state);
+        Assert.False(renderedProbeCalled);
+    }
+
+    [Theory]
+    [InlineData("Unknown")]
+    [InlineData("DiabloSplash")]
+    [InlineData("CharacterScreen")]
+    [InlineData("InGame")]
+    public void RunningD2RStillUsesItsRenderedScreen(string renderedStateName)
+    {
+        var renderedState = Enum.Parse<VmOperations.VisibleD2RState>(renderedStateName);
+        var vm = new VmOperations(new VmAgentConfig());
+        var renderedProbeCalled = false;
+
+        var state = vm.DetectVisibleD2RState(
+            d2rRunning: true,
+            detectGraphicsDeviceFailure: () => false,
+            detectRenderedState: () =>
+            {
+                renderedProbeCalled = true;
+                return renderedState;
+            });
+
+        Assert.Equal(renderedState, state);
+        Assert.True(renderedProbeCalled);
+    }
+
     [Fact]
     public void EveryVisibleStateSurvivesAProcessOnlyStatus()
     {

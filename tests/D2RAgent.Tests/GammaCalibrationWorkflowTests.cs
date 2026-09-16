@@ -189,6 +189,20 @@ public sealed class GammaCalibrationWorkflowTests
             Assert.Equal(firstAttemptUtc, prepared.FirstAttemptUtc);
             Assert.Equal(lastAttemptUtc, prepared.LastAttemptUtc);
 
+            // The Windows status path must not classify the runner's desktop as a healthy
+            // D2R screen and erase the repair journal when the game is not running.
+            var renderedProbeCalled = false;
+            var visibleState = vm.DetectVisibleD2RState(
+                d2rRunning: false,
+                detectGraphicsDeviceFailure: () => false,
+                detectRenderedState: () =>
+                {
+                    renderedProbeCalled = true;
+                    return VmOperations.VisibleD2RState.CharacterScreen;
+                });
+            Assert.Equal(VmOperations.VisibleD2RState.NotRunning, visibleState);
+            Assert.False(renderedProbeCalled);
+
             var status = JsonSerializer.SerializeToElement(await vm.GetStatusAsync(CancellationToken.None));
             var repairStatus = status.GetProperty("d2rSettingsRepair");
             Assert.True(repairStatus.GetProperty("needsDonorSettings").GetBoolean());
